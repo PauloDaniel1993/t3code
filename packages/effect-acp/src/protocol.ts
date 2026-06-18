@@ -409,15 +409,8 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       ),
     ),
     Effect.matchEffect({
-      onFailure: (error) => {
-        const normalized: AcpError.AcpError = isAcpError(error)
-          ? error
-          : new AcpError.AcpTransportError({
-              detail: error instanceof Error ? error.message : String(error),
-              cause: error,
-            });
-        return handleTermination(() => Effect.succeed(normalized));
-      },
+      onFailure: (error) =>
+        handleTermination(() => Effect.succeed(normalizeToTerminationError(error))),
       onSuccess: () =>
         handleTermination(
           () =>
@@ -524,6 +517,24 @@ function isProtocolError(
 
 function normalizeToRequestError(error: AcpError.AcpError): AcpError.AcpRequestError {
   return isAcpRequestError(error) ? error : AcpError.AcpRequestError.internalError(error.message);
+}
+
+function normalizeToTerminationError(error: unknown): AcpError.AcpError {
+  return isAcpError(error)
+    ? error
+    : new AcpError.AcpTransportError({
+        detail: extractErrorMessage(error),
+        cause: error,
+      });
+}
+
+function extractErrorMessage(error: unknown): string {
+  return typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+    ? error.message
+    : String(error);
 }
 
 function toRpcClientError(error: AcpError.AcpError): RpcClientError.RpcClientError {

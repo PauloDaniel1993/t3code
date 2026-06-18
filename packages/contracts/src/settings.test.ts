@@ -2,11 +2,90 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { DEFAULT_SERVER_SETTINGS, ServerSettings, ServerSettingsPatch } from "./settings.ts";
+import {
+  ClientSettingsPatch,
+  ClientSettingsSchema,
+  DEFAULT_CLIENT_SETTINGS,
+  DEFAULT_SERVER_SETTINGS,
+  DEFAULT_SIDEBAR_ORGANIZATION,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings.ts";
 
+const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
+const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+
+describe("ClientSettings.sidebarOrganization", () => {
+  it("defaults to an empty sidebar organization so legacy client settings still decode", () => {
+    const decoded = decodeClientSettings({});
+
+    expect(decoded.sidebarOrganization).toEqual(DEFAULT_SIDEBAR_ORGANIZATION);
+    expect(DEFAULT_CLIENT_SETTINGS.sidebarOrganization).toEqual(DEFAULT_SIDEBAR_ORGANIZATION);
+  });
+
+  it("filters invalid category references while decoding", () => {
+    const decoded = decodeClientSettings({
+      sidebarOrganization: {
+        categoryOrder: ["keep", "missing", "keep", "renamed"],
+        categories: {
+          keep: {
+            id: " keep ",
+            name: " Work ",
+            archivedAt: null,
+          },
+          stale: {
+            id: " renamed ",
+            name: " Renamed ",
+            archivedAt: "2026-06-18T00:00:00.000Z",
+          },
+        },
+        projectCategoryAssignments: {
+          project_keep: {
+            categoryId: " keep ",
+            updatedAt: "2026-06-18T00:00:00.000Z",
+          },
+          project_missing: {
+            categoryId: "missing",
+            updatedAt: "2026-06-18T00:00:00.000Z",
+          },
+          project_renamed: {
+            categoryId: " renamed ",
+            updatedAt: "2026-06-18T00:00:00.000Z",
+          },
+        },
+      },
+    });
+
+    expect(decoded.sidebarOrganization).toEqual({
+      categoryOrder: ["keep", "renamed"],
+      categories: {
+        keep: {
+          id: "keep",
+          name: "Work",
+          archivedAt: null,
+        },
+        renamed: {
+          id: "renamed",
+          name: "Renamed",
+          archivedAt: "2026-06-18T00:00:00.000Z",
+        },
+      },
+      projectCategoryAssignments: {
+        project_keep: {
+          categoryId: "keep",
+          updatedAt: "2026-06-18T00:00:00.000Z",
+        },
+        project_renamed: {
+          categoryId: "renamed",
+          updatedAt: "2026-06-18T00:00:00.000Z",
+        },
+      },
+    });
+  });
+});
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults to an empty record so legacy configs without the key still decode", () => {
@@ -149,5 +228,44 @@ describe("ServerSettingsPatch string normalization", () => {
 
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
+  });
+});
+
+describe("ClientSettingsPatch.sidebarOrganization", () => {
+  it("treats sidebarOrganization as an optional whole-object replacement", () => {
+    const emptyPatch = decodeClientSettingsPatch({});
+    expect(emptyPatch.sidebarOrganization).toBeUndefined();
+
+    const replacement = decodeClientSettingsPatch({
+      sidebarOrganization: {
+        categoryOrder: ["work", "missing"],
+        categories: {
+          work: { id: " work ", name: " Work ", archivedAt: null },
+        },
+        projectCategoryAssignments: {
+          project_a: {
+            categoryId: " work ",
+            updatedAt: "2026-06-18T00:00:00.000Z",
+          },
+          project_b: {
+            categoryId: "missing",
+            updatedAt: "2026-06-18T00:00:00.000Z",
+          },
+        },
+      },
+    });
+
+    expect(replacement.sidebarOrganization).toEqual({
+      categoryOrder: ["work"],
+      categories: {
+        work: { id: "work", name: "Work", archivedAt: null },
+      },
+      projectCategoryAssignments: {
+        project_a: {
+          categoryId: "work",
+          updatedAt: "2026-06-18T00:00:00.000Z",
+        },
+      },
+    });
   });
 });

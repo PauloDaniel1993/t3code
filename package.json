@@ -5,10 +5,13 @@
   "scripts": {
     "prepare": "effect-tsgo patch",
     "dev": "node scripts/dev-runner.ts dev",
+    "dev:local": "node scripts/dev-runner.ts dev --home-dir ./.t3-dev",
     "dev:server": "node scripts/dev-runner.ts dev:server",
+    "dev:server:local": "node scripts/dev-runner.ts dev:server --home-dir ./.t3-dev",
     "dev:web": "node scripts/dev-runner.ts dev:web",
     "dev:marketing": "vp run --filter @t3tools/marketing dev",
     "dev:desktop": "node scripts/dev-runner.ts dev:desktop",
+    "dev:desktop:local": "node scripts/dev-runner.ts dev:desktop --home-dir ./.t3-dev",
     "start": "vp run --filter t3 start",
     "start:desktop": "vp run --filter @t3tools/desktop start",
     "start:marketing": "vp run --filter @t3tools/marketing preview",
