@@ -1,0 +1,1518 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Magic World Reference Atlas</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #11120f;
+        --panel: #1b1d18;
+        --panel-2: #24261f;
+        --text: #f3efe2;
+        --muted: #beb7a3;
+        --line: rgba(243, 239, 226, 0.16);
+        --nature: #79b36b;
+        --ancient: #73b7c8;
+        --corrupt: #c87a54;
+        --story: #c5a3e0;
+        --music: #d6b85f;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          linear-gradient(180deg, rgba(17, 18, 15, 0.1), var(--bg) 580px),
+          url("https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Mont-Saint-Michel_vu_du_ciel.jpg/3840px-Mont-Saint-Michel_vu_du_ciel.jpg")
+            center top / cover fixed;
+        color: var(--text);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.55;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .hero {
+        min-height: 82vh;
+        display: grid;
+        align-items: end;
+        padding: 40px clamp(18px, 5vw, 72px);
+      }
+
+      .hero-inner {
+        max-width: 1040px;
+      }
+
+      .eyebrow {
+        color: var(--music);
+        font-size: 0.86rem;
+        font-weight: 760;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 940px;
+        margin: 12px 0 18px;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(2.8rem, 8vw, 7.4rem);
+        line-height: 0.94;
+        letter-spacing: 0;
+      }
+
+      .intro {
+        max-width: 760px;
+        margin: 0 0 28px;
+        color: #f9f1d4;
+        font-size: clamp(1.05rem, 2vw, 1.35rem);
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 26px;
+      }
+
+      .pill {
+        border: 1px solid var(--line);
+        background: rgba(17, 18, 15, 0.62);
+        padding: 8px 11px;
+        border-radius: 999px;
+        color: var(--text);
+        font-size: 0.88rem;
+      }
+
+      .pill.nature {
+        border-color: color-mix(in srgb, var(--nature), transparent 42%);
+      }
+
+      .pill.ancient {
+        border-color: color-mix(in srgb, var(--ancient), transparent 42%);
+      }
+
+      .pill.corrupt {
+        border-color: color-mix(in srgb, var(--corrupt), transparent 38%);
+      }
+
+      main {
+        background: var(--bg);
+      }
+
+      section {
+        padding: 56px clamp(18px, 5vw, 72px);
+        border-top: 1px solid var(--line);
+      }
+
+      .section-head {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(260px, 1fr);
+        gap: 28px;
+        max-width: 1280px;
+        margin: 0 auto 28px;
+      }
+
+      h2 {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(2rem, 4.8vw, 4rem);
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .section-head p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 1rem;
+      }
+
+      .grid {
+        max-width: 1280px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+      }
+
+      article {
+        min-width: 0;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      article img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 10;
+        object-fit: cover;
+        background: #090a08;
+      }
+
+      .card-body {
+        padding: 16px;
+      }
+
+      h3 {
+        margin: 0 0 8px;
+        font-size: 1.04rem;
+        line-height: 1.24;
+      }
+
+      .tagline {
+        margin: 0 0 12px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 12px;
+      }
+
+      .tag {
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 0.75rem;
+      }
+
+      .tag.nature {
+        color: #d7f0ce;
+        border-color: color-mix(in srgb, var(--nature), transparent 50%);
+      }
+
+      .tag.ancient {
+        color: #d5f3fa;
+        border-color: color-mix(in srgb, var(--ancient), transparent 50%);
+      }
+
+      .tag.corrupt {
+        color: #ffd8c6;
+        border-color: color-mix(in srgb, var(--corrupt), transparent 46%);
+      }
+
+      .tag.story {
+        color: #ead5fb;
+        border-color: color-mix(in srgb, var(--story), transparent 50%);
+      }
+
+      .tag.music {
+        color: #f6e7aa;
+        border-color: color-mix(in srgb, var(--music), transparent 50%);
+      }
+
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .links a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 32px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 9px;
+        color: var(--text);
+        text-decoration: none;
+        font-size: 0.86rem;
+      }
+
+      .links a:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .wide {
+        grid-column: span 2;
+      }
+
+      .note {
+        max-width: 1280px;
+        margin: 28px auto 0;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+      }
+
+      .reference-map {
+        max-width: 1280px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .column {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .column h3 {
+        font-size: 1.18rem;
+      }
+
+      .column ul {
+        margin: 12px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+      }
+
+      footer {
+        padding: 36px clamp(18px, 5vw, 72px);
+        color: var(--muted);
+        border-top: 1px solid var(--line);
+        background: #0d0e0c;
+      }
+
+      footer p {
+        max-width: 980px;
+        margin: 0 auto;
+      }
+
+      @media (max-width: 760px) {
+        body {
+          background-attachment: scroll;
+        }
+
+        .section-head,
+        .reference-map {
+          grid-template-columns: 1fr;
+        }
+
+        .wide {
+          grid-column: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero-inner">
+        <div class="eyebrow">Research board for a magic, lost-tech RPG world</div>
+        <h1>Magic World Reference Atlas</h1>
+        <p class="intro">
+          Real architecture, music traditions, books, manga, films, series, and games to inspire a
+          world where living magic, ancient spell technology, and corruptive magic-punk collide.
+        </p>
+        <div class="legend" aria-label="Reference categories">
+          <span class="pill nature">Harmonious civilization</span>
+          <span class="pill ancient">Lost magic technology</span>
+          <span class="pill corrupt">Corruptive magic-punk</span>
+          <span class="pill">Dungeon, town, music, story, and culture prompts</span>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <div class="section-head">
+          <h2>Design Compass</h2>
+          <p>
+            Use these as the three forces behind every region. The same location can have a living
+            surface settlement, an ancient layer below it, and a corruptive occupation spreading
+            through it.
+          </p>
+        </div>
+        <div class="reference-map">
+          <div class="column">
+            <h3>Magic as Relationship</h3>
+            <p class="tagline">
+              Villages, temples, guilds, festivals, music, farming, weather rites, and spirit
+              bargains.
+            </p>
+            <ul>
+              <li>Materials: timber, stone, cloth, clay, copper, glass, living plants.</li>
+              <li>Shapes: terraces, courtyards, canals, tree-roots, shrines, wind towers.</li>
+              <li>Conflicts: broken pacts, sick forests, drought, forgotten local spirits.</li>
+            </ul>
+          </div>
+          <div class="column">
+            <h3>Magic as System</h3>
+            <p class="tagline">
+              Dungeons as spell infrastructure: crystal logic, song archives, artificial weather,
+              and impossible machines.
+            </p>
+            <ul>
+              <li>Materials: white stone, crystal, ceramic, gold inlay, glass conduits.</li>
+              <li>Shapes: rings, lattices, vertical shafts, observatories, recursive rooms.</li>
+              <li>Conflicts: sealed weapons, failed utopias, living systems without masters.</li>
+            </ul>
+          </div>
+          <div class="column">
+            <h3>Magic as Control</h3>
+            <p class="tagline">
+              Enemy domains turn magic into extraction: anti-shrines, mana factories, rune engines,
+              and suppressed nature.
+            </p>
+            <ul>
+              <li>
+                Materials: black iron, brass, pipes, leather, pressure glass, artificial crystal.
+              </li>
+              <li>
+                Shapes: smokestacks, cages, turbines, gauges, cables, repeating military blocks.
+              </li>
+              <li>Conflicts: polluted leylines, captured elementals, silenced forests.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Real Architecture</h2>
+          <p>
+            These are the strongest real-world anchors for towns, temples, dungeons, and enemy
+            domains. Do not copy them directly; extract construction logic, silhouettes, material
+            culture, and relationship to landscape.
+          </p>
+        </div>
+        <div class="grid">
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f5/Buddhist_monks_in_front_of_the_Angkor_Wat.jpg/330px-Buddhist_monks_in_front_of_the_Angkor_Wat.jpg"
+              alt="Aerial view of Angkor Wat"
+            />
+            <div class="card-body">
+              <h3>Angkor Wat and Khmer Temple Cities</h3>
+              <p class="tagline">
+                Temple-mountains, moats, causeways, carved myth, and city-scale sacred geometry.
+              </p>
+              <div class="tags">
+                <span class="tag nature">sacred landscape</span>
+                <span class="tag ancient">dungeon plan</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Angkor_Wat">Overview</a>
+                <a href="https://commons.wikimedia.org/wiki/Category:Angkor_Wat">Images</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Angkor+Wat+architecture+documentary"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/8/8c/Ta_Prohm_%28III%29.jpg/330px-Ta_Prohm_%28III%29.jpg"
+              alt="Tree roots growing over Ta Prohm ruins"
+            />
+            <div class="card-body">
+              <h3>Ta Prohm</h3>
+              <p class="tagline">
+                Ruins and roots locked together: ideal for ancient facilities reclaimed by spirits.
+              </p>
+              <div class="tags">
+                <span class="tag nature">reclaimed ruin</span>
+                <span class="tag ancient">lost city</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Ta_Prohm">Overview</a>
+                <a href="https://commons.wikimedia.org/wiki/Category:Ta_Prohm">Images</a>
+                <a href="https://www.youtube.com/results?search_query=Ta+Prohm+Cambodia+ruins+roots"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/Dawn_Charles_V_Palace_Alhambra_Granada_Andalusia_Spain.jpg/330px-Dawn_Charles_V_Palace_Alhambra_Granada_Andalusia_Spain.jpg"
+              alt="Alhambra palace at evening"
+            />
+            <div class="card-body">
+              <h3>Alhambra</h3>
+              <p class="tagline">
+                Water courts, mathematical ornament, inscriptions, gardens, and palace-fortress
+                atmosphere.
+              </p>
+              <div class="tags">
+                <span class="tag nature">court gardens</span>
+                <span class="tag ancient">spell geometry</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Alhambra">Overview</a>
+                <a href="https://commons.wikimedia.org/wiki/Alhambra">Images</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Alhambra+architecture+water+gardens"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/ef/SF_maig_2_cropped.jpg/330px-SF_maig_2_cropped.jpg"
+              alt="Interior of Sagrada Familia"
+            />
+            <div class="card-body">
+              <h3>Sagrada Familia and Gaudi</h3>
+              <p class="tagline">
+                Organic columns, bone-like vaults, radiant stained glass, and architecture that
+                feels grown.
+              </p>
+              <div class="tags">
+                <span class="tag nature">living cathedral</span>
+                <span class="tag ancient">bio-arcane machine</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Sagrada_Fam%C3%ADlia">Overview</a>
+                <a href="https://commons.wikimedia.org/wiki/Sagrada_Fam%C3%ADlia">Images</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Sagrada+Familia+interior+architecture"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Mont-Saint-Michel_vu_du_ciel.jpg/330px-Mont-Saint-Michel_vu_du_ciel.jpg"
+              alt="Mont Saint-Michel rising from tidal flats"
+            />
+            <div class="card-body">
+              <h3>Mont Saint-Michel</h3>
+              <p class="tagline">
+                A pilgrimage fortress on a tidal island: perfect for a shrine city, academy, or
+                dungeon entrance.
+              </p>
+              <div class="tags">
+                <span class="tag nature">tide magic</span>
+                <span class="tag ancient">vertical city</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Mont-Saint-Michel">Overview</a>
+                <a href="https://commons.wikimedia.org/wiki/Category:Mont_Saint-Michel">Images</a>
+                <a href="https://www.youtube.com/results?search_query=Mont+Saint+Michel+documentary"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7c/Meteora%27s_monastery_2.jpg/330px-Meteora%27s_monastery_2.jpg"
+              alt="Meteora monasteries on high rock pillars"
+            />
+            <div class="card-body">
+              <h3>Meteora Monasteries</h3>
+              <p class="tagline">
+                Monasteries perched on stone pillars: wind monks, defensive wards, sky bridges, and
+                hermit magic.
+              </p>
+              <div class="tags">
+                <span class="tag nature">mountain rites</span>
+                <span class="tag ancient">sky access</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Meteora">Overview</a>
+                <a href="https://commons.wikimedia.org/wiki/Category:Meteora">Images</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Meteora+monasteries+documentary"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e8/Al_Deir_Petra.JPG/330px-Al_Deir_Petra.JPG"
+              alt="Petra's rock-cut facade"
+            />
+            <div class="card-body">
+              <h3>Petra</h3>
+              <p class="tagline">
+                Rock-cut facades and desert hydraulic systems for canyon cities and sealed vaults.
+              </p>
+              <div class="tags">
+                <span class="tag nature">desert watercraft</span>
+                <span class="tag ancient">hidden vault</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Petra">Overview</a>
+                <a href="https://commons.wikimedia.org/wiki/Category:Petra">Images</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Petra+architecture+documentary"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/5/59/Cappadocia_balloon_trip%2C_Ortahisar_Castle_%2811893715185%29.jpg/330px-Cappadocia_balloon_trip%2C_Ortahisar_Castle_%2811893715185%29.jpg"
+              alt="Cappadocia cave dwellings"
+            />
+            <div class="card-body">
+              <h3>Cappadocia and Underground Cities</h3>
+              <p class="tagline">
+                Soft-stone homes, cave chapels, hidden tunnels, and emergency underground society.
+              </p>
+              <div class="tags">
+                <span class="tag nature">earth villages</span>
+                <span class="tag ancient">subterranean networks</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Cappadocia">Cappadocia</a>
+                <a href="https://en.wikipedia.org/wiki/Derinkuyu_underground_city">Derinkuyu</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Cappadocia+underground+city+documentary"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/Zeche_Zollverein_abends.jpg/330px-Zeche_Zollverein_abends.jpg"
+              alt="Zollverein industrial complex"
+            />
+            <div class="card-body">
+              <h3>Zollverein and Industrial Heritage</h3>
+              <p class="tagline">
+                Repeating steel frames, conveyors, towers, and production logic for mana factories.
+              </p>
+              <div class="tags">
+                <span class="tag corrupt">extractive city</span>
+                <span class="tag ancient">reactor ruins</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Zollverein_Coal_Mine_Industrial_Complex"
+                  >Overview</a
+                >
+                <a
+                  href="https://commons.wikimedia.org/wiki/Category:Zollverein_Coal_Mine_Industrial_Complex"
+                  >Images</a
+                >
+                <a
+                  href="https://www.youtube.com/results?search_query=industrial+heritage+architecture+documentary"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/3b/Houses_of_Parliament_in_2022_%28cropped%29.jpg/330px-Houses_of_Parliament_in_2022_%28cropped%29.jpg"
+              alt="Palace of Westminster with Gothic Revival details"
+            />
+            <div class="card-body">
+              <h3>Gothic Revival Cities</h3>
+              <p class="tagline">
+                Spires, parliamentary mass, gaslight streets, and occult bureaucracy for enemy
+                capitals.
+              </p>
+              <div class="tags">
+                <span class="tag corrupt">magic-punk state</span>
+                <span class="tag story">political fantasy</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Gothic_Revival_architecture"
+                  >Style overview</a
+                >
+                <a href="https://commons.wikimedia.org/wiki/Category:Gothic_Revival_architecture"
+                  >Images</a
+                >
+                <a
+                  href="https://www.youtube.com/results?search_query=Gothic+Revival+architecture+documentary"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Music and Sound</h2>
+          <p>
+            Treat music as worldbuilding. These references can define magic schools, regional
+            identity, dungeon interfaces, and enemy propaganda or industrial rhythm.
+          </p>
+        </div>
+        <div class="grid">
+          <article>
+            <div class="card-body">
+              <h3>Hildegard von Bingen</h3>
+              <p class="tagline">
+                Mystic monophonic chant for healing orders, cathedral magic, and sacred memory.
+              </p>
+              <div class="tags">
+                <span class="tag music">voice magic</span>
+                <span class="tag nature">spiritual ecology</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Hildegard_of_Bingen">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Hildegard+von+Bingen+chant"
+                  >Listen</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Bulgarian State Television Female Vocal Choir</h3>
+              <p class="tagline">
+                Dense, bright vocal harmony for spirit choirs, mountain rites, and unsettling
+                beauty.
+              </p>
+              <div class="tags">
+                <span class="tag music">polyphony</span>
+                <span class="tag nature">communal ritual</span>
+              </div>
+              <div class="links">
+                <a
+                  href="https://en.wikipedia.org/wiki/Bulgarian_State_Television_Female_Vocal_Choir"
+                  >Overview</a
+                >
+                <a href="https://www.youtube.com/results?search_query=Le+Mystere+des+Voix+Bulgares"
+                  >Listen</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Gamelan</h3>
+              <p class="tagline">
+                Interlocking metallic patterns for ancient spell machines, temple puzzles, and
+                clockwork enchantment.
+              </p>
+              <div class="tags">
+                <span class="tag music">cyclical time</span>
+                <span class="tag ancient">machine ritual</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Gamelan">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Javanese+gamelan+performance"
+                  >Listen</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Japanese Gagaku</h3>
+              <p class="tagline">
+                Slow court music with supernatural distance, useful for ancient nobility and ritual
+                machinery.
+              </p>
+              <div class="tags">
+                <span class="tag music">court ritual</span>
+                <span class="tag ancient">imperial ruins</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Gagaku">Overview</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=gagaku+traditional+japanese+court+music"
+                  >Listen</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Duduk and Armenian Sacred Sound</h3>
+              <p class="tagline">
+                Breath, grief, and ancient warmth for memory dungeons, ruins, and lost bloodlines.
+              </p>
+              <div class="tags">
+                <span class="tag music">lament</span>
+                <span class="tag story">ancestral memory</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Duduk">Duduk</a>
+                <a href="https://www.youtube.com/results?search_query=Armenian+duduk+music"
+                  >Listen</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Nordic Folk: Nyckelharpa, Hurdy-Gurdy, Hardanger Fiddle</h3>
+              <p class="tagline">
+                Resonant drones and dance patterns for rural magic, guild musicians, and traveling
+                enchanters.
+              </p>
+              <div class="tags">
+                <span class="tag music">bardic craft</span>
+                <span class="tag nature">village festivals</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Nyckelharpa">Nyckelharpa</a>
+                <a href="https://en.wikipedia.org/wiki/Hurdy-gurdy">Hurdy-gurdy</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=nordic+folk+nyckelharpa+hurdy+gurdy"
+                  >Listen</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Industrial, Dark Ambient, and Found Sound</h3>
+              <p class="tagline">
+                Pipes, pressure, metal strain, drones, and distorted choirs for corruptive
+                magic-punk territory.
+              </p>
+              <div class="tags">
+                <span class="tag music">factory rhythm</span>
+                <span class="tag corrupt">suppression</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Industrial_music">Industrial music</a>
+                <a href="https://en.wikipedia.org/wiki/Dark_ambient">Dark ambient</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=dark+ambient+industrial+soundscape"
+                  >Listen</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Game Soundtrack Touchstones</h3>
+              <p class="tagline">
+                Compare how JRPGs give each civilization a melodic identity and each ruin a memory.
+              </p>
+              <div class="tags">
+                <span class="tag music">motifs</span>
+                <span class="tag story">leitmotif</span>
+              </div>
+              <div class="links">
+                <a
+                  href="https://www.youtube.com/results?search_query=Final+Fantasy+VII+OST+Mako+Reactor"
+                  >FFVII reactor mood</a
+                >
+                <a href="https://www.youtube.com/results?search_query=Chrono+Trigger+Zeal+theme"
+                  >Chrono Trigger Zeal</a
+                >
+                <a href="https://www.youtube.com/results?search_query=Ar+tonelico+Hymmnos"
+                  >Ar tonelico Hymmnos</a
+                >
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Books and Prose</h2>
+          <p>
+            Read these for tone, magic philosophy, fallen civilizations, political pressure, and the
+            feeling of living after an incomprehensible past.
+          </p>
+        </div>
+        <div class="grid">
+          <article>
+            <div class="card-body">
+              <h3>Earthsea - Ursula K. Le Guin</h3>
+              <p class="tagline">
+                Magic as language, balance, responsibility, naming, and humility before the world.
+              </p>
+              <div class="tags">
+                <span class="tag nature">balanced magic</span>
+                <span class="tag story">coming of age</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Earthsea">Overview</a>
+                <a href="https://www.goodreads.com/series/40909-earthsea-cycle">Goodreads</a>
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>The Book of the New Sun - Gene Wolfe</h3>
+              <p class="tagline">
+                A future so old it feels medieval, with relics that read like miracles.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">lost technology</span>
+                <span class="tag story">mythic ambiguity</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/The_Book_of_the_New_Sun">Overview</a>
+                <a href="https://www.goodreads.com/series/41474-the-book-of-the-new-sun"
+                  >Goodreads</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Perdido Street Station - China Mieville</h3>
+              <p class="tagline">
+                Weird urban fantasy, industry, biological magic, class pressure, and monstrous city
+                texture.
+              </p>
+              <div class="tags">
+                <span class="tag corrupt">weird city</span>
+                <span class="tag story">magic industry</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Perdido_Street_Station">Overview</a>
+                <a href="https://www.goodreads.com/book/show/68494.Perdido_Street_Station"
+                  >Goodreads</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Mortal Engines - Philip Reeve</h3>
+              <p class="tagline">
+                Mobile cities, scavenged history, predatory civilization, and industrial spectacle.
+              </p>
+              <div class="tags">
+                <span class="tag corrupt">moving fortress</span>
+                <span class="tag ancient">salvage culture</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Mortal_Engines">Overview</a>
+                <a href="https://www.goodreads.com/book/show/287861.Mortal_Engines">Goodreads</a>
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>The Broken Earth - N. K. Jemisin</h3>
+              <p class="tagline">
+                Catastrophe cycles, oppressed magic users, geology, empire, and ancient systems.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">buried systems</span>
+                <span class="tag story">ecological trauma</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/The_Broken_Earth">Overview</a>
+                <a href="https://www.goodreads.com/series/112296-the-broken-earth">Goodreads</a>
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Viriconium - M. John Harrison</h3>
+              <p class="tagline">
+                Decadent cities built on the debris of previous ages, dreamlike and unstable.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">dying world</span>
+                <span class="tag story">strange city</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Viriconium">Overview</a>
+                <a href="https://www.goodreads.com/series/50693-viriconium">Goodreads</a>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Films and Series</h2>
+          <p>
+            These are useful for mood, staging, enemy faction language, environmental storytelling,
+            and how to show a world wounded by its own progress.
+          </p>
+        </div>
+        <div class="grid">
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/en/b/bc/Nausicaaposter.jpg"
+              alt="Studio Ghibli logo"
+            />
+            <div class="card-body">
+              <h3>Nausicaa of the Valley of the Wind</h3>
+              <p class="tagline">
+                Toxic ecology, ancient weapons, compassion toward strange life, and the cost of war.
+              </p>
+              <div class="tags">
+                <span class="tag nature">wounded nature</span>
+                <span class="tag ancient">god weapon</span>
+              </div>
+              <div class="links">
+                <a
+                  href="https://en.wikipedia.org/wiki/Nausica%C3%A4_of_the_Valley_of_the_Wind_(film)"
+                  >Film</a
+                >
+                <a
+                  href="https://en.wikipedia.org/wiki/Nausica%C3%A4_of_the_Valley_of_the_Wind_(manga)"
+                  >Manga</a
+                >
+                <a
+                  href="https://www.youtube.com/results?search_query=Nausicaa+of+the+Valley+of+the+Wind+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/en/f/f5/Castle_in_the_Sky_%281986%29.png"
+              alt="Laputa robot soldier statue"
+            />
+            <div class="card-body">
+              <h3>Castle in the Sky</h3>
+              <p class="tagline">
+                Floating ruins, gentle ancient machines, sky kingdoms, and the sadness of abandoned
+                power.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">floating city</span>
+                <span class="tag nature">ruin garden</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Castle_in_the_Sky">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Castle+in+the+Sky+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/en/8/8c/Princess_Mononoke_Japanese_poster.png"
+              alt="Princess Mononoke inspired cosplay"
+            />
+            <div class="card-body">
+              <h3>Princess Mononoke</h3>
+              <p class="tagline">
+                Nature spirits versus iron production without flattening either side into simple
+                good or evil.
+              </p>
+              <div class="tags">
+                <span class="tag nature">forest spirits</span>
+                <span class="tag corrupt">iron town</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Princess_Mononoke">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Princess+Mononoke+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/en/6/65/Dishonored_box_art_Bethesda.jpg"
+              alt="Dishonored promotional display"
+            />
+            <div class="card-body">
+              <h3>Dishonored</h3>
+              <p class="tagline">
+                Occult industry, whale-oil tech, aristocratic decay, plague city, and oppressive
+                machinery.
+              </p>
+              <div class="tags">
+                <span class="tag corrupt">occult industry</span>
+                <span class="tag story">urban intrigue</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Dishonored">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Dishonored+world+design"
+                  >Video search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/en/9/9d/Fullmetal123.jpg"
+              alt="Fullmetal Alchemist logo"
+            />
+            <div class="card-body">
+              <h3>Fullmetal Alchemist</h3>
+              <p class="tagline">
+                Alchemy as science, state power, forbidden exchange, military secrets, and ethics of
+                creation.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">magic science</span>
+                <span class="tag corrupt">state alchemy</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Fullmetal_Alchemist">Overview</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Fullmetal+Alchemist+Brotherhood+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/Zeche_Zollverein_abends.jpg/330px-Zeche_Zollverein_abends.jpg"
+              alt="Industrial complex used as a visual proxy for magic-punk city inspiration"
+            />
+            <div class="card-body">
+              <h3>Arcane</h3>
+              <p class="tagline">
+                Class-divided cities, unstable magic technology, neon alchemy, workshop culture, and
+                weaponized progress.
+              </p>
+              <div class="tags">
+                <span class="tag corrupt">magic-punk city</span>
+                <span class="tag story">class conflict</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Arcane_(TV_series)">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Arcane+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Manga and Anime</h2>
+          <p>
+            These are especially strong for combining wonder, danger, readable environments, and
+            technology that feels like myth.
+          </p>
+        </div>
+        <div class="grid">
+          <article>
+            <div class="card-body">
+              <h3>Made in Abyss</h3>
+              <p class="tagline">
+                Layered descent, relic ecology, beauty mixed with threat, and artifacts that change
+                bodies and societies.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">relic dungeon</span>
+                <span class="tag story">body cost</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Made_in_Abyss">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Made+in+Abyss+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>BLAME!</h3>
+              <p class="tagline">
+                Endless megastructure, post-human machinery, isolation, and architecture as cosmic
+                dungeon.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">infinite structure</span>
+                <span class="tag corrupt">hostile system</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Blame!">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=BLAME+anime+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Dorohedoro</h3>
+              <p class="tagline">
+                Dirty magic urbanism, masks, markets, body transformation, and grimy humor.
+              </p>
+              <div class="tags">
+                <span class="tag corrupt">polluted magic city</span>
+                <span class="tag story">body magic</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Dorohedoro">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Dorohedoro+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Witch Hat Atelier</h3>
+              <p class="tagline">
+                Magic as craft, drawing, tools, apprenticeship, workshop culture, and wonder.
+              </p>
+              <div class="tags">
+                <span class="tag nature">craft magic</span>
+                <span class="tag story">apprenticeship</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Witch_Hat_Atelier">Overview</a>
+                <a href="https://www.goodreads.com/series/232274-witch-hat-atelier">Goodreads</a>
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Delicious in Dungeon</h3>
+              <p class="tagline">
+                Dungeon ecology, practical adventuring, food culture, and monsters as part of an
+                ecosystem.
+              </p>
+              <div class="tags">
+                <span class="tag nature">dungeon ecology</span>
+                <span class="tag story">party texture</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Delicious_in_Dungeon">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Delicious+in+Dungeon+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Escaflowne</h3>
+              <p class="tagline">
+                Medieval kingdoms, mystic mecha, fate, floating fortresses, and romantic war
+                fantasy.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">magic machines</span>
+                <span class="tag story">war fantasy</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/The_Vision_of_Escaflowne">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Vision+of+Escaflowne+trailer"
+                  >Trailer search</a
+                >
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Games</h2>
+          <p>
+            Study these for how exploration, UI, dungeon pacing, settlements, music, and faction
+            identity can reinforce the setting through play.
+          </p>
+        </div>
+        <div class="grid">
+          <article>
+            <img
+              src="https://upload.wikimedia.org/wikipedia/en/c/c2/Final_Fantasy_VII_Box_Art.jpg"
+              alt="Final Fantasy VII wordmark"
+            />
+            <div class="card-body">
+              <h3>Final Fantasy VII</h3>
+              <p class="tagline">
+                Life-force extraction, reactors, corporate domination, ecological grief, and
+                industrial fantasy.
+              </p>
+              <div class="tags">
+                <span class="tag corrupt">reactors</span>
+                <span class="tag story">ecological conflict</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Final_Fantasy_VII">Overview</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Final+Fantasy+VII+Midgar+Mako+Reactor"
+                  >Watch</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Chrono Trigger</h3>
+              <p class="tagline">
+                Zeal is a goldmine: magical utopia, floating kingdom, class divide, and ruin born
+                from arrogance.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">Zeal</span>
+                <span class="tag story">fallen utopia</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Chrono_Trigger">Overview</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Chrono+Trigger+Kingdom+of+Zeal"
+                  >Watch</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Ar tonelico</h3>
+              <p class="tagline">
+                Song magic, towers, language systems, hymns as code, and ancient infrastructures
+                with personality.
+              </p>
+              <div class="tags">
+                <span class="tag music">song programming</span>
+                <span class="tag ancient">tower system</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Ar_tonelico:_Melody_of_Elemia">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Ar+tonelico+Hymmnos+music"
+                  >Music</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Xenogears</h3>
+              <p class="tagline">
+                Religious-tech mystery, buried machines, ancient trauma, and mythic sci-fantasy.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">buried machines</span>
+                <span class="tag story">mythic conspiracy</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Xenogears">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Xenogears+story+worldbuilding"
+                  >Watch</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Final Fantasy IX</h3>
+              <p class="tagline">
+                Fantasy kingdoms, mist technology, warm villages, theatrical identity, and hidden
+                artificial origins.
+              </p>
+              <div class="tags">
+                <span class="tag nature">storybook towns</span>
+                <span class="tag ancient">hidden systems</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Final_Fantasy_IX">Overview</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Final+Fantasy+IX+Alexandria+Lindblum"
+                  >Watch</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Secret of Mana and Trials of Mana</h3>
+              <p class="tagline">
+                Mana trees, elemental palaces, clear biome identity, and adventure-friendly sacred
+                geography.
+              </p>
+              <div class="tags">
+                <span class="tag nature">mana ecology</span>
+                <span class="tag story">elemental journey</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Secret_of_Mana">Secret of Mana</a>
+                <a href="https://en.wikipedia.org/wiki/Trials_of_Mana">Trials of Mana</a>
+                <a href="https://www.youtube.com/results?search_query=Secret+of+Mana+OST+Mana+Tree"
+                  >Music</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Wild Arms</h3>
+              <p class="tagline">
+                Post-collapse fantasy with ruins, ancient weapons, frontier towns, and melancholy
+                world decay.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">lost arms</span>
+                <span class="tag story">frontier fantasy</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Wild_Arms_(video_game)">Overview</a>
+                <a href="https://www.youtube.com/results?search_query=Wild+Arms+game+ruins+OST"
+                  >Watch</a
+                >
+              </div>
+            </div>
+          </article>
+
+          <article>
+            <div class="card-body">
+              <h3>Hollow Knight</h3>
+              <p class="tagline">
+                A layered ruined kingdom where each biome has ecology, mood, history, and enemy
+                logic.
+              </p>
+              <div class="tags">
+                <span class="tag ancient">fallen kingdom</span>
+                <span class="tag nature">biome storytelling</span>
+              </div>
+              <div class="links">
+                <a href="https://en.wikipedia.org/wiki/Hollow_Knight">Overview</a>
+                <a
+                  href="https://www.youtube.com/results?search_query=Hollow+Knight+environmental+storytelling"
+                  >Watch</a
+                >
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Environment Prompts</h2>
+          <p>
+            Use these pairings when sketching maps. Each row gives you a normal-world expression, a
+            dungeon expression, and a corruptive expression of the same region.
+          </p>
+        </div>
+        <div class="grid">
+          <article class="wide">
+            <div class="card-body">
+              <h3>Forest Region</h3>
+              <p class="tagline">
+                Living village: tree platforms, resin lamps, herb guilds. Ancient dungeon: bio-lab
+                arboretum with extinct plants. Enemy version: iron braces choking trunks, sap pipes,
+                spirit cages.
+              </p>
+              <div class="tags">
+                <span class="tag nature">Ta Prohm</span>
+                <span class="tag ancient">Sagrada Familia</span>
+                <span class="tag corrupt">industrial heritage</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="wide">
+            <div class="card-body">
+              <h3>Mountain Region</h3>
+              <p class="tagline">
+                Living village: cliff monasteries, wind bells, defensive stone chants. Ancient
+                dungeon: weather-control observatory. Enemy version: mine-fortress, pressure towers,
+                captured storm spirit.
+              </p>
+              <div class="tags">
+                <span class="tag nature">Meteora</span>
+                <span class="tag ancient">Zeal</span>
+                <span class="tag corrupt">Dishonored</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="wide">
+            <div class="card-body">
+              <h3>Coastal Region</h3>
+              <p class="tagline">
+                Living town: tidal shrine, shell instruments, moonlit ferries. Ancient dungeon:
+                drowned transit hub and tide engine. Enemy version: polluted harbor with bottled
+                water spirits powering cranes.
+              </p>
+              <div class="tags">
+                <span class="tag nature">Mont Saint-Michel</span>
+                <span class="tag ancient">Petra hydraulics</span>
+                <span class="tag corrupt">FFVII reactors</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="wide">
+            <div class="card-body">
+              <h3>Capital Region</h3>
+              <p class="tagline">
+                Living city: guild courts, music academies, warded bridges. Ancient dungeon: crystal
+                civic archive below the palace. Enemy version: Gothic ministry district, propaganda
+                choirs, rune-lit alleys.
+              </p>
+              <div class="tags">
+                <span class="tag nature">Alhambra</span>
+                <span class="tag ancient">Book of the New Sun</span>
+                <span class="tag corrupt">Arcane</span>
+              </div>
+            </div>
+          </article>
+        </div>
+        <p class="note">
+          Practical method: pick one real architectural anchor, one music anchor, and one story
+          anchor per region. Example: "Meteora + Bulgarian choir + Chrono Trigger's Zeal" quickly
+          suggests a mountain spirit academy built above a buried weather engine.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Image sources are linked from Wikimedia Commons through Special:FilePath where available.
+        Video and music links intentionally use search pages so you can choose trailers,
+        documentaries, live performances, soundtrack playlists, or analysis videos in your preferred
+        language and platform.
+      </p>
+    </footer>
+  </body>
+</html>

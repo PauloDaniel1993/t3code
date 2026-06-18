@@ -1,0 +1,872 @@
+{
+  "displayName": "Codex",
+  "showInteractionModeToggle": true,
+  "enabled": true,
+  "installed": true,
+  "version": "0.137.0",
+  "status": "ready",
+  "auth": {
+    "status": "authenticated",
+    "type": "chatgpt",
+    "label": "ChatGPT Pro 20x Subscription",
+    "email": "pdc187@gmail.com"
+  },
+  "checkedAt": "2026-06-06T01:03:10.137Z",
+  "models": [
+    {
+      "slug": "gpt-5.5",
+      "name": "GPT-5.5",
+      "isCustom": false,
+      "capabilities": {
+        "optionDescriptors": [
+          {
+            "id": "reasoningEffort",
+            "label": "Reasoning",
+            "type": "select",
+            "options": [
+              {
+                "id": "low",
+                "label": "Low"
+              },
+              {
+                "id": "medium",
+                "label": "Medium",
+                "isDefault": true
+              },
+              {
+                "id": "high",
+                "label": "High"
+              },
+              {
+                "id": "xhigh",
+                "label": "Extra High"
+              }
+            ],
+            "currentValue": "medium"
+          },
+          {
+            "id": "fastMode",
+            "label": "Fast Mode",
+            "type": "boolean"
+          }
+        ]
+      }
+    },
+    {
+      "slug": "gpt-5.4",
+      "name": "GPT-5.4",
+      "isCustom": false,
+      "capabilities": {
+        "optionDescriptors": [
+          {
+            "id": "reasoningEffort",
+            "label": "Reasoning",
+            "type": "select",
+            "options": [
+              {
+                "id": "low",
+                "label": "Low"
+              },
+              {
+                "id": "medium",
+                "label": "Medium",
+                "isDefault": true
+              },
+              {
+                "id": "high",
+                "label": "High"
+              },
+              {
+                "id": "xhigh",
+                "label": "Extra High"
+              }
+            ],
+            "currentValue": "medium"
+          },
+          {
+            "id": "fastMode",
+            "label": "Fast Mode",
+            "type": "boolean"
+          }
+        ]
+      }
+    },
+    {
+      "slug": "gpt-5.4-mini",
+      "name": "GPT-5.4-Mini",
+      "isCustom": false,
+      "capabilities": {
+        "optionDescriptors": [
+          {
+            "id": "reasoningEffort",
+            "label": "Reasoning",
+            "type": "select",
+            "options": [
+              {
+                "id": "low",
+                "label": "Low"
+              },
+              {
+                "id": "medium",
+                "label": "Medium",
+                "isDefault": true
+              },
+              {
+                "id": "high",
+                "label": "High"
+              },
+              {
+                "id": "xhigh",
+                "label": "Extra High"
+              }
+            ],
+            "currentValue": "medium"
+          }
+        ]
+      }
+    },
+    {
+      "slug": "gpt-5.3-codex-spark",
+      "name": "GPT-5.3-Codex-Spark",
+      "isCustom": false,
+      "capabilities": {
+        "optionDescriptors": [
+          {
+            "id": "reasoningEffort",
+            "label": "Reasoning",
+            "type": "select",
+            "options": [
+              {
+                "id": "low",
+                "label": "Low"
+              },
+              {
+                "id": "medium",
+                "label": "Medium"
+              },
+              {
+                "id": "high",
+                "label": "High",
+                "isDefault": true
+              },
+              {
+                "id": "xhigh",
+                "label": "Extra High"
+              }
+            ],
+            "currentValue": "high"
+          }
+        ]
+      }
+    }
+  ],
+  "slashCommands": [],
+  "skills": [
+    {
+      "name": "openspec-apply-change",
+      "path": "I:\\projects\\Personal\\t3code\\.codex\\skills\\openspec-apply-change\\SKILL.md",
+      "enabled": true,
+      "description": "Implement tasks from an OpenSpec change. Use when the user wants to start implementing, continue implementation, or work through tasks.",
+      "scope": "repo"
+    },
+    {
+      "name": "openspec-archive-change",
+      "path": "I:\\projects\\Personal\\t3code\\.codex\\skills\\openspec-archive-change\\SKILL.md",
+      "enabled": true,
+      "description": "Archive a completed change in the experimental workflow. Use when the user wants to finalize and archive a change after implementation is complete.",
+      "scope": "repo"
+    },
+    {
+      "name": "openspec-explore",
+      "path": "I:\\projects\\Personal\\t3code\\.codex\\skills\\openspec-explore\\SKILL.md",
+      "enabled": true,
+      "description": "Enter explore mode - a thinking partner for exploring ideas, investigating problems, and clarifying requirements. Use when the user wants to think through something before or during a change.",
+      "scope": "repo"
+    },
+    {
+      "name": "openspec-propose",
+      "path": "I:\\projects\\Personal\\t3code\\.codex\\skills\\openspec-propose\\SKILL.md",
+      "enabled": true,
+      "description": "Propose a new change with all artifacts generated in one step. Use when the user wants to quickly describe what they want to build and get a complete proposal with design, specs, and tasks ready for implementation.",
+      "scope": "repo"
+    },
+    {
+      "name": "openspec-sync-specs",
+      "path": "I:\\projects\\Personal\\t3code\\.codex\\skills\\openspec-sync-specs\\SKILL.md",
+      "enabled": true,
+      "description": "Sync delta specs from a change to main specs. Use when the user wants to update main specs with changes from a delta spec, without archiving the change.",
+      "scope": "repo"
+    },
+    {
+      "name": "Expo UI Jetpack Compose",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\expo-ui-jetpack-compose\\SKILL.md",
+      "enabled": true,
+      "description": "`@expo/ui/jetpack-compose` package lets you use Jetpack Compose Views and modifiers in your app.",
+      "scope": "user"
+    },
+    {
+      "name": "Expo UI SwiftUI",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\expo-ui-swiftui\\SKILL.md",
+      "enabled": true,
+      "description": "`@expo/ui/swift-ui` package lets you use SwiftUI Views and modifiers in your app.",
+      "scope": "user"
+    },
+    {
+      "name": "accessibility-compliance",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\accessibility-compliance\\SKILL.md",
+      "enabled": true,
+      "description": "Implement WCAG 2.2 compliant interfaces with mobile accessibility, inclusive design patterns, and assistive technology support. Use when auditing accessibility, implementing ARIA patterns, building for screen readers, or ensuring inclusive user experiences.",
+      "scope": "user"
+    },
+    {
+      "name": "anti-reversing-techniques",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\anti-reversing-techniques\\SKILL.md",
+      "enabled": true,
+      "description": "Understand anti-reversing, obfuscation, and protection techniques encountered during software analysis. Use this skill when analyzing malware evasion techniques, when implementing anti-debugging protections for CTF challenges, when reverse engineering packed binaries, or when building security research tools that need to detect virtualized environments.",
+      "scope": "user"
+    },
+    {
+      "name": "api-design-principles",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\api-design-principles\\SKILL.md",
+      "enabled": true,
+      "description": "Master REST and GraphQL API design principles to build intuitive, scalable, and maintainable APIs that delight developers. Use when designing new APIs, reviewing API specifications, or establishing API design standards.",
+      "scope": "user"
+    },
+    {
+      "name": "architecture-decision-records",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\architecture-decision-records\\SKILL.md",
+      "enabled": true,
+      "description": "Write and maintain Architecture Decision Records (ADRs) following best practices for technical decision documentation. Use when documenting significant technical decisions, reviewing past architectural choices, or establishing decision processes.",
+      "scope": "user"
+    },
+    {
+      "name": "architecture-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\architecture-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Implement proven backend architecture patterns including Clean Architecture, Hexagonal Architecture, and Domain-Driven Design. Use this skill when designing clean architecture for a new microservice, when refactoring a monolith to use bounded contexts, when implementing hexagonal or onion architecture patterns, or when debugging dependency cycles between application layers.",
+      "scope": "user"
+    },
+    {
+      "name": "auth-implementation-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\auth-implementation-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master authentication and authorization patterns including JWT, OAuth2, session management, and RBAC to build secure, scalable access control systems. Use when implementing auth systems, securing APIs, or debugging security issues.",
+      "scope": "user"
+    },
+    {
+      "name": "auth0-quickstart",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\auth0-quickstart\\SKILL.md",
+      "enabled": true,
+      "description": "Use when adding authentication or login to any app - detects your stack (React, Next.js, Vue, Nuxt, Angular, Express, Fastify, FastAPI, ASP.NET Core, React Native, Expo, Android, Swift), sets up an Auth0 account if needed, and routes to the correct SDK setup workflow.",
+      "scope": "user"
+    },
+    {
+      "name": "auth0-react-native",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\auth0-react-native\\SKILL.md",
+      "enabled": true,
+      "description": "Use when adding authentication to React Native or Expo mobile apps (iOS/Android) with biometric support - integrates react-native-auth0 SDK with native deep linking",
+      "scope": "user"
+    },
+    {
+      "name": "bash-defensive-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\bash-defensive-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master defensive Bash programming techniques for production-grade scripts. Use when writing robust shell scripts, CI/CD pipelines, or system utilities requiring fault tolerance and safety.",
+      "scope": "user"
+    },
+    {
+      "name": "browser:control-in-app-browser",
+      "path": "C:\\Users\\pdc18\\.codex\\plugins\\cache\\openai-bundled\\browser\\26.602.30954\\skills\\control-in-app-browser\\SKILL.md",
+      "enabled": true,
+      "description": "Control the in-app Browser. Use to open, navigate, inspect, test, click, type, screenshot, or verify local targets such as localhost, 127.0.0.1, ::1, file://, the current in-app browser tab, and websites shown side by side inside Codex.",
+      "scope": "user",
+      "displayName": "Browser",
+      "shortDescription": "Browser lets Codex open and control the in-app browser, mainly for local development pages and files. Use it to navigate, inspect, click, type, and take screenshots while testing pages inside Codex."
+    },
+    {
+      "name": "building-native-ui",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\building-native-ui\\SKILL.md",
+      "enabled": true,
+      "description": "Complete guide for building beautiful apps with Expo Router. Covers fundamentals, styling, components, navigation, animations, patterns, and native tabs.",
+      "scope": "user"
+    },
+    {
+      "name": "changelog-automation",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\changelog-automation\\SKILL.md",
+      "enabled": true,
+      "description": "Automate changelog generation from commits, PRs, and releases following Keep a Changelog format. Use when setting up release workflows, generating release notes, or standardizing commit conventions.",
+      "scope": "user"
+    },
+    {
+      "name": "code-review-excellence",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\code-review-excellence\\SKILL.md",
+      "enabled": true,
+      "description": "Master effective code review practices to provide constructive feedback, catch bugs early, and foster knowledge sharing while maintaining team morale. Use when reviewing pull requests, establishing review standards, or mentoring developers.",
+      "scope": "user"
+    },
+    {
+      "name": "cqrs-implementation",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\cqrs-implementation\\SKILL.md",
+      "enabled": true,
+      "description": "Implement Command Query Responsibility Segregation for scalable architectures. Use when separating read and write models, optimizing query performance, or building event-sourced systems.",
+      "scope": "user"
+    },
+    {
+      "name": "debugging-strategies",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\debugging-strategies\\SKILL.md",
+      "enabled": true,
+      "description": "Master systematic debugging techniques, profiling tools, and root cause analysis to efficiently track down bugs across any codebase or technology stack. Use when investigating bugs, performance issues, or unexpected behavior.",
+      "scope": "user"
+    },
+    {
+      "name": "design-system-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\design-system-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Build scalable design systems with design tokens, theming infrastructure, and component architecture patterns. Use when creating design tokens, implementing theme switching, building component libraries, or establishing design system foundations.",
+      "scope": "user"
+    },
+    {
+      "name": "documents:documents",
+      "path": "C:\\Users\\pdc18\\.codex\\plugins\\cache\\openai-primary-runtime\\documents\\26.601.10930\\skills\\documents\\SKILL.md",
+      "enabled": true,
+      "description": "Create, edit, redline, and comment on `.docx`, Word, and Google Docs-targeted document artifacts inside the container, with a strict render-and-verify workflow. Use `render_docx.py` to generate page PNGs (and optional PDF) for visual QA, then iterate until layout is flawless before delivering the final document.",
+      "scope": "user",
+      "displayName": "Documents",
+      "shortDescription": "Create and edit Word and Google Docs files"
+    },
+    {
+      "name": "dotnet-backend-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\dotnet-backend-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master C#/.NET backend development patterns for building robust APIs, MCP servers, and enterprise applications. Covers async/await, dependency injection, Entity Framework Core, Dapper, configuration, caching, and testing with xUnit. Use when developing .NET backends, reviewing C# code, or designing API architectures.",
+      "scope": "user"
+    },
+    {
+      "name": "e2e-testing-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\e2e-testing-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master end-to-end testing with Playwright and Cypress to build reliable test suites that catch bugs, improve confidence, and enable fast deployment. Use when implementing E2E tests, debugging flaky tests, or establishing testing standards.",
+      "scope": "user"
+    },
+    {
+      "name": "eas-update-insights",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\eas-update-insights\\SKILL.md",
+      "enabled": true,
+      "description": "Check the health of published EAS Updates: crash rates, install/launch counts, unique users, payload size, and the split between embedded and OTA users per channel. Use when the user asks how an update is performing, whether a rollout is healthy, how many users are on the embedded build vs OTA, or wants to gate CI on update health.",
+      "scope": "user"
+    },
+    {
+      "name": "error-handling-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\error-handling-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master error handling patterns across languages including exceptions, Result types, error propagation, and graceful degradation to build resilient applications. Use when implementing error handling, designing APIs, or improving application reliability.",
+      "scope": "user"
+    },
+    {
+      "name": "evaluation-methodology",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\evaluation-methodology\\SKILL.md",
+      "enabled": true,
+      "description": "PluginEval quality methodology — dimensions, rubrics, statistical methods, and scoring formulas. Use this skill when understanding how plugin quality is measured, when interpreting a low score on a specific dimension, when deciding how to improve a skill's triggering accuracy or orchestration fitness, when calibrating scoring thresholds for your marketplace, or when explaining quality badges to external partners like Neon.",
+      "scope": "user"
+    },
+    {
+      "name": "expo-api-routes",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\expo-api-routes\\SKILL.md",
+      "enabled": true,
+      "description": "Guidelines for creating API routes in Expo Router with EAS Hosting",
+      "scope": "user"
+    },
+    {
+      "name": "expo-cicd-workflows",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\expo-cicd-workflows\\SKILL.md",
+      "enabled": true,
+      "description": "Helps understand and write EAS workflow YAML files for Expo projects. Use this skill when the user asks about CI/CD or workflows in an Expo or EAS context, mentions .eas/workflows/, or wants help with EAS build pipelines or deployment automation.",
+      "scope": "user"
+    },
+    {
+      "name": "expo-deployment",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\expo-deployment\\SKILL.md",
+      "enabled": true,
+      "description": "Deploying Expo apps to iOS App Store, Android Play Store, web hosting, and API routes",
+      "scope": "user"
+    },
+    {
+      "name": "expo-dev-client",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\expo-dev-client\\SKILL.md",
+      "enabled": true,
+      "description": "Build and distribute Expo development clients locally or via TestFlight",
+      "scope": "user"
+    },
+    {
+      "name": "expo-module",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\expo-module\\SKILL.md",
+      "enabled": true,
+      "description": "Guide for creating and writing Expo native modules and views using the Expo Modules API (Swift, Kotlin, TypeScript). Covers module definition DSL, native views, shared objects, config plugins, lifecycle hooks, autolinking, and type system. Use when building or modifying native modules for Expo.",
+      "scope": "user"
+    },
+    {
+      "name": "expo-tailwind-setup",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\expo-tailwind-setup\\SKILL.md",
+      "enabled": true,
+      "description": "Set up Tailwind CSS v4 in Expo with react-native-css and NativeWind v5 for universal styling",
+      "scope": "user"
+    },
+    {
+      "name": "find-skills",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\find-skills\\SKILL.md",
+      "enabled": true,
+      "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.",
+      "scope": "user"
+    },
+    {
+      "name": "gdpr-data-handling",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\gdpr-data-handling\\SKILL.md",
+      "enabled": true,
+      "description": "Implement GDPR-compliant data handling with consent management, data subject rights, and privacy by design. Use when building systems that process EU personal data, implementing privacy controls, or conducting GDPR compliance reviews.",
+      "scope": "user"
+    },
+    {
+      "name": "git-advanced-workflows",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\git-advanced-workflows\\SKILL.md",
+      "enabled": true,
+      "description": "Master advanced Git workflows including rebasing, cherry-picking, bisect, worktrees, and reflog to maintain clean history and recover from any situation. Use when managing complex Git histories, collaborating on feature branches, or troubleshooting repository issues.",
+      "scope": "user"
+    },
+    {
+      "name": "graphify-windows",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\graphify\\SKILL.md",
+      "enabled": true,
+      "description": "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools.",
+      "scope": "user"
+    },
+    {
+      "name": "kpi-dashboard-design",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\kpi-dashboard-design\\SKILL.md",
+      "enabled": true,
+      "description": "Design effective KPI dashboards with metrics selection, visualization best practices, and real-time monitoring patterns. Use this skill when building an executive SaaS metrics dashboard tracking MRR, churn, and LTV/CAC ratios; designing an operations center with live service health and request throughput; creating a cohort retention analysis view for a product team; or debugging a dashboard where metrics contradict each other due to inconsistent calculation methodology.",
+      "scope": "user"
+    },
+    {
+      "name": "memory-forensics",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\memory-forensics\\SKILL.md",
+      "enabled": true,
+      "description": "Master memory forensics techniques including memory acquisition, process analysis, and artifact extraction using Volatility and related tools. Use when analyzing memory dumps, investigating incidents, or performing malware analysis from RAM captures.",
+      "scope": "user"
+    },
+    {
+      "name": "memory-safety-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\memory-safety-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Implement memory-safe programming with RAII, ownership, smart pointers, and resource management across Rust, C++, and C. Use when writing safe systems code, managing resources, or preventing memory bugs.",
+      "scope": "user"
+    },
+    {
+      "name": "mobile-android-design",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\mobile-android-design\\SKILL.md",
+      "enabled": true,
+      "description": "Master Material Design 3 and Jetpack Compose patterns for building native Android apps. Use when designing Android interfaces, implementing Compose UI, or following Google's Material Design guidelines.",
+      "scope": "user"
+    },
+    {
+      "name": "mobile-ios-design",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\mobile-ios-design\\SKILL.md",
+      "enabled": true,
+      "description": "Master iOS Human Interface Guidelines and SwiftUI patterns for building native iOS apps. Use when designing iOS interfaces, implementing SwiftUI views, or ensuring apps follow Apple's design principles.",
+      "scope": "user"
+    },
+    {
+      "name": "modern-javascript-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\modern-javascript-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master ES6+ features including async/await, destructuring, spread operators, arrow functions, promises, modules, iterators, generators, and functional programming patterns for writing clean, efficient JavaScript code. Use when refactoring legacy code, implementing modern patterns, or optimizing JavaScript applications.",
+      "scope": "user"
+    },
+    {
+      "name": "monorepo-management",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\monorepo-management\\SKILL.md",
+      "enabled": true,
+      "description": "Master monorepo management with Turborepo, Nx, and pnpm workspaces to build efficient, scalable multi-package repositories with optimized builds and dependency management. Use when setting up monorepos, optimizing builds, or managing shared dependencies.",
+      "scope": "user"
+    },
+    {
+      "name": "multi-reviewer-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\multi-reviewer-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Coordinate parallel code reviews across multiple quality dimensions with finding deduplication, severity calibration, and consolidated reporting. Use this skill when organizing multi-reviewer code reviews, calibrating finding severity, or consolidating review results.",
+      "scope": "user"
+    },
+    {
+      "name": "native-data-fetching",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\native-data-fetching\\SKILL.md",
+      "enabled": true,
+      "description": "Use when implementing or debugging ANY network request, API call, or data fetching. Covers fetch API, React Query, SWR, error handling, caching, offline support, and Expo Router data loaders (`useLoaderData`).",
+      "scope": "user"
+    },
+    {
+      "name": "nextjs-app-router-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\nextjs-app-router-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master Next.js 14+ App Router with Server Components, streaming, parallel routes, and advanced data fetching. Use when building Next.js applications, implementing SSR/SSG, or optimizing React Server Components.",
+      "scope": "user"
+    },
+    {
+      "name": "nodejs-backend-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\nodejs-backend-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Build production-ready Node.js backend services with Express/Fastify, implementing middleware patterns, error handling, authentication, database integration, and API design best practices. Use when creating Node.js servers, REST APIs, GraphQL backends, or microservices architectures.",
+      "scope": "user"
+    },
+    {
+      "name": "openapi-spec-generation",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\openapi-spec-generation\\SKILL.md",
+      "enabled": true,
+      "description": "Generate and maintain OpenAPI 3.1 specifications from code, design-first specs, and validation patterns. Use when creating API documentation, generating SDKs, or ensuring API contract compliance.",
+      "scope": "user"
+    },
+    {
+      "name": "openspec-apply-change",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\openspec-apply-change\\SKILL.md",
+      "enabled": true,
+      "description": "Implement tasks from an OpenSpec change. Use when the user wants to start implementing, continue implementation, or work through tasks.",
+      "scope": "user"
+    },
+    {
+      "name": "openspec-archive-change",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\openspec-archive-change\\SKILL.md",
+      "enabled": true,
+      "description": "Archive a completed change in the experimental workflow. Use when the user wants to finalize and archive a change after implementation is complete.",
+      "scope": "user"
+    },
+    {
+      "name": "openspec-explore",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\openspec-explore\\SKILL.md",
+      "enabled": true,
+      "description": "Enter explore mode - a thinking partner for exploring ideas, investigating problems, and clarifying requirements. Use when the user wants to think through something before or during a change.",
+      "scope": "user"
+    },
+    {
+      "name": "openspec-propose",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\openspec-propose\\SKILL.md",
+      "enabled": true,
+      "description": "Propose a new change with all artifacts generated in one step. Use when the user wants to quickly describe what they want to build and get a complete proposal with design, specs, and tasks ready for implementation.",
+      "scope": "user"
+    },
+    {
+      "name": "openspec-sync-specs",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\openspec-sync-specs\\SKILL.md",
+      "enabled": true,
+      "description": "Sync delta specs from a change to main specs. Use when the user wants to update main specs with changes from a delta spec, without archiving the change.",
+      "scope": "user"
+    },
+    {
+      "name": "parallel-debugging",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\parallel-debugging\\SKILL.md",
+      "enabled": true,
+      "description": "Debug complex issues using competing hypotheses with parallel investigation, evidence collection, and root cause arbitration. Use this skill when debugging bugs with multiple potential causes, performing root cause analysis, or organizing parallel investigation workflows.",
+      "scope": "user"
+    },
+    {
+      "name": "parallel-feature-development",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\parallel-feature-development\\SKILL.md",
+      "enabled": true,
+      "description": "Coordinate parallel feature development with file ownership strategies, conflict avoidance rules, and integration patterns for multi-agent implementation. Use this skill when decomposing a large feature into independent work streams, when two or more agents need to implement different layers of the same system simultaneously, when establishing file ownership to prevent merge conflicts in a shared codebase, when designing interface contracts so parallel implementers can build against each other's APIs before they are ready, or when deciding whether to use vertical slices versus horizontal layers for a full-stack feature.",
+      "scope": "user"
+    },
+    {
+      "name": "postgresql-table-design",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\postgresql-table-design\\SKILL.md",
+      "enabled": true,
+      "description": "Use this skill when designing or reviewing a PostgreSQL-specific schema. Covers best-practices, data types, indexing, constraints, performance patterns, and advanced features",
+      "scope": "user"
+    },
+    {
+      "name": "postmortem-writing",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\postmortem-writing\\SKILL.md",
+      "enabled": true,
+      "description": "Write effective blameless postmortems with root cause analysis, timelines, and action items. Use when conducting incident reviews, writing postmortem documents, or improving incident response processes.",
+      "scope": "user"
+    },
+    {
+      "name": "presentations:Presentations",
+      "path": "C:\\Users\\pdc18\\.codex\\plugins\\cache\\openai-primary-runtime\\presentations\\26.601.10930\\skills\\presentations\\SKILL.md",
+      "enabled": true,
+      "description": "Build PowerPoint PPTX decks with artifact-tool presentation JSX",
+      "scope": "user",
+      "displayName": "Presentations",
+      "shortDescription": "Create polished PowerPoint and Google Slides decks"
+    },
+    {
+      "name": "protect-mcp-setup",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\protect-mcp-setup\\SKILL.md",
+      "enabled": true,
+      "description": "Configure Cedar policy enforcement and Ed25519 signed receipts for Claude Code tool calls. Use when setting up projects that need cryptographic audit trails, policy-gated tool execution, or compliance-ready evidence of agent actions.",
+      "scope": "user"
+    },
+    {
+      "name": "protocol-reverse-engineering",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\protocol-reverse-engineering\\SKILL.md",
+      "enabled": true,
+      "description": "Master network protocol reverse engineering including packet analysis, protocol dissection, and custom protocol documentation. Use when analyzing network traffic, understanding proprietary protocols, or debugging network communication.",
+      "scope": "user"
+    },
+    {
+      "name": "rag-implementation",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\rag-implementation\\SKILL.md",
+      "enabled": true,
+      "description": "Build Retrieval-Augmented Generation (RAG) systems for LLM applications with vector databases and semantic search. Use when implementing knowledge-grounded AI, building document Q&A systems, or integrating LLMs with external knowledge bases.",
+      "scope": "user"
+    },
+    {
+      "name": "react-modernization",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\react-modernization\\SKILL.md",
+      "enabled": true,
+      "description": "Upgrade React applications to latest versions, migrate from class components to hooks, and adopt concurrent features. Use when modernizing React codebases, migrating to React Hooks, or upgrading to latest React versions.",
+      "scope": "user"
+    },
+    {
+      "name": "react-native",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\react-native\\SKILL.md",
+      "enabled": true,
+      "description": "React Native renderer for json-render that turns JSON specs into native mobile UIs. Use when working with @json-render/react-native, building React Native UIs from JSON, creating mobile component catalogs, or rendering AI-generated specs on mobile.",
+      "scope": "user"
+    },
+    {
+      "name": "react-native-best-practices",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\react-native-best-practices\\SKILL.md",
+      "enabled": true,
+      "description": "Provides React Native performance optimization guidelines for FPS, TTI, bundle size, memory leaks, re-renders, and animations. Applies to tasks involving Hermes optimization, JS thread blocking, bridge overhead, FlashList, native modules, or debugging jank and frame drops.",
+      "scope": "user",
+      "displayName": "React Native Best Practices",
+      "shortDescription": "React Native performance optimization guide"
+    },
+    {
+      "name": "react-native-design",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\react-native-design\\SKILL.md",
+      "enabled": true,
+      "description": "Master React Native styling, navigation, and Reanimated animations for cross-platform mobile development. Use when building React Native apps, implementing navigation patterns, or creating performant animations.",
+      "scope": "user"
+    },
+    {
+      "name": "react-state-management",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\react-state-management\\SKILL.md",
+      "enabled": true,
+      "description": "Master modern React state management with Redux Toolkit, Zustand, Jotai, and React Query. Use when setting up global state, managing server state, or choosing between state management solutions.",
+      "scope": "user"
+    },
+    {
+      "name": "responsive-design",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\responsive-design\\SKILL.md",
+      "enabled": true,
+      "description": "Implement modern responsive layouts using container queries, fluid typography, CSS Grid, and mobile-first breakpoint strategies. Use when building adaptive interfaces, implementing fluid layouts, or creating component-level responsive behavior.",
+      "scope": "user"
+    },
+    {
+      "name": "review-agent-setup",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\review-agent-setup\\SKILL.md",
+      "enabled": true,
+      "description": "Configure human-in-the-loop gating for AI agent review actions in Claude Code. Use when setting up a project where an agent may post PR reviews, comments, merges, or edit CI configuration, and you want a cryptographically auditable approval trail with Cedar-enforced gates.",
+      "scope": "user"
+    },
+    {
+      "name": "saga-orchestration",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\saga-orchestration\\SKILL.md",
+      "enabled": true,
+      "description": "Implement saga patterns for distributed transactions and cross-aggregate workflows. Use this skill when implementing distributed transactions across microservices where 2PC is unavailable, designing compensating actions for failed order workflows that span inventory, payment, and shipping services, building event-driven saga coordinators for travel booking systems that must roll back hotel, flight, and car rental reservations atomically, or debugging stuck saga states in production where compensation steps never complete.",
+      "scope": "user"
+    },
+    {
+      "name": "secrets-management",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\secrets-management\\SKILL.md",
+      "enabled": true,
+      "description": "Implement secure secrets management for CI/CD pipelines using Vault, AWS Secrets Manager, or native platform solutions. Use when handling sensitive credentials, rotating secrets, or securing CI/CD environments.",
+      "scope": "user"
+    },
+    {
+      "name": "security-requirement-extraction",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\security-requirement-extraction\\SKILL.md",
+      "enabled": true,
+      "description": "Derive security requirements from threat models and business context. Use when translating threats into actionable requirements, creating security user stories, or building security test cases.",
+      "scope": "user"
+    },
+    {
+      "name": "shadcn",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\shadcn\\SKILL.md",
+      "enabled": true,
+      "description": "Manages shadcn components and projects — adding, searching, fixing, debugging, styling, and composing UI. Provides project context, component docs, and usage examples. Applies when working with shadcn/ui, component registries, presets, --preset codes, or any project with a components.json file. Also triggers for \"shadcn init\", \"create an app with --preset\", or \"switch to --preset\".",
+      "scope": "user"
+    },
+    {
+      "name": "spreadsheets:Spreadsheets",
+      "path": "C:\\Users\\pdc18\\.codex\\plugins\\cache\\openai-primary-runtime\\spreadsheets\\26.601.10930\\skills\\spreadsheets\\SKILL.md",
+      "enabled": true,
+      "description": "Use this skill when a user requests to create, modify, analyze, visualize, or work with spreadsheet files (`.xlsx`, `.xls`, `.csv`, `.tsv`) or Google Sheets-targeted spreadsheet artifacts with formulas, formatting, charts, tables, and recalculation.",
+      "scope": "user",
+      "displayName": "Spreadsheets",
+      "shortDescription": "Create and edit spreadsheet or Google Sheets-ready files"
+    },
+    {
+      "name": "sql-optimization-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\sql-optimization-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master SQL query optimization, indexing strategies, and EXPLAIN analysis to dramatically improve database performance and eliminate slow queries. Use when debugging slow queries, designing database schemas, or optimizing application performance.",
+      "scope": "user"
+    },
+    {
+      "name": "tailwind-design-system",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\tailwind-design-system\\SKILL.md",
+      "enabled": true,
+      "description": "Build scalable design systems with Tailwind CSS v4, design tokens, component libraries, and responsive patterns. Use when creating component libraries, implementing design systems, or standardizing UI patterns.",
+      "scope": "user"
+    },
+    {
+      "name": "task-coordination-strategies",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\task-coordination-strategies\\SKILL.md",
+      "enabled": true,
+      "description": "Decompose complex tasks, design dependency graphs, and coordinate multi-agent work with proper task descriptions and workload balancing. Use this skill when breaking down work for agent teams, managing task dependencies, or monitoring team progress.",
+      "scope": "user"
+    },
+    {
+      "name": "terraform-module-library",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\terraform-module-library\\SKILL.md",
+      "enabled": true,
+      "description": "Build reusable Terraform modules for AWS, Azure, GCP, and OCI infrastructure following infrastructure-as-code best practices. Use when creating infrastructure modules, standardizing cloud provisioning, or implementing reusable IaC components.",
+      "scope": "user"
+    },
+    {
+      "name": "unity-ecs-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\unity-ecs-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Master Unity ECS (Entity Component System) with DOTS, Jobs, and Burst for high-performance game development. Use when building data-oriented games, optimizing performance, or working with large entity counts.",
+      "scope": "user"
+    },
+    {
+      "name": "upgrading-expo",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\upgrading-expo\\SKILL.md",
+      "enabled": true,
+      "description": "Guidelines for upgrading Expo SDK versions and fixing dependency issues",
+      "scope": "user"
+    },
+    {
+      "name": "use-dom",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\use-dom\\SKILL.md",
+      "enabled": true,
+      "description": "Use Expo DOM components to run web code in a webview on native and as-is on web. Migrate web code to native incrementally.",
+      "scope": "user"
+    },
+    {
+      "name": "uv-package-manager",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\uv-package-manager\\SKILL.md",
+      "enabled": true,
+      "description": "Master the uv package manager for fast Python dependency management, virtual environments, and modern Python project workflows. Use when setting up Python projects, managing dependencies, or optimizing Python development workflows with uv.",
+      "scope": "user"
+    },
+    {
+      "name": "vector-index-tuning",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\vector-index-tuning\\SKILL.md",
+      "enabled": true,
+      "description": "Optimize vector index performance for latency, recall, and memory. Use when tuning HNSW parameters, selecting quantization strategies, or scaling vector search infrastructure.",
+      "scope": "user"
+    },
+    {
+      "name": "vercel-react-native-skills",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\vercel-react-native-skills\\SKILL.md",
+      "enabled": true,
+      "description": "React Native and Expo best practices for building performant mobile apps. Use when building React Native components, optimizing list performance, implementing animations, or working with native modules. Triggers on tasks involving React Native, Expo, mobile performance, or native platform APIs.",
+      "scope": "user"
+    },
+    {
+      "name": "visual-design-foundations",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\visual-design-foundations\\SKILL.md",
+      "enabled": true,
+      "description": "Apply typography, color theory, spacing systems, and iconography principles to create cohesive visual designs. Use when establishing design tokens, building style guides, or improving visual hierarchy and consistency.",
+      "scope": "user"
+    },
+    {
+      "name": "web-component-design",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\web-component-design\\SKILL.md",
+      "enabled": true,
+      "description": "Master React, Vue, and Svelte component patterns including CSS-in-JS, composition strategies, and reusable component architecture. Use when building UI component libraries, designing component APIs, or implementing frontend design systems.",
+      "scope": "user"
+    },
+    {
+      "name": "web3-testing",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\web3-testing\\SKILL.md",
+      "enabled": true,
+      "description": "Test smart contracts comprehensively using Hardhat and Foundry with unit tests, integration tests, and mainnet forking. Use when testing Solidity contracts, setting up blockchain test suites, or validating DeFi protocols.",
+      "scope": "user"
+    },
+    {
+      "name": "workflow-orchestration-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\workflow-orchestration-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Design durable workflows with Temporal for distributed systems. Covers workflow vs activity separation, saga patterns, state management, and determinism constraints. Use when building long-running processes, distributed transactions, or microservice orchestration.",
+      "scope": "user"
+    },
+    {
+      "name": "workflow-patterns",
+      "path": "C:\\Users\\pdc18\\.agents\\skills\\workflow-patterns\\SKILL.md",
+      "enabled": true,
+      "description": "Use this skill when implementing tasks according to Conductor's TDD workflow, handling phase checkpoints, managing git commits for tasks, or understanding the verification protocol.",
+      "scope": "user"
+    },
+    {
+      "name": "imagegen",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\.system\\imagegen\\SKILL.md",
+      "enabled": true,
+      "description": "Generate or edit raster images when the task benefits from AI-created bitmap visuals such as photos, illustrations, textures, sprites, mockups, or transparent-background cutouts. Use when Codex should create a brand-new image, transform an existing image, or derive visual variants from references, and the output should be a bitmap asset rather than repo-native code or vector. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas.",
+      "scope": "system",
+      "displayName": "Image Gen",
+      "shortDescription": "Generate or edit images for websites, games, and more"
+    },
+    {
+      "name": "openai-docs",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\.system\\openai-docs\\SKILL.md",
+      "enabled": true,
+      "description": "Use when the user asks how to build with OpenAI products or APIs, asks about Codex itself or choosing Codex surfaces, needs up-to-date official documentation with citations, help choosing the latest model for a use case, or model upgrade and prompt-upgrade guidance; use OpenAI docs MCP tools for non-Codex docs questions, use the Codex manual helper first for broad Codex self-knowledge, and restrict fallback browsing to official OpenAI domains.",
+      "scope": "system",
+      "displayName": "OpenAI Docs",
+      "shortDescription": "Reference OpenAI docs, Codex self-knowledge, and model migration guidance"
+    },
+    {
+      "name": "plugin-creator",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\.system\\plugin-creator\\SKILL.md",
+      "enabled": true,
+      "description": "Create and scaffold plugin directories for Codex with a required `.codex-plugin/plugin.json`, optional plugin folders/files, valid manifest defaults, and personal-marketplace entries by default. Use when Codex needs to create a new personal plugin, add optional plugin structure, generate or update marketplace entries for plugin ordering and availability metadata, or update an existing local plugin during development with the CLI-driven cachebuster and reinstall flow.",
+      "scope": "system",
+      "displayName": "Plugin Creator",
+      "shortDescription": "Scaffold plugins and marketplace entries"
+    },
+    {
+      "name": "skill-creator",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\.system\\skill-creator\\SKILL.md",
+      "enabled": true,
+      "description": "Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Codex's capabilities with specialized knowledge, workflows, or tool integrations.",
+      "scope": "system",
+      "displayName": "Skill Creator",
+      "shortDescription": "Create or update a skill"
+    },
+    {
+      "name": "skill-installer",
+      "path": "C:\\Users\\pdc18\\.codex\\skills\\.system\\skill-installer\\SKILL.md",
+      "enabled": true,
+      "description": "Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).",
+      "scope": "system",
+      "displayName": "Skill Installer",
+      "shortDescription": "Install curated skills from openai/skills or other repos"
+    }
+  ],
+  "instanceId": "codex",
+  "driver": "codex",
+  "continuation": {
+    "groupKey": "codex:home:C:\\Users\\pdc18\\.codex"
+  },
+  "versionAdvisory": {
+    "status": "current",
+    "currentVersion": "0.137.0",
+    "latestVersion": "0.137.0",
+    "updateCommand": "npm install -g @openai/codex@latest",
+    "canUpdate": true,
+    "checkedAt": "2026-06-06T01:03:11.417Z",
+    "message": null
+  }
+}

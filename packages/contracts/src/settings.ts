@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { IsoDateTime, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
@@ -38,6 +38,105 @@ export const SidebarThreadPreviewCount = Schema.Int.check(
 );
 export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
+
+export const SidebarCategory = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  archivedAt: Schema.NullOr(IsoDateTime),
+});
+export type SidebarCategory = typeof SidebarCategory.Type;
+
+export const SidebarCategoryAssignment = Schema.Struct({
+  categoryId: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+export type SidebarCategoryAssignment = typeof SidebarCategoryAssignment.Type;
+
+const SidebarOrganizationWire = Schema.Struct({
+  categoryOrder: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+  categories: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, SidebarCategory)),
+  projectCategoryAssignments: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, SidebarCategoryAssignment),
+  ),
+});
+
+const SidebarOrganizationValue = Schema.Struct({
+  categoryOrder: Schema.Array(TrimmedNonEmptyString),
+  categories: Schema.Record(TrimmedNonEmptyString, SidebarCategory),
+  projectCategoryAssignments: Schema.Record(TrimmedNonEmptyString, SidebarCategoryAssignment),
+});
+
+type SidebarOrganizationInput = typeof SidebarOrganizationWire.Type;
+type SidebarOrganizationOutput = typeof SidebarOrganizationValue.Type;
+
+function normalizeSidebarOrganization(value: SidebarOrganizationInput): SidebarOrganizationOutput {
+  const categories: Record<string, SidebarCategory> = {};
+  for (const category of Object.values(value.categories ?? {})) {
+    categories[category.id] = {
+      id: category.id,
+      name: category.name,
+      archivedAt: category.archivedAt,
+    };
+  }
+  const validCategoryIds = new Set(Object.keys(categories));
+  const categoryOrder = [
+    ...new Set((value.categoryOrder ?? []).filter((id) => validCategoryIds.has(id))),
+  ];
+  const projectCategoryAssignments: Record<string, SidebarCategoryAssignment> = {};
+  for (const [projectKey, assignment] of Object.entries(value.projectCategoryAssignments ?? {})) {
+    if (!validCategoryIds.has(assignment.categoryId)) {
+      continue;
+    }
+    projectCategoryAssignments[projectKey] = {
+      categoryId: assignment.categoryId,
+      updatedAt: assignment.updatedAt,
+    };
+  }
+
+  return {
+    categoryOrder,
+    categories,
+    projectCategoryAssignments,
+  };
+}
+
+function encodeSidebarOrganization(value: SidebarOrganizationOutput): SidebarOrganizationInput {
+  const categories: Record<string, SidebarCategory> = {};
+  for (const [id, category] of Object.entries(value.categories)) {
+    categories[id] = {
+      id: category.id,
+      name: category.name,
+      archivedAt: category.archivedAt,
+    };
+  }
+  const projectCategoryAssignments: Record<string, SidebarCategoryAssignment> = {};
+  for (const [projectKey, assignment] of Object.entries(value.projectCategoryAssignments)) {
+    projectCategoryAssignments[projectKey] = {
+      categoryId: assignment.categoryId,
+      updatedAt: assignment.updatedAt,
+    };
+  }
+
+  return {
+    categoryOrder: value.categoryOrder,
+    categories,
+    projectCategoryAssignments,
+  };
+}
+
+export const SidebarOrganization = SidebarOrganizationWire.pipe(
+  Schema.decodeTo(
+    SidebarOrganizationValue,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => Effect.succeed(normalizeSidebarOrganization(value)),
+      encode: (value) => Effect.succeed(encodeSidebarOrganization(value)),
+    }),
+  ),
+);
+export type SidebarOrganization = typeof SidebarOrganization.Type;
+export const DEFAULT_SIDEBAR_ORGANIZATION: SidebarOrganization = Schema.decodeSync(
+  SidebarOrganization,
+)({});
 
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -81,6 +180,9 @@ export const ClientSettingsSchema = Schema.Struct({
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sidebarProjectSortOrder: SidebarProjectSortOrder.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_SORT_ORDER)),
+  ),
+  sidebarOrganization: SidebarOrganization.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_ORGANIZATION)),
   ),
   sidebarThreadSortOrder: SidebarThreadSortOrder.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_SORT_ORDER)),
@@ -564,6 +666,7 @@ export const ClientSettingsPatch = Schema.Struct({
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
   ),
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
+  sidebarOrganization: Schema.optionalKey(SidebarOrganization),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),

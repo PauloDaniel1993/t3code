@@ -1,0 +1,22 @@
+{
+  "displayName": "Cursor",
+  "badgeLabel": "Early Access",
+  "showInteractionModeToggle": true,
+  "enabled": false,
+  "installed": false,
+  "version": null,
+  "status": "disabled",
+  "auth": {
+    "status": "unknown"
+  },
+  "checkedAt": "2026-06-06T01:06:28.214Z",
+  "message": "Cursor is disabled in T3 Code settings.",
+  "models": [],
+  "slashCommands": [],
+  "skills": [],
+  "instanceId": "cursor",
+  "driver": "cursor",
+  "continuation": {
+    "groupKey": "cursor:instance:cursor"
+  }
+}
