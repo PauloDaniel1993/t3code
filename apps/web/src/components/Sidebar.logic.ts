@@ -1,15 +1,17 @@
 import * as React from "react";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import type { SidebarOrganization } from "@t3tools/contracts/settings";
 import {
   getThreadSortTimestamp,
   sortThreads,
   toSortableTimestamp,
   type ThreadSortInput,
 } from "../lib/threadSort";
-import type { SidebarThreadSummary, Thread } from "../types";
+import type { Project, SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
+import { migrateSidebarCategoryAssignments } from "../sidebarOrganization/assignments";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -37,6 +39,23 @@ export interface ThreadStatusPill {
   colorClass: string;
   dotClass: string;
   pulse: boolean;
+}
+
+export function resolveSidebarOrganizationMigration(input: {
+  sidebarOrganization: SidebarOrganization;
+  projects: ReadonlyArray<Pick<Project, "environmentId" | "workspaceRoot" | "repositoryIdentity">>;
+}): {
+  readonly sidebarOrganization: SidebarOrganization;
+  readonly shouldPersist: boolean;
+} {
+  const sidebarOrganization = migrateSidebarCategoryAssignments(
+    input.sidebarOrganization,
+    input.projects,
+  );
+  return {
+    sidebarOrganization,
+    shouldPersist: sidebarOrganization !== input.sidebarOrganization,
+  };
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {

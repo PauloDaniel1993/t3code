@@ -101,6 +101,21 @@ export function migrateSidebarCategoryAssignments(
     }
   }
 
+  const currentEntries = Object.entries(sidebarOrganization.projectCategoryAssignments);
+  const hasChanged =
+    currentEntries.length !== Object.keys(nextAssignments).length ||
+    currentEntries.some(([assignmentKey, assignment]) => {
+      const nextAssignment = nextAssignments[assignmentKey];
+      return (
+        !nextAssignment ||
+        nextAssignment.categoryId !== assignment.categoryId ||
+        nextAssignment.updatedAt !== assignment.updatedAt
+      );
+    });
+  if (!hasChanged) {
+    return sidebarOrganization;
+  }
+
   return {
     ...sidebarOrganization,
     projectCategoryAssignments: nextAssignments,
