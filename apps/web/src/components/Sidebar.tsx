@@ -183,6 +183,7 @@ import {
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
+  resolveSidebarOrganizationMigration,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
@@ -228,12 +229,19 @@ import {
   getSidebarProjectCategoryOptions,
   MOVE_TO_CATEGORY_LABEL,
   NEW_CATEGORY_LABEL,
-  REPOSITORY_GROUPING_DIALOG_LABEL,
-  REPOSITORY_GROUPING_LABEL,
   reassignSidebarProjectCategory,
   resolveSidebarProjectCategoryValue,
 } from "../sidebarOrganization/projectWorkflow";
-import { UNCATEGORIZED_CATEGORY_ID } from "../sidebarOrganization/categories";
+import {
+  createSidebarCategoryId,
+  UNCATEGORIZED_CATEGORY_ID,
+} from "../sidebarOrganization/categories";
+import {
+  describeRepositoryGroupingMode,
+  REPOSITORY_GROUPING_DIALOG_LABEL,
+  REPOSITORY_GROUPING_LABEL,
+  REPOSITORY_GROUPING_MODE_LABELS,
+} from "../sidebarOrganization/repositoryGrouping";
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -248,11 +256,6 @@ const SIDEBAR_LIST_ANIMATION_OPTIONS = {
   easing: "ease-out",
 } as const;
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
-const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> = {
-  repository: "Group by repository",
-  repository_path: "Group by repository path",
-  separate: "Keep separate",
-};
 const SIDEBAR_ICON_ACTION_BUTTON_CLASS =
   "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -287,17 +290,6 @@ function projectExpansionPreferenceKeys(project: SidebarProjectSnapshot): string
     ...project.memberProjects.map((member) => member.physicalProjectKey),
     ...project.memberProjects.map((member) => legacyProjectCwdPreferenceKey(member.workspaceRoot)),
   ];
-}
-
-function projectGroupingModeDescription(mode: SidebarProjectGroupingMode): string {
-  switch (mode) {
-    case "repository":
-      return "Projects from the same repository share one sidebar row.";
-    case "repository_path":
-      return "Projects group only when both the repository and repo-relative path match.";
-    case "separate":
-      return "Every project path gets its own sidebar row.";
-  }
 }
 
 function buildThreadJumpLabelMap(input: {
@@ -1504,7 +1496,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   }, []);
 
   const saveNewProjectCategory = useCallback(() => {
-    const categoryId = `sidebar-category-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const categoryId = createSidebarCategoryId();
     const result = createSidebarCategoryForProject({
       sidebarOrganization,
       project,
@@ -2519,8 +2511,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 <SelectTrigger className="w-full" aria-label="Repository grouping rule">
                   <SelectValue>
                     {projectGroupingSelection === "inherit"
-                      ? `Use global default (${PROJECT_GROUPING_MODE_LABELS[projectGroupingSettings.sidebarProjectGroupingMode]})`
-                      : PROJECT_GROUPING_MODE_LABELS[projectGroupingSelection]}
+                      ? `Use global default (${REPOSITORY_GROUPING_MODE_LABELS[projectGroupingSettings.sidebarProjectGroupingMode]})`
+                      : REPOSITORY_GROUPING_MODE_LABELS[projectGroupingSelection]}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -2528,21 +2520,21 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                     Use global default
                   </SelectItem>
                   <SelectItem hideIndicator value="repository">
-                    {PROJECT_GROUPING_MODE_LABELS.repository}
+                    {REPOSITORY_GROUPING_MODE_LABELS.repository}
                   </SelectItem>
                   <SelectItem hideIndicator value="repository_path">
-                    {PROJECT_GROUPING_MODE_LABELS.repository_path}
+                    {REPOSITORY_GROUPING_MODE_LABELS.repository_path}
                   </SelectItem>
                   <SelectItem hideIndicator value="separate">
-                    {PROJECT_GROUPING_MODE_LABELS.separate}
+                    {REPOSITORY_GROUPING_MODE_LABELS.separate}
                   </SelectItem>
                 </SelectPopup>
               </Select>
             </div>
             <p className="text-xs text-muted-foreground">
               {projectGroupingSelection === "inherit"
-                ? projectGroupingModeDescription(projectGroupingSettings.sidebarProjectGroupingMode)
-                : projectGroupingModeDescription(projectGroupingSelection)}
+                ? describeRepositoryGroupingMode(projectGroupingSettings.sidebarProjectGroupingMode)
+                : describeRepositoryGroupingMode(projectGroupingSelection)}
             </p>
           </DialogPanel>
           <DialogFooter>
@@ -2816,7 +2808,7 @@ function ProjectSortMenu({
             }}
           >
             {(
-              Object.entries(PROJECT_GROUPING_MODE_LABELS) as Array<
+              Object.entries(REPOSITORY_GROUPING_MODE_LABELS) as Array<
                 [SidebarProjectGroupingMode, string]
               >
             ).map(([value, label]) => (
@@ -3373,6 +3365,24 @@ export default function Sidebar() {
       ],
     });
   }, [projectOrder, projects]);
+  const sidebarOrganizationMigration = useMemo(
+    () =>
+      resolveSidebarOrganizationMigration({
+        sidebarOrganization,
+        projects: orderedProjects,
+      }),
+    [orderedProjects, sidebarOrganization],
+  );
+  const migratedSidebarOrganization = sidebarOrganizationMigration.sidebarOrganization;
+
+  useEffect(() => {
+    if (!sidebarOrganizationMigration.shouldPersist) {
+      return;
+    }
+    updateSettings(
+      createSidebarOrganizationPatch(sidebarOrganizationMigration.sidebarOrganization),
+    );
+  }, [sidebarOrganizationMigration, updateSettings]);
 
   // Build a mapping from physical project key → logical project key for
   // cross-environment grouping.  Projects that share a repositoryIdentity
@@ -3576,10 +3586,10 @@ export default function Sidebar() {
     () =>
       buildSidebarCategoryGroups({
         projects: sortedProjects,
-        sidebarOrganization,
+        sidebarOrganization: migratedSidebarOrganization,
         activeRouteProjectKey,
       }),
-    [activeRouteProjectKey, sidebarOrganization, sortedProjects],
+    [activeRouteProjectKey, migratedSidebarOrganization, sortedProjects],
   );
   const categoryIdByVisibleProjectKey = useMemo(
     () =>

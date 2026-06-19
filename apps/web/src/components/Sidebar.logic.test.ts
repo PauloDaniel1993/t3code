@@ -14,12 +14,14 @@ import {
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
+  resolveSidebarOrganizationMigration,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
 } from "./Sidebar.logic";
+import { DEFAULT_SIDEBAR_ORGANIZATION } from "@t3tools/contracts/settings";
 import {
   EnvironmentId,
   OrchestrationLatestTurn,
@@ -769,6 +771,90 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     ...rest,
   };
 }
+
+describe("resolveSidebarOrganizationMigration", () => {
+  it("migrates fallback physical category assignments to canonical repository keys", () => {
+    const project = makeProject({
+      workspaceRoot: "/tmp/project",
+      repositoryIdentity: {
+        canonicalKey: "github.com/example/project",
+        locator: {
+          source: "git-remote",
+          remoteName: "origin",
+          remoteUrl: "https://github.com/example/project.git",
+        },
+      },
+    });
+    const sidebarOrganization = {
+      ...DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryOrder: ["cat-work"],
+      categories: {
+        "cat-work": {
+          id: "cat-work",
+          name: "Work",
+          archivedAt: null,
+        },
+      },
+      projectCategoryAssignments: {
+        [`${localEnvironmentId}:/tmp/project`]: {
+          categoryId: "cat-work",
+          updatedAt: "2026-06-19T17:00:00.000Z",
+        },
+      },
+    };
+
+    const result = resolveSidebarOrganizationMigration({
+      sidebarOrganization,
+      projects: [project],
+    });
+
+    expect(result.shouldPersist).toBe(true);
+    expect(result.sidebarOrganization.projectCategoryAssignments).toEqual({
+      "github.com/example/project": {
+        categoryId: "cat-work",
+        updatedAt: "2026-06-19T17:00:00.000Z",
+      },
+    });
+  });
+
+  it("does not request persistence when assignments are already canonical", () => {
+    const project = makeProject({
+      repositoryIdentity: {
+        canonicalKey: "github.com/example/project",
+        locator: {
+          source: "git-remote",
+          remoteName: "origin",
+          remoteUrl: "https://github.com/example/project.git",
+        },
+      },
+    });
+    const sidebarOrganization = {
+      ...DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryOrder: ["cat-work"],
+      categories: {
+        "cat-work": {
+          id: "cat-work",
+          name: "Work",
+          archivedAt: null,
+        },
+      },
+      projectCategoryAssignments: {
+        "github.com/example/project": {
+          categoryId: "cat-work",
+          updatedAt: "2026-06-19T17:00:00.000Z",
+        },
+      },
+    };
+
+    const result = resolveSidebarOrganizationMigration({
+      sidebarOrganization,
+      projects: [project],
+    });
+
+    expect(result.shouldPersist).toBe(false);
+    expect(result.sidebarOrganization).toBe(sidebarOrganization);
+  });
+});
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
