@@ -250,3 +250,27 @@ export function getSidebarHiddenCategories(
     (category) => category.archivedAt !== null,
   );
 }
+
+export function getSidebarOrderedCategories(
+  sidebarOrganization: SidebarOrganization,
+): ReadonlyArray<SidebarCategory> {
+  const orderedCategories: SidebarCategory[] = [];
+  const seen = new Set<string>();
+
+  for (const categoryId of sidebarOrganization.categoryOrder) {
+    const category = sidebarOrganization.categories[categoryId];
+    if (!category || seen.has(categoryId)) {
+      continue;
+    }
+    seen.add(categoryId);
+    orderedCategories.push(category);
+  }
+
+  const remainingCategories = Object.values(sidebarOrganization.categories)
+    .filter((category) => !seen.has(category.id))
+    .toSorted(
+      (left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id),
+    );
+
+  return [...orderedCategories, ...remainingCategories];
+}
