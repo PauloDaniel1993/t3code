@@ -4,6 +4,10 @@ export const UNCATEGORIZED_CATEGORY_ID = "__uncategorized__";
 export const UNCATEGORIZED_CATEGORY_NAME = "Uncategorized";
 export const MAX_SIDEBAR_CATEGORY_NAME_LENGTH = 64;
 
+export function createSidebarCategoryId(now = Date.now(), random = Math.random()): string {
+  return `sidebar-category-${now}-${random.toString(16).slice(2)}`;
+}
+
 export interface SidebarCategoryNameValidationResult {
   readonly isValid: boolean;
   readonly normalizedName: string;

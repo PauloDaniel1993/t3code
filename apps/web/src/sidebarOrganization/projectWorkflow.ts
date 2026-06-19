@@ -13,11 +13,9 @@ import {
   UNCATEGORIZED_CATEGORY_NAME,
   validateSidebarCategoryName,
 } from "./categories";
-
-export const REPOSITORY_GROUPING_LABEL = "Repository grouping";
-export const REPOSITORY_GROUPING_DIALOG_LABEL = "Repository grouping...";
 export const MOVE_TO_CATEGORY_LABEL = "Move to category...";
 export const NEW_CATEGORY_LABEL = "New category...";
+export { REPOSITORY_GROUPING_DIALOG_LABEL, REPOSITORY_GROUPING_LABEL } from "./repositoryGrouping";
 
 export function buildSidebarProjectContextMenuItems<T extends string>(input: {
   renameItem: ContextMenuItem<T>;
