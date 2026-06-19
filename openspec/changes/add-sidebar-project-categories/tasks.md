@@ -16,16 +16,16 @@
 
 ## 4. Sidebar Tree Rendering
 
-- [ ] 4.1 Extract category tree derivation from `Sidebar.tsx` so categories wrap the existing logical project and sorting pipeline
-- [ ] 4.2 Render category headers, project counts, and `Uncategorized` behavior in the sidebar
-- [ ] 4.3 Implement temporary reveal for active threads in hidden categories without mutating persisted hidden state
-- [ ] 4.4 Add sidebar tests for categorized rendering, collapse behavior, hidden-category filtering, and temporary reveal
+- [x] 4.1 Extract category tree derivation from `Sidebar.tsx` so categories wrap the existing logical project and sorting pipeline
+- [x] 4.2 Render category headers, project counts, and `Uncategorized` behavior in the sidebar
+- [x] 4.3 Implement temporary reveal for active threads in hidden categories without mutating persisted hidden state
+- [x] 4.4 Add sidebar tests for categorized rendering, collapse behavior, hidden-category filtering, and temporary reveal
 
 ## 5. Assignment And Category Lifecycle UX
 
-- [ ] 5.1 Add row-level `Move to category...` and inline `New category...` flows to the logical project-row context menu without reusing member-targeted submenus
-- [ ] 5.2 Rename repository-deduping labels from `Project grouping...` to `Repository grouping...` where applicable
-- [ ] 5.3 Add UI tests for creating categories and assigning projects from sidebar workflows
+- [x] 5.1 Add row-level `Move to category...` and inline `New category...` flows to the logical project-row context menu without reusing member-targeted submenus
+- [x] 5.2 Rename repository-deduping labels from `Project grouping...` to `Repository grouping...` where applicable
+- [x] 5.3 Add UI tests for creating categories and assigning projects from sidebar workflows
 
 ## 6. Sidebar Settings Surface
 
