@@ -29,14 +29,14 @@
 
 ## 6. Sidebar Settings Surface
 
-- [ ] 6.1 Add `/settings/sidebar` and a `Sidebar` settings navigation item
-- [ ] 6.2 Mirror repository grouping controls on the Sidebar settings page while preserving the existing quick sidebar controls
-- [ ] 6.3 Implement active category management, hidden-category recovery, `Unhide all categories`, and read-only `Uncategorized` presentation
-- [ ] 6.4 Add a scoped `Reset sidebar organization` action that clears only category-organization state
-- [ ] 6.5 Add tests for settings-driven rename, hide, unhide, delete, reorder, and reset behavior
+- [x] 6.1 Add `/settings/sidebar` and a `Sidebar` settings navigation item
+- [x] 6.2 Mirror repository grouping controls on the Sidebar settings page while preserving the existing quick sidebar controls
+- [x] 6.3 Implement active category management, hidden-category recovery, `Unhide all categories`, and read-only `Uncategorized` presentation
+- [x] 6.4 Add a scoped `Reset sidebar organization` action that clears only category-organization state
+- [x] 6.5 Add tests for settings-driven rename, hide, unhide, delete, reorder, and reset behavior
 
 ## 7. Verification
 
 - [ ] 7.1 Manually verify the feature using a separate `--base-dir` or `T3CODE_HOME` instead of the current installed runtime state tree
-- [ ] 7.2 Run `vp check`
-- [ ] 7.3 Run `vp run typecheck`
+- [x] 7.2 Run `vp check`
+- [x] 7.3 Run `vp run typecheck`
