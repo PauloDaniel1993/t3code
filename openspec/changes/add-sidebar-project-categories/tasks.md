@@ -26,6 +26,10 @@
 - [x] 5.1 Add row-level `Move to category...` and inline `New category...` flows to the logical project-row context menu without reusing member-targeted submenus
 - [x] 5.2 Rename repository-deduping labels from `Project grouping...` to `Repository grouping...` where applicable
 - [x] 5.3 Add UI tests for creating categories and assigning projects from sidebar workflows
+- [x] 5.4 Add category selection with inline `New category...` creation to the Add project flow
+- [x] 5.5 Add tests for Add project category selection, inline category creation, and existing-project reassignment
+- [x] 5.6 Add direct sidebar hide action for user-created category headers
+- [x] 5.7 Add tests for sidebar-header hide behavior and `Uncategorized` exclusion
 
 ## 6. Sidebar Settings Surface
 

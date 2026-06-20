@@ -49,7 +49,7 @@ import { OpenAddProjectCommandPaletteProvider } from "../commandPaletteContext";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useClientSettings } from "../hooks/useSettings";
+import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
@@ -122,11 +122,24 @@ import {
   CommandPanel,
 } from "./ui/command";
 import { Button } from "./ui/button";
+import { Input } from "./ui/input";
 import { Kbd, KbdGroup } from "./ui/kbd";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
+import type { Project } from "../types";
+import { createSidebarOrganizationPatch } from "../sidebarOrganization/settings";
+import {
+  ADD_PROJECT_NEW_CATEGORY_VALUE,
+  applyAddProjectCategorySelection,
+  getAddProjectCategoryOptions,
+} from "../sidebarOrganization/projectWorkflow";
+import {
+  createSidebarCategoryId,
+  UNCATEGORIZED_CATEGORY_ID,
+} from "../sidebarOrganization/categories";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
@@ -459,6 +472,7 @@ function OpenCommandPaletteDialog(props: {
   const isActionsOnly = deferredQuery.startsWith(">");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const clientSettings = useClientSettings();
+  const updateSettings = useUpdateClientSettings();
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -484,6 +498,9 @@ function OpenCommandPaletteDialog(props: {
   );
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
+  const [addProjectCategoryId, setAddProjectCategoryId] = useState(UNCATEGORIZED_CATEGORY_ID);
+  const [addProjectNewCategoryName, setAddProjectNewCategoryName] = useState("");
+  const [addProjectCategoryError, setAddProjectCategoryError] = useState<string | null>(null);
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
   const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
@@ -511,6 +528,14 @@ function OpenCommandPaletteDialog(props: {
 
     return options;
   }, [environments]);
+  const addProjectCategoryOptions = useMemo(
+    () => getAddProjectCategoryOptions(clientSettings.sidebarOrganization),
+    [clientSettings.sidebarOrganization],
+  );
+  const selectedAddProjectCategoryOption = useMemo(
+    () => addProjectCategoryOptions.find((option) => option.value === addProjectCategoryId),
+    [addProjectCategoryId, addProjectCategoryOptions],
+  );
   const defaultAddProjectEnvironmentId = addProjectEnvironmentOptions[0]?.environmentId ?? null;
   const wslAddProjectEnvironmentOption = useMemo(
     () =>
@@ -626,6 +651,44 @@ function OpenCommandPaletteDialog(props: {
   const { filteredEntries: filteredBrowseEntries, exactEntry: exactBrowseEntry } = useMemo(
     () => filterBrowseEntries({ browseEntries, browseFilterQuery, highlightedItemValue }),
     [browseEntries, browseFilterQuery, highlightedItemValue],
+  );
+  useEffect(() => {
+    if (!selectedAddProjectCategoryOption) {
+      setAddProjectCategoryId(UNCATEGORIZED_CATEGORY_ID);
+    }
+  }, [selectedAddProjectCategoryOption]);
+
+  const resetAddProjectCategorySelection = useCallback(() => {
+    setAddProjectCategoryId(UNCATEGORIZED_CATEGORY_ID);
+    setAddProjectNewCategoryName("");
+    setAddProjectCategoryError(null);
+  }, []);
+
+  const resolveAddProjectSidebarOrganization = useCallback(
+    (project: Pick<Project, "environmentId" | "workspaceRoot" | "repositoryIdentity">) => {
+      const result = applyAddProjectCategorySelection({
+        sidebarOrganization: clientSettings.sidebarOrganization,
+        project,
+        selectedCategoryId: addProjectCategoryId,
+        newCategoryName: addProjectNewCategoryName,
+        createCategoryId: createSidebarCategoryId,
+        updatedAt: new Date().toISOString(),
+      });
+      if (result.error) {
+        setAddProjectCategoryError(result.error);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to add project",
+            description: result.error,
+          }),
+        );
+        return null;
+      }
+      setAddProjectCategoryError(null);
+      return result.sidebarOrganization;
+    },
+    [addProjectCategoryId, addProjectNewCategoryName, clientSettings.sidebarOrganization],
   );
 
   const openProjectFromSearch = useMemo(
@@ -924,6 +987,8 @@ function OpenCommandPaletteDialog(props: {
   );
 
   const openAddProjectFlow = useCallback(() => {
+    resetAddProjectCategorySelection();
+
     if (addProjectEnvironmentOptions.length > 1) {
       pushPaletteView({
         addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
@@ -949,6 +1014,7 @@ function OpenCommandPaletteDialog(props: {
     addProjectEnvironmentGroups,
     addProjectEnvironmentOptions.length,
     defaultAddProjectEnvironmentId,
+    resetAddProjectCategorySelection,
     startAddProjectSourceSelection,
   ]);
 
@@ -1116,6 +1182,12 @@ function OpenCommandPaletteDialog(props: {
         cwd,
       );
       if (existing) {
+        const nextSidebarOrganization = resolveAddProjectSidebarOrganization(existing);
+        if (!nextSidebarOrganization) {
+          return;
+        }
+        updateSettings(createSidebarOrganizationPatch(nextSidebarOrganization));
+
         const latestThread = getLatestThreadForProject(
           threads.filter((thread) => thread.environmentId === existing.environmentId),
           existing.id,
@@ -1145,6 +1217,20 @@ function OpenCommandPaletteDialog(props: {
           }
         }
         setOpen(false);
+        resetAddProjectCategorySelection();
+        return;
+      }
+
+      const projectCategoryTarget: Pick<
+        Project,
+        "environmentId" | "workspaceRoot" | "repositoryIdentity"
+      > = {
+        environmentId: input.environmentId,
+        workspaceRoot: cwd,
+        repositoryIdentity: null,
+      };
+      const nextSidebarOrganization = resolveAddProjectSidebarOrganization(projectCategoryTarget);
+      if (!nextSidebarOrganization) {
         return;
       }
 
@@ -1176,6 +1262,8 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
 
+      updateSettings(createSidebarOrganizationPatch(nextSidebarOrganization));
+
       const navigationResult = await settlePromise(() =>
         handleNewThread(scopeProjectRef(input.environmentId, projectId)),
       );
@@ -1191,8 +1279,11 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
       setOpen(false);
+      resetAddProjectCategorySelection();
     },
     [
+      resetAddProjectCategorySelection,
+      resolveAddProjectSidebarOrganization,
       handleNewThread,
       createProject,
       navigate,
@@ -1200,6 +1291,7 @@ function OpenCommandPaletteDialog(props: {
       setOpen,
       clientSettings.sidebarThreadSortOrder,
       threads,
+      updateSettings,
     ],
   );
 
@@ -1449,6 +1541,8 @@ function OpenCommandPaletteDialog(props: {
     addProjectCloneFlow?.step === "repository" &&
     query.trim().length > 0 &&
     !isRemoteProjectPending;
+  const showAddProjectCategoryControls =
+    addProjectEnvironmentId !== null && (isBrowsing || isCloneDestinationStep);
   const fileManagerName = getLocalFileManagerName(navigator.platform);
   const canOpenProjectFromFileManager =
     isBrowsing &&
@@ -1833,6 +1927,66 @@ function OpenCommandPaletteDialog(props: {
                     : {})}
           />
         </CommandPanel>
+        {showAddProjectCategoryControls ? (
+          <div className="border-t bg-background/95 px-3 py-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <label
+                className="shrink-0 font-medium text-muted-foreground text-xs"
+                htmlFor="add-project-category"
+              >
+                Category
+              </label>
+              <Select
+                value={addProjectCategoryId}
+                onValueChange={(value) => {
+                  if (value === null) {
+                    return;
+                  }
+                  setAddProjectCategoryId(value);
+                  setAddProjectCategoryError(null);
+                  if (value !== ADD_PROJECT_NEW_CATEGORY_VALUE) {
+                    setAddProjectNewCategoryName("");
+                  }
+                }}
+              >
+                <SelectTrigger
+                  id="add-project-category"
+                  size="sm"
+                  className="min-w-0 flex-1"
+                  aria-label="Add project category"
+                >
+                  <SelectValue>
+                    {selectedAddProjectCategoryOption?.label ?? "Uncategorized"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {addProjectCategoryOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </div>
+            {addProjectCategoryId === ADD_PROJECT_NEW_CATEGORY_VALUE ? (
+              <div className="mt-2">
+                <Input
+                  aria-label="New category name"
+                  placeholder="New category name"
+                  size="sm"
+                  value={addProjectNewCategoryName}
+                  onChange={(event) => {
+                    setAddProjectNewCategoryName(event.currentTarget.value);
+                    setAddProjectCategoryError(null);
+                  }}
+                />
+              </div>
+            ) : null}
+            {addProjectCategoryError ? (
+              <p className="mt-1 text-destructive text-xs">{addProjectCategoryError}</p>
+            ) : null}
+          </div>
+        ) : null}
         <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
           <div className="flex items-center gap-3">
             <KbdGroup className="items-center gap-1.5">
