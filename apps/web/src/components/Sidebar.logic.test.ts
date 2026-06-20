@@ -12,6 +12,8 @@ import {
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
+  canHideSidebarCategoryHeader,
+  resolveSidebarCategoryHeaderHide,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarOrganizationMigration,
@@ -23,6 +25,7 @@ import {
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
 } from "./Sidebar.logic";
 import { DEFAULT_SIDEBAR_ORGANIZATION } from "@t3tools/contracts/settings";
+import { UNCATEGORIZED_CATEGORY_ID } from "../sidebarOrganization/categories";
 import {
   EnvironmentId,
   OrchestrationLatestTurn,
@@ -895,6 +898,76 @@ describe("resolveSidebarOrganizationMigration", () => {
 
     expect(result.shouldPersist).toBe(false);
     expect(result.sidebarOrganization).toBe(sidebarOrganization);
+  });
+});
+
+describe("canHideSidebarCategoryHeader", () => {
+  it("allows visible custom categories and excludes hidden or built-in categories", () => {
+    expect(canHideSidebarCategoryHeader({ categoryId: "cat-work", archivedAt: null })).toBe(true);
+    expect(
+      canHideSidebarCategoryHeader({
+        categoryId: "cat-work",
+        archivedAt: "2026-06-19T17:05:00.000Z",
+      }),
+    ).toBe(false);
+    expect(
+      canHideSidebarCategoryHeader({
+        categoryId: UNCATEGORIZED_CATEGORY_ID,
+        archivedAt: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("resolveSidebarCategoryHeaderHide", () => {
+  it("hides a visible custom category while preserving project assignments", () => {
+    const sidebarOrganization = {
+      ...DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryOrder: ["cat-work"],
+      categories: {
+        "cat-work": {
+          id: "cat-work",
+          name: "Work",
+          archivedAt: null,
+        },
+      },
+      projectCategoryAssignments: {
+        "github.com/example/project": {
+          categoryId: "cat-work",
+          updatedAt: "2026-06-19T17:00:00.000Z",
+        },
+      },
+    };
+
+    const result = resolveSidebarCategoryHeaderHide({
+      sidebarOrganization,
+      categoryId: "cat-work",
+      archivedAt: null,
+      hiddenAt: "2026-06-19T17:05:00.000Z",
+    });
+
+    expect(result.shouldPersist).toBe(true);
+    expect(result.sidebarOrganization.categories["cat-work"]?.archivedAt).toBe(
+      "2026-06-19T17:05:00.000Z",
+    );
+    expect(result.sidebarOrganization.projectCategoryAssignments).toEqual({
+      "github.com/example/project": {
+        categoryId: "cat-work",
+        updatedAt: "2026-06-19T17:00:00.000Z",
+      },
+    });
+  });
+
+  it("does not persist when the sidebar header represents Uncategorized", () => {
+    const result = resolveSidebarCategoryHeaderHide({
+      sidebarOrganization: DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryId: UNCATEGORIZED_CATEGORY_ID,
+      archivedAt: null,
+      hiddenAt: "2026-06-19T17:05:00.000Z",
+    });
+
+    expect(result.shouldPersist).toBe(false);
+    expect(result.sidebarOrganization).toBe(DEFAULT_SIDEBAR_ORGANIZATION);
   });
 });
 
