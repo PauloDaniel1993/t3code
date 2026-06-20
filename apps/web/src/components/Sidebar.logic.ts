@@ -12,6 +12,7 @@ import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
 import { migrateSidebarCategoryAssignments } from "../sidebarOrganization/assignments";
+import { hideSidebarCategory, UNCATEGORIZED_CATEGORY_ID } from "../sidebarOrganization/categories";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -52,6 +53,45 @@ export function resolveSidebarOrganizationMigration(input: {
     input.sidebarOrganization,
     input.projects,
   );
+  return {
+    sidebarOrganization,
+    shouldPersist: sidebarOrganization !== input.sidebarOrganization,
+  };
+}
+
+export function canHideSidebarCategoryHeader(input: {
+  categoryId: string;
+  archivedAt: string | null;
+}): boolean {
+  return input.categoryId !== UNCATEGORIZED_CATEGORY_ID && input.archivedAt === null;
+}
+
+export function resolveSidebarCategoryHeaderHide(input: {
+  sidebarOrganization: SidebarOrganization;
+  categoryId: string;
+  archivedAt: string | null;
+  hiddenAt: string;
+}): {
+  readonly sidebarOrganization: SidebarOrganization;
+  readonly shouldPersist: boolean;
+} {
+  if (
+    !canHideSidebarCategoryHeader({
+      categoryId: input.categoryId,
+      archivedAt: input.archivedAt,
+    })
+  ) {
+    return {
+      sidebarOrganization: input.sidebarOrganization,
+      shouldPersist: false,
+    };
+  }
+
+  const sidebarOrganization = hideSidebarCategory(input.sidebarOrganization, {
+    categoryId: input.categoryId,
+    archivedAt: input.hiddenAt,
+  });
+
   return {
     sidebarOrganization,
     shouldPersist: sidebarOrganization !== input.sidebarOrganization,
