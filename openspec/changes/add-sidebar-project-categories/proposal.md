@@ -10,8 +10,12 @@ runtime behavior or losing their current installation state during verification.
 - Add a client-local sidebar category system that organizes logical project rows into a
   `category -> project -> thread` tree.
 - Add category lifecycle support for create, rename, reorder, collapse, hide, unhide, and delete.
+- Let users hide custom categories directly from the sidebar while preserving recovery from
+  `/settings/sidebar`.
 - Add durable project-to-category assignments that survive repository identity resolution and
   existing repository-grouping mode changes.
+- Add category selection to the Add project flow, including inline creation of a new category while
+  adding or cloning a workspace.
 - Add a dedicated `/settings/sidebar` management surface for repository grouping controls, category
   management, hidden-category recovery, and sidebar-organization reset while preserving quick
   repository-grouping controls in the main sidebar.

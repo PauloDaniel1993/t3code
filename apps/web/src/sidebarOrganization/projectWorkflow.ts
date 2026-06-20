@@ -15,7 +15,13 @@ import {
 } from "./categories";
 export const MOVE_TO_CATEGORY_LABEL = "Move to category...";
 export const NEW_CATEGORY_LABEL = "New category...";
+export const ADD_PROJECT_NEW_CATEGORY_VALUE = "__new_category__";
 export { REPOSITORY_GROUPING_DIALOG_LABEL, REPOSITORY_GROUPING_LABEL } from "./repositoryGrouping";
+
+type SidebarProjectCategoryTarget = Pick<
+  SidebarProjectSnapshot,
+  "environmentId" | "workspaceRoot" | "repositoryIdentity"
+>;
 
 export function buildSidebarProjectContextMenuItems<T extends string>(input: {
   renameItem: ContextMenuItem<T>;
@@ -50,9 +56,30 @@ export function getSidebarProjectCategoryOptions(
   ];
 }
 
+export function getAddProjectCategoryOptions(
+  sidebarOrganization: SidebarOrganization,
+): ReadonlyArray<{ readonly value: string; readonly label: string }> {
+  return [
+    {
+      value: UNCATEGORIZED_CATEGORY_ID,
+      label: UNCATEGORIZED_CATEGORY_NAME,
+    },
+    ...getSidebarOrderedCategories(sidebarOrganization)
+      .filter((category) => category.archivedAt === null)
+      .map((category) => ({
+        value: category.id,
+        label: category.name,
+      })),
+    {
+      value: ADD_PROJECT_NEW_CATEGORY_VALUE,
+      label: NEW_CATEGORY_LABEL,
+    },
+  ];
+}
+
 export function resolveSidebarProjectCategoryValue(
   sidebarOrganization: SidebarOrganization,
-  project: SidebarProjectSnapshot,
+  project: SidebarProjectCategoryTarget,
 ): string {
   return (
     resolveSidebarCategoryAssignment(sidebarOrganization, project)?.categoryId ??
@@ -62,7 +89,7 @@ export function resolveSidebarProjectCategoryValue(
 
 export function reassignSidebarProjectCategory(input: {
   sidebarOrganization: SidebarOrganization;
-  project: SidebarProjectSnapshot;
+  project: SidebarProjectCategoryTarget;
   categoryId: string;
   updatedAt: string;
 }): SidebarOrganization {
@@ -75,7 +102,7 @@ export function reassignSidebarProjectCategory(input: {
 
 export function createSidebarCategoryForProject(input: {
   sidebarOrganization: SidebarOrganization;
-  project: SidebarProjectSnapshot;
+  project: SidebarProjectCategoryTarget;
   categoryId: string;
   name: string;
   updatedAt: string;
@@ -104,6 +131,48 @@ export function createSidebarCategoryForProject(input: {
       sidebarOrganization: withCategory,
       project: input.project,
       categoryId: input.categoryId,
+      updatedAt: input.updatedAt,
+    }),
+    error: null,
+  };
+}
+
+export function applyAddProjectCategorySelection(input: {
+  sidebarOrganization: SidebarOrganization;
+  project: SidebarProjectCategoryTarget;
+  selectedCategoryId: string;
+  newCategoryName: string;
+  createCategoryId: () => string;
+  updatedAt: string;
+}): {
+  readonly sidebarOrganization: SidebarOrganization;
+  readonly error: string | null;
+} {
+  if (input.selectedCategoryId === ADD_PROJECT_NEW_CATEGORY_VALUE) {
+    return createSidebarCategoryForProject({
+      sidebarOrganization: input.sidebarOrganization,
+      project: input.project,
+      categoryId: input.createCategoryId(),
+      name: input.newCategoryName,
+      updatedAt: input.updatedAt,
+    });
+  }
+
+  if (input.selectedCategoryId !== UNCATEGORIZED_CATEGORY_ID) {
+    const category = input.sidebarOrganization.categories[input.selectedCategoryId];
+    if (!category || category.archivedAt !== null) {
+      return {
+        sidebarOrganization: input.sidebarOrganization,
+        error: "Choose an active category.",
+      };
+    }
+  }
+
+  return {
+    sidebarOrganization: reassignSidebarProjectCategory({
+      sidebarOrganization: input.sidebarOrganization,
+      project: input.project,
+      categoryId: input.selectedCategoryId,
       updatedAt: input.updatedAt,
     }),
     error: null,
