@@ -189,6 +189,8 @@ import {
   isContextMenuPointerDown,
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
+  canHideSidebarCategoryHeader,
+  resolveSidebarCategoryHeaderHide,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarStageBadgeLabel,
@@ -3043,6 +3045,7 @@ interface SidebarProjectsContentProps {
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   categoryExpandedById: Readonly<Record<string, boolean>>;
   setCategoryExpanded: (categoryId: string, expanded: boolean) => void;
+  onHideCategory: (categoryId: string) => void;
   categoryGroups: readonly SidebarCategoryGroup[];
   expandedThreadListsByProject: ReadonlySet<string>;
   activeRouteProjectKey: string | null;
@@ -3065,6 +3068,7 @@ interface SidebarCategoryGroupSectionProps {
   isManualProjectSorting: boolean;
   categoryExpandedById: Readonly<Record<string, boolean>>;
   setCategoryExpanded: (categoryId: string, expanded: boolean) => void;
+  onHideCategory: (categoryId: string) => void;
   attachProjectListAutoAnimateRef: (node: HTMLElement | null) => void;
   renderProject: (
     project: SidebarProjectSnapshot,
@@ -3080,45 +3084,96 @@ const SidebarCategoryGroupSection = memo(function SidebarCategoryGroupSection(
     isManualProjectSorting,
     categoryExpandedById,
     setCategoryExpanded,
+    onHideCategory,
     attachProjectListAutoAnimateRef,
     renderProject,
   } = props;
   const isExpanded = resolveSidebarCategoryGroupExpanded(categoryExpandedById, group);
+  const canHideCategory = canHideSidebarCategoryHeader({
+    categoryId: group.categoryId,
+    archivedAt: group.archivedAt,
+  });
   const handleToggleCategory = useCallback(() => {
     setCategoryExpanded(group.categoryId, !isExpanded);
   }, [group.categoryId, isExpanded, setCategoryExpanded]);
-  const categoryBadge = (
-    <span className="ml-auto flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
-      {group.isTemporarilyRevealed ? (
-        <span className="inline-flex items-center gap-1">
-          <ArchiveIcon className="size-3" />
-          <span>Hidden</span>
-        </span>
-      ) : null}
-      <span className="tabular-nums">{group.projects.length}</span>
-    </span>
+  const handleHideCategoryPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+    },
+    [],
   );
+  const handleHideCategoryClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onHideCategory(group.categoryId);
+    },
+    [group.categoryId, onHideCategory],
+  );
+  const categoryBadge =
+    !canHideCategory || group.isTemporarilyRevealed ? (
+      <span className="ml-auto flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+        {group.isTemporarilyRevealed ? (
+          <span className="inline-flex items-center gap-1">
+            <ArchiveIcon className="size-3" />
+            <span>Hidden</span>
+          </span>
+        ) : null}
+        <span className="tabular-nums">{group.projects.length}</span>
+      </span>
+    ) : null;
 
   return (
     <SidebarMenuItem
-      className="rounded-md"
+      className="group/category relative rounded-md"
       data-testid={`sidebar-category-${group.categoryId}`}
       data-sidebar-category={group.categoryId}
     >
-      <SidebarMenuButton
-        size="sm"
-        className={cn(
-          "h-6 gap-1.5 px-1.5 text-[11px] font-medium text-muted-foreground/75 hover:text-foreground",
-          group.isTemporarilyRevealed && "text-foreground/85",
-        )}
-        onClick={handleToggleCategory}
-      >
-        <ChevronRightIcon
-          className={cn("size-3 shrink-0 transition-transform", isExpanded && "rotate-90")}
-        />
-        <span className="truncate">{group.name}</span>
-        {categoryBadge}
-      </SidebarMenuButton>
+      <div className="relative">
+        <SidebarMenuButton
+          size="sm"
+          className={cn(
+            "h-6 gap-1.5 px-1.5 text-[11px] font-medium text-muted-foreground/75 hover:text-foreground",
+            canHideCategory && "pr-16",
+            group.isTemporarilyRevealed && "text-foreground/85",
+          )}
+          onClick={handleToggleCategory}
+        >
+          <ChevronRightIcon
+            className={cn("size-3 shrink-0 transition-transform", isExpanded && "rotate-90")}
+          />
+          <span className="truncate">{group.name}</span>
+          {categoryBadge}
+        </SidebarMenuButton>
+        {canHideCategory ? (
+          <>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <div className="absolute top-1/2 right-7 -translate-y-1/2">
+                    <button
+                      type="button"
+                      aria-label={`Hide ${group.name}`}
+                      className={cn(
+                        SIDEBAR_ICON_ACTION_BUTTON_CLASS,
+                        "text-muted-foreground/55 transition-[color,filter] hover:text-primary hover:[filter:drop-shadow(0_0_5px_var(--primary))]",
+                      )}
+                      onPointerDown={handleHideCategoryPointerDown}
+                      onClick={handleHideCategoryClick}
+                    >
+                      <ArchiveIcon className="size-3.5" />
+                    </button>
+                  </div>
+                }
+              />
+              <TooltipPopup side="top">Hide category</TooltipPopup>
+            </Tooltip>
+            <span className="pointer-events-none absolute top-1/2 right-1.5 min-w-5 -translate-y-1/2 text-right text-[10px] tabular-nums text-muted-foreground/60">
+              {group.projects.length}
+            </span>
+          </>
+        ) : null}
+      </div>
 
       {isExpanded && group.projects.length > 0 ? (
         isManualProjectSorting ? (
@@ -3173,6 +3228,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     deleteThread,
     categoryExpandedById,
     setCategoryExpanded,
+    onHideCategory,
     categoryGroups,
     expandedThreadListsByProject,
     activeRouteProjectKey,
@@ -3357,6 +3413,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                   isManualProjectSorting={isManualProjectSorting}
                   categoryExpandedById={categoryExpandedById}
                   setCategoryExpanded={setCategoryExpanded}
+                  onHideCategory={onHideCategory}
                   attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
                   renderProject={renderProject}
                 />
@@ -3372,6 +3429,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 isManualProjectSorting={isManualProjectSorting}
                 categoryExpandedById={categoryExpandedById}
                 setCategoryExpanded={setCategoryExpanded}
+                onHideCategory={onHideCategory}
                 attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
                 renderProject={renderProject}
               />
@@ -3481,6 +3539,23 @@ export default function Sidebar() {
       createSidebarOrganizationPatch(sidebarOrganizationMigration.sidebarOrganization),
     );
   }, [sidebarOrganizationMigration, updateSettings]);
+
+  const hideCategoryFromSidebar = useCallback(
+    (categoryId: string) => {
+      const category = migratedSidebarOrganization.categories[categoryId] ?? null;
+      const result = resolveSidebarCategoryHeaderHide({
+        sidebarOrganization: migratedSidebarOrganization,
+        categoryId,
+        archivedAt: category?.archivedAt ?? null,
+        hiddenAt: new Date().toISOString(),
+      });
+      if (!result.shouldPersist) {
+        return;
+      }
+      updateSettings(createSidebarOrganizationPatch(result.sidebarOrganization));
+    },
+    [migratedSidebarOrganization, updateSettings],
+  );
 
   // Build a mapping from physical project key → logical project key for
   // cross-environment grouping.  Projects that share a repositoryIdentity
@@ -4072,6 +4147,7 @@ export default function Sidebar() {
             deleteThread={deleteThread}
             categoryExpandedById={categoryExpandedById}
             setCategoryExpanded={setCategoryExpanded}
+            onHideCategory={hideCategoryFromSidebar}
             categoryGroups={categoryGroups}
             expandedThreadListsByProject={expandedThreadListsByProject}
             activeRouteProjectKey={activeRouteProjectKey}
