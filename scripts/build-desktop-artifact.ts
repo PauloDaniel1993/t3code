@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off - Desktop packaging needs to copy both file and directory artifacts from electron-builder output.
 
 import * as NodeModule from "node:module";
+import * as NodeFs from "node:fs/promises";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -1857,10 +1859,15 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   for (const entry of stageEntries) {
     const from = path.join(stageDistDir, entry);
     const stat = yield* fs.stat(from).pipe(Effect.orElseSucceed(() => null));
-    if (!stat || stat.type !== "File") continue;
+    if (!stat || (stat.type !== "File" && stat.type !== "Directory")) continue;
 
     const to = path.join(options.outputDir, entry);
-    yield* fs.copyFile(from, to);
+    yield* Effect.promise(() => NodeFs.rm(to, { recursive: true, force: true }));
+    if (stat.type === "File") {
+      yield* fs.copyFile(from, to);
+    } else {
+      yield* fs.copy(from, to);
+    }
     copiedArtifacts.push(to);
   }
 

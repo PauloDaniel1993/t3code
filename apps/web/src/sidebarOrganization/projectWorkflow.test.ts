@@ -8,8 +8,11 @@ import {
 import { DEFAULT_SIDEBAR_ORGANIZATION } from "@t3tools/contracts/settings";
 import type { SidebarProjectSnapshot } from "../sidebarProjectGrouping";
 import {
+  ADD_PROJECT_NEW_CATEGORY_VALUE,
+  applyAddProjectCategorySelection,
   buildSidebarProjectContextMenuItems,
   createSidebarCategoryForProject,
+  getAddProjectCategoryOptions,
   getSidebarProjectCategoryOptions,
   MOVE_TO_CATEGORY_LABEL,
   NEW_CATEGORY_LABEL,
@@ -157,5 +160,90 @@ describe("sidebar project category workflows", () => {
       { value: "cat-b", label: "Beta" },
       { value: "cat-a", label: "Alpha" },
     ]);
+  });
+
+  it("lists active categories plus new category for the add-project flow", () => {
+    const sidebarOrganization = createSidebarCategory(
+      createSidebarCategory(DEFAULT_SIDEBAR_ORGANIZATION, {
+        id: "cat-active",
+        name: "Active",
+      }),
+      {
+        id: "cat-hidden",
+        name: "Hidden",
+        archivedAt: "2026-06-19T12:00:00.000Z",
+      },
+    );
+
+    expect(getAddProjectCategoryOptions(sidebarOrganization)).toEqual([
+      { value: UNCATEGORIZED_CATEGORY_ID, label: "Uncategorized" },
+      { value: "cat-active", label: "Active" },
+      { value: ADD_PROJECT_NEW_CATEGORY_VALUE, label: NEW_CATEGORY_LABEL },
+    ]);
+  });
+
+  it("assigns an added project to an existing active category", () => {
+    const project = makeProjectSnapshot({ repositoryIdentity: null });
+    const sidebarOrganization = createSidebarCategory(DEFAULT_SIDEBAR_ORGANIZATION, {
+      id: "cat-work",
+      name: "Work",
+    });
+
+    const result = applyAddProjectCategorySelection({
+      sidebarOrganization,
+      project,
+      selectedCategoryId: "cat-work",
+      newCategoryName: "",
+      createCategoryId: () => "unused",
+      updatedAt: "2026-06-19T12:05:00.000Z",
+    });
+
+    expect(result.error).toBeNull();
+    expect(resolveSidebarProjectCategoryValue(result.sidebarOrganization, project)).toBe(
+      "cat-work",
+    );
+  });
+
+  it("creates and assigns a new category from the add-project flow", () => {
+    const project = makeProjectSnapshot({ repositoryIdentity: null });
+
+    const result = applyAddProjectCategorySelection({
+      sidebarOrganization: DEFAULT_SIDEBAR_ORGANIZATION,
+      project,
+      selectedCategoryId: ADD_PROJECT_NEW_CATEGORY_VALUE,
+      newCategoryName: "  Client Work  ",
+      createCategoryId: () => "cat-client",
+      updatedAt: "2026-06-19T12:10:00.000Z",
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.sidebarOrganization.categories["cat-client"]).toMatchObject({
+      id: "cat-client",
+      name: "Client Work",
+    });
+    expect(resolveSidebarProjectCategoryValue(result.sidebarOrganization, project)).toBe(
+      "cat-client",
+    );
+  });
+
+  it("rejects hidden category assignment from a stale add-project selection", () => {
+    const project = makeProjectSnapshot({ repositoryIdentity: null });
+    const sidebarOrganization = createSidebarCategory(DEFAULT_SIDEBAR_ORGANIZATION, {
+      id: "cat-hidden",
+      name: "Hidden",
+      archivedAt: "2026-06-19T12:15:00.000Z",
+    });
+
+    const result = applyAddProjectCategorySelection({
+      sidebarOrganization,
+      project,
+      selectedCategoryId: "cat-hidden",
+      newCategoryName: "",
+      createCategoryId: () => "unused",
+      updatedAt: "2026-06-19T12:20:00.000Z",
+    });
+
+    expect(result.error).toBe("Choose an active category.");
+    expect(result.sidebarOrganization).toBe(sidebarOrganization);
   });
 });

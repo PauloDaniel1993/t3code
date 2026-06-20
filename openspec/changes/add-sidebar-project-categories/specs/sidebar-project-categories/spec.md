@@ -70,6 +70,22 @@ fallback assignments deterministically when canonical repository identity appear
 - **WHEN** the user assigns a logical project row to a category from the sidebar workflow
 - **THEN** the assignment applies to the logical project and the project moves under that category
 
+#### Scenario: Assigning a project while adding a workspace
+
+- **WHEN** the user selects an existing category in the Add project flow and adds a workspace
+- **THEN** the created project is assigned to that category before the Add project flow closes
+
+#### Scenario: Creating a category while adding a workspace
+
+- **WHEN** the user chooses `New category...`, enters a valid category name, and adds a workspace
+- **THEN** the system creates the category and assigns the created project to it in the same
+  sidebar-organization settings update
+
+#### Scenario: Reassigning an existing project from Add project
+
+- **WHEN** the selected Add project path already exists and the user chose a category
+- **THEN** the existing logical project is assigned to that category before the app navigates to it
+
 #### Scenario: Grouped project row assignment
 
 - **WHEN** a logical sidebar row represents multiple grouped member projects
@@ -100,6 +116,17 @@ category SHALL move its assigned projects to `Uncategorized`.
 - **WHEN** the user hides a category
 - **THEN** the category is removed from the normal sidebar and remains recoverable from sidebar
   settings
+
+#### Scenario: Hiding a category from the sidebar
+
+- **WHEN** the user hides a user-created category from its sidebar header
+- **THEN** the category is archived through sidebar-organization settings and disappears from the
+  normal sidebar without clearing its project assignments
+
+#### Scenario: Built-in Uncategorized cannot be hidden
+
+- **WHEN** the user views the `Uncategorized` category in the sidebar
+- **THEN** the sidebar does not offer a hide action for it
 
 #### Scenario: Deleting a category
 

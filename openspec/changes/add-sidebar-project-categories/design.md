@@ -21,6 +21,8 @@ settings route, so a technical design is warranted before implementation.
   grouping and ordering.
 - Support reversible category hide/unhide and category collapse with predictable persistence
   boundaries.
+- Let users choose or create the target sidebar category while adding a project so organization can
+  be set before the new workspace appears in the sidebar.
 - Provide a first-class Sidebar settings page for category lifecycle management and repository
   grouping controls.
 - Keep reset behavior scoped so category organization can be cleared without resetting unrelated
@@ -85,12 +87,18 @@ ordering, and expansion state. Delete removes the category object and moves its 
 `Uncategorized`. Hidden categories are restored from `/settings/sidebar`; they are not rendered in
 the normal sidebar except for a temporary active-thread reveal.
 
+The normal sidebar should expose a direct hide action on user-created category headers so users can
+declutter in context. `Uncategorized` remains built in and cannot be hidden. The action must use the
+same full-object `sidebarOrganization` write path as settings so the category remains recoverable.
+
 Alternatives considered:
 
 - Boolean hidden flag: rejected because `archivedAt` preserves useful metadata and fits the
   existing archive mental model.
 - Auto-unhide when activity appears: rejected because hide is an explicit user choice and should
   not be silently overridden.
+- Require users to open settings to hide a visible category: rejected because hiding is commonly an
+  in-context cleanup action.
 
 ### 5. Introduce a dedicated `/settings/sidebar` route
 
@@ -112,10 +120,18 @@ Category assignment applies to logical sidebar rows, not individual member proje
 workflow therefore belongs on the project row itself and must not reuse the existing member-targeted
 submenu pattern used for rename, path copy, and project removal.
 
+The Add project flow is also a valid category-assignment entry point because it creates the logical
+project row. It should expose existing active categories plus `Uncategorized`, support an inline
+`New category...` entry, and persist the assignment immediately after project creation succeeds. If
+the selected workspace already exists, the same selection should update that existing project's
+category before navigating to it.
+
 Alternatives considered:
 
 - Reuse member-targeted submenus for category assignment: rejected because it would imply
   per-member category ownership that conflicts with the logical-project assignment model.
+- Require users to add the project first and then move it from the sidebar: rejected because the
+  user already knows the desired organization while adding the workspace.
 
 ### 7. Keep reset behavior explicit and scoped
 
@@ -151,9 +167,10 @@ Alternatives considered:
    when available.
 3. Add category expansion state to `uiStateStore`.
 4. Move sidebar organization rendering onto the extracted category tree layer.
-5. Add `/settings/sidebar`, mirror repository grouping controls there, keep the quick sidebar
+5. Add category selection and inline category creation to the Add project flow.
+6. Add `/settings/sidebar`, mirror repository grouping controls there, keep the quick sidebar
    grouping controls, and wire reset behavior.
-6. Verify behavior against a separate `--base-dir` or `T3CODE_HOME` so the user's current runtime
+7. Verify behavior against a separate `--base-dir` or `T3CODE_HOME` so the user's current runtime
    state is untouched.
 
 ## Open Questions
