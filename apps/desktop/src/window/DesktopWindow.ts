@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -82,6 +83,14 @@ export class DesktopWindow extends Context.Service<
 
 const { logInfo: logWindowInfo, logWarning: logWindowWarning } =
   makeComponentLogger("desktop-window");
+
+class RendererHttpCacheClearError extends Data.TaggedError("RendererHttpCacheClearError")<{
+  readonly cause: unknown;
+}> {
+  override get message() {
+    return "Failed to clear renderer HTTP cache.";
+  }
+}
 
 function getIconOption(
   iconPaths: DesktopAssets.DesktopIconPaths,
@@ -175,6 +184,26 @@ function syncWindowAppearance(
       window.setTitleBarOverlay(titleBarOverlay);
     }
   });
+}
+
+function clearProductionRendererHttpCache(
+  window: Electron.BrowserWindow,
+  isDevelopment: boolean,
+): Effect.Effect<void> {
+  if (isDevelopment) {
+    return Effect.void;
+  }
+
+  return Effect.tryPromise({
+    try: () => window.webContents.session.clearCache(),
+    catch: (cause) => new RendererHttpCacheClearError({ cause }),
+  }).pipe(
+    Effect.catch((cause) =>
+      logWindowWarning("failed to clear renderer http cache", {
+        cause: cause.message,
+      }),
+    ),
+  );
 }
 
 type RevealSubscription = (listener: () => void) => void;
@@ -466,6 +495,7 @@ export const make = Effect.gen(function* () {
       void runPromise(Effect.andThen(electronWindow.reveal(window), dismissConnectingSplash));
     });
 
+    yield* clearProductionRendererHttpCache(window, environment.isDevelopment);
     loadApplication();
     if (environment.isDevelopment) {
       window.webContents.openDevTools({ mode: "detach" });

@@ -1243,7 +1243,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const response = yield* HttpClient.get("/");
       assert.equal(response.status, 200);
+      assert.equal(response.headers["cache-control"], "no-store");
+      assert.equal(response.headers["x-content-type-options"], "nosniff");
       assert.include(yield* response.text, "router-static-ok");
+
+      const fallbackResponse = yield* HttpClient.get("/@vite/client");
+      assert.equal(fallbackResponse.status, 200);
+      assert.equal(fallbackResponse.headers["cache-control"], "no-store");
+      assert.equal(fallbackResponse.headers["x-content-type-options"], "nosniff");
+      assert.include(yield* fallbackResponse.text, "router-static-ok");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

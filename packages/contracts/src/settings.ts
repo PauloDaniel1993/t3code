@@ -39,6 +39,21 @@ export const SidebarThreadPreviewCount = Schema.Int.check(
 export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
 
+export const DEFAULT_TERMINAL_FONT_FAMILY =
+  '"JetBrainsMono NFM", "JetBrainsMono NF", "CaskaydiaCove NFM", "CaskaydiaCove NF", "CaskaydiaCove Nerd Font Mono", "CaskaydiaCove Nerd Font", "CaskaydiaMono Nerd Font Mono", "CaskaydiaMono Nerd Font", "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font", "MesloLGS NF", "FiraCode Nerd Font Mono", "FiraCode Nerd Font", "Hack Nerd Font Mono", "Hack Nerd Font", "Cascadia Code PL", "Cascadia Mono PL", "Cascadia Code", "Cascadia Mono", "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace';
+
+export const TerminalFontFamily = TrimmedString.pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => Effect.succeed(value || DEFAULT_TERMINAL_FONT_FAMILY),
+      encode: (value) => Effect.succeed(value || DEFAULT_TERMINAL_FONT_FAMILY),
+    }),
+  ),
+  Schema.check(Schema.isMaxLength(1024)),
+);
+export type TerminalFontFamily = typeof TerminalFontFamily.Type;
+
 export const SidebarCategory = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
@@ -194,6 +209,9 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  terminalFontFamily: TerminalFontFamily.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_TERMINAL_FONT_FAMILY)),
+  ),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -671,5 +689,6 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   wordWrap: Schema.optionalKey(Schema.Boolean),
+  terminalFontFamily: Schema.optionalKey(TerminalFontFamily),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
