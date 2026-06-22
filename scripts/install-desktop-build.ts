@@ -1,17 +1,23 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - Standalone installer/update CLI that runs outside an Effect runtime.
 
-import { spawn } from "node:child_process";
-import * as NodeFs from "node:fs/promises";
-import * as NodeOs from "node:os";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeTimersPromises from "node:timers/promises";
+import * as NodeURL from "node:url";
 
-const REPO_ROOT = NodePath.resolve(NodePath.dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUTPUT_DIR = NodePath.join(REPO_ROOT, ".t3-dev", "desktop-install-artifacts");
 const METADATA_FILE_NAME = ".t3code-install.json";
 const WINDOWS_LOCAL_LAUNCHER_NAME = "T3 Code Local.cmd";
+const WINDOWS_LOCAL_SHORTCUT_NAME = "T3 Code (alpha.local).lnk";
 const POSIX_LOCAL_LAUNCHER_NAME = "t3code-local";
+const LOCAL_DISPLAY_NAME = "T3 Code (alpha.local)";
+const LOCAL_WINDOWS_APP_USER_MODEL_ID = "com.t3tools.t3code.alpha.local";
+const INSTALL_REPLACE_ATTEMPTS = 6;
+const INSTALL_REPLACE_RETRY_DELAY_MS = 350;
 
 const BUILD_PLATFORMS = ["mac", "linux", "win"] as const;
 const BUILD_ARCHES = ["arm64", "x64", "universal"] as const;
@@ -27,6 +33,7 @@ export interface InstallDesktopBuildOptions {
   readonly arch?: BuildArch;
   readonly buildVersion?: string;
   readonly skipBuild: boolean;
+  readonly reuseArtifact: boolean;
   readonly verbose: boolean;
   readonly launch: boolean;
 }
@@ -39,6 +46,7 @@ interface ParseState {
   arch?: BuildArch;
   buildVersion?: string;
   skipBuild: boolean;
+  reuseArtifact: boolean;
   verbose: boolean;
   launch: boolean;
 }
@@ -53,6 +61,7 @@ function usage(): string {
     "",
     "Builds an unpacked desktop app and replaces the install directory with it.",
     "Rerun the same command after rebasing to update that install location.",
+    "Generated local launchers keep state and Windows taskbar identity separate from official builds.",
     "",
     "Options:",
     "  --install-dir <path>       Required install/update directory.",
@@ -62,6 +71,7 @@ function usage(): string {
     "  --arch <arm64|x64|universal>",
     "  --build-version <version>",
     "  --skip-build               Reuse existing build outputs while packaging.",
+    "  --reuse-artifact           Install the existing unpacked artifact from --output-dir.",
     "  --verbose                  Stream verbose artifact-builder output.",
     "  --launch                   Launch the installed app after updating.",
     "  --help",
@@ -126,10 +136,11 @@ export function parseInstallDesktopBuildArgs(
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
   hostPlatform: NodeJS.Platform = readCliHostPlatform(),
-  homeDir = NodeOs.homedir(),
+  homeDir = NodeOS.homedir(),
 ): InstallDesktopBuildOptions {
   const state: ParseState = {
     skipBuild: false,
+    reuseArtifact: false,
     verbose: false,
     launch: false,
   };
@@ -142,6 +153,10 @@ export function parseInstallDesktopBuildArgs(
     }
     if (arg === "--skip-build") {
       state.skipBuild = true;
+      continue;
+    }
+    if (arg === "--reuse-artifact") {
+      state.reuseArtifact = true;
       continue;
     }
     if (arg === "--verbose") {
@@ -233,6 +248,7 @@ export function parseInstallDesktopBuildArgs(
     ...(arch ? { arch } : {}),
     ...(buildVersion ? { buildVersion } : {}),
     skipBuild: state.skipBuild,
+    reuseArtifact: state.reuseArtifact,
     verbose: state.verbose,
     launch: state.launch,
   };
@@ -315,7 +331,7 @@ export function assertSafeStateDir(
 
 async function pathExists(filePath: string): Promise<boolean> {
   try {
-    await NodeFs.access(filePath);
+    await NodeFSP.access(filePath);
     return true;
   } catch {
     return false;
@@ -324,7 +340,7 @@ async function pathExists(filePath: string): Promise<boolean> {
 
 async function isDirectory(filePath: string): Promise<boolean> {
   try {
-    return (await NodeFs.stat(filePath)).isDirectory();
+    return (await NodeFSP.stat(filePath)).isDirectory();
   } catch {
     return false;
   }
@@ -342,9 +358,29 @@ async function firstExistingDirectory(
 }
 
 async function findFirstAppBundle(directory: string): Promise<string | undefined> {
-  const entries = await NodeFs.readdir(directory, { withFileTypes: true });
+  const entries = await NodeFSP.readdir(directory, { withFileTypes: true });
   const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".app"));
   return appEntry ? NodePath.join(directory, appEntry.name) : undefined;
+}
+
+function formatErrorCause(cause: unknown): string {
+  if (cause instanceof Error) {
+    const error = cause as Error & {
+      readonly code?: unknown;
+      readonly syscall?: unknown;
+      readonly path?: unknown;
+      readonly dest?: unknown;
+    };
+    const details = [
+      typeof error.code === "string" ? `code=${error.code}` : undefined,
+      typeof error.syscall === "string" ? `syscall=${error.syscall}` : undefined,
+      typeof error.path === "string" ? `path=${error.path}` : undefined,
+      typeof error.dest === "string" ? `dest=${error.dest}` : undefined,
+      error.message,
+    ].filter((part): part is string => typeof part === "string" && part.length > 0);
+    return details.join(" ");
+  }
+  return String(cause);
 }
 
 export async function resolveUnpackedAppRoot(
@@ -374,7 +410,7 @@ export async function resolveUnpackedAppRoot(
     }
   }
 
-  const entries = (await NodeFs.readdir(outputDir, { withFileTypes: true })).filter((entry) =>
+  const entries = (await NodeFSP.readdir(outputDir, { withFileTypes: true })).filter((entry) =>
     entry.isDirectory(),
   );
   const unpackedEntry = entries.find((entry) => entry.name.endsWith("-unpacked"));
@@ -393,7 +429,7 @@ async function runCommand(
   cwd: string,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = NodeChildProcess.spawn(command, args, {
       cwd,
       stdio: "inherit",
       shell: false,
@@ -425,6 +461,7 @@ function buildArtifactArgs(options: InstallDesktopBuildOptions): string[] {
     options.outputDir,
     "--platform",
     options.platform,
+    "--local-identity",
   ];
   if (options.arch) {
     args.push("--arch", options.arch);
@@ -443,7 +480,7 @@ function buildArtifactArgs(options: InstallDesktopBuildOptions): string[] {
 
 async function readGitValue(args: ReadonlyArray<string>): Promise<string> {
   return await new Promise((resolve) => {
-    const child = spawn("git", args, {
+    const child = NodeChildProcess.spawn("git", args, {
       cwd: REPO_ROOT,
       stdio: ["ignore", "pipe", "ignore"],
       shell: false,
@@ -469,17 +506,37 @@ async function writeInstallMetadata(
     readGitValue(["branch", "--show-current"]),
     readGitValue(["rev-parse", "--short=12", "HEAD"]),
   ]);
-  const metadata = {
-    installedAt: new Date().toISOString(),
-    branch,
-    commit,
-    sourceAppRoot,
-    stateDir,
-  };
-  await NodeFs.writeFile(
+  await NodeFSP.writeFile(
     NodePath.join(installStageDir, METADATA_FILE_NAME),
-    `${JSON.stringify(metadata, null, 2)}\n`,
+    renderInstallMetadata({
+      installedAt: new Date().toISOString(),
+      branch,
+      commit,
+      sourceAppRoot,
+      stateDir,
+    }),
   );
+}
+
+export function renderInstallMetadata(input: {
+  readonly installedAt: string;
+  readonly branch: string;
+  readonly commit: string;
+  readonly sourceAppRoot: string;
+  readonly stateDir: string;
+}): string {
+  const metadata = {
+    installedAt: input.installedAt,
+    branch: input.branch,
+    commit: input.commit,
+    sourceAppRoot: input.sourceAppRoot,
+    t3Home: input.stateDir,
+    stateDir: input.stateDir,
+    appDataDirectory: NodePath.join(input.stateDir, "appdata"),
+    displayName: LOCAL_DISPLAY_NAME,
+    windowsAppUserModelId: LOCAL_WINDOWS_APP_USER_MODEL_ID,
+  };
+  return `${JSON.stringify(metadata, null, 2)}\n`;
 }
 
 function batchLiteral(value: string): string {
@@ -490,6 +547,45 @@ function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function powershellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function renderWindowsShortcutScript(input: {
+  readonly shortcutPath: string;
+  readonly targetPath: string;
+  readonly iconPath: string;
+  readonly workingDirectory: string;
+}): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$shell = New-Object -ComObject WScript.Shell",
+    `$shortcut = $shell.CreateShortcut(${powershellSingleQuote(input.shortcutPath)})`,
+    `$shortcut.TargetPath = ${powershellSingleQuote(input.targetPath)}`,
+    "$shortcut.Arguments = ''",
+    `$shortcut.WorkingDirectory = ${powershellSingleQuote(input.workingDirectory)}`,
+    `$shortcut.IconLocation = ${powershellSingleQuote(`${input.iconPath},0`)}`,
+    `$shortcut.Description = ${powershellSingleQuote(`${LOCAL_DISPLAY_NAME} local build`)}`,
+    "$shortcut.Save()",
+  ].join("\n");
+}
+
+export function renderWindowsLocalLauncher(stateDir: string, executableName: string): string {
+  return [
+    "@echo off",
+    "setlocal",
+    `set "T3CODE_HOME=${batchLiteral(stateDir)}"`,
+    'set "APPDATA=%T3CODE_HOME%\\appdata"',
+    `set "T3CODE_DESKTOP_DISPLAY_NAME=${batchLiteral(LOCAL_DISPLAY_NAME)}"`,
+    `set "T3CODE_DESKTOP_APP_USER_MODEL_ID=${batchLiteral(LOCAL_WINDOWS_APP_USER_MODEL_ID)}"`,
+    'set "T3CODE_DISABLE_AUTO_UPDATE=true"',
+    'set "ELECTRON_RUN_AS_NODE="',
+    'if not exist "%APPDATA%" mkdir "%APPDATA%" >nul 2>nul',
+    `start "" "%~dp0${batchLiteral(executableName)}" %*`,
+    "",
+  ].join("\r\n");
+}
+
 async function writeWindowsLocalLauncher(
   installStageDir: string,
   stateDir: string,
@@ -497,19 +593,67 @@ async function writeWindowsLocalLauncher(
 ): Promise<string> {
   const executableName = NodePath.basename(executablePath);
   const launcherPath = NodePath.join(installStageDir, WINDOWS_LOCAL_LAUNCHER_NAME);
-  await NodeFs.writeFile(
-    launcherPath,
-    [
-      "@echo off",
-      "setlocal",
-      `set "T3CODE_HOME=${batchLiteral(stateDir)}"`,
-      'set "APPDATA=%T3CODE_HOME%\\appdata"',
-      'if not exist "%APPDATA%" mkdir "%APPDATA%" >nul 2>nul',
-      `start "" "%~dp0${batchLiteral(executableName)}" %*`,
-      "",
-    ].join("\r\n"),
-  );
+  await NodeFSP.writeFile(launcherPath, renderWindowsLocalLauncher(stateDir, executableName));
   return launcherPath;
+}
+
+async function writeWindowsShortcut(input: {
+  readonly shortcutPath: string;
+  readonly targetPath: string;
+  readonly iconPath: string;
+  readonly workingDirectory: string;
+}): Promise<void> {
+  if (readCliHostPlatform() !== "win32") {
+    return;
+  }
+
+  await NodeFSP.mkdir(NodePath.dirname(input.shortcutPath), { recursive: true });
+  await runCommand(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      renderWindowsShortcutScript(input),
+    ],
+    REPO_ROOT,
+  );
+}
+
+async function writeWindowsShortcutFiles(installDir: string): Promise<void> {
+  const executablePath = await findLaunchTarget(installDir, "win");
+  if (!executablePath) {
+    return;
+  }
+
+  const shortcut = {
+    targetPath: executablePath,
+    iconPath: executablePath,
+    workingDirectory: installDir,
+  };
+  await writeWindowsShortcut({
+    ...shortcut,
+    shortcutPath: NodePath.join(installDir, WINDOWS_LOCAL_SHORTCUT_NAME),
+  });
+
+  const appData = process.env.APPDATA;
+  if (typeof appData !== "string" || appData.trim().length === 0) {
+    return;
+  }
+
+  await writeWindowsShortcut({
+    ...shortcut,
+    shortcutPath: NodePath.join(
+      appData,
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+      WINDOWS_LOCAL_SHORTCUT_NAME,
+    ),
+  });
 }
 
 async function writePosixLocalLauncher(
@@ -524,12 +668,18 @@ async function writePosixLocalLauncher(
     platform === "linux"
       ? [
           `export T3CODE_HOME=${shellSingleQuote(stateDir)}`,
+          `export T3CODE_DESKTOP_DISPLAY_NAME=${shellSingleQuote(LOCAL_DISPLAY_NAME)}`,
+          "export T3CODE_DISABLE_AUTO_UPDATE=true",
           `export XDG_CONFIG_HOME=${shellSingleQuote(NodePath.join(stateDir, "config"))}`,
           'mkdir -p "$XDG_CONFIG_HOME"',
         ]
-      : [`export T3CODE_HOME=${shellSingleQuote(stateDir)}`];
+      : [
+          `export T3CODE_HOME=${shellSingleQuote(stateDir)}`,
+          `export T3CODE_DESKTOP_DISPLAY_NAME=${shellSingleQuote(LOCAL_DISPLAY_NAME)}`,
+          "export T3CODE_DISABLE_AUTO_UPDATE=true",
+        ];
 
-  await NodeFs.writeFile(
+  await NodeFSP.writeFile(
     launcherPath,
     [
       "#!/bin/sh",
@@ -540,7 +690,7 @@ async function writePosixLocalLauncher(
       "",
     ].join("\n"),
   );
-  await NodeFs.chmod(launcherPath, 0o755);
+  await NodeFSP.chmod(launcherPath, 0o755);
   return launcherPath;
 }
 
@@ -565,31 +715,57 @@ async function writeLocalLauncher(
   );
 }
 
-async function replaceInstallDir(stagedDir: string, installDir: string): Promise<void> {
-  const parentDir = NodePath.dirname(installDir);
-  const backupDir = `${installDir}.previous`;
-  await NodeFs.mkdir(parentDir, { recursive: true });
-  await NodeFs.rm(backupDir, { recursive: true, force: true });
-
+async function replaceInstallDirOnce(
+  stagedDir: string,
+  installDir: string,
+  backupDir: string,
+): Promise<void> {
   let existingMoved = false;
   try {
     if (await pathExists(installDir)) {
-      await NodeFs.rename(installDir, backupDir);
+      await NodeFSP.rename(installDir, backupDir);
       existingMoved = true;
     }
-    await NodeFs.rename(stagedDir, installDir);
+    await NodeFSP.rename(stagedDir, installDir);
     if (existingMoved) {
-      await NodeFs.rm(backupDir, { recursive: true, force: true });
+      await NodeFSP.rm(backupDir, { recursive: true, force: true }).catch((cause: unknown) => {
+        process.stderr.write(
+          `[install-desktop] Warning: installed update, but could not remove ${backupDir}: ${formatErrorCause(cause)}\n`,
+        );
+      });
     }
   } catch (cause) {
     if (existingMoved && !(await pathExists(installDir)) && (await pathExists(backupDir))) {
-      await NodeFs.rename(backupDir, installDir);
+      await NodeFSP.rename(backupDir, installDir);
     }
-    throw new InstallDesktopBuildError(
-      `Failed to replace ${installDir}. Close any running T3 Code build from that directory and retry.`,
-      { cause },
-    );
+    throw cause;
   }
+}
+
+async function replaceInstallDir(stagedDir: string, installDir: string): Promise<void> {
+  const parentDir = NodePath.dirname(installDir);
+  const backupDir = `${installDir}.previous`;
+  await NodeFSP.mkdir(parentDir, { recursive: true });
+
+  let lastCause: unknown;
+  for (let attempt = 1; attempt <= INSTALL_REPLACE_ATTEMPTS; attempt += 1) {
+    try {
+      await NodeFSP.rm(backupDir, { recursive: true, force: true });
+      await replaceInstallDirOnce(stagedDir, installDir, backupDir);
+      return;
+    } catch (cause) {
+      lastCause = cause;
+      if (attempt === INSTALL_REPLACE_ATTEMPTS) {
+        break;
+      }
+      await NodeTimersPromises.setTimeout(INSTALL_REPLACE_RETRY_DELAY_MS * attempt);
+    }
+  }
+
+  throw new InstallDesktopBuildError(
+    `Failed to replace ${installDir} after ${INSTALL_REPLACE_ATTEMPTS} attempts. Close any running T3 Code build from that directory and retry. Last error: ${formatErrorCause(lastCause)}`,
+    { cause: lastCause },
+  );
 }
 
 async function stageInstall(
@@ -602,8 +778,8 @@ async function stageInstall(
     parentDir,
     `.t3code-install-${NodePath.basename(installDir)}-${process.pid}-${Date.now()}`,
   );
-  await NodeFs.rm(stageDir, { recursive: true, force: true });
-  await NodeFs.cp(sourceAppRoot, stageDir, {
+  await NodeFSP.rm(stageDir, { recursive: true, force: true });
+  await NodeFSP.cp(sourceAppRoot, stageDir, {
     recursive: true,
     force: true,
     dereference: false,
@@ -629,7 +805,7 @@ async function findLaunchTarget(
     return undefined;
   }
 
-  const entries = await NodeFs.readdir(installDir, { withFileTypes: true });
+  const entries = await NodeFSP.readdir(installDir, { withFileTypes: true });
   const executables = entries
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
     .map((entry) => entry.name)
@@ -645,28 +821,24 @@ async function findLaunchTarget(
 }
 
 async function launchInstalledApp(installDir: string, platform: BuildPlatform): Promise<void> {
-  const localLauncher =
-    platform === "win"
-      ? NodePath.join(installDir, WINDOWS_LOCAL_LAUNCHER_NAME)
-      : NodePath.join(installDir, POSIX_LOCAL_LAUNCHER_NAME);
-  const target = (await pathExists(localLauncher))
-    ? localLauncher
-    : await findLaunchTarget(installDir, platform);
+  const localLauncher = NodePath.join(installDir, POSIX_LOCAL_LAUNCHER_NAME);
+  const target =
+    platform !== "win" && (await pathExists(localLauncher))
+      ? localLauncher
+      : await findLaunchTarget(installDir, platform);
   if (!target) {
     process.stderr.write(`[install-desktop] No launch target found in ${installDir}\n`);
     return;
   }
 
-  const isWindowsLauncher = platform === "win" && target.endsWith(".cmd");
-  const command = isWindowsLauncher ? "cmd.exe" : platform === "mac" ? "open" : target;
-  const args = isWindowsLauncher
-    ? ["/d", "/s", "/c", "start", "", target]
-    : platform === "mac"
-      ? [target]
-      : [];
-  const child = spawn(command, args, {
+  const command = platform === "mac" ? "open" : target;
+  const args = platform === "mac" ? [target] : [];
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const child = NodeChildProcess.spawn(command, args, {
     cwd: installDir,
     detached: true,
+    env,
     stdio: "ignore",
     shell: false,
     windowsHide: true,
@@ -678,22 +850,31 @@ export async function installDesktopBuild(options: InstallDesktopBuildOptions): 
   assertSafeInstallDir(options.installDir, {
     repoRoot: REPO_ROOT,
     outputDir: options.outputDir,
-    homeDir: NodeOs.homedir(),
+    homeDir: NodeOS.homedir(),
   });
   assertSafeStateDir(options.stateDir, {
     installDir: options.installDir,
     outputDir: options.outputDir,
   });
 
-  process.stdout.write(
-    `[install-desktop] Building unpacked desktop artifact into ${options.outputDir}\n`,
-  );
-  await runCommand(process.execPath, buildArtifactArgs(options), REPO_ROOT);
+  if (options.reuseArtifact) {
+    process.stdout.write(
+      `[install-desktop] Reusing unpacked desktop artifact from ${options.outputDir}\n`,
+    );
+  } else {
+    process.stdout.write(
+      `[install-desktop] Building unpacked desktop artifact into ${options.outputDir}\n`,
+    );
+    await runCommand(process.execPath, buildArtifactArgs(options), REPO_ROOT);
+  }
 
   const sourceAppRoot = await resolveUnpackedAppRoot(options.outputDir, options.platform);
   process.stdout.write(`[install-desktop] Installing ${sourceAppRoot} -> ${options.installDir}\n`);
   const stagedDir = await stageInstall(sourceAppRoot, options);
   await replaceInstallDir(stagedDir, options.installDir);
+  if (options.platform === "win") {
+    await writeWindowsShortcutFiles(options.installDir);
+  }
 
   process.stdout.write(`[install-desktop] Installed desktop build at ${options.installDir}\n`);
   process.stdout.write(`[install-desktop] Local state directory: ${options.stateDir}\n`);

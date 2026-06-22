@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
@@ -56,9 +57,11 @@ function makeEnvironmentLayer(
     processArch: "x64",
     appVersion: "1.2.3",
     appPath: "/repo",
+    executablePath: "/repo/T3 Code",
     isPackaged: options?.isPackaged ?? true,
     resourcesPath: "/missing/resources",
     runningUnderArm64Translation: false,
+    localInstallMetadata: Option.none(),
   }).pipe(
     Layer.provide(
       Layer.mergeAll(
