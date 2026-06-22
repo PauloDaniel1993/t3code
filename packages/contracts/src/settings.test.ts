@@ -8,6 +8,7 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_SIDEBAR_ORGANIZATION,
+  DEFAULT_TERMINAL_FONT_FAMILY,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
@@ -101,6 +102,53 @@ describe("ClientSettings.sidebarOrganization", () => {
         },
       },
     });
+  });
+});
+
+describe("ClientSettings.terminalFontFamily", () => {
+  it("defaults to a Powerline-capable terminal font stack for legacy client settings", () => {
+    const decoded = decodeClientSettings({});
+
+    expect(decoded.terminalFontFamily).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
+    expect(decoded.terminalFontFamily).toContain("JetBrainsMono NFM");
+    expect(decoded.terminalFontFamily).toContain("CaskaydiaCove Nerd Font Mono");
+    expect(decoded.terminalFontFamily).toContain("JetBrainsMono Nerd Font");
+    expect(DEFAULT_CLIENT_SETTINGS.terminalFontFamily).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
+  });
+
+  it("trims custom terminal font family values while decoding", () => {
+    const decoded = decodeClientSettings({
+      terminalFontFamily: '  "JetBrainsMono Nerd Font", "Cascadia Code PL", monospace  ',
+    });
+
+    expect(decoded.terminalFontFamily).toBe(
+      '"JetBrainsMono Nerd Font", "Cascadia Code PL", monospace',
+    );
+  });
+
+  it("falls back to the default terminal font stack for empty values", () => {
+    expect(decodeClientSettings({ terminalFontFamily: "" }).terminalFontFamily).toBe(
+      DEFAULT_TERMINAL_FONT_FAMILY,
+    );
+    expect(decodeClientSettings({ terminalFontFamily: "   " }).terminalFontFamily).toBe(
+      DEFAULT_TERMINAL_FONT_FAMILY,
+    );
+  });
+
+  it("accepts terminal font family updates in client settings patches", () => {
+    const patch = decodeClientSettingsPatch({
+      terminalFontFamily: '  "CaskaydiaCove Nerd Font", monospace  ',
+    });
+
+    expect(patch.terminalFontFamily).toBe('"CaskaydiaCove Nerd Font", monospace');
+  });
+
+  it("rejects excessively long terminal font family values", () => {
+    expect(() =>
+      decodeClientSettings({
+        terminalFontFamily: "a".repeat(1025),
+      }),
+    ).toThrow();
   });
 });
 

@@ -1,7 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off - Clerk's Electron bridge must initialize synchronously before app ready.
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -53,6 +56,44 @@ import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 
+function trimNonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readEarlyLocalInstallHome(executablePath: string): string | undefined {
+  try {
+    const metadataPath = NodePath.join(
+      NodePath.dirname(executablePath),
+      DesktopEnvironment.LOCAL_INSTALL_METADATA_FILE_NAME,
+    );
+    const metadata = JSON.parse(NodeFS.readFileSync(metadataPath, "utf8")) as {
+      readonly t3Home?: unknown;
+      readonly stateDir?: unknown;
+    };
+    const t3Home = typeof metadata.t3Home === "string" ? trimNonEmpty(metadata.t3Home) : undefined;
+    const stateDir =
+      typeof metadata.stateDir === "string" ? trimNonEmpty(metadata.stateDir) : undefined;
+    return t3Home ?? stateDir;
+  } catch {
+    return undefined;
+  }
+}
+
+function initializeEarlyDesktopClerkBridge(): void {
+  const isDevelopment = trimNonEmpty(process.env.VITE_DEV_SERVER_URL) !== undefined;
+  const baseDir =
+    trimNonEmpty(process.env.T3CODE_HOME) ??
+    readEarlyLocalInstallHome(process.execPath) ??
+    NodePath.join(NodeOS.homedir(), ".t3");
+  DesktopClerk.initializeDesktopClerkBridgeEarly({
+    stateDir: NodePath.join(baseDir, isDevelopment ? "dev" : "userdata"),
+    isDevelopment,
+  });
+}
+
+initializeEarlyDesktopClerkBridge();
+
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
     const metadata = yield* Effect.service(ElectronApp.ElectronApp).pipe(
@@ -65,6 +106,9 @@ const desktopEnvironmentLayer = Layer.unwrap(
       homeDirectory: NodeOS.homedir(),
       platform,
       processArch,
+      localInstallMetadata: yield* DesktopEnvironment.readLocalInstallMetadata(
+        metadata.executablePath,
+      ),
       ...metadata,
     });
   }),

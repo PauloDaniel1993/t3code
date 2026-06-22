@@ -24,6 +24,7 @@ export class ElectronShell extends Context.Service<
   ElectronShell,
   {
     readonly openExternal: (rawUrl: unknown) => Effect.Effect<boolean>;
+    readonly revealPath: (rawPath: unknown) => Effect.Effect<boolean>;
     readonly copyText: (text: string) => Effect.Effect<void>;
   }
 >()("@t3tools/desktop/electron/ElectronShell") {}
@@ -39,6 +40,24 @@ export const make = ElectronShell.of({
             () => false,
           ),
         ),
+    }),
+  revealPath: (rawPath) =>
+    Effect.sync(() => {
+      if (typeof rawPath !== "string") {
+        return false;
+      }
+
+      const targetPath = rawPath.trim();
+      if (targetPath.length === 0) {
+        return false;
+      }
+
+      try {
+        Electron.shell.showItemInFolder(targetPath);
+        return true;
+      } catch {
+        return false;
+      }
     }),
   copyText: (text) =>
     Effect.sync(() => {
