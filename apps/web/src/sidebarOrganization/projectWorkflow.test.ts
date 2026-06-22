@@ -80,6 +80,7 @@ describe("sidebar project category workflows", () => {
       moveToCategoryItem: leaf("move", MOVE_TO_CATEGORY_LABEL),
       newCategoryItem: leaf("new", NEW_CATEGORY_LABEL),
       copyPathItem: leaf("copy", "Copy Path"),
+      revealPathItem: leaf("reveal", "Show in Explorer"),
       removeItem: { ...leaf("remove", "Remove"), destructive: true },
     });
 
@@ -89,6 +90,7 @@ describe("sidebar project category workflows", () => {
       MOVE_TO_CATEGORY_LABEL,
       NEW_CATEGORY_LABEL,
       "Copy Path",
+      "Show in Explorer",
       "Remove",
     ]);
     expect(items.find((item) => item.label === MOVE_TO_CATEGORY_LABEL)?.children).toBeUndefined();

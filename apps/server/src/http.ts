@@ -79,6 +79,11 @@ export function resolveDevRedirectUrl(devUrl: URL, requestUrl: URL): string {
   return redirectUrl.toString();
 }
 
+const htmlResponseHeaders = {
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+} as const;
+
 const authenticateRawRouteWithScope = (
   scope: typeof AuthOrchestrationReadScope | typeof AuthOrchestrationOperateScope,
 ) =>
@@ -291,6 +296,7 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       return HttpServerResponse.uint8Array(indexData, {
         status: 200,
         contentType: "text/html; charset=utf-8",
+        headers: htmlResponseHeaders,
       });
     }
 
@@ -303,6 +309,7 @@ export const staticAndDevRouteLayer = HttpRouter.add(
     return HttpServerResponse.uint8Array(data, {
       status: 200,
       contentType,
+      ...(contentType === "text/html" ? { headers: htmlResponseHeaders } : {}),
     });
   }),
 );

@@ -40,13 +40,16 @@ const environmentInput = {
   processArch: "arm64",
   appVersion: "1.2.3",
   appPath: "/repo",
+  executablePath: "/repo/T3 Code",
   isPackaged: false,
   resourcesPath: "/repo/resources",
   runningUnderArm64Translation: false,
+  localInstallMetadata: Option.none(),
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
 function makeFakeBrowserWindow() {
   const webContentsListeners = new Map<string, (...args: readonly unknown[]) => void>();
+  const clearCache = vi.fn(() => Promise.resolve());
   const webContents = {
     copyImageAt: vi.fn(),
     getURL: vi.fn(() => "t3code-dev://app/"),
@@ -59,6 +62,9 @@ function makeFakeBrowserWindow() {
     reload: vi.fn(),
     replaceMisspelling: vi.fn(),
     send: vi.fn(),
+    session: {
+      clearCache,
+    },
     setWindowOpenHandler: vi.fn(),
   };
 
@@ -83,6 +89,7 @@ function makeFakeBrowserWindow() {
   return {
     window: window as unknown as Electron.BrowserWindow,
     loadURL: window.loadURL,
+    clearCache,
     openDevTools: webContents.openDevTools,
     reload: webContents.reload,
     send: webContents.send,
@@ -127,23 +134,26 @@ const electronThemeLayer = Layer.succeed(ElectronTheme.ElectronTheme, {
   onUpdated: () => Effect.void,
 } satisfies ElectronTheme.ElectronTheme["Service"]);
 
-const desktopEnvironmentLayer = DesktopEnvironment.layer(environmentInput).pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      NodeServices.layer,
-      DesktopConfig.layerTest({
-        T3CODE_PORT: "3773",
-        VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
-      }),
-    ),
-  ),
-);
+const makeDesktopEnvironmentLayer = (
+  env: Readonly<Record<string, string | undefined>> = {
+    T3CODE_PORT: "3773",
+    VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
+  },
+) =>
+  DesktopEnvironment.layer(environmentInput).pipe(
+    Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest(env))),
+  );
+
+const desktopEnvironmentLayer = makeDesktopEnvironmentLayer();
+
+const productionDesktopEnvironmentLayer = makeDesktopEnvironmentLayer({});
 
 function makeTestLayer(input: {
   readonly window: Electron.BrowserWindow;
   readonly createCount: Ref.Ref<number>;
   readonly mainWindow: Ref.Ref<Option.Option<Electron.BrowserWindow>>;
   readonly createdWindowOptions?: Electron.BrowserWindowConstructorOptions[];
+  readonly desktopEnvironmentLayer?: ReturnType<typeof makeDesktopEnvironmentLayer>;
   readonly openedExternalUrls?: unknown[];
 }) {
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
@@ -169,7 +179,7 @@ function makeTestLayer(input: {
     Layer.provide(
       Layer.mergeAll(
         desktopAssetsLayer,
-        desktopEnvironmentLayer,
+        input.desktopEnvironmentLayer ?? desktopEnvironmentLayer,
         desktopServerExposureLayer,
         DesktopState.layer,
         electronMenuLayer,
@@ -179,6 +189,7 @@ function makeTestLayer(input: {
               input.openedExternalUrls?.push(url);
               return true;
             }),
+          revealPath: () => Effect.succeed(true),
           copyText: () => Effect.void,
         } satisfies ElectronShell.ElectronShell["Service"]),
         electronThemeLayer,
@@ -374,6 +385,32 @@ describe("DesktopWindow", () => {
         yield* TestClock.adjust(250);
         assert.equal(fakeWindow.loadURL.mock.calls.length, 2);
         assert.equal(fakeWindow.reload.mock.calls.length, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("clears production renderer HTTP cache before loading the main window", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        desktopEnvironmentLayer: productionDesktopEnvironmentLayer,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        assert.deepEqual(fakeWindow.clearCache.mock.calls, [[]]);
+        assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["t3code://app/"]);
+        assert.isBelow(
+          fakeWindow.clearCache.mock.invocationCallOrder[0] ?? 0,
+          fakeWindow.loadURL.mock.invocationCallOrder[0] ?? 0,
+        );
       }).pipe(Effect.provide(layer));
     }),
   );
