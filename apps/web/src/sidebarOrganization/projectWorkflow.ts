@@ -29,6 +29,7 @@ export function buildSidebarProjectContextMenuItems<T extends string>(input: {
   moveToCategoryItem: ContextMenuItem<T>;
   newCategoryItem: ContextMenuItem<T>;
   copyPathItem: ContextMenuItem<T>;
+  revealPathItem: ContextMenuItem<T>;
   removeItem: ContextMenuItem<T>;
 }): readonly ContextMenuItem<T>[] {
   return [
@@ -37,6 +38,7 @@ export function buildSidebarProjectContextMenuItems<T extends string>(input: {
     input.moveToCategoryItem,
     input.newCategoryItem,
     input.copyPathItem,
+    input.revealPathItem,
     input.removeItem,
   ];
 }

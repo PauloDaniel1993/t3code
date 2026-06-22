@@ -17,6 +17,7 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
+import { DEFAULT_TERMINAL_FONT_FAMILY } from "@t3tools/contracts/settings";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
@@ -65,6 +66,7 @@ import { previewEnvironment } from "../state/preview";
 import { terminalEnvironment } from "../state/terminal";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useClientSettings } from "../hooks/useSettings";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -99,6 +101,11 @@ function fitTerminalSafely(fitAddon: FitAddon): boolean {
   } catch {
     return false;
   }
+}
+
+function resolveTerminalFontFamily(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_TERMINAL_FONT_FAMILY;
 }
 
 function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefined): string {
@@ -310,6 +317,9 @@ export function TerminalViewport({
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const terminalFontFamily = resolveTerminalFontFamily(
+    useClientSettings((settings) => settings.terminalFontFamily),
+  );
   const environmentId = threadRef.environmentId;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
@@ -390,8 +400,7 @@ export function TerminalViewport({
       lineHeight: 1,
       fontSize: 12,
       scrollback: 5_000,
-      fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: terminalFontFamily,
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);
@@ -706,6 +715,24 @@ export function TerminalViewport({
     // it is only read at mount time and must not trigger terminal teardown/recreation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cwd, environmentId, runtimeEnvKey, terminalId, threadId, worktreePath]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal) return;
+
+    terminal.options.fontFamily = terminalFontFamily;
+    const frame = window.requestAnimationFrame(() => {
+      if (fitAddon) {
+        fitTerminalSafely(fitAddon);
+      }
+      terminal.refresh(0, terminal.rows - 1);
+      void resizeTerminal(terminal.cols, terminal.rows);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [resizeTerminal, terminalFontFamily]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

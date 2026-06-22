@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 
 import * as DesktopAssets from "./DesktopAssets.ts";
@@ -16,9 +17,11 @@ const environmentLayer = DesktopEnvironment.layer({
   processArch: "arm64",
   appVersion: "1.2.3",
   appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  executablePath: "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
   isPackaged: true,
   resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
   runningUnderArm64Translation: false,
+  localInstallMetadata: Option.none(),
 }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({}))));
 
 describe("DesktopAssets", () => {

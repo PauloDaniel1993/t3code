@@ -14,6 +14,7 @@ import {
   createStagePatchedDependencies,
   createBuildConfig,
   DESKTOP_ASAR_UNPACK,
+  hasT3ConnectPublicBuildConfig,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   InvalidMockUpdateServerPortError,
@@ -28,6 +29,8 @@ import {
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
+  resolveDesktopAppId,
+  resolveDesktopPackageName,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
   resolveGitHubPublishConfig,
@@ -86,6 +89,29 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+    assert.equal(resolveDesktopProductName("0.0.17", true), "T3 Code (alpha.local)");
+    assert.equal(resolveDesktopAppId(true), "com.t3tools.t3code.alpha.local");
+    assert.equal(resolveDesktopPackageName(true), "t3code-alpha-local");
+  });
+
+  it("detects complete T3 Connect public build configuration", () => {
+    assert.equal(hasT3ConnectPublicBuildConfig({}), false);
+    assert.equal(
+      hasT3ConnectPublicBuildConfig({
+        VITE_CLERK_PUBLISHABLE_KEY: "pk_test_example",
+        VITE_CLERK_JWT_TEMPLATE: "t3-relay",
+        VITE_T3CODE_RELAY_URL: "https://relay.example.test",
+      }),
+      true,
+    );
+    assert.equal(
+      hasT3ConnectPublicBuildConfig({
+        VITE_CLERK_PUBLISHABLE_KEY: "pk_test_example",
+        VITE_CLERK_JWT_TEMPLATE: " ",
+        VITE_T3CODE_RELAY_URL: "https://relay.example.test",
+      }),
+      false,
+    );
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -458,10 +484,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("adds passkey entitlements and both renderer protocols to signed macOS builds", () =>
     Effect.gen(function* () {
-      const config = yield* createBuildConfig("mac", "dmg", "1.2.3", true, false, undefined, {
-        entitlementsPath: "/tmp/entitlements.mac.plist",
-        provisioningProfilePath: "/tmp/t3code.provisionprofile",
-      });
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        true,
+        false,
+        undefined,
+        false,
+        {
+          entitlementsPath: "/tmp/entitlements.mac.plist",
+          provisioningProfilePath: "/tmp/t3code.provisionprofile",
+        },
+      );
 
       const mac = config.mac as Record<string, unknown>;
       assert.equal(config.appId, "com.t3tools.t3code");
@@ -482,6 +517,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         false,
         false,
         undefined,
+        false,
         undefined,
       );
 
@@ -489,6 +525,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(win.icon, "icon.ico");
       assert.equal(win.signAndEditExecutable, true);
       assert.notProperty(win, "azureSignOptions");
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("uses a separate local desktop build identity", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "win",
+        "dir",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        true,
+        undefined,
+      );
+
+      assert.equal(config.appId, "com.t3tools.t3code.alpha.local");
+      assert.equal(config.productName, "T3 Code (alpha.local)");
+      assert.equal(config.executableName, "T3 Code (alpha.local)");
+      assert.equal(config.artifactName, "T3-Code-alpha-local-${version}-${arch}.${ext}");
+      assert.equal((config.win as Record<string, unknown>).signAndEditExecutable, true);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
@@ -593,6 +650,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         buildVersion: Option.none(),
         outputDir: Option.none(),
         skipBuild: Option.none(),
+        localIdentity: Option.none(),
         keepStage: Option.none(),
         signed: Option.none(),
         verbose: Option.none(),
@@ -619,6 +677,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.platform, "win");
       assert.equal(resolved.target, "nsis");
       assert.equal(resolved.arch, "arm64");
+      assert.equal(resolved.localIdentity, false);
     }),
   );
 
@@ -631,6 +690,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         buildVersion: Option.none(),
         outputDir: Option.some("release-test"),
         skipBuild: Option.some(false),
+        localIdentity: Option.some(false),
         keepStage: Option.some(false),
         signed: Option.some(false),
         verbose: Option.some(false),
@@ -654,6 +714,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       );
 
       assert.equal(resolved.skipBuild, false);
+      assert.equal(resolved.localIdentity, false);
       assert.equal(resolved.keepStage, false);
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);

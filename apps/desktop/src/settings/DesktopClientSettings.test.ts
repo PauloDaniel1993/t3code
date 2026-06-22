@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   ClientSettingsSchema,
   DEFAULT_SIDEBAR_ORGANIZATION,
+  DEFAULT_TERMINAL_FONT_FAMILY,
   type ClientSettings,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -34,6 +35,7 @@ const clientSettings: ClientSettings = {
   sidebarThreadPreviewCount: 6,
   timestampFormat: "24-hour",
   wordWrap: true,
+  terminalFontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
 };
 
 const decodeClientSettingsJson = Schema.decodeEffect(Schema.fromJsonString(ClientSettingsSchema));
@@ -48,9 +50,11 @@ function makeLayer(baseDir: string) {
     processArch: "x64",
     appVersion: "1.2.3",
     appPath: "/repo",
+    executablePath: "/repo/T3 Code",
     isPackaged: true,
     resourcesPath: "/missing/resources",
     runningUnderArm64Translation: false,
+    localInstallMetadata: Option.none(),
   }).pipe(
     Layer.provide(
       Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ T3CODE_HOME: baseDir })),

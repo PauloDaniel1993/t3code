@@ -4,6 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as DesktopConfig from "./DesktopConfig.ts";
@@ -44,9 +45,11 @@ const environmentInput = (baseDir: string) =>
     processArch: "arm64",
     appVersion: "1.2.3",
     appPath: "/repo",
+    executablePath: "/repo/T3 Code",
     isPackaged: false,
     resourcesPath: "/repo/resources",
     runningUnderArm64Translation: false,
+    localInstallMetadata: Option.none(),
   }) satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
 const makeEnvironmentLayer = (baseDir: string) =>

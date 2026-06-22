@@ -13,7 +13,7 @@ import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { selectProjectGroupingSettings } from "../../logicalProject";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { useUiStateStore } from "../../uiStateStore";
-import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { useClientSettings, useUpdateClientSettings } from "../../hooks/useSettings";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -173,9 +173,9 @@ function HiddenSidebarCategoryRow({
 }
 
 export function SidebarSettingsPanel() {
-  const updateSettings = useUpdateSettings();
-  const sidebarOrganization = useSettings(selectSidebarOrganization);
-  const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
+  const updateSettings = useUpdateClientSettings();
+  const sidebarOrganization = useClientSettings(selectSidebarOrganization);
+  const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const categoryExpandedById = useUiStateStore((state) => state.categoryExpandedById);
   const resetSidebarOrganizationUiState = useUiStateStore(
     (state) => state.resetSidebarOrganizationUiState,
