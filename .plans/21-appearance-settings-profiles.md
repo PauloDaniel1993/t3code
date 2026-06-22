@@ -16,6 +16,10 @@ Add a dedicated Appearance settings area where users can manage named visual pro
 - Provider accent colors remain provider identity markers and are not affected by app accent color.
 - Global restore defaults resets the active profile to `Default` but does not delete custom profiles.
 
+## Interim Notes
+
+- 2026-06-20: Added a client-local `terminalFontFamily` setting before the full Appearance profile implementation so xterm sessions can use Powerline/Nerd Font stacks. The field trims values, defaults empty values to a Nerd Font-aware stack, and allows CSS font-family lists up to 1024 characters. When Appearance profiles land, migrate this value into the active profile's terminal/mono font field while keeping legacy settings decode backward-compatible.
+
 ## Non-Goals
 
 - No full arbitrary palette editor in v1.
@@ -365,4 +369,3 @@ Integrate appearance into reset flows without destroying user-created work.
 8. Preview panel.
 9. Restore defaults integration.
 10. Browser tests and final verification.
-

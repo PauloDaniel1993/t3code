@@ -77,7 +77,7 @@ import { isElectron } from "../env";
 import { APP_STAGE_LABEL } from "../branding";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { isTerminalFocused } from "../lib/terminalFocus";
-import { cn, isMacPlatform } from "../lib/utils";
+import { cn, isMacPlatform, isWindowsPlatform } from "../lib/utils";
 import {
   readThreadShell,
   useProject,
@@ -244,8 +244,13 @@ import {
   resolveSidebarProjectCategoryValue,
 } from "../sidebarOrganization/projectWorkflow";
 import {
+  createSidebarCategory,
   createSidebarCategoryId,
+  deleteSidebarCategory,
+  renameSidebarCategory,
   UNCATEGORIZED_CATEGORY_ID,
+  UNCATEGORIZED_CATEGORY_NAME,
+  validateSidebarCategoryName,
 } from "../sidebarOrganization/categories";
 import {
   describeRepositoryGroupingMode,
@@ -293,6 +298,16 @@ function formatProjectMemberActionLabel(
   return member.environmentLabel
     ? `${member.environmentLabel} — ${member.workspaceRoot}`
     : member.workspaceRoot;
+}
+
+function getRevealProjectPathLabel(platform: string): string {
+  if (isMacPlatform(platform)) {
+    return "Reveal in Finder";
+  }
+  if (isWindowsPlatform(platform)) {
+    return "Show in Explorer";
+  }
+  return "Show in Files";
 }
 
 function projectExpansionPreferenceKeys(project: SidebarProjectSnapshot): string[] {
@@ -1679,7 +1694,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           openNewProjectCategoryDialog();
         });
         const makeLeaf = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "rename" | "grouping" | "copy-path" | "reveal-path" | "delete",
           member: SidebarProjectGroupMember,
           options?: {
             destructive?: boolean;
@@ -1698,6 +1713,21 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               case "copy-path":
                 copyPathToClipboard(member.workspaceRoot, { path: member.workspaceRoot });
                 return;
+              case "reveal-path":
+                return api.shell.revealPath(member.workspaceRoot).catch((error: unknown) => {
+                  console.error("Failed to reveal project path", {
+                    path: member.workspaceRoot,
+                    error,
+                  });
+                  toastManager.add(
+                    stackedThreadToast({
+                      type: "error",
+                      title: "Failed to show project in file manager",
+                      description:
+                        error instanceof Error ? error.message : "Unable to reveal project path.",
+                    }),
+                  );
+                });
               case "delete":
                 return handleRemoveProject(member);
             }
@@ -1712,7 +1742,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         };
 
         const buildTargetedItem = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "rename" | "grouping" | "copy-path" | "reveal-path" | "delete",
           label: string,
           options?: {
             destructive?: boolean;
@@ -1757,6 +1787,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               label: NEW_CATEGORY_LABEL,
             },
             copyPathItem: buildTargetedItem("copy-path", "Copy Path"),
+            revealPathItem: buildTargetedItem(
+              "reveal-path",
+              getRevealProjectPathLabel(navigator.platform),
+            ),
             removeItem: buildTargetedItem("delete", "Remove", {
               destructive: true,
             }),
@@ -3046,6 +3080,7 @@ interface SidebarProjectsContentProps {
   categoryExpandedById: Readonly<Record<string, boolean>>;
   setCategoryExpanded: (categoryId: string, expanded: boolean) => void;
   onHideCategory: (categoryId: string) => void;
+  categoryStatusById: ReadonlyMap<string, ThreadStatusPill | null>;
   categoryGroups: readonly SidebarCategoryGroup[];
   expandedThreadListsByProject: ReadonlySet<string>;
   activeRouteProjectKey: string | null;
@@ -3069,6 +3104,8 @@ interface SidebarCategoryGroupSectionProps {
   categoryExpandedById: Readonly<Record<string, boolean>>;
   setCategoryExpanded: (categoryId: string, expanded: boolean) => void;
   onHideCategory: (categoryId: string) => void;
+  categoryStatus: ThreadStatusPill | null;
+  onCategoryContextMenu: (group: SidebarCategoryGroup, position: { x: number; y: number }) => void;
   attachProjectListAutoAnimateRef: (node: HTMLElement | null) => void;
   renderProject: (
     project: SidebarProjectSnapshot,
@@ -3085,6 +3122,8 @@ const SidebarCategoryGroupSection = memo(function SidebarCategoryGroupSection(
     categoryExpandedById,
     setCategoryExpanded,
     onHideCategory,
+    categoryStatus,
+    onCategoryContextMenu,
     attachProjectListAutoAnimateRef,
     renderProject,
   } = props;
@@ -3096,6 +3135,16 @@ const SidebarCategoryGroupSection = memo(function SidebarCategoryGroupSection(
   const handleToggleCategory = useCallback(() => {
     setCategoryExpanded(group.categoryId, !isExpanded);
   }, [group.categoryId, isExpanded, setCategoryExpanded]);
+  const handleCategoryContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      onCategoryContextMenu(group, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+    },
+    [group, onCategoryContextMenu],
+  );
   const handleHideCategoryPointerDown = useCallback(
     (event: React.PointerEvent<HTMLButtonElement>) => {
       event.stopPropagation();
@@ -3138,10 +3187,30 @@ const SidebarCategoryGroupSection = memo(function SidebarCategoryGroupSection(
             group.isTemporarilyRevealed && "text-foreground/85",
           )}
           onClick={handleToggleCategory}
+          onContextMenu={handleCategoryContextMenu}
         >
           <ChevronRightIcon
             className={cn("size-3 shrink-0 transition-transform", isExpanded && "rotate-90")}
           />
+          {categoryStatus ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label={categoryStatus.label}
+                    className={`inline-flex size-3 shrink-0 items-center justify-center ${categoryStatus.colorClass}`}
+                  >
+                    <span
+                      className={`size-1.5 rounded-full ${categoryStatus.dotClass} ${
+                        categoryStatus.pulse ? "animate-pulse" : ""
+                      }`}
+                    />
+                  </span>
+                }
+              />
+              <TooltipPopup side="top">{categoryStatus.label}</TooltipPopup>
+            </Tooltip>
+          ) : null}
           <span className="truncate">{group.name}</span>
           {categoryBadge}
         </SidebarMenuButton>
@@ -3229,6 +3298,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     categoryExpandedById,
     setCategoryExpanded,
     onHideCategory,
+    categoryStatusById,
     categoryGroups,
     expandedThreadListsByProject,
     activeRouteProjectKey,
@@ -3269,6 +3339,171 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
       updateSettings({ sidebarThreadPreviewCount: count });
     },
     [updateSettings],
+  );
+  const sidebarOrganization = useClientSettings(selectSidebarOrganization);
+  const [categoryRenameTargetId, setCategoryRenameTargetId] = useState<string | null>(null);
+  const [categoryRenameName, setCategoryRenameName] = useState("");
+  const [categoryRenameError, setCategoryRenameError] = useState<string | null>(null);
+  const [isCategoryCreateDialogOpen, setIsCategoryCreateDialogOpen] = useState(false);
+  const [categoryCreateName, setCategoryCreateName] = useState("");
+  const [categoryCreateError, setCategoryCreateError] = useState<string | null>(null);
+
+  const closeCategoryRenameDialog = useCallback(() => {
+    setCategoryRenameTargetId(null);
+    setCategoryRenameName("");
+    setCategoryRenameError(null);
+  }, []);
+  const openCategoryRenameDialog = useCallback((group: SidebarCategoryGroup) => {
+    if (group.isUncategorized) {
+      return;
+    }
+    setCategoryRenameTargetId(group.categoryId);
+    setCategoryRenameName(group.name);
+    setCategoryRenameError(null);
+  }, []);
+  const saveCategoryRename = useCallback(() => {
+    if (!categoryRenameTargetId) {
+      return;
+    }
+
+    const validation = validateSidebarCategoryName({
+      sidebarOrganization,
+      name: categoryRenameName,
+      excludeCategoryId: categoryRenameTargetId,
+    });
+    if (!validation.isValid) {
+      setCategoryRenameError(validation.error);
+      return;
+    }
+
+    updateSettings(
+      createSidebarOrganizationPatch(
+        renameSidebarCategory(sidebarOrganization, {
+          categoryId: categoryRenameTargetId,
+          name: validation.normalizedName,
+        }),
+      ),
+    );
+    closeCategoryRenameDialog();
+  }, [
+    categoryRenameName,
+    categoryRenameTargetId,
+    closeCategoryRenameDialog,
+    sidebarOrganization,
+    updateSettings,
+  ]);
+  const closeCategoryCreateDialog = useCallback(() => {
+    setIsCategoryCreateDialogOpen(false);
+    setCategoryCreateName("");
+    setCategoryCreateError(null);
+  }, []);
+  const openCategoryCreateDialog = useCallback(() => {
+    setCategoryCreateName("");
+    setCategoryCreateError(null);
+    setIsCategoryCreateDialogOpen(true);
+  }, []);
+  const saveCategoryCreate = useCallback(() => {
+    const validation = validateSidebarCategoryName({
+      sidebarOrganization,
+      name: categoryCreateName,
+    });
+    if (!validation.isValid) {
+      setCategoryCreateError(validation.error);
+      return;
+    }
+
+    updateSettings(
+      createSidebarOrganizationPatch(
+        createSidebarCategory(sidebarOrganization, {
+          id: createSidebarCategoryId(),
+          name: validation.normalizedName,
+        }),
+      ),
+    );
+    closeCategoryCreateDialog();
+  }, [categoryCreateName, closeCategoryCreateDialog, sidebarOrganization, updateSettings]);
+  const handleRemoveCategory = useCallback(
+    async (group: SidebarCategoryGroup) => {
+      if (group.isUncategorized) {
+        return;
+      }
+
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+
+      const confirmed = await api.dialogs.confirm(
+        `Remove the "${group.name}" category? Assigned projects will move to ${UNCATEGORIZED_CATEGORY_NAME}.`,
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      updateSettings(
+        createSidebarOrganizationPatch(
+          deleteSidebarCategory(sidebarOrganization, group.categoryId),
+        ),
+      );
+    },
+    [sidebarOrganization, updateSettings],
+  );
+  const handleCategoryContextMenu = useCallback(
+    (group: SidebarCategoryGroup, position: { x: number; y: number }) => {
+      void (async () => {
+        const api = readLocalApi();
+        if (!api) return;
+
+        const items: ContextMenuItem<string>[] = [];
+        const actionHandlers = new Map<string, () => Promise<void> | void>();
+
+        if (!group.isUncategorized) {
+          items.push({
+            id: "rename-category",
+            label: "Rename category",
+            icon: "pencil",
+          });
+          actionHandlers.set("rename-category", () => openCategoryRenameDialog(group));
+        }
+
+        items.push({
+          id: "new-category",
+          label: NEW_CATEGORY_LABEL,
+          icon: "folder-tree",
+        });
+        actionHandlers.set("new-category", openCategoryCreateDialog);
+
+        const canHideCategory = canHideSidebarCategoryHeader({
+          categoryId: group.categoryId,
+          archivedAt: group.archivedAt,
+        });
+        if (canHideCategory) {
+          items.push({
+            id: "hide-category",
+            label: "Hide category",
+          });
+          actionHandlers.set("hide-category", () => onHideCategory(group.categoryId));
+        }
+
+        if (!group.isUncategorized) {
+          items.push({
+            id: "remove-category",
+            label: "Remove category",
+            destructive: true,
+            icon: "trash",
+          });
+          actionHandlers.set("remove-category", () => handleRemoveCategory(group));
+        }
+
+        const clicked = await api.contextMenu.show(items, position);
+        if (!clicked) {
+          return;
+        }
+
+        await actionHandlers.get(clicked)?.();
+      })();
+    },
+    [handleRemoveCategory, onHideCategory, openCategoryCreateDialog, openCategoryRenameDialog],
   );
 
   const renderProject = useCallback(
@@ -3313,99 +3548,118 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
   );
 
   return (
-    <SidebarContent className="gap-0">
-      <SidebarGroup className="px-2 pt-2 pb-1">
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <CommandDialogTrigger
-              render={
-                <SidebarMenuButton
-                  size="sm"
-                  className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
-                  data-testid="command-palette-trigger"
-                />
-              }
-            >
-              <SearchIcon className="size-3.5 text-muted-foreground/70" />
-              <span className="flex-1 truncate text-left text-xs">Search</span>
-              {commandPaletteShortcutLabel ? (
-                <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
-                  {commandPaletteShortcutLabel}
-                </Kbd>
-              ) : null}
-            </CommandDialogTrigger>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarGroup>
-      {showArm64IntelBuildWarning && arm64IntelBuildWarningDescription ? (
-        <SidebarGroup className="px-2 pt-2 pb-0">
-          <Alert variant="warning" className="rounded-2xl border-warning/40 bg-warning/8">
-            <TriangleAlertIcon />
-            <AlertTitle>Intel build on Apple Silicon</AlertTitle>
-            <AlertDescription>{arm64IntelBuildWarningDescription}</AlertDescription>
-            {desktopUpdateButtonAction !== "none" ? (
-              <AlertAction>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={desktopUpdateButtonDisabled}
-                  onClick={handleDesktopUpdateButtonClick}
-                >
-                  {desktopUpdateButtonAction === "download"
-                    ? "Download ARM build"
-                    : "Install ARM build"}
-                </Button>
-              </AlertAction>
-            ) : null}
-          </Alert>
-        </SidebarGroup>
-      ) : null}
-      <LocalSecondaryStatus />
-      <SidebarGroup className="px-2 py-2">
-        <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
-          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-            Projects
-          </span>
-          <div className="flex items-center gap-1">
-            <ProjectSortMenu
-              projectSortOrder={projectSortOrder}
-              threadSortOrder={threadSortOrder}
-              projectGroupingMode={projectGroupingMode}
-              threadPreviewCount={threadPreviewCount}
-              onProjectSortOrderChange={handleProjectSortOrderChange}
-              onThreadSortOrderChange={handleThreadSortOrderChange}
-              onProjectGroupingModeChange={handleProjectGroupingModeChange}
-              onThreadPreviewCountChange={handleThreadPreviewCountChange}
-            />
-            <Tooltip>
-              <TooltipTrigger
+    <>
+      <SidebarContent className="gap-0">
+        <SidebarGroup className="px-2 pt-2 pb-1">
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <CommandDialogTrigger
                 render={
-                  <button
-                    type="button"
-                    aria-label="Add project"
-                    data-testid="sidebar-add-project-trigger"
-                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                    onClick={openAddProject}
+                  <SidebarMenuButton
+                    size="sm"
+                    className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
+                    data-testid="command-palette-trigger"
                   />
                 }
               >
-                <FolderPlusIcon className="size-3.5" />
-              </TooltipTrigger>
-              <TooltipPopup side="right">Add project</TooltipPopup>
-            </Tooltip>
+                <SearchIcon className="size-3.5 text-muted-foreground/70" />
+                <span className="flex-1 truncate text-left text-xs">Search</span>
+                {commandPaletteShortcutLabel ? (
+                  <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
+                    {commandPaletteShortcutLabel}
+                  </Kbd>
+                ) : null}
+              </CommandDialogTrigger>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+        {showArm64IntelBuildWarning && arm64IntelBuildWarningDescription ? (
+          <SidebarGroup className="px-2 pt-2 pb-0">
+            <Alert variant="warning" className="rounded-2xl border-warning/40 bg-warning/8">
+              <TriangleAlertIcon />
+              <AlertTitle>Intel build on Apple Silicon</AlertTitle>
+              <AlertDescription>{arm64IntelBuildWarningDescription}</AlertDescription>
+              {desktopUpdateButtonAction !== "none" ? (
+                <AlertAction>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={desktopUpdateButtonDisabled}
+                    onClick={handleDesktopUpdateButtonClick}
+                  >
+                    {desktopUpdateButtonAction === "download"
+                      ? "Download ARM build"
+                      : "Install ARM build"}
+                  </Button>
+                </AlertAction>
+              ) : null}
+            </Alert>
+          </SidebarGroup>
+        ) : null}
+        <LocalSecondaryStatus />
+        <SidebarGroup className="px-2 py-2">
+          <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+              Projects
+            </span>
+            <div className="flex items-center gap-1">
+              <ProjectSortMenu
+                projectSortOrder={projectSortOrder}
+                threadSortOrder={threadSortOrder}
+                projectGroupingMode={projectGroupingMode}
+                threadPreviewCount={threadPreviewCount}
+                onProjectSortOrderChange={handleProjectSortOrderChange}
+                onThreadSortOrderChange={handleThreadSortOrderChange}
+                onProjectGroupingModeChange={handleProjectGroupingModeChange}
+                onThreadPreviewCountChange={handleThreadPreviewCountChange}
+              />
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label="Add project"
+                      data-testid="sidebar-add-project-trigger"
+                      className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                      onClick={openAddProject}
+                    />
+                  }
+                >
+                  <FolderPlusIcon className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipPopup side="right">Add project</TooltipPopup>
+              </Tooltip>
+            </div>
           </div>
-        </div>
 
-        {isManualProjectSorting ? (
-          <DndContext
-            sensors={projectDnDSensors}
-            collisionDetection={projectCollisionDetection}
-            modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
-            onDragStart={handleProjectDragStart}
-            onDragEnd={handleProjectDragEnd}
-            onDragCancel={handleProjectDragCancel}
-          >
-            <SidebarMenu>
+          {isManualProjectSorting ? (
+            <DndContext
+              sensors={projectDnDSensors}
+              collisionDetection={projectCollisionDetection}
+              modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+              onDragStart={handleProjectDragStart}
+              onDragEnd={handleProjectDragEnd}
+              onDragCancel={handleProjectDragCancel}
+            >
+              <SidebarMenu>
+                {categoryGroups.map((group) => (
+                  <SidebarCategoryGroupSection
+                    key={group.categoryId}
+                    group={group}
+                    isManualProjectSorting={isManualProjectSorting}
+                    categoryExpandedById={categoryExpandedById}
+                    setCategoryExpanded={setCategoryExpanded}
+                    onHideCategory={onHideCategory}
+                    categoryStatus={categoryStatusById.get(group.categoryId) ?? null}
+                    onCategoryContextMenu={handleCategoryContextMenu}
+                    attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
+                    renderProject={renderProject}
+                  />
+                ))}
+              </SidebarMenu>
+            </DndContext>
+          ) : (
+            <SidebarMenu ref={attachProjectListAutoAnimateRef}>
               {categoryGroups.map((group) => (
                 <SidebarCategoryGroupSection
                   key={group.categoryId}
@@ -3414,36 +3668,115 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                   categoryExpandedById={categoryExpandedById}
                   setCategoryExpanded={setCategoryExpanded}
                   onHideCategory={onHideCategory}
+                  categoryStatus={categoryStatusById.get(group.categoryId) ?? null}
+                  onCategoryContextMenu={handleCategoryContextMenu}
                   attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
                   renderProject={renderProject}
                 />
               ))}
             </SidebarMenu>
-          </DndContext>
-        ) : (
-          <SidebarMenu ref={attachProjectListAutoAnimateRef}>
-            {categoryGroups.map((group) => (
-              <SidebarCategoryGroupSection
-                key={group.categoryId}
-                group={group}
-                isManualProjectSorting={isManualProjectSorting}
-                categoryExpandedById={categoryExpandedById}
-                setCategoryExpanded={setCategoryExpanded}
-                onHideCategory={onHideCategory}
-                attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
-                renderProject={renderProject}
-              />
-            ))}
-          </SidebarMenu>
-        )}
+          )}
 
-        {projectsLength === 0 && (
-          <div className="px-2 pt-4 text-center text-xs text-muted-foreground/60">
-            No projects yet
-          </div>
-        )}
-      </SidebarGroup>
-    </SidebarContent>
+          {projectsLength === 0 && (
+            <div className="px-2 pt-4 text-center text-xs text-muted-foreground/60">
+              No projects yet
+            </div>
+          )}
+        </SidebarGroup>
+      </SidebarContent>
+
+      <Dialog
+        open={categoryRenameTargetId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeCategoryRenameDialog();
+          }
+        }}
+      >
+        <DialogPopup className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Rename category</DialogTitle>
+            <DialogDescription>Update this sidebar category name.</DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="space-y-4">
+            <div className="grid gap-1.5">
+              <span className="text-xs font-medium text-foreground">Category name</span>
+              <Input
+                aria-label="Sidebar category name"
+                value={categoryRenameName}
+                onChange={(event) => {
+                  setCategoryRenameName(event.target.value);
+                  if (categoryRenameError) {
+                    setCategoryRenameError(null);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    saveCategoryRename();
+                  }
+                }}
+              />
+              {categoryRenameError ? (
+                <p className="text-xs text-destructive">{categoryRenameError}</p>
+              ) : null}
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeCategoryRenameDialog}>
+              Cancel
+            </Button>
+            <Button onClick={saveCategoryRename}>Save</Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+
+      <Dialog
+        open={isCategoryCreateDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeCategoryCreateDialog();
+          }
+        }}
+      >
+        <DialogPopup className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{NEW_CATEGORY_LABEL.replace("...", "")}</DialogTitle>
+            <DialogDescription>Create a sidebar category.</DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="space-y-4">
+            <div className="grid gap-1.5">
+              <span className="text-xs font-medium text-foreground">Category name</span>
+              <Input
+                aria-label="Sidebar category name"
+                value={categoryCreateName}
+                onChange={(event) => {
+                  setCategoryCreateName(event.target.value);
+                  if (categoryCreateError) {
+                    setCategoryCreateError(null);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    saveCategoryCreate();
+                  }
+                }}
+              />
+              {categoryCreateError ? (
+                <p className="text-xs text-destructive">{categoryCreateError}</p>
+              ) : null}
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeCategoryCreateDialog}>
+              Cancel
+            </Button>
+            <Button onClick={saveCategoryCreate}>Create</Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+    </>
   );
 });
 
@@ -3453,6 +3786,7 @@ export default function Sidebar() {
   const categoryExpandedById = useUiStateStore((store) => store.categoryExpandedById);
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
+  const threadLastVisitedAtById = useUiStateStore((store) => store.threadLastVisitedAtById);
   const setCategoryExpanded = useUiStateStore((store) => store.setCategoryExpanded);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
   const navigate = useNavigate();
@@ -3771,6 +4105,29 @@ export default function Sidebar() {
       }),
     [activeRouteProjectKey, migratedSidebarOrganization, sortedProjects],
   );
+  const categoryStatusById = useMemo(() => {
+    const next = new Map<string, ThreadStatusPill | null>();
+
+    for (const group of categoryGroups) {
+      const statuses = group.projects.flatMap((project) =>
+        (threadsByProjectKey.get(project.projectKey) ?? [])
+          .filter((thread) => thread.archivedAt === null)
+          .map((thread) => {
+            const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+            const lastVisitedAt = threadLastVisitedAtById[threadKey] ?? null;
+            return resolveThreadStatusPill({
+              thread: {
+                ...thread,
+                ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+              },
+            });
+          }),
+      );
+      next.set(group.categoryId, resolveProjectStatusIndicator(statuses));
+    }
+
+    return next;
+  }, [categoryGroups, threadLastVisitedAtById, threadsByProjectKey]);
   const categoryIdByVisibleProjectKey = useMemo(
     () =>
       new Map(
@@ -4148,6 +4505,7 @@ export default function Sidebar() {
             categoryExpandedById={categoryExpandedById}
             setCategoryExpanded={setCategoryExpanded}
             onHideCategory={hideCategoryFromSidebar}
+            categoryStatusById={categoryStatusById}
             categoryGroups={categoryGroups}
             expandedThreadListsByProject={expandedThreadListsByProject}
             activeRouteProjectKey={activeRouteProjectKey}
