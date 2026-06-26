@@ -78,7 +78,11 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   }, [navigate]);
 
   return (
-    <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={macosWindowControlsStyle}>
+    <SidebarProvider
+      className="h-dvh! min-h-0! overflow-hidden!"
+      defaultOpen
+      style={macosWindowControlsStyle}
+    >
       <Sidebar
         side="left"
         collapsible="offcanvas"

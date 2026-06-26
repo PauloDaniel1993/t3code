@@ -34,6 +34,7 @@ import {
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { cn } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
+import { runWithDocumentScrollPreserved } from "~/lib/terminalFocus";
 import { useOpenInPreferredEditor } from "../editorPreferences";
 import {
   collectWrappedTerminalLinkLine,
@@ -489,7 +490,12 @@ export function TerminalViewport({
         }
         handleAddTerminalContext(nextAction.selection);
         terminalRef.current?.clearSelection();
-        terminalRef.current?.focus();
+        const terminalForFocus = terminalRef.current;
+        if (terminalForFocus) {
+          runWithDocumentScrollPreserved(() => {
+            terminalForFocus.focus();
+          });
+        }
       } finally {
         selectionActionOpenRef.current = false;
       }
@@ -787,7 +793,9 @@ export function TerminalViewport({
 
     if (previous.version === 0 && autoFocus) {
       window.requestAnimationFrame(() => {
-        terminal.focus();
+        runWithDocumentScrollPreserved(() => {
+          terminal.focus();
+        });
       });
     }
     previousSessionRef.current = current;
@@ -798,7 +806,9 @@ export function TerminalViewport({
     const terminal = terminalRef.current;
     if (!terminal) return;
     const frame = window.requestAnimationFrame(() => {
-      terminal.focus();
+      runWithDocumentScrollPreserved(() => {
+        terminal.focus();
+      });
     });
     return () => {
       window.cancelAnimationFrame(frame);
