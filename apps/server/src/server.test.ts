@@ -164,6 +164,7 @@ const makeDefaultOrchestrationReadModel = () => {
         updatedAt: now,
         archivedAt: null,
         latestTurn: null,
+        handoff: null,
         messages: [],
         session: null,
         activities: [],
@@ -179,6 +180,7 @@ const makeDefaultOrchestrationThreadShell = (
   overrides: Partial<OrchestrationThreadShell> = {},
 ): OrchestrationThreadShell => {
   const now = "2026-01-01T00:00:00.000Z";
+  const { handoff = null, ...restOverrides } = overrides;
   return {
     id: defaultThreadId,
     projectId: defaultProjectId,
@@ -197,7 +199,8 @@ const makeDefaultOrchestrationThreadShell = (
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    ...overrides,
+    ...restOverrides,
+    handoff,
   };
 };
 
@@ -5502,6 +5505,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             updatedAt: now,
             archivedAt: null,
             latestTurn: null,
+            handoff: null,
             messages: [],
             session: null,
             activities: [],

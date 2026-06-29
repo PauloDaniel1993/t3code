@@ -1,3 +1,4 @@
+// oxlint-disable t3code/no-manual-effect-runtime-in-tests
 import {
   CheckpointRef,
   CommandId,
@@ -7,6 +8,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationThread,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -143,6 +145,7 @@ describe("OrchestrationEngine", () => {
           branch: null,
           worktreePath: null,
           latestTurn: null,
+          handoff: null,
           createdAt: "2026-03-03T00:00:02.000Z",
           updatedAt: "2026-03-03T00:00:03.000Z",
           archivedAt: null,
@@ -228,6 +231,186 @@ describe("OrchestrationEngine", () => {
 
     expect(result.sequence).toBe(8);
     expect(fullSnapshotReadCount).toBe(0);
+
+    await runtime.dispose();
+  });
+
+  it("hydrates source thread messages for handoff from targeted thread detail", async () => {
+    let nextSequence = 8;
+    const appendedEvents: OrchestrationEvent[] = [];
+    const eventStore: OrchestrationEventStoreShape = {
+      append: (event) =>
+        Effect.sync(() => {
+          const savedEvent = {
+            ...event,
+            sequence: nextSequence,
+          } as OrchestrationEvent;
+          nextSequence += 1;
+          appendedEvents.push(savedEvent);
+          return savedEvent;
+        }),
+      readFromSequence: () => Stream.empty,
+      readAll: () =>
+        Stream.fail(
+          new PersistenceSqlError({
+            operation: "test.readAll",
+            detail: "historical replay should not be used during bootstrap",
+          }),
+        ),
+    };
+
+    const sourceThread: OrchestrationThread = {
+      id: ThreadId.make("thread-handoff-source"),
+      projectId: asProjectId("project-bootstrap"),
+      title: "Source Thread",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "full-access",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      handoff: null,
+      createdAt: "2026-03-03T00:00:02.000Z",
+      updatedAt: "2026-03-03T00:00:04.000Z",
+      archivedAt: null,
+      deletedAt: null,
+      messages: [
+        {
+          id: asMessageId("message-source-1"),
+          role: "user",
+          text: "Please continue this in Claude.",
+          turnId: null,
+          streaming: false,
+          source: "user",
+          createdAt: "2026-03-03T00:00:03.000Z",
+          updatedAt: "2026-03-03T00:00:03.000Z",
+        },
+      ],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+      session: null,
+    };
+    const projectionSnapshot = {
+      snapshotSequence: 7,
+      updatedAt: "2026-03-03T00:00:04.000Z",
+      projects: [
+        {
+          id: asProjectId("project-bootstrap"),
+          title: "Bootstrap Project",
+          workspaceRoot: "/tmp/project-bootstrap",
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          scripts: [],
+          createdAt: "2026-03-03T00:00:00.000Z",
+          updatedAt: "2026-03-03T00:00:01.000Z",
+          deletedAt: null,
+        },
+      ],
+      threads: [sourceThread],
+    };
+    const commandReadModel = {
+      ...projectionSnapshot,
+      threads: [
+        {
+          ...sourceThread,
+          messages: [],
+          proposedPlans: [],
+          activities: [],
+          checkpoints: [],
+        },
+      ],
+    };
+    let fullSnapshotReadCount = 0;
+    let threadDetailReadCount = 0;
+
+    const layer = OrchestrationEngineLive.pipe(
+      Layer.provide(
+        Layer.succeed(ProjectionSnapshotQuery, {
+          getCommandReadModel: () => Effect.succeed(commandReadModel),
+          getSnapshot: () =>
+            Effect.sync(() => {
+              fullSnapshotReadCount += 1;
+              return projectionSnapshot;
+            }),
+          getShellSnapshot: () =>
+            Effect.succeed({
+              snapshotSequence: projectionSnapshot.snapshotSequence,
+              projects: [],
+              threads: [],
+              updatedAt: projectionSnapshot.updatedAt,
+            }),
+          getArchivedShellSnapshot: () =>
+            Effect.succeed({
+              snapshotSequence: projectionSnapshot.snapshotSequence,
+              projects: [],
+              threads: [],
+              updatedAt: projectionSnapshot.updatedAt,
+            }),
+          getSnapshotSequence: () =>
+            Effect.succeed({ snapshotSequence: projectionSnapshot.snapshotSequence }),
+          getCounts: () => Effect.succeed({ projectCount: 1, threadCount: 1 }),
+          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+          getProjectShellById: () => Effect.succeed(Option.none()),
+          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+          getFullThreadDiffContext: () => Effect.succeed(Option.none()),
+          getThreadShellById: () => Effect.succeed(Option.none()),
+          getThreadDetailById: (threadId) =>
+            Effect.sync(() => {
+              threadDetailReadCount += 1;
+              return threadId === sourceThread.id ? Option.some(sourceThread) : Option.none();
+            }),
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(OrchestrationProjectionPipeline, {
+          bootstrap: Effect.void,
+          projectEvent: () => Effect.void,
+        } satisfies OrchestrationProjectionPipelineShape),
+      ),
+      Layer.provide(Layer.succeed(OrchestrationEventStore, eventStore)),
+      Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provide(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    const runtime = ManagedRuntime.make(layer);
+    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const result = await runtime.runPromise(
+      engine.dispatch({
+        type: "thread.handoff.create",
+        commandId: CommandId.make("cmd-handoff-to-opus"),
+        sourceThreadId: sourceThread.id,
+        targetThreadId: ThreadId.make("thread-handoff-target"),
+        targetModelSelection: {
+          instanceId: ProviderInstanceId.make("claude"),
+          model: "claude-opus-4.8",
+        },
+        createdAt: "2026-03-03T00:00:05.000Z",
+      }),
+    );
+
+    expect(result.sequence).toBe(10);
+    expect(fullSnapshotReadCount).toBe(0);
+    expect(threadDetailReadCount).toBe(1);
+    expect(appendedEvents.map((event) => event.type)).toEqual([
+      "thread.created",
+      "thread.message-sent",
+      "thread.activity-appended",
+    ]);
+    expect(appendedEvents[1]?.payload).toMatchObject({
+      threadId: "thread-handoff-target",
+      text: "Please continue this in Claude.",
+      source: "handoff-import",
+      sourceThreadId: sourceThread.id,
+      sourceMessageId: asMessageId("message-source-1"),
+    });
 
     await runtime.dispose();
   });

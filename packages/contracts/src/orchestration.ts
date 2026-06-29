@@ -224,16 +224,65 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
-export const OrchestrationMessage = Schema.Struct({
+export const OrchestrationMessageSource = Schema.Literals([
+  "user",
+  "provider",
+  "system",
+  "handoff-import",
+]);
+export type OrchestrationMessageSource = typeof OrchestrationMessageSource.Type;
+
+export const messageSourceFromRole = (
+  role: OrchestrationMessageRole,
+): OrchestrationMessageSource => {
+  if (role === "assistant") return "provider";
+  return role;
+};
+
+const OrchestrationMessageWire = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  source: Schema.optionalKey(OrchestrationMessageSource),
+  sourceThreadId: Schema.optionalKey(ThreadId),
+  sourceMessageId: Schema.optionalKey(MessageId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
+
+const OrchestrationMessageValue = Schema.Struct({
+  id: MessageId,
+  role: OrchestrationMessageRole,
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  turnId: Schema.NullOr(TurnId),
+  streaming: Schema.Boolean,
+  source: OrchestrationMessageSource,
+  sourceThreadId: Schema.optionalKey(ThreadId),
+  sourceMessageId: Schema.optionalKey(MessageId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const OrchestrationMessage = OrchestrationMessageWire.pipe(
+  Schema.decodeTo(
+    OrchestrationMessageValue,
+    SchemaTransformation.transform<
+      typeof OrchestrationMessageValue.Encoded,
+      typeof OrchestrationMessageWire.Type
+    >({
+      decode: (value) =>
+        ({
+          ...value,
+          source: value.source ?? messageSourceFromRole(value.role),
+        }) as typeof OrchestrationMessageValue.Encoded,
+      encode: (value) => value as typeof OrchestrationMessageWire.Type,
+    }),
+  ),
+);
 export type OrchestrationMessage = typeof OrchestrationMessage.Type;
 
 export const OrchestrationProposedPlanId = TrimmedNonEmptyString;
@@ -341,6 +390,39 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const ThreadHandoffBootstrapStatus = Schema.Literals(["pending", "completed", "skipped"]);
+export type ThreadHandoffBootstrapStatus = typeof ThreadHandoffBootstrapStatus.Type;
+
+export const HandoffCompressionSummary = Schema.Struct({
+  sourceMessageId: MessageId,
+  modelSelection: ModelSelection,
+  sourceTextHash: TrimmedNonEmptyString,
+  summary: Schema.String,
+  createdAt: IsoDateTime,
+});
+export type HandoffCompressionSummary = typeof HandoffCompressionSummary.Type;
+
+export const HandoffThreadMetadata = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  sourceThreadId: ThreadId,
+  sourceTitle: TrimmedNonEmptyString,
+  sourceProviderInstanceId: ProviderInstanceId,
+  targetProviderInstanceId: ProviderInstanceId,
+  importedMessageCount: NonNegativeInt,
+  visibleImportCapped: Schema.optionalKey(Schema.Boolean),
+  bootstrapStatus: ThreadHandoffBootstrapStatus,
+  bootstrapMessageId: Schema.NullOr(MessageId),
+  bootstrapCompletedAt: Schema.optionalKey(IsoDateTime),
+  bootstrapSkippedAt: Schema.optionalKey(IsoDateTime),
+  bootstrapSkipReason: Schema.optionalKey(TrimmedNonEmptyString),
+  compression: Schema.optionalKey(
+    Schema.Struct({
+      summaries: Schema.Array(HandoffCompressionSummary),
+    }),
+  ),
+});
+export type HandoffThreadMetadata = typeof HandoffThreadMetadata.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -353,6 +435,9 @@ export const OrchestrationThread = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
+  handoff: Schema.NullOr(HandoffThreadMetadata).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -399,6 +484,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
+  handoff: Schema.NullOr(HandoffThreadMetadata).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -550,6 +638,15 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadHandoffCreateCommand = Schema.Struct({
+  type: Schema.Literal("thread.handoff.create"),
+  commandId: CommandId,
+  sourceThreadId: ThreadId,
+  targetThreadId: ThreadId,
+  targetModelSelection: ModelSelection,
+  createdAt: IsoDateTime,
+});
+
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -668,6 +765,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
+  ThreadHandoffCreateCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
@@ -689,6 +787,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
+  ThreadHandoffCreateCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
@@ -763,6 +862,24 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadHandoffBootstrapCompleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.handoff.bootstrap.complete"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  bootstrapMessageId: MessageId,
+  providerTurnId: TrimmedNonEmptyString,
+  compressionSummaries: Schema.optionalKey(Schema.Array(HandoffCompressionSummary)),
+  completedAt: IsoDateTime,
+});
+
+export const ThreadHandoffBootstrapSkipCommand = Schema.Struct({
+  type: Schema.Literal("thread.handoff.bootstrap.skip"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  reason: TrimmedNonEmptyString,
+  skippedAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -771,6 +888,8 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
+  ThreadHandoffBootstrapCompleteCommand,
+  ThreadHandoffBootstrapSkipCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -803,6 +922,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.handoff-bootstrap-completed",
+  "thread.handoff-bootstrap-skipped",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -847,6 +968,9 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  handoff: Schema.NullOr(HandoffThreadMetadata).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -890,7 +1014,7 @@ export const ThreadInteractionModeSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
-export const ThreadMessageSentPayload = Schema.Struct({
+const ThreadMessageSentPayloadWire = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   role: OrchestrationMessageRole,
@@ -898,9 +1022,44 @@ export const ThreadMessageSentPayload = Schema.Struct({
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  source: Schema.optionalKey(OrchestrationMessageSource),
+  sourceThreadId: Schema.optionalKey(ThreadId),
+  sourceMessageId: Schema.optionalKey(MessageId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
+
+const ThreadMessageSentPayloadValue = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  turnId: Schema.NullOr(TurnId),
+  streaming: Schema.Boolean,
+  source: OrchestrationMessageSource,
+  sourceThreadId: Schema.optionalKey(ThreadId),
+  sourceMessageId: Schema.optionalKey(MessageId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMessageSentPayload = ThreadMessageSentPayloadWire.pipe(
+  Schema.decodeTo(
+    ThreadMessageSentPayloadValue,
+    SchemaTransformation.transform<
+      typeof ThreadMessageSentPayloadValue.Encoded,
+      typeof ThreadMessageSentPayloadWire.Type
+    >({
+      decode: (value) =>
+        ({
+          ...value,
+          source: value.source ?? messageSourceFromRole(value.role),
+        }) as typeof ThreadMessageSentPayloadValue.Encoded,
+      encode: (value) => value as typeof ThreadMessageSentPayloadWire.Type,
+    }),
+  ),
+);
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -975,6 +1134,20 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
 export const ThreadActivityAppendedPayload = Schema.Struct({
   threadId: ThreadId,
   activity: OrchestrationThreadActivity,
+});
+
+export const ThreadHandoffBootstrapCompletedPayload = Schema.Struct({
+  threadId: ThreadId,
+  bootstrapMessageId: MessageId,
+  providerTurnId: TrimmedNonEmptyString,
+  compressionSummaries: Schema.optionalKey(Schema.Array(HandoffCompressionSummary)),
+  completedAt: IsoDateTime,
+});
+
+export const ThreadHandoffBootstrapSkippedPayload = Schema.Struct({
+  threadId: ThreadId,
+  reason: TrimmedNonEmptyString,
+  skippedAt: IsoDateTime,
 });
 
 export const OrchestrationEventMetadata = Schema.Struct({
@@ -1108,6 +1281,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.handoff-bootstrap-completed"),
+    payload: ThreadHandoffBootstrapCompletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.handoff-bootstrap-skipped"),
+    payload: ThreadHandoffBootstrapSkippedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

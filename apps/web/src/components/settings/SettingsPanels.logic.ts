@@ -64,6 +64,9 @@ export function buildProviderInstanceUpdatePatch(input: {
   readonly textGenerationModelSelection?:
     | ServerSettings["textGenerationModelSelection"]
     | undefined;
+  readonly handoffCompressionModelSelection?:
+    | ServerSettings["handoffCompressionModelSelection"]
+    | undefined;
 }): Partial<UnifiedSettings> {
   type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
   const legacyProviderDefaults = DEFAULT_UNIFIED_SETTINGS.providers as Record<
@@ -86,6 +89,9 @@ export function buildProviderInstanceUpdatePatch(input: {
     },
     ...(input.textGenerationModelSelection !== undefined
       ? { textGenerationModelSelection: input.textGenerationModelSelection }
+      : {}),
+    ...(input.handoffCompressionModelSelection !== undefined
+      ? { handoffCompressionModelSelection: input.handoffCompressionModelSelection }
       : {}),
   };
 }
