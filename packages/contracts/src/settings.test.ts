@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
+import {
+  DEFAULT_DEEPSEEK_HANDOFF_COMPRESSION_MODEL,
+  DEFAULT_DEEPSEEK_MODEL,
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
+} from "./model.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind } from "./providerInstance.ts";
 import {
   ClientSettingsPatch,
   ClientSettingsSchema,
@@ -205,6 +212,83 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
         providerInstances: { "1bad": { driver: "codex" } },
       }),
     ).toThrow();
+  });
+});
+
+describe("ServerSettings.providers.deepseek", () => {
+  it("defaults DeepSeek to disabled with empty connection settings", () => {
+    const decoded = decodeServerSettings({});
+    const deepseek = decoded.providers.deepseek;
+
+    expect(deepseek.enabled).toBe(false);
+    expect(deepseek.baseUrl).toBe("");
+    expect(deepseek.contextLimit).toBe(128_000);
+    expect(deepseek.customModels).toEqual([]);
+  });
+
+  it("registers DeepSeek model defaults in provider model metadata", () => {
+    const deepseek = ProviderDriverKind.make("deepseek");
+
+    expect(DEFAULT_MODEL_BY_PROVIDER[deepseek]).toBe(DEFAULT_DEEPSEEK_MODEL);
+    expect(DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[deepseek]).toBe(
+      DEFAULT_DEEPSEEK_HANDOFF_COMPRESSION_MODEL,
+    );
+  });
+
+  it("accepts DeepSeek provider patches", () => {
+    const patch = decodeServerSettingsPatch({
+      providers: {
+        deepseek: {
+          enabled: true,
+          baseUrl: "  https://api.deepseek.example/v1  ",
+          contextLimit: 64_000,
+          customModels: ["deepseek-local"],
+        },
+      },
+    });
+
+    expect(patch.providers?.deepseek?.enabled).toBe(true);
+    expect(patch.providers?.deepseek?.baseUrl).toBe("https://api.deepseek.example/v1");
+    expect(patch.providers?.deepseek?.contextLimit).toBe(64_000);
+    expect(patch.providers?.deepseek?.customModels).toEqual(["deepseek-local"]);
+  });
+});
+
+describe("ServerSettings.handoffCompressionModelSelection", () => {
+  it("defaults handoff compression model selection to automatic", () => {
+    expect(decodeServerSettings({}).handoffCompressionModelSelection).toBeNull();
+  });
+
+  it("decodes explicit handoff compression model selection", () => {
+    const decoded = decodeServerSettings({
+      handoffCompressionModelSelection: {
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
+      },
+    });
+
+    expect(decoded.handoffCompressionModelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("deepseek"),
+      model: "deepseek-v4-flash",
+    });
+  });
+
+  it("accepts null and explicit handoff compression selection patches", () => {
+    expect(decodeServerSettingsPatch({ handoffCompressionModelSelection: null })).toEqual({
+      handoffCompressionModelSelection: null,
+    });
+
+    const explicit = decodeServerSettingsPatch({
+      handoffCompressionModelSelection: {
+        instanceId: "deepseek_work",
+        model: "  deepseek-v4-flash  ",
+      },
+    });
+
+    expect(explicit.handoffCompressionModelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("deepseek_work"),
+      model: "deepseek-v4-flash",
+    });
   });
 });
 

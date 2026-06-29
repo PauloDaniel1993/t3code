@@ -1,5 +1,6 @@
 import {
   ArchiveIcon,
+  ArchiveRestoreIcon,
   ArrowUpDownIcon,
   ChevronRightIcon,
   CloudIcon,
@@ -190,7 +191,9 @@ import {
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
   canHideSidebarCategoryHeader,
+  canUnhideSidebarCategoryHeader,
   resolveSidebarCategoryHeaderHide,
+  resolveSidebarCategoryHeaderUnhide,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarStageBadgeLabel,
@@ -247,6 +250,7 @@ import {
   createSidebarCategory,
   createSidebarCategoryId,
   deleteSidebarCategory,
+  getSidebarHiddenCategories,
   renameSidebarCategory,
   UNCATEGORIZED_CATEGORY_ID,
   UNCATEGORIZED_CATEGORY_NAME,
@@ -3341,12 +3345,23 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     [updateSettings],
   );
   const sidebarOrganization = useClientSettings(selectSidebarOrganization);
+  const hiddenCategories = useMemo(
+    () => getSidebarHiddenCategories(sidebarOrganization),
+    [sidebarOrganization],
+  );
   const [categoryRenameTargetId, setCategoryRenameTargetId] = useState<string | null>(null);
   const [categoryRenameName, setCategoryRenameName] = useState("");
   const [categoryRenameError, setCategoryRenameError] = useState<string | null>(null);
   const [isCategoryCreateDialogOpen, setIsCategoryCreateDialogOpen] = useState(false);
   const [categoryCreateName, setCategoryCreateName] = useState("");
   const [categoryCreateError, setCategoryCreateError] = useState<string | null>(null);
+  const [isHiddenCategoriesDialogOpen, setIsHiddenCategoriesDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (hiddenCategories.length === 0) {
+      setIsHiddenCategoriesDialogOpen(false);
+    }
+  }, [hiddenCategories.length]);
 
   const closeCategoryRenameDialog = useCallback(() => {
     setCategoryRenameTargetId(null);
@@ -3422,6 +3437,29 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     );
     closeCategoryCreateDialog();
   }, [categoryCreateName, closeCategoryCreateDialog, sidebarOrganization, updateSettings]);
+  const showHiddenCategoriesDialog = useCallback(() => {
+    if (hiddenCategories.length === 0) {
+      return;
+    }
+    setIsHiddenCategoriesDialogOpen(true);
+  }, [hiddenCategories.length]);
+  const closeHiddenCategoriesDialog = useCallback(() => {
+    setIsHiddenCategoriesDialogOpen(false);
+  }, []);
+  const unhideCategory = useCallback(
+    (categoryId: string, archivedAt: string | null) => {
+      const result = resolveSidebarCategoryHeaderUnhide({
+        sidebarOrganization,
+        categoryId,
+        archivedAt,
+      });
+      if (!result.shouldPersist) {
+        return;
+      }
+      updateSettings(createSidebarOrganizationPatch(result.sidebarOrganization));
+    },
+    [sidebarOrganization, updateSettings],
+  );
   const handleRemoveCategory = useCallback(
     async (group: SidebarCategoryGroup) => {
       if (group.isUncategorized) {
@@ -3477,12 +3515,25 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           categoryId: group.categoryId,
           archivedAt: group.archivedAt,
         });
+        const canUnhideCategory = canUnhideSidebarCategoryHeader({
+          categoryId: group.categoryId,
+          archivedAt: group.archivedAt,
+        });
         if (canHideCategory) {
           items.push({
             id: "hide-category",
             label: "Hide category",
           });
           actionHandlers.set("hide-category", () => onHideCategory(group.categoryId));
+        }
+        if (canUnhideCategory) {
+          items.push({
+            id: "show-category",
+            label: "Show category",
+          });
+          actionHandlers.set("show-category", () =>
+            unhideCategory(group.categoryId, group.archivedAt),
+          );
         }
 
         if (!group.isUncategorized) {
@@ -3503,7 +3554,13 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         await actionHandlers.get(clicked)?.();
       })();
     },
-    [handleRemoveCategory, onHideCategory, openCategoryCreateDialog, openCategoryRenameDialog],
+    [
+      handleRemoveCategory,
+      onHideCategory,
+      openCategoryCreateDialog,
+      openCategoryRenameDialog,
+      unhideCategory,
+    ],
   );
 
   const renderProject = useCallback(
@@ -3603,6 +3660,23 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               Projects
             </span>
             <div className="flex items-center gap-1">
+              {hiddenCategories.length > 0 ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label="Show hidden categories"
+                        className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                        onClick={showHiddenCategoriesDialog}
+                      />
+                    }
+                  >
+                    <ArchiveRestoreIcon className="size-3.5" />
+                  </TooltipTrigger>
+                  <TooltipPopup side="right">Show hidden categories</TooltipPopup>
+                </Tooltip>
+              ) : null}
               <ProjectSortMenu
                 projectSortOrder={projectSortOrder}
                 threadSortOrder={threadSortOrder}
@@ -3773,6 +3847,50 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               Cancel
             </Button>
             <Button onClick={saveCategoryCreate}>Create</Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+
+      <Dialog
+        open={isHiddenCategoriesDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeHiddenCategoriesDialog();
+          }
+        }}
+      >
+        <DialogPopup className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Hidden categories</DialogTitle>
+            <DialogDescription>Restore categories hidden from the sidebar.</DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="space-y-2">
+            {hiddenCategories.map((category) => (
+              <div
+                key={category.id}
+                className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-foreground">
+                    {category.name}
+                  </div>
+                  <div className="text-xs text-muted-foreground">Hidden</div>
+                </div>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => unhideCategory(category.id, category.archivedAt)}
+                >
+                  <ArchiveRestoreIcon className="size-3.5" />
+                  Show
+                </Button>
+              </div>
+            ))}
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeHiddenCategoriesDialog}>
+              Close
+            </Button>
           </DialogFooter>
         </DialogPopup>
       </Dialog>

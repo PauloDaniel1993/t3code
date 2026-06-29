@@ -6,6 +6,7 @@ import {
   type ArchiveThreadInput,
   type CreateThreadInput,
   type DeleteThreadInput,
+  type HandoffThreadInput,
   type InterruptThreadTurnInput,
   type RespondToThreadApprovalInput,
   type RespondToThreadUserInputInput,
@@ -19,6 +20,7 @@ import {
   archiveThread,
   createThread,
   deleteThread,
+  handoffThread,
   interruptThreadTurn,
   respondToThreadApproval,
   respondToThreadUserInput,
@@ -36,6 +38,7 @@ export type {
   ArchiveThreadInput,
   CreateThreadInput,
   DeleteThreadInput,
+  HandoffThreadInput,
   InterruptThreadTurnInput,
   RespondToThreadApprovalInput,
   RespondToThreadUserInputInput,
@@ -48,14 +51,37 @@ export type {
   UpdateThreadMetadataInput,
 } from "../operations/commands.ts";
 
+export function threadCommandConcurrencyKey({
+  environmentId,
+  input,
+}: {
+  readonly environmentId: string;
+  readonly input: { readonly threadId: string };
+}): string {
+  return JSON.stringify([environmentId, input.threadId]);
+}
+
+export function handoffThreadConcurrencyKey({
+  environmentId,
+  input,
+}: {
+  readonly environmentId: string;
+  readonly input: { readonly sourceThreadId: string };
+}): string {
+  return JSON.stringify([environmentId, input.sourceThreadId]);
+}
+
 export function createThreadEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
 ) {
   const scheduler = createAtomCommandScheduler();
   const concurrency = {
     mode: "serial" as const,
-    key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
-      JSON.stringify([environmentId, input.threadId]),
+    key: threadCommandConcurrencyKey,
+  };
+  const handoffConcurrency = {
+    mode: "serial" as const,
+    key: handoffThreadConcurrencyKey,
   };
   return {
     create: createEnvironmentCommand(runtime, {
@@ -63,6 +89,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       execute: (input: CreateThreadInput) => createThread(input),
       scheduler,
       concurrency,
+    }),
+    handoff: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:handoff",
+      execute: (input: HandoffThreadInput) => handoffThread(input),
+      scheduler,
+      concurrency: handoffConcurrency,
     }),
     delete: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:delete",
