@@ -8,6 +8,7 @@
  */
 import {
   IsoDateTime,
+  HandoffThreadMetadata,
   ModelSelection,
   NonNegativeInt,
   ProjectId,
@@ -33,6 +34,7 @@ export const ProjectionThread = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   latestTurnId: Schema.NullOr(TurnId),
+  handoff: Schema.NullOr(HandoffThreadMetadata),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),

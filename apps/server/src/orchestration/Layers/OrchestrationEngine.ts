@@ -68,6 +68,11 @@ function commandToAggregateRef(command: OrchestrationCommand): {
         aggregateKind: "project",
         aggregateId: command.projectId,
       };
+    case "thread.handoff.create":
+      return {
+        aggregateKind: "thread",
+        aggregateId: command.targetThreadId,
+      };
     default:
       return {
         aggregateKind: "thread",
@@ -101,6 +106,27 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       }
       return nextReadModel;
     });
+
+  const readModelForCommand = (
+    command: OrchestrationCommand,
+  ): Effect.Effect<OrchestrationReadModel, OrchestrationDispatchError> => {
+    if (command.type !== "thread.handoff.create") {
+      return Effect.succeed(commandReadModel);
+    }
+    return projectionSnapshotQuery.getThreadDetailById(command.sourceThreadId).pipe(
+      Effect.map((threadDetail) => {
+        if (Option.isNone(threadDetail)) {
+          return commandReadModel;
+        }
+        return {
+          ...commandReadModel,
+          threads: commandReadModel.threads.map((thread) =>
+            thread.id === command.sourceThreadId ? threadDetail.value : thread,
+          ),
+        };
+      }),
+    );
+  };
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = commandReadModel.snapshotSequence;
@@ -150,9 +176,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        const decisionReadModel = yield* readModelForCommand(envelope.command);
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
-          readModel: commandReadModel,
+          readModel: decisionReadModel,
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError((cause) =>

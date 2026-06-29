@@ -151,14 +151,18 @@ import {
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { useEnvironmentSettings } from "../hooks/useSettings";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  getAppModelOptionsForInstance,
+  resolveAppModelSelectionForInstance,
+  type AppModelOption,
+} from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { buildDraftThreadRouteParams } from "../threadRoutes";
+import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -205,6 +209,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
+import { ThreadHandoffDialog } from "./chat/ThreadHandoffDialog";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -249,6 +254,19 @@ import {
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+  type ProviderInstanceEntry,
+} from "../providerInstances";
+import {
+  buildHandoffDraftCopy,
+  buildHandoffTargetOptions,
+  countImportableHandoffMessages,
+  getHandoffSourceDisabledReason,
+  resolveInitialHandoffTarget,
+} from "../threadHandoff/handoff";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -1001,6 +1019,7 @@ function ChatViewContent(props: ChatViewProps) {
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
+  const handoffThread = useAtomCommand(threadEnvironment.handoff, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -1043,6 +1062,9 @@ function ChatViewContent(props: ChatViewProps) {
   const settings = useEnvironmentSettings(environmentId);
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
+  );
+  const stickyModelSelectionByProvider = useComposerDraftStore(
+    (store) => store.stickyModelSelectionByProvider,
   );
   const timestampFormat = settings.timestampFormat;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
@@ -1139,6 +1161,10 @@ function ChatViewContent(props: ChatViewProps) {
   const [pendingServerThreadEnvMode, setPendingServerThreadEnvMode] =
     useState<DraftThreadEnvMode | null>(null);
   const [pendingServerThreadBranch, setPendingServerThreadBranch] = useState<string | null>();
+  const [handoffDialogOpen, setHandoffDialogOpen] = useState(false);
+  const [selectedHandoffModelSelection, setSelectedHandoffModelSelection] =
+    useState<ModelSelection | null>(null);
+  const [isHandoffSubmitting, setIsHandoffSubmitting] = useState(false);
   const [
     pendingServerThreadStartFromOriginByThreadId,
     setPendingServerThreadStartFromOriginByThreadId,
@@ -1719,6 +1745,22 @@ function ChatViewContent(props: ChatViewProps) {
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
+  const handoffProviderInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(
+    () =>
+      sortProviderInstanceEntries(
+        applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings),
+      ),
+    [providerStatuses, settings],
+  );
+  const handoffModelOptionsByInstance = useMemo<
+    ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>
+  >(() => {
+    const out = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
+    for (const entry of handoffProviderInstanceEntries) {
+      out.set(entry.instanceId, getAppModelOptionsForInstance(settings, entry));
+    }
+    return out;
+  }, [handoffProviderInstanceEntries, settings]);
   const unlockedSelectedProvider = resolveSelectableProvider(
     providerStatuses,
     selectedProviderByThreadId ?? threadProvider ?? ProviderDriverKind.make("codex"),
@@ -1798,6 +1840,70 @@ function ChatViewContent(props: ChatViewProps) {
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
   const activePendingApproval = pendingApprovals[0] ?? null;
+  const handoffImportableMessageCount = useMemo(
+    () => countImportableHandoffMessages(activeThread?.messages ?? []),
+    [activeThread?.messages],
+  );
+  const handoffSourceDisabledReason = useMemo(
+    () =>
+      getHandoffSourceDisabledReason({
+        isServerThread,
+        thread: activeThread ?? null,
+        hasPendingApproval: activePendingApproval !== null,
+        hasPendingUserInput: activePendingUserInput !== null,
+      }),
+    [activePendingApproval, activePendingUserInput, activeThread, isServerThread],
+  );
+  const handoffSourceInstanceId =
+    activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null;
+  const handoffTargetOptions = useMemo(
+    () =>
+      handoffSourceInstanceId
+        ? buildHandoffTargetOptions({
+            entries: handoffProviderInstanceEntries,
+            sourceInstanceId: handoffSourceInstanceId,
+            modelOptionsByInstance: handoffModelOptionsByInstance,
+            stickyModelSelectionByProvider,
+          })
+        : [],
+    [
+      handoffModelOptionsByInstance,
+      handoffProviderInstanceEntries,
+      handoffSourceInstanceId,
+      stickyModelSelectionByProvider,
+    ],
+  );
+  useEffect(() => {
+    if (!handoffDialogOpen) return;
+    if (
+      selectedHandoffModelSelection &&
+      handoffTargetOptions.some((option) => {
+        if (
+          option.disabledReason !== null ||
+          option.entry.instanceId !== selectedHandoffModelSelection.instanceId
+        ) {
+          return false;
+        }
+        const models = handoffModelOptionsByInstance.get(option.entry.instanceId) ?? [];
+        return (
+          models.some((model) => model.slug === selectedHandoffModelSelection.model) ||
+          option.entry.models.some((model) => model.slug === selectedHandoffModelSelection.model)
+        );
+      })
+    ) {
+      return;
+    }
+    setSelectedHandoffModelSelection(
+      resolveInitialHandoffTarget(handoffTargetOptions, composerActiveProvider)?.modelSelection ??
+        null,
+    );
+  }, [
+    composerActiveProvider,
+    handoffDialogOpen,
+    handoffModelOptionsByInstance,
+    handoffTargetOptions,
+    selectedHandoffModelSelection,
+  ]);
   const {
     beginLocalDispatch,
     resetLocalDispatch,
@@ -2144,6 +2250,11 @@ function ChatViewContent(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  const handoffSourceProviderName =
+    handoffProviderInstanceEntries.find((entry) => entry.instanceId === handoffSourceInstanceId)
+      ?.displayName ??
+    activeProviderStatus?.displayName ??
+    "Current provider";
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
@@ -2265,6 +2376,104 @@ function ChatViewContent(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
+  const openHandoffDialog = useCallback(() => {
+    if (handoffSourceDisabledReason !== null) {
+      return;
+    }
+    const initialTarget = resolveInitialHandoffTarget(handoffTargetOptions, composerActiveProvider);
+    setSelectedHandoffModelSelection(initialTarget?.modelSelection ?? null);
+    setHandoffDialogOpen(true);
+  }, [composerActiveProvider, handoffSourceDisabledReason, handoffTargetOptions]);
+  const onSubmitHandoff = useCallback(async () => {
+    if (
+      !activeThread ||
+      !isServerThread ||
+      handoffSourceDisabledReason !== null ||
+      selectedHandoffModelSelection === null ||
+      isHandoffSubmitting
+    ) {
+      return;
+    }
+    const selectedTarget = handoffTargetOptions.find(
+      (option) => option.entry.instanceId === selectedHandoffModelSelection.instanceId,
+    );
+    if (!selectedTarget || selectedTarget.disabledReason !== null) {
+      return;
+    }
+
+    const sourceThreadId = activeThread.id;
+    const targetThreadId = newThreadId();
+    const targetThreadRef = scopeThreadRef(activeThread.environmentId, targetThreadId);
+    const draftCopy = buildHandoffDraftCopy({ prompt: promptRef.current });
+
+    setIsHandoffSubmitting(true);
+    const result = await handoffThread({
+      environmentId: activeThread.environmentId,
+      input: {
+        sourceThreadId,
+        targetThreadId,
+        targetModelSelection: selectedHandoffModelSelection,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    if (result._tag === "Failure") {
+      setIsHandoffSubmitting(false);
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not hand off thread",
+            description:
+              error instanceof Error
+                ? error.message
+                : "An error occurred while creating the target thread.",
+          }),
+        );
+      }
+      return;
+    }
+
+    setStickyComposerModelSelection(selectedHandoffModelSelection);
+    setComposerDraftModelSelection(targetThreadRef, selectedHandoffModelSelection);
+    if (draftCopy !== null) {
+      setComposerDraftPrompt(targetThreadRef, draftCopy.prompt);
+    }
+    setHandoffDialogOpen(false);
+
+    await settlePromise(() => waitForStartedServerThread(targetThreadRef, 2_000));
+    const navigateResult = await settlePromise(() =>
+      navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(targetThreadRef),
+      }),
+    );
+    setIsHandoffSubmitting(false);
+    if (navigateResult._tag === "Failure") {
+      const error = squashAtomCommandFailure(navigateResult);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Thread created, but navigation failed",
+          description: error instanceof Error ? error.message : "Open it from the sidebar.",
+        }),
+      );
+      return;
+    }
+  }, [
+    activeThread,
+    handoffSourceDisabledReason,
+    handoffTargetOptions,
+    handoffThread,
+    isHandoffSubmitting,
+    isServerThread,
+    navigate,
+    selectedHandoffModelSelection,
+    setComposerDraftModelSelection,
+    setComposerDraftPrompt,
+    setStickyComposerModelSelection,
+  ]);
   const addTerminalContextToDraft = useCallback(
     (selection: TerminalContextSelection) => {
       composerRef.current?.addTerminalContext(selection);
@@ -5009,6 +5218,22 @@ function ChatViewContent(props: ChatViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+      <ThreadHandoffDialog
+        open={handoffDialogOpen}
+        sourceProviderName={handoffSourceProviderName}
+        importableMessageCount={handoffImportableMessageCount}
+        targetOptions={handoffTargetOptions}
+        selectedModelSelection={selectedHandoffModelSelection}
+        isSubmitting={isHandoffSubmitting}
+        onOpenChange={(open) => {
+          if (!open && isHandoffSubmitting) {
+            return;
+          }
+          setHandoffDialogOpen(open);
+        }}
+        onTargetChange={setSelectedHandoffModelSelection}
+        onSubmit={onSubmitHandoff}
+      />
       {rightPanelOpen && !shouldUsePlanSidebarSheet ? panelLayoutControls : null}
       <div
         className={cn(
@@ -5173,6 +5398,7 @@ function ChatViewContent(props: ChatViewProps) {
                       sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
                       planSidebarLabel={planSidebarLabel}
                       planSidebarOpen={planSidebarOpen}
+                      handoffDisabledReason={handoffSourceDisabledReason}
                       runtimeMode={runtimeMode}
                       interactionMode={interactionMode}
                       lockedProvider={lockedProvider}
@@ -5207,6 +5433,7 @@ function ChatViewContent(props: ChatViewProps) {
                       handleRuntimeModeChange={handleRuntimeModeChange}
                       handleInteractionModeChange={handleInteractionModeChange}
                       togglePlanSidebar={togglePlanSidebar}
+                      onOpenHandoff={openHandoffDialog}
                       focusComposer={focusComposer}
                       scheduleComposerFocus={scheduleComposerFocus}
                       setThreadError={setThreadError}
