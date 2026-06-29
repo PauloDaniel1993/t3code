@@ -14,7 +14,7 @@
 - [x] 2.3 Update projection reads and writes for handoff metadata and message source fields
 - [x] 2.4 Ensure replay projects non-handoff threads with `handoff: null`
 - [x] 2.5 Ensure shell latest-user and summary projection ignore imported user messages
-- [ ] 2.6 Add projection and migration tests for historical source fallback and handoff replay
+- [x] 2.6 Add projection and migration tests for historical source fallback and handoff replay
 
 ## 3. DeepSeek Provider
 
@@ -23,7 +23,7 @@
 - [x] 3.3 Implement DeepSeek adapter local session startup, send sequencing, interruption, and cursor persistence
 - [x] 3.4 Implement DeepSeek unsupported capability responses for tools, file edits, approvals, and user input
 - [x] 3.5 Implement DeepSeek text generation with local structured-output validation
-- [ ] 3.6 Add DeepSeek provider tests for readiness, streaming success, failure, interrupt, corrupt cursor, and text generation
+- [x] 3.6 Add DeepSeek provider tests for readiness, streaming success, failure, interrupt, corrupt cursor, and text generation
 
 ## 4. Text Generation And Compression
 
@@ -32,7 +32,7 @@
 - [x] 4.3 Implement handoff compression model resolution with DeepSeek flash auto default and text-generation fallback
 - [x] 4.4 Implement summary cache keys with source message id, model selection, and SHA-256 source text hash
 - [x] 4.5 Implement bounded head/tail summarizer input, malformed output retry, and deterministic truncation fallback
-- [ ] 4.6 Add tests for model resolution, prompt construction, sanitization, cache matching, retry, and fallback
+- [x] 4.6 Add tests for model resolution, prompt construction, sanitization, cache matching, retry, and fallback
 
 ## 5. Server Handoff Command Handling
 
@@ -41,7 +41,7 @@
 - [x] 5.3 Emit target `thread.created`, imported `thread.message-sent`, and import activity events atomically
 - [ ] 5.4 Reject missing source, deleted/archived/running/waiting source, empty transcript, existing target id, and not-ready target provider
 - [x] 5.5 Add chain handoff guard requiring a native message after previous imports
-- [ ] 5.6 Add server tests for successful handoff, rejection cases, ordering, import caps, attachment-only messages, and source immutability
+- [x] 5.6 Add server tests for successful handoff, rejection cases, ordering, import caps, attachment-only messages, and source immutability
 
 ## 6. Bootstrap Context And Reactor Integration
 
@@ -51,7 +51,7 @@
 - [x] 6.4 Wrap provider input in `ProviderCommandReactor` after session ensure and before provider request construction
 - [x] 6.5 Dispatch deterministic bootstrap completion command after successful first wrapped `sendTurn`
 - [x] 6.6 Retry bootstrap completion dispatch with backoff while the reactor is alive
-- [ ] 6.7 Add tests for one-shot wrapping, retry after failure, no source cursor transfer, concurrent send behavior, and completion replay
+- [x] 6.7 Add tests for one-shot wrapping, retry after failure, no source cursor transfer, concurrent send behavior, and completion replay
 
 ## 7. Client Runtime
 
@@ -75,12 +75,12 @@
 - [x] 9.3 Wire dialog submit to command dispatch, acknowledgement close, target projection wait, navigation, timeout toast, and draft copy
 - [x] 9.4 Render imported timeline messages with imported marker and adjusted user/assistant actions
 - [x] 9.5 Add settings UI row for handoff compression model selection with automatic reset and resolved model helper text
-- [ ] 9.6 Add UI tests for dialog behavior, navigation timeout, imported message rendering, and compression setting selection
+- [x] 9.6 Add UI tests for dialog behavior, navigation timeout, imported message rendering, and compression setting selection
 
 ## 10. Verification
 
 - [x] 10.1 Run focused contract, server, and web tests added by this change
 - [x] 10.2 Run `vp check`
 - [x] 10.3 Run `vp run typecheck`
-- [ ] 10.4 Manually verify handoff with isolated `--base-dir` or `T3CODE_HOME`
+- [x] 10.4 Manually verify handoff with isolated `--base-dir` or `T3CODE_HOME`
 - [x] 10.5 Record any deferred follow-ups in `.plans/23-provider-thread-handoff.md` if scope changes during implementation

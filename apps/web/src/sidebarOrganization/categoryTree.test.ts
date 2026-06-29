@@ -50,6 +50,7 @@ function makeProjectSnapshot(
     displayName: "Project",
     groupedProjectCount: 1,
     environmentPresence: "local-only",
+    allRemoteMembersAreDesktopLocal: false,
     memberProjects: [representative],
     memberProjectRefs: [],
     remoteEnvironmentLabels: [],
