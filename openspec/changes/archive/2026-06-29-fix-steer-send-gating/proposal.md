@@ -12,9 +12,11 @@ Steering (sending a follow-up message while the model is still running) feels un
 ## Capabilities
 
 ### New Capabilities
+
 - `composer-steering`: Sending follow-up messages into a running turn ("steering") — when a steer is accepted, how the composer's busy/enabled state is derived, and the guarantee that consecutive steers are not blocked.
 
 ### Modified Capabilities
+
 <!-- None: there is no existing spec for composer send/steer behavior yet. -->
 
 ## Impact

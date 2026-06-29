@@ -479,8 +479,7 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   // the dispatch in the rare case neither signal is observed.
   if (input.localDispatch.wasSteer) {
     const messageLanded = input.userMessageCount > input.localDispatch.userMessageCount;
-    const sessionAdvanced =
-      input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null);
+    const sessionAdvanced = input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null);
     return messageLanded || sessionAdvanced;
   }
 
