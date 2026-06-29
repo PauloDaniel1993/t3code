@@ -14,3 +14,4 @@
 20. `20-version-control-phase-2-source-control-provider-foundation.md`
 21. `21-appearance-settings-profiles.md`
 22. `22-sidebar-project-categories.md`
+23. `23-provider-thread-handoff.md`

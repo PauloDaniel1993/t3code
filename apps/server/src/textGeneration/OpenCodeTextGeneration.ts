@@ -21,11 +21,13 @@ import { resolveAttachmentPath } from "../attachmentStore.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildHandoffSummaryPrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import {
+  sanitizeHandoffSummary,
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
@@ -39,6 +41,7 @@ const OpenCodeTextGenerationOperation = Schema.Literals([
   "generatePrContent",
   "generateBranchName",
   "generateThreadTitle",
+  "generateHandoffSummary",
 ]);
 
 type OpenCodeTextGenerationOperation = typeof OpenCodeTextGenerationOperation.Type;
@@ -253,7 +256,8 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateHandoffSummary";
   }) =>
     sharedServerMutex.withPermit(
       Effect.gen(function* () {
@@ -611,10 +615,32 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       };
     });
 
+  const generateHandoffSummary: TextGeneration.TextGeneration["Service"]["generateHandoffSummary"] =
+    Effect.fn("OpenCodeTextGeneration.generateHandoffSummary")(function* (input) {
+      const { prompt, outputSchema } = buildHandoffSummaryPrompt({
+        sourceThreadTitle: input.sourceThreadTitle,
+        role: input.role,
+        messageText: input.messageText,
+        attachmentMetadata: input.attachmentMetadata,
+      });
+      const generated = yield* runOpenCodeJson({
+        operation: "generateHandoffSummary",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+
+      return {
+        summary: sanitizeHandoffSummary(generated.summary),
+      };
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateHandoffSummary,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

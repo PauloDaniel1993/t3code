@@ -12,7 +12,11 @@ import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
 import { migrateSidebarCategoryAssignments } from "../sidebarOrganization/assignments";
-import { hideSidebarCategory, UNCATEGORIZED_CATEGORY_ID } from "../sidebarOrganization/categories";
+import {
+  hideSidebarCategory,
+  UNCATEGORIZED_CATEGORY_ID,
+  unhideSidebarCategory,
+} from "../sidebarOrganization/categories";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -66,6 +70,13 @@ export function canHideSidebarCategoryHeader(input: {
   return input.categoryId !== UNCATEGORIZED_CATEGORY_ID && input.archivedAt === null;
 }
 
+export function canUnhideSidebarCategoryHeader(input: {
+  categoryId: string;
+  archivedAt: string | null;
+}): boolean {
+  return input.categoryId !== UNCATEGORIZED_CATEGORY_ID && input.archivedAt !== null;
+}
+
 export function resolveSidebarCategoryHeaderHide(input: {
   sidebarOrganization: SidebarOrganization;
   categoryId: string;
@@ -91,6 +102,34 @@ export function resolveSidebarCategoryHeaderHide(input: {
     categoryId: input.categoryId,
     archivedAt: input.hiddenAt,
   });
+
+  return {
+    sidebarOrganization,
+    shouldPersist: sidebarOrganization !== input.sidebarOrganization,
+  };
+}
+
+export function resolveSidebarCategoryHeaderUnhide(input: {
+  sidebarOrganization: SidebarOrganization;
+  categoryId: string;
+  archivedAt: string | null;
+}): {
+  readonly sidebarOrganization: SidebarOrganization;
+  readonly shouldPersist: boolean;
+} {
+  if (
+    !canUnhideSidebarCategoryHeader({
+      categoryId: input.categoryId,
+      archivedAt: input.archivedAt,
+    })
+  ) {
+    return {
+      sidebarOrganization: input.sidebarOrganization,
+      shouldPersist: false,
+    };
+  }
+
+  const sidebarOrganization = unhideSidebarCategory(input.sidebarOrganization, input.categoryId);
 
   return {
     sidebarOrganization,
