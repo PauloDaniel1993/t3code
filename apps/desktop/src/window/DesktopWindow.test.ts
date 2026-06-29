@@ -282,6 +282,7 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
           electronMenuLayer,
           Layer.succeed(ElectronShell.ElectronShell, {
             openExternal: () => Effect.succeed(true),
+            revealPath: () => Effect.succeed(true),
             copyText: () => Effect.void,
           } satisfies ElectronShell.ElectronShell["Service"]),
           electronThemeLayer,
@@ -403,7 +404,7 @@ describe("DesktopWindow", () => {
 
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
-        yield* desktopWindow.handleBackendReady;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
 
         assert.deepEqual(fakeWindow.clearCache.mock.calls, [[]]);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["t3code://app/"]);
