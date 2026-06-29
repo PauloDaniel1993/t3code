@@ -227,6 +227,7 @@ import {
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
   getStartedThreadModelChangeBlockReason,
+  STEER_DISPATCH_FALLBACK_MS,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
@@ -391,6 +392,16 @@ function useLocalDispatchState(input: {
     setLocalDispatch(null);
   }, []);
 
+  const userMessageCount = useMemo(() => {
+    const messages = input.activeThread?.messages;
+    if (!messages) return 0;
+    let count = 0;
+    for (const message of messages) {
+      if (message.role === "user") count += 1;
+    }
+    return count;
+  }, [input.activeThread?.messages]);
+
   const serverAcknowledgedLocalDispatch = useMemo(
     () =>
       hasServerAcknowledgedLocalDispatch({
@@ -398,6 +409,7 @@ function useLocalDispatchState(input: {
         phase: input.phase,
         latestTurn: input.activeLatestTurn,
         session: input.activeThread?.session ?? null,
+        userMessageCount,
         hasPendingApproval: input.activePendingApproval !== null,
         hasPendingUserInput: input.activePendingUserInput !== null,
         threadError: input.threadError,
@@ -410,6 +422,7 @@ function useLocalDispatchState(input: {
       input.phase,
       input.threadError,
       localDispatch,
+      userMessageCount,
     ],
   );
   const activeLocalDispatch = serverAcknowledgedLocalDispatch ? null : localDispatch;
@@ -423,11 +436,27 @@ function useLocalDispatchState(input: {
             ? active
             : { ...active, preparingWorktree };
         }
-        return createLocalDispatchSnapshot(input.activeThread, options);
+        return createLocalDispatchSnapshot(input.activeThread, { ...options, phase: input.phase });
       });
     },
-    [input.activeThread, serverAcknowledgedLocalDispatch],
+    [input.activeThread, input.phase, serverAcknowledgedLocalDispatch],
   );
+
+  // Safety net: a steer continues the running turn, so its acknowledgement
+  // signals (steered message landing / session advancing) can in rare cases be
+  // missed. Force-clear the dispatch after a bounded timeout so the composer
+  // never stays locked for the remainder of the turn.
+  useEffect(() => {
+    if (!activeLocalDispatch?.wasSteer) return;
+    const elapsed = Date.now() - new Date(activeLocalDispatch.startedAt).getTime();
+    const remaining = Math.max(0, STEER_DISPATCH_FALLBACK_MS - elapsed);
+    const timer = setTimeout(() => {
+      resetLocalDispatch();
+    }, remaining);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [activeLocalDispatch, resetLocalDispatch]);
 
   return {
     beginLocalDispatch,

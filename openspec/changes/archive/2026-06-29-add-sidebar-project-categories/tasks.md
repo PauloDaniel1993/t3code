@@ -41,6 +41,6 @@
 
 ## 7. Verification
 
-- [ ] 7.1 Manually verify the feature using a separate `--base-dir` or `T3CODE_HOME` instead of the current installed runtime state tree
+- [x] 7.1 Manually verify the feature using a separate `--base-dir` or `T3CODE_HOME` instead of the current installed runtime state tree
 - [x] 7.2 Run `vp check`
 - [x] 7.3 Run `vp run typecheck`
