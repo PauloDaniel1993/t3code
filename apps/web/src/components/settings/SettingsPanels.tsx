@@ -19,7 +19,7 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { DEFAULT_APPEARANCE_SETTINGS, DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
@@ -90,28 +90,11 @@ import {
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useAtomCommand } from "../../state/use-atom-command";
 
-const THEME_OPTIONS = [
-  {
-    value: "system",
-    label: "System",
-  },
-  {
-    value: "light",
-    label: "Light",
-  },
-  {
-    value: "dark",
-    label: "Dark",
-  },
-] as const;
-
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
   "12-hour": "12-hour",
   "24-hour": "24-hour",
 } as const;
-
-const TERMINAL_FONT_PLACEHOLDER = DEFAULT_UNIFIED_SETTINGS.terminalFontFamily;
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 
@@ -375,8 +358,13 @@ function AboutVersionSection() {
   );
 }
 
-export function useSettingsRestore(onRestored?: () => void) {
-  const { theme, setTheme } = useTheme();
+type SettingsRestoreScope = "general" | "appearance";
+
+export function useSettingsRestore(
+  scope: SettingsRestoreScope = "general",
+  onRestored?: () => void,
+) {
+  const { setTheme } = useTheme();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
 
@@ -389,14 +377,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection ?? null,
   );
 
-  const changedSettingLabels = useMemo(
+  const generalChangedSettingLabels = useMemo(
     () => [
-      ...(theme !== "system" ? ["Theme"] : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
-        : []),
-      ...(settings.terminalFontFamily !== DEFAULT_UNIFIED_SETTINGS.terminalFontFamily
-        ? ["Terminal font"]
         : []),
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
@@ -447,12 +431,25 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.sidebarThreadPreviewCount,
-      settings.terminalFontFamily,
       settings.timestampFormat,
       settings.wordWrap,
-      theme,
     ],
   );
+
+  const appearanceChangedSettingLabels = useMemo(
+    () => [
+      ...(settings.appearance.colorScheme !== DEFAULT_APPEARANCE_SETTINGS.colorScheme
+        ? ["Theme mode"]
+        : []),
+      ...(settings.appearance.activeThemeId !== DEFAULT_APPEARANCE_SETTINGS.activeThemeId
+        ? ["Active theme"]
+        : []),
+    ],
+    [settings.appearance.activeThemeId, settings.appearance.colorScheme],
+  );
+
+  const changedSettingLabels =
+    scope === "appearance" ? appearanceChangedSettingLabels : generalChangedSettingLabels;
 
   const restoreDefaults = useCallback(async () => {
     if (changedSettingLabels.length === 0) return;
@@ -464,26 +461,44 @@ export function useSettingsRestore(onRestored?: () => void) {
     );
     if (!confirmed) return;
 
-    setTheme("system");
-    updateSettings({
-      timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
-      wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
-      terminalFontFamily: DEFAULT_UNIFIED_SETTINGS.terminalFontFamily,
-      diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
-      sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
-      autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
-      enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
-      automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
-      defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-      newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
-      addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
-      confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
-      confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
-      textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-      handoffCompressionModelSelection: DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection,
-    });
+    if (scope === "appearance") {
+      updateSettings({
+        appearance: {
+          ...DEFAULT_APPEARANCE_SETTINGS,
+          customThemeOrder: settings.appearance.customThemeOrder,
+          customThemes: settings.appearance.customThemes,
+        },
+        terminalFontFamily: DEFAULT_UNIFIED_SETTINGS.terminalFontFamily,
+      });
+      setTheme("system");
+    } else {
+      updateSettings({
+        timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+        wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
+        diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
+        sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
+        autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
+        enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+        automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
+        defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+        newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+        addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+        confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
+        confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+        textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+        handoffCompressionModelSelection: DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection,
+      });
+    }
     onRestored?.();
-  }, [changedSettingLabels, onRestored, setTheme, updateSettings]);
+  }, [
+    changedSettingLabels,
+    onRestored,
+    scope,
+    setTheme,
+    settings.appearance.customThemeOrder,
+    settings.appearance.customThemes,
+    updateSettings,
+  ]);
 
   return {
     changedSettingLabels,
@@ -492,7 +507,6 @@ export function useSettingsRestore(onRestored?: () => void) {
 }
 
 export function GeneralSettingsPanel() {
-  const { theme, setTheme } = useTheme();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const observability = useAtomValue(primaryServerObservabilityAtom);
@@ -562,39 +576,6 @@ export function GeneralSettingsPanel() {
     <SettingsPageContainer>
       <SettingsSection title="General">
         <SettingsRow
-          title="Theme"
-          description="Choose how T3 Code looks across the app."
-          resetAction={
-            theme !== "system" ? (
-              <SettingResetButton label="theme" onClick={() => setTheme("system")} />
-            ) : null
-          }
-          control={
-            <Select
-              value={theme}
-              onValueChange={(value) => {
-                if (value === "system" || value === "light" || value === "dark") {
-                  setTheme(value);
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
-                <SelectValue>
-                  {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {THEME_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
           title="Time format"
           description="System default follows your browser or OS clock preference."
           resetAction={
@@ -633,36 +614,6 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
               </SelectPopup>
             </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Terminal font"
-          description="Use an installed Nerd Font or Powerline font family list for terminal sessions."
-          resetAction={
-            settings.terminalFontFamily !== DEFAULT_UNIFIED_SETTINGS.terminalFontFamily ? (
-              <SettingResetButton
-                label="terminal font"
-                onClick={() =>
-                  updateSettings({
-                    terminalFontFamily: DEFAULT_UNIFIED_SETTINGS.terminalFontFamily,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <DraftInput
-              value={settings.terminalFontFamily}
-              onCommit={(next) =>
-                updateSettings({
-                  terminalFontFamily: next.trim() || DEFAULT_UNIFIED_SETTINGS.terminalFontFamily,
-                })
-              }
-              placeholder={TERMINAL_FONT_PLACEHOLDER}
-              aria-label="Terminal font family"
-              className="w-full font-mono text-xs sm:w-96"
-            />
           }
         />
 
