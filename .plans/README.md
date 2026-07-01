@@ -15,3 +15,4 @@
 21. `21-appearance-settings-profiles.md`
 22. `22-sidebar-project-categories.md`
 23. `23-provider-thread-handoff.md`
+24. `24-timeline-large-thread-perf.md`

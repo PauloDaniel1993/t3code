@@ -10,8 +10,20 @@ import {
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 import {
+  AppearanceTheme,
   ClientSettingsPatch,
   ClientSettingsSchema,
+  DEFAULT_APPEARANCE_ACTIVE_THEME_ID,
+  DEFAULT_APPEARANCE_CHAT_FONT_SIZE_PX,
+  DEFAULT_APPEARANCE_CODE_FONT_SIZE_PX,
+  DEFAULT_APPEARANCE_COLOR_SCHEME,
+  DEFAULT_APPEARANCE_DENSITY,
+  DEFAULT_APPEARANCE_DIFF_MARKER_STYLE,
+  DEFAULT_APPEARANCE_MONO_FONT_FAMILY,
+  DEFAULT_APPEARANCE_SETTINGS,
+  DEFAULT_APPEARANCE_TERMINAL_FONT_SIZE_PX,
+  DEFAULT_APPEARANCE_UI_FONT_FAMILY,
+  DEFAULT_APPEARANCE_UI_FONT_SIZE_PX,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_SIDEBAR_ORGANIZATION,
@@ -22,9 +34,51 @@ import {
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
+const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
+const decodeAppearanceTheme = Schema.decodeUnknownSync(AppearanceTheme);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+
+const baseAppearanceVariants = {
+  light: {
+    accent: "#339CFF",
+    background: "#FFFFFF",
+    foreground: "#1A1C1F",
+    surface: "#F7F7F7",
+    muted: "#EDEDED",
+    contrast: 45,
+    translucentSidebar: true,
+  },
+  dark: {
+    accent: "#339CFF",
+    background: "#181818",
+    foreground: "#FFFFFF",
+    surface: "#202020",
+    muted: "#303030",
+    contrast: 60,
+    translucentSidebar: true,
+  },
+};
+
+function makeCustomAppearanceTheme(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const theme = {
+    id: "custom_readable",
+    name: "Readable Copy",
+    uiFontFamily: DEFAULT_APPEARANCE_UI_FONT_FAMILY,
+    monoFontFamily: DEFAULT_APPEARANCE_MONO_FONT_FAMILY,
+    terminalFontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
+    uiFontSizePx: DEFAULT_APPEARANCE_UI_FONT_SIZE_PX,
+    chatFontSizePx: DEFAULT_APPEARANCE_CHAT_FONT_SIZE_PX,
+    codeFontSizePx: DEFAULT_APPEARANCE_CODE_FONT_SIZE_PX,
+    terminalFontSizePx: DEFAULT_APPEARANCE_TERMINAL_FONT_SIZE_PX,
+    density: DEFAULT_APPEARANCE_DENSITY,
+    diffMarkerStyle: DEFAULT_APPEARANCE_DIFF_MARKER_STYLE,
+    variants: baseAppearanceVariants,
+  };
+
+  return { ...theme, ...overrides };
+}
 
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
@@ -40,6 +94,127 @@ describe("ClientSettings word wrap", () => {
     expect(decoded.wordWrap).toBe(true);
     expect(decoded).not.toHaveProperty("chatWordWrap");
     expect(decoded).not.toHaveProperty("diffWordWrap");
+  });
+});
+
+describe("ClientSettings.appearance", () => {
+  it("defaults missing appearance settings to built-in Default in System mode", () => {
+    const decoded = decodeClientSettings({});
+
+    expect(decoded.appearance).toEqual(DEFAULT_APPEARANCE_SETTINGS);
+    expect(decoded.appearance.colorScheme).toBe(DEFAULT_APPEARANCE_COLOR_SCHEME);
+    expect(decoded.appearance.activeThemeId).toBe(DEFAULT_APPEARANCE_ACTIVE_THEME_ID);
+    expect(decoded.appearance.customThemeOrder).toEqual([]);
+    expect(decoded.appearance.customThemes).toEqual({});
+    expect(DEFAULT_CLIENT_SETTINGS.appearance).toEqual(DEFAULT_APPEARANCE_SETTINGS);
+  });
+
+  it("falls back to Default when the active theme id is missing or invalid", () => {
+    const decoded = decodeClientSettings({
+      appearance: {
+        activeThemeId: "missing_custom",
+        customThemeOrder: ["custom_readable"],
+        customThemes: {
+          custom_readable: makeCustomAppearanceTheme(),
+        },
+      },
+    });
+
+    expect(decoded.appearance.activeThemeId).toBe(DEFAULT_APPEARANCE_ACTIVE_THEME_ID);
+    expect(decoded.appearance.customThemeOrder).toEqual(["custom_readable"]);
+  });
+
+  it("round-trips valid custom themes and normalizes custom order", () => {
+    const decoded = decodeClientSettings({
+      appearance: {
+        colorScheme: "dark",
+        activeThemeId: "custom_readable",
+        customThemeOrder: ["missing", "custom_readable", "custom_readable"],
+        customThemes: {
+          custom_readable: makeCustomAppearanceTheme(),
+        },
+      },
+    });
+
+    expect(decoded.appearance.colorScheme).toBe("dark");
+    expect(decoded.appearance.activeThemeId).toBe("custom_readable");
+    expect(decoded.appearance.customThemeOrder).toEqual(["custom_readable"]);
+    expect(decoded.appearance.customThemes.custom_readable?.name).toBe("Readable Copy");
+
+    const encoded = encodeClientSettings(decoded);
+    expect(encoded.appearance).toEqual({
+      colorScheme: "dark",
+      activeThemeId: "custom_readable",
+      customThemeOrder: ["custom_readable"],
+      customThemes: {
+        custom_readable: decoded.appearance.customThemes.custom_readable,
+      },
+    });
+  });
+
+  it("discards invalid custom themes without discarding the rest of client settings", () => {
+    const invalidColor = makeCustomAppearanceTheme({
+      id: "custom_bad_color",
+      variants: {
+        ...baseAppearanceVariants,
+        light: {
+          ...baseAppearanceVariants.light,
+          accent: "blue",
+        },
+      },
+    });
+    const invalidSize = makeCustomAppearanceTheme({
+      id: "custom_bad_size",
+      uiFontSizePx: 11,
+    });
+    const valid = makeCustomAppearanceTheme({ id: "custom_valid", name: "Valid" });
+
+    const decoded = decodeClientSettings({
+      appearance: {
+        activeThemeId: "custom_bad_color",
+        customThemeOrder: ["custom_bad_color", "custom_valid", "custom_bad_size"],
+        customThemes: {
+          custom_bad_color: invalidColor,
+          custom_bad_size: invalidSize,
+          "bad key": makeCustomAppearanceTheme({ id: "bad key" }),
+          default: makeCustomAppearanceTheme({ id: "default" }),
+          custom_valid: valid,
+        },
+      },
+      wordWrap: false,
+    });
+
+    expect(decoded.wordWrap).toBe(false);
+    expect(decoded.appearance.activeThemeId).toBe(DEFAULT_APPEARANCE_ACTIVE_THEME_ID);
+    expect(decoded.appearance.customThemeOrder).toEqual(["custom_valid"]);
+    expect(Object.keys(decoded.appearance.customThemes)).toEqual(["custom_valid"]);
+  });
+
+  it("rejects unsafe custom theme colors, sizes, density, variant data, and id shape", () => {
+    for (const invalidTheme of [
+      makeCustomAppearanceTheme({ id: "1bad" }),
+      makeCustomAppearanceTheme({ uiFontSizePx: 11 }),
+      makeCustomAppearanceTheme({ chatFontSizePx: 25 }),
+      makeCustomAppearanceTheme({ codeFontSizePx: 10 }),
+      makeCustomAppearanceTheme({ terminalFontSizePx: 23 }),
+      makeCustomAppearanceTheme({ density: "wide" }),
+      makeCustomAppearanceTheme({
+        variants: {
+          ...baseAppearanceVariants,
+          light: {
+            ...baseAppearanceVariants.light,
+            accent: "#12345",
+          },
+        },
+      }),
+      makeCustomAppearanceTheme({
+        variants: {
+          light: baseAppearanceVariants.light,
+        },
+      }),
+    ]) {
+      expect(() => decodeAppearanceTheme(invalidTheme)).toThrow();
+    }
   });
 });
 
