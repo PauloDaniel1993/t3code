@@ -91,6 +91,7 @@ AppearanceThemeVariant: {
 - Map the theme accent color to primary actions and focus rings; keep the shared `--accent` token neutral so settings buttons, dropdowns, text fields, and menu rows keep the same white/black hover behavior as the rest of Settings.
 - Clear managed core semantic variables for built-in `Default` so current T3 CSS remains the source of truth.
 - Body, markdown, inline code, code blocks, diff surfaces, and terminal surfaces use appearance variables.
+- Density variables are consumed by settings page spacing, settings row/control gaps, and chat markdown block spacing so Compact and Comfortable produce visible layout changes.
 - Diff marker style maps to existing `@pierre/diffs` indicators: color-only uses bars, color-plus-markers uses classic indicators.
 
 ## Settings UI

@@ -44,6 +44,9 @@ describe("Appearance settings", () => {
     const html = await renderAppearanceSettings();
 
     expect(html).toContain("Active theme");
+    expect(html).toContain("settings-density-page");
+    expect(html).toContain("settings-density-row");
+    expect(html).toContain("settings-density-control-group");
     expect(html).toContain("Built-in themes are read-only templates.");
     expect(html).toContain("Create editable copy");
     expect(html).toContain("UI font size");
