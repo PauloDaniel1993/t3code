@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   ClientSettingsSchema,
+  DEFAULT_APPEARANCE_SETTINGS,
   DEFAULT_SIDEBAR_ORGANIZATION,
   DEFAULT_TERMINAL_FONT_FAMILY,
   type ClientSettings,
@@ -18,6 +19,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  appearance: DEFAULT_APPEARANCE_SETTINGS,
   autoOpenPlanSidebar: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
