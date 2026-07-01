@@ -61,7 +61,9 @@ const baseAppearanceVariants = {
   },
 };
 
-function makeCustomAppearanceTheme(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeCustomAppearanceTheme(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   const theme = {
     id: "custom_readable",
     name: "Readable Copy",
