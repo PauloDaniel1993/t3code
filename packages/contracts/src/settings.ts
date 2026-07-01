@@ -80,7 +80,7 @@ export const DEFAULT_APPEARANCE_DENSITY: AppearanceDensity = "default";
 
 export const AppearanceDiffMarkerStyle = Schema.Literals(["color", "color-and-markers"]);
 export type AppearanceDiffMarkerStyle = typeof AppearanceDiffMarkerStyle.Type;
-export const DEFAULT_APPEARANCE_DIFF_MARKER_STYLE: AppearanceDiffMarkerStyle = "color-and-markers";
+export const DEFAULT_APPEARANCE_DIFF_MARKER_STYLE: AppearanceDiffMarkerStyle = "color";
 
 export const MIN_APPEARANCE_UI_FONT_SIZE_PX = 12;
 export const MAX_APPEARANCE_UI_FONT_SIZE_PX = 20;
