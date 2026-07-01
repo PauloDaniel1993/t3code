@@ -17,6 +17,7 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
+import { DEFAULT_TERMINAL_FONT_FAMILY } from "@t3tools/contracts/settings";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
@@ -33,6 +34,7 @@ import {
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { cn } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
+import { runWithDocumentScrollPreserved } from "~/lib/terminalFocus";
 import { useOpenInPreferredEditor } from "../editorPreferences";
 import {
   collectWrappedTerminalLinkLine,
@@ -65,6 +67,7 @@ import { previewEnvironment } from "../state/preview";
 import { terminalEnvironment } from "../state/terminal";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useClientSettings } from "../hooks/useSettings";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -99,6 +102,11 @@ function fitTerminalSafely(fitAddon: FitAddon): boolean {
   } catch {
     return false;
   }
+}
+
+function resolveTerminalFontFamily(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_TERMINAL_FONT_FAMILY;
 }
 
 function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefined): string {
@@ -268,6 +276,13 @@ export function shouldHandleTerminalSelectionMouseUp(
   return selectionGestureActive && button === 0;
 }
 
+export function shouldClearTerminalSelectionForBufferUpdate(
+  previousBuffer: string,
+  nextBuffer: string,
+): boolean {
+  return !(nextBuffer.length >= previousBuffer.length && nextBuffer.startsWith(previousBuffer));
+}
+
 interface TerminalViewportProps {
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
@@ -310,6 +325,9 @@ export function TerminalViewport({
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const terminalFontFamily = resolveTerminalFontFamily(
+    useClientSettings((settings) => settings.terminalFontFamily),
+  );
   const environmentId = threadRef.environmentId;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
@@ -390,8 +408,7 @@ export function TerminalViewport({
       lineHeight: 1,
       fontSize: 12,
       scrollback: 5_000,
-      fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: terminalFontFamily,
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);
@@ -480,7 +497,12 @@ export function TerminalViewport({
         }
         handleAddTerminalContext(nextAction.selection);
         terminalRef.current?.clearSelection();
-        terminalRef.current?.focus();
+        const terminalForFocus = terminalRef.current;
+        if (terminalForFocus) {
+          runWithDocumentScrollPreserved(() => {
+            terminalForFocus.focus();
+          });
+        }
       } finally {
         selectionActionOpenRef.current = false;
       }
@@ -709,6 +731,24 @@ export function TerminalViewport({
 
   useEffect(() => {
     const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal) return;
+
+    terminal.options.fontFamily = terminalFontFamily;
+    const frame = window.requestAnimationFrame(() => {
+      if (fitAddon) {
+        fitTerminalSafely(fitAddon);
+      }
+      terminal.refresh(0, terminal.rows - 1);
+      void resizeTerminal(terminal.cols, terminal.rows);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [resizeTerminal, terminalFontFamily]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
     const current = {
       buffer: terminalBuffer,
       error: terminalError,
@@ -725,15 +765,16 @@ export function TerminalViewport({
       return;
     }
 
-    if (
-      current.buffer.length >= previous.buffer.length &&
-      current.buffer.startsWith(previous.buffer)
-    ) {
+    const shouldClearSelection = shouldClearTerminalSelectionForBufferUpdate(
+      previous.buffer,
+      current.buffer,
+    );
+    if (!shouldClearSelection) {
       terminal.write(current.buffer.slice(previous.buffer.length));
     } else {
       writeTerminalBuffer(terminal, current.buffer);
+      terminal.clearSelection();
     }
-    terminal.clearSelection();
 
     if (current.error !== null && current.error !== previous.error) {
       writeSystemMessage(terminal, current.error);
@@ -760,7 +801,9 @@ export function TerminalViewport({
 
     if (previous.version === 0 && autoFocus) {
       window.requestAnimationFrame(() => {
-        terminal.focus();
+        runWithDocumentScrollPreserved(() => {
+          terminal.focus();
+        });
       });
     }
     previousSessionRef.current = current;
@@ -771,7 +814,9 @@ export function TerminalViewport({
     const terminal = terminalRef.current;
     if (!terminal) return;
     const frame = window.requestAnimationFrame(() => {
-      terminal.focus();
+      runWithDocumentScrollPreserved(() => {
+        terminal.focus();
+      });
     });
     return () => {
       window.cancelAnimationFrame(frame);

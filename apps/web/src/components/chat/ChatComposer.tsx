@@ -95,6 +95,7 @@ import { toastManager } from "../ui/toast";
 import {
   BotIcon,
   CircleAlertIcon,
+  GitBranchPlusIcon,
   ListTodoIcon,
   PencilRulerIcon,
   type LucideIcon,
@@ -197,9 +198,11 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   showPlanToggle: boolean;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
+  handoffDisabledReason: string | null;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
   onTogglePlanSidebar: () => void;
+  onOpenHandoff: () => void;
 }) {
   const runtimeModeOption = runtimeModeConfig[props.runtimeMode];
   const RuntimeModeIcon = runtimeModeOption.icon;
@@ -323,6 +326,33 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
           </Tooltip>
         </>
       ) : null}
+
+      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+              size="sm"
+              type="button"
+              disabled={Boolean(props.handoffDisabledReason)}
+              onClick={() => {
+                if (!props.handoffDisabledReason) {
+                  props.onOpenHandoff();
+                }
+              }}
+              aria-label="Hand off thread"
+            />
+          }
+        >
+          <GitBranchPlusIcon />
+          <span className="sr-only sm:not-sr-only">Hand off</span>
+        </TooltipTrigger>
+        <TooltipPopup side="top">
+          {props.handoffDisabledReason ?? "Hand off this thread"}
+        </TooltipPopup>
+      </Tooltip>
     </>
   );
 });
@@ -476,6 +506,7 @@ export interface ChatComposerProps {
   sidebarProposedPlan: { turnId?: TurnId } | null;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
+  handoffDisabledReason: string | null;
 
   // Mode
   runtimeMode: RuntimeMode;
@@ -529,6 +560,7 @@ export interface ChatComposerProps {
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
   handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
   togglePlanSidebar: () => void;
+  onOpenHandoff: () => void;
 
   focusComposer: () => void;
   scheduleComposerFocus: () => void;
@@ -572,6 +604,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     sidebarProposedPlan,
     planSidebarLabel,
     planSidebarOpen,
+    handoffDisabledReason,
     runtimeMode,
     interactionMode,
     lockedProvider,
@@ -603,6 +636,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     handleRuntimeModeChange,
     handleInteractionModeChange,
     togglePlanSidebar,
+    onOpenHandoff,
     focusComposer,
     scheduleComposerFocus,
     setThreadError,
@@ -2502,8 +2536,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     runtimeMode={runtimeMode}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     traitsMenuContent={providerTraitsMenuContent}
+                    handoffDisabledReason={handoffDisabledReason}
                     onToggleInteractionMode={toggleInteractionMode}
                     onTogglePlanSidebar={togglePlanSidebar}
+                    onOpenHandoff={onOpenHandoff}
                     onRuntimeModeChange={handleRuntimeModeChange}
                   />
                 ) : (
@@ -2521,9 +2557,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       showPlanToggle={showPlanSidebarToggle}
                       planSidebarLabel={planSidebarLabel}
                       planSidebarOpen={planSidebarOpen}
+                      handoffDisabledReason={handoffDisabledReason}
                       onToggleInteractionMode={toggleInteractionMode}
                       onRuntimeModeChange={handleRuntimeModeChange}
                       onTogglePlanSidebar={togglePlanSidebar}
+                      onOpenHandoff={onOpenHandoff}
                     />
                   </>
                 )}

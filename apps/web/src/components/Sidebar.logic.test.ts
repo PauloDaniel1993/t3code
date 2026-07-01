@@ -12,8 +12,13 @@ import {
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
+  canHideSidebarCategoryHeader,
+  canUnhideSidebarCategoryHeader,
+  resolveSidebarCategoryHeaderHide,
+  resolveSidebarCategoryHeaderUnhide,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
+  resolveSidebarOrganizationMigration,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
@@ -21,6 +26,8 @@ import {
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
 } from "./Sidebar.logic";
+import { DEFAULT_SIDEBAR_ORGANIZATION } from "@t3tools/contracts/settings";
+import { UNCATEGORIZED_CATEGORY_ID } from "../sidebarOrganization/categories";
 import {
   EnvironmentId,
   OrchestrationLatestTurn,
@@ -812,6 +819,228 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   };
 }
 
+describe("resolveSidebarOrganizationMigration", () => {
+  it("migrates fallback physical category assignments to canonical repository keys", () => {
+    const project = makeProject({
+      workspaceRoot: "/tmp/project",
+      repositoryIdentity: {
+        canonicalKey: "github.com/example/project",
+        locator: {
+          source: "git-remote",
+          remoteName: "origin",
+          remoteUrl: "https://github.com/example/project.git",
+        },
+      },
+    });
+    const sidebarOrganization = {
+      ...DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryOrder: ["cat-work"],
+      categories: {
+        "cat-work": {
+          id: "cat-work",
+          name: "Work",
+          archivedAt: null,
+        },
+      },
+      projectCategoryAssignments: {
+        [`${localEnvironmentId}:/tmp/project`]: {
+          categoryId: "cat-work",
+          updatedAt: "2026-06-19T17:00:00.000Z",
+        },
+      },
+    };
+
+    const result = resolveSidebarOrganizationMigration({
+      sidebarOrganization,
+      projects: [project],
+    });
+
+    expect(result.shouldPersist).toBe(true);
+    expect(result.sidebarOrganization.projectCategoryAssignments).toEqual({
+      "github.com/example/project": {
+        categoryId: "cat-work",
+        updatedAt: "2026-06-19T17:00:00.000Z",
+      },
+    });
+  });
+
+  it("does not request persistence when assignments are already canonical", () => {
+    const project = makeProject({
+      repositoryIdentity: {
+        canonicalKey: "github.com/example/project",
+        locator: {
+          source: "git-remote",
+          remoteName: "origin",
+          remoteUrl: "https://github.com/example/project.git",
+        },
+      },
+    });
+    const sidebarOrganization = {
+      ...DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryOrder: ["cat-work"],
+      categories: {
+        "cat-work": {
+          id: "cat-work",
+          name: "Work",
+          archivedAt: null,
+        },
+      },
+      projectCategoryAssignments: {
+        "github.com/example/project": {
+          categoryId: "cat-work",
+          updatedAt: "2026-06-19T17:00:00.000Z",
+        },
+      },
+    };
+
+    const result = resolveSidebarOrganizationMigration({
+      sidebarOrganization,
+      projects: [project],
+    });
+
+    expect(result.shouldPersist).toBe(false);
+    expect(result.sidebarOrganization).toBe(sidebarOrganization);
+  });
+});
+
+describe("canHideSidebarCategoryHeader", () => {
+  it("allows visible custom categories and excludes hidden or built-in categories", () => {
+    expect(canHideSidebarCategoryHeader({ categoryId: "cat-work", archivedAt: null })).toBe(true);
+    expect(
+      canHideSidebarCategoryHeader({
+        categoryId: "cat-work",
+        archivedAt: "2026-06-19T17:05:00.000Z",
+      }),
+    ).toBe(false);
+    expect(
+      canHideSidebarCategoryHeader({
+        categoryId: UNCATEGORIZED_CATEGORY_ID,
+        archivedAt: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("canUnhideSidebarCategoryHeader", () => {
+  it("allows hidden custom categories and excludes visible or built-in categories", () => {
+    expect(
+      canUnhideSidebarCategoryHeader({
+        categoryId: "cat-work",
+        archivedAt: "2026-06-19T17:05:00.000Z",
+      }),
+    ).toBe(true);
+    expect(canUnhideSidebarCategoryHeader({ categoryId: "cat-work", archivedAt: null })).toBe(
+      false,
+    );
+    expect(
+      canUnhideSidebarCategoryHeader({
+        categoryId: UNCATEGORIZED_CATEGORY_ID,
+        archivedAt: "2026-06-19T17:05:00.000Z",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("resolveSidebarCategoryHeaderHide", () => {
+  it("hides a visible custom category while preserving project assignments", () => {
+    const sidebarOrganization = {
+      ...DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryOrder: ["cat-work"],
+      categories: {
+        "cat-work": {
+          id: "cat-work",
+          name: "Work",
+          archivedAt: null,
+        },
+      },
+      projectCategoryAssignments: {
+        "github.com/example/project": {
+          categoryId: "cat-work",
+          updatedAt: "2026-06-19T17:00:00.000Z",
+        },
+      },
+    };
+
+    const result = resolveSidebarCategoryHeaderHide({
+      sidebarOrganization,
+      categoryId: "cat-work",
+      archivedAt: null,
+      hiddenAt: "2026-06-19T17:05:00.000Z",
+    });
+
+    expect(result.shouldPersist).toBe(true);
+    expect(result.sidebarOrganization.categories["cat-work"]?.archivedAt).toBe(
+      "2026-06-19T17:05:00.000Z",
+    );
+    expect(result.sidebarOrganization.projectCategoryAssignments).toEqual({
+      "github.com/example/project": {
+        categoryId: "cat-work",
+        updatedAt: "2026-06-19T17:00:00.000Z",
+      },
+    });
+  });
+
+  it("does not persist when the sidebar header represents Uncategorized", () => {
+    const result = resolveSidebarCategoryHeaderHide({
+      sidebarOrganization: DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryId: UNCATEGORIZED_CATEGORY_ID,
+      archivedAt: null,
+      hiddenAt: "2026-06-19T17:05:00.000Z",
+    });
+
+    expect(result.shouldPersist).toBe(false);
+    expect(result.sidebarOrganization).toBe(DEFAULT_SIDEBAR_ORGANIZATION);
+  });
+});
+
+describe("resolveSidebarCategoryHeaderUnhide", () => {
+  it("unhides a hidden custom category while preserving project assignments", () => {
+    const sidebarOrganization = {
+      ...DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryOrder: ["cat-work"],
+      categories: {
+        "cat-work": {
+          id: "cat-work",
+          name: "Work",
+          archivedAt: "2026-06-19T17:05:00.000Z",
+        },
+      },
+      projectCategoryAssignments: {
+        "github.com/example/project": {
+          categoryId: "cat-work",
+          updatedAt: "2026-06-19T17:00:00.000Z",
+        },
+      },
+    };
+
+    const result = resolveSidebarCategoryHeaderUnhide({
+      sidebarOrganization,
+      categoryId: "cat-work",
+      archivedAt: "2026-06-19T17:05:00.000Z",
+    });
+
+    expect(result.shouldPersist).toBe(true);
+    expect(result.sidebarOrganization.categories["cat-work"]?.archivedAt).toBeNull();
+    expect(result.sidebarOrganization.projectCategoryAssignments).toEqual({
+      "github.com/example/project": {
+        categoryId: "cat-work",
+        updatedAt: "2026-06-19T17:00:00.000Z",
+      },
+    });
+  });
+
+  it("does not persist when the sidebar header represents Uncategorized", () => {
+    const result = resolveSidebarCategoryHeaderUnhide({
+      sidebarOrganization: DEFAULT_SIDEBAR_ORGANIZATION,
+      categoryId: UNCATEGORIZED_CATEGORY_ID,
+      archivedAt: "2026-06-19T17:05:00.000Z",
+    });
+
+    expect(result.shouldPersist).toBe(false);
+    expect(result.sidebarOrganization).toBe(DEFAULT_SIDEBAR_ORGANIZATION);
+  });
+});
+
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
     id: ThreadId.make("thread-1"),
@@ -833,6 +1062,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     deletedAt: null,
     updatedAt: "2026-03-09T10:00:00.000Z",
     latestTurn: null,
+    handoff: null,
     branch: null,
     worktreePath: null,
     checkpoints: [],

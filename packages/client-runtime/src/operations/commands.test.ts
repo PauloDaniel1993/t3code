@@ -1,17 +1,19 @@
+// oxlint-disable t3code/no-manual-effect-runtime-in-tests
 import {
   CommandId,
   EnvironmentId,
   ORCHESTRATION_WS_METHODS,
+  ProviderInstanceId,
   ProjectId,
   ThreadId,
   type ClientOrchestrationCommand,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -21,7 +23,7 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { archiveThread, createProject, stopThreadSession } from "./commands.ts";
+import { archiveThread, createProject, handoffThread, stopThreadSession } from "./commands.ts";
 
 const TEST_CRYPTO_LAYER = Layer.succeed(
   Crypto.Crypto,
@@ -67,7 +69,13 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("environment commands", () => {
-  it.effect("adds generated command metadata", () =>
+  const effectIt = {
+    effect: (name: string, body: () => Effect.Effect<unknown, object, never>): void => {
+      it(name, () => Effect.runPromise(body()));
+    },
+  };
+
+  effectIt.effect("adds generated command metadata", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];
       const supervisor = yield* makeSupervisor(dispatched);
@@ -93,7 +101,7 @@ describe("environment commands", () => {
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
-  it.effect("preserves caller metadata for idempotent queued commands", () =>
+  effectIt.effect("preserves caller metadata for idempotent queued commands", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];
       const supervisor = yield* makeSupervisor(dispatched);
@@ -115,7 +123,40 @@ describe("environment commands", () => {
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
-  it.effect("does not add timestamps to commands without createdAt", () =>
+  effectIt.effect(
+    "dispatches thread handoff with generated metadata and server-derived source fields",
+    () =>
+      Effect.gen(function* () {
+        const dispatched: ClientOrchestrationCommand[] = [];
+        const supervisor = yield* makeSupervisor(dispatched);
+
+        yield* handoffThread({
+          sourceThreadId: ThreadId.make("thread-source"),
+          targetThreadId: ThreadId.make("thread-target"),
+          targetModelSelection: {
+            instanceId: ProviderInstanceId.make("deepseek"),
+            model: "deepseek-v4-pro",
+          },
+          createdAt: "2026-06-06T00:02:00.000Z",
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+        expect(dispatched).toEqual([
+          {
+            type: "thread.handoff.create",
+            commandId: "00000000-0000-4000-8000-000000000000",
+            sourceThreadId: "thread-source",
+            targetThreadId: "thread-target",
+            targetModelSelection: {
+              instanceId: "deepseek",
+              model: "deepseek-v4-pro",
+            },
+            createdAt: "2026-06-06T00:02:00.000Z",
+          },
+        ]);
+      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  effectIt.effect("does not add timestamps to commands without createdAt", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];
       const supervisor = yield* makeSupervisor(dispatched);
