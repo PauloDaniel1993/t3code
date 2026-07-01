@@ -54,6 +54,243 @@ export const TerminalFontFamily = TrimmedString.pipe(
 );
 export type TerminalFontFamily = typeof TerminalFontFamily.Type;
 
+export const APPEARANCE_BUILT_IN_THEME_IDS = [
+  "default",
+  "readable",
+  "compact",
+  "terminal",
+] as const;
+export const AppearanceBuiltInThemeId = Schema.Literals(APPEARANCE_BUILT_IN_THEME_IDS);
+export type AppearanceBuiltInThemeId = typeof AppearanceBuiltInThemeId.Type;
+
+export const AppearanceThemeId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[a-z][a-z0-9_-]*$/i),
+);
+export type AppearanceThemeId = typeof AppearanceThemeId.Type;
+
+export const AppearanceColorScheme = Schema.Literals(["system", "light", "dark"]);
+export type AppearanceColorScheme = typeof AppearanceColorScheme.Type;
+export const DEFAULT_APPEARANCE_COLOR_SCHEME: AppearanceColorScheme = "system";
+export const DEFAULT_APPEARANCE_ACTIVE_THEME_ID: AppearanceBuiltInThemeId = "default";
+
+export const AppearanceDensity = Schema.Literals(["compact", "default", "comfortable"]);
+export type AppearanceDensity = typeof AppearanceDensity.Type;
+export const DEFAULT_APPEARANCE_DENSITY: AppearanceDensity = "default";
+
+export const AppearanceDiffMarkerStyle = Schema.Literals(["color", "color-and-markers"]);
+export type AppearanceDiffMarkerStyle = typeof AppearanceDiffMarkerStyle.Type;
+export const DEFAULT_APPEARANCE_DIFF_MARKER_STYLE: AppearanceDiffMarkerStyle =
+  "color-and-markers";
+
+export const MIN_APPEARANCE_UI_FONT_SIZE_PX = 12;
+export const MAX_APPEARANCE_UI_FONT_SIZE_PX = 20;
+export const DEFAULT_APPEARANCE_UI_FONT_SIZE_PX = 14;
+export const AppearanceUiFontSizePx = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_APPEARANCE_UI_FONT_SIZE_PX,
+    maximum: MAX_APPEARANCE_UI_FONT_SIZE_PX,
+  }),
+);
+export type AppearanceUiFontSizePx = typeof AppearanceUiFontSizePx.Type;
+
+export const MIN_APPEARANCE_CHAT_FONT_SIZE_PX = 13;
+export const MAX_APPEARANCE_CHAT_FONT_SIZE_PX = 24;
+export const DEFAULT_APPEARANCE_CHAT_FONT_SIZE_PX = 14;
+export const AppearanceChatFontSizePx = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_APPEARANCE_CHAT_FONT_SIZE_PX,
+    maximum: MAX_APPEARANCE_CHAT_FONT_SIZE_PX,
+  }),
+);
+export type AppearanceChatFontSizePx = typeof AppearanceChatFontSizePx.Type;
+
+export const MIN_APPEARANCE_CODE_FONT_SIZE_PX = 11;
+export const MAX_APPEARANCE_CODE_FONT_SIZE_PX = 22;
+export const DEFAULT_APPEARANCE_CODE_FONT_SIZE_PX = 12;
+export const AppearanceCodeFontSizePx = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_APPEARANCE_CODE_FONT_SIZE_PX,
+    maximum: MAX_APPEARANCE_CODE_FONT_SIZE_PX,
+  }),
+);
+export type AppearanceCodeFontSizePx = typeof AppearanceCodeFontSizePx.Type;
+
+export const MIN_APPEARANCE_TERMINAL_FONT_SIZE_PX = 11;
+export const MAX_APPEARANCE_TERMINAL_FONT_SIZE_PX = 22;
+export const DEFAULT_APPEARANCE_TERMINAL_FONT_SIZE_PX = 12;
+export const AppearanceTerminalFontSizePx = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_APPEARANCE_TERMINAL_FONT_SIZE_PX,
+    maximum: MAX_APPEARANCE_TERMINAL_FONT_SIZE_PX,
+  }),
+);
+export type AppearanceTerminalFontSizePx = typeof AppearanceTerminalFontSizePx.Type;
+
+export const DEFAULT_APPEARANCE_UI_FONT_FAMILY = "var(--font-sans)";
+export const DEFAULT_APPEARANCE_MONO_FONT_FAMILY = "var(--font-mono)";
+export const READABLE_APPEARANCE_UI_FONT_FAMILY =
+  '"Atkinson Hyperlegible", "Atkinson Hyperlegible Next", var(--font-sans)';
+
+export const HexColor = TrimmedString.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/));
+export type HexColor = typeof HexColor.Type;
+
+export const AppearanceThemeName = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
+export type AppearanceThemeName = typeof AppearanceThemeName.Type;
+
+export const AppearanceFontFamily = TrimmedNonEmptyString.check(Schema.isMaxLength(1024));
+export type AppearanceFontFamily = typeof AppearanceFontFamily.Type;
+
+export const AppearanceContrast = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 }));
+export type AppearanceContrast = typeof AppearanceContrast.Type;
+
+export const AppearanceThemeVariant = Schema.Struct({
+  accent: HexColor,
+  background: HexColor,
+  foreground: HexColor,
+  surface: HexColor,
+  muted: HexColor,
+  contrast: AppearanceContrast,
+  translucentSidebar: Schema.Boolean,
+});
+export type AppearanceThemeVariant = typeof AppearanceThemeVariant.Type;
+
+export const AppearanceTheme = Schema.Struct({
+  id: AppearanceThemeId,
+  name: AppearanceThemeName,
+  uiFontFamily: AppearanceFontFamily,
+  monoFontFamily: AppearanceFontFamily,
+  terminalFontFamily: TerminalFontFamily,
+  uiFontSizePx: AppearanceUiFontSizePx,
+  chatFontSizePx: AppearanceChatFontSizePx,
+  codeFontSizePx: AppearanceCodeFontSizePx,
+  terminalFontSizePx: AppearanceTerminalFontSizePx,
+  density: AppearanceDensity,
+  diffMarkerStyle: AppearanceDiffMarkerStyle,
+  variants: Schema.Struct({
+    light: AppearanceThemeVariant,
+    dark: AppearanceThemeVariant,
+  }),
+});
+export type AppearanceTheme = typeof AppearanceTheme.Type;
+
+const AppearanceSettingsValue = Schema.Struct({
+  colorScheme: AppearanceColorScheme,
+  activeThemeId: AppearanceThemeId,
+  customThemeOrder: Schema.Array(AppearanceThemeId),
+  customThemes: Schema.Record(AppearanceThemeId, AppearanceTheme),
+});
+
+type AppearanceSettingsOutput = typeof AppearanceSettingsValue.Type;
+
+const decodeAppearanceColorScheme = Schema.decodeUnknownSync(AppearanceColorScheme);
+const decodeAppearanceThemeId = Schema.decodeUnknownSync(AppearanceThemeId);
+const decodeAppearanceTheme = Schema.decodeUnknownSync(AppearanceTheme);
+const APPEARANCE_BUILT_IN_THEME_ID_SET = new Set<string>(APPEARANCE_BUILT_IN_THEME_IDS);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodeOptionalColorScheme(value: unknown): AppearanceColorScheme | null {
+  try {
+    return decodeAppearanceColorScheme(value);
+  } catch {
+    return null;
+  }
+}
+
+function decodeOptionalThemeId(value: unknown): AppearanceThemeId | null {
+  try {
+    return decodeAppearanceThemeId(value);
+  } catch {
+    return null;
+  }
+}
+
+function decodeOptionalAppearanceTheme(value: unknown): AppearanceTheme | null {
+  try {
+    return decodeAppearanceTheme(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeAppearanceSettings(value: unknown): AppearanceSettingsOutput {
+  const input = isRecord(value) ? value : {};
+  const customThemesInput = isRecord(input.customThemes) ? input.customThemes : {};
+  const customThemes: Record<string, AppearanceTheme> = {};
+
+  for (const [rawId, rawTheme] of Object.entries(customThemesInput)) {
+    const id = decodeOptionalThemeId(rawId);
+    if (!id || APPEARANCE_BUILT_IN_THEME_ID_SET.has(id)) {
+      continue;
+    }
+
+    const theme = decodeOptionalAppearanceTheme(rawTheme);
+    if (!theme || theme.id !== id || APPEARANCE_BUILT_IN_THEME_ID_SET.has(theme.id)) {
+      continue;
+    }
+
+    customThemes[id] = theme;
+  }
+
+  const orderedThemeIds: AppearanceThemeId[] = [];
+  const seenThemeIds = new Set<string>();
+  const customThemeOrderInput = Array.isArray(input.customThemeOrder) ? input.customThemeOrder : [];
+  for (const rawId of customThemeOrderInput) {
+    const id = decodeOptionalThemeId(rawId);
+    if (!id || seenThemeIds.has(id) || customThemes[id] === undefined) {
+      continue;
+    }
+    orderedThemeIds.push(id);
+    seenThemeIds.add(id);
+  }
+  for (const id of Object.keys(customThemes)) {
+    if (!seenThemeIds.has(id)) {
+      orderedThemeIds.push(id);
+      seenThemeIds.add(id);
+    }
+  }
+
+  const activeThemeId = decodeOptionalThemeId(input.activeThemeId);
+  const resolvedActiveThemeId =
+    activeThemeId &&
+    (APPEARANCE_BUILT_IN_THEME_ID_SET.has(activeThemeId) || customThemes[activeThemeId] !== undefined)
+      ? activeThemeId
+      : DEFAULT_APPEARANCE_ACTIVE_THEME_ID;
+
+  return {
+    colorScheme: decodeOptionalColorScheme(input.colorScheme) ?? DEFAULT_APPEARANCE_COLOR_SCHEME,
+    activeThemeId: resolvedActiveThemeId,
+    customThemeOrder: orderedThemeIds,
+    customThemes,
+  };
+}
+
+function encodeAppearanceSettings(value: AppearanceSettingsOutput): unknown {
+  return {
+    colorScheme: value.colorScheme,
+    activeThemeId: value.activeThemeId,
+    customThemeOrder: value.customThemeOrder,
+    customThemes: value.customThemes,
+  };
+}
+
+export const AppearanceSettings = Schema.Unknown.pipe(
+  Schema.decodeTo(
+    AppearanceSettingsValue,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => Effect.succeed(normalizeAppearanceSettings(value)),
+      encode: (value) => Effect.succeed(encodeAppearanceSettings(value)),
+    }),
+  ),
+);
+export type AppearanceSettings = typeof AppearanceSettings.Type;
+export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = Schema.decodeSync(
+  AppearanceSettings,
+)({});
+
 export const SidebarCategory = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
@@ -154,6 +391,9 @@ export const DEFAULT_SIDEBAR_ORGANIZATION: SidebarOrganization = Schema.decodeSy
 )({});
 
 export const ClientSettingsSchema = Schema.Struct({
+  appearance: AppearanceSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_SETTINGS)),
+  ),
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -706,6 +946,7 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
+  appearance: Schema.optionalKey(AppearanceSettings),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
