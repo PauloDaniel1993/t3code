@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   resolveTerminalSelectionActionPosition,
+  shouldClearTerminalSelectionForBufferUpdate,
   shouldHandleTerminalSelectionMouseUp,
   terminalSelectionActionDelayForClickCount,
 } from "./ThreadTerminalDrawer";
@@ -71,5 +72,15 @@ describe("resolveTerminalSelectionActionPosition", () => {
     expect(shouldHandleTerminalSelectionMouseUp(true, 0)).toBe(true);
     expect(shouldHandleTerminalSelectionMouseUp(false, 0)).toBe(false);
     expect(shouldHandleTerminalSelectionMouseUp(true, 1)).toBe(false);
+  });
+
+  it("keeps terminal selection for append-only buffer updates", () => {
+    expect(shouldClearTerminalSelectionForBufferUpdate("alpha", "alpha beta")).toBe(false);
+    expect(shouldClearTerminalSelectionForBufferUpdate("", "alpha")).toBe(false);
+  });
+
+  it("clears terminal selection when a buffer update rewrites existing output", () => {
+    expect(shouldClearTerminalSelectionForBufferUpdate("alpha", "beta")).toBe(true);
+    expect(shouldClearTerminalSelectionForBufferUpdate("alpha beta", "alpha")).toBe(true);
   });
 });

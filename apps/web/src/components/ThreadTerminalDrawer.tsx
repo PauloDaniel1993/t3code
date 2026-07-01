@@ -276,6 +276,13 @@ export function shouldHandleTerminalSelectionMouseUp(
   return selectionGestureActive && button === 0;
 }
 
+export function shouldClearTerminalSelectionForBufferUpdate(
+  previousBuffer: string,
+  nextBuffer: string,
+): boolean {
+  return !(nextBuffer.length >= previousBuffer.length && nextBuffer.startsWith(previousBuffer));
+}
+
 interface TerminalViewportProps {
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
@@ -758,15 +765,16 @@ export function TerminalViewport({
       return;
     }
 
-    if (
-      current.buffer.length >= previous.buffer.length &&
-      current.buffer.startsWith(previous.buffer)
-    ) {
+    const shouldClearSelection = shouldClearTerminalSelectionForBufferUpdate(
+      previous.buffer,
+      current.buffer,
+    );
+    if (!shouldClearSelection) {
       terminal.write(current.buffer.slice(previous.buffer.length));
     } else {
       writeTerminalBuffer(terminal, current.buffer);
+      terminal.clearSelection();
     }
-    terminal.clearSelection();
 
     if (current.error !== null && current.error !== previous.error) {
       writeSystemMessage(terminal, current.error);
