@@ -37,7 +37,7 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("deepseek");
 const DEEPSEEK_RESUME_VERSION = 1 as const;
-const DEEPSEEK_STREAM_TIMEOUT_MS = 180_000;
+const DEEPSEEK_STREAM_TIMEOUT_MS = 600_000;
 
 const DeepSeekResumeCursor = Schema.Struct({
   schemaVersion: Schema.Literal(DEEPSEEK_RESUME_VERSION),
