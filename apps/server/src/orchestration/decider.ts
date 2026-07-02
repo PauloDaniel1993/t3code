@@ -1,11 +1,8 @@
 import {
   EventId,
-  MessageId,
   type OrchestrationCommand,
-  type OrchestrationMessage,
   type OrchestrationEvent,
   type OrchestrationReadModel,
-  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -23,39 +20,14 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
+import {
+  getHandoffSourceRejectionDetail,
+  isImportableHandoffMessage,
+  makeImportedHandoffMessageId,
+} from "./threadHandoff/eligibility.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const VISIBLE_HANDOFF_IMPORT_MESSAGE_LIMIT = 2_000;
-
-function makeImportedMessageId(input: {
-  readonly targetThreadId: ThreadId;
-  readonly sourceMessageId: MessageId;
-}): MessageId {
-  return MessageId.make(`handoff:${input.targetThreadId}:${input.sourceMessageId}`);
-}
-
-function isImportableHandoffMessage(message: OrchestrationMessage): boolean {
-  if (message.streaming) {
-    return false;
-  }
-  const hasText = message.text.trim().length > 0;
-  const hasAttachments = (message.attachments?.length ?? 0) > 0;
-  return hasText || hasAttachments;
-}
-
-function hasNativeMessageAfterPreviousImports(thread: {
-  readonly messages: ReadonlyArray<OrchestrationMessage>;
-}): boolean {
-  const lastImportedIndex = thread.messages.findLastIndex(
-    (message) => message.source === "handoff-import",
-  );
-  if (lastImportedIndex < 0) {
-    return true;
-  }
-  return thread.messages
-    .slice(lastImportedIndex + 1)
-    .some((message) => message.source !== "handoff-import");
-}
 
 function withEventBase(
   input: Pick<OrchestrationCommand, "commandId"> & {
@@ -296,43 +268,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.targetThreadId,
       });
-      if (sourceThread.deletedAt !== null) {
+      const sourceRejectionDetail = getHandoffSourceRejectionDetail(sourceThread);
+      if (sourceRejectionDetail !== null) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: `Thread '${command.sourceThreadId}' is deleted and cannot be handed off.`,
-        });
-      }
-      if (sourceThread.archivedAt !== null) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Thread '${command.sourceThreadId}' is archived and cannot be handed off.`,
-        });
-      }
-      if (
-        sourceThread.latestTurn?.state === "running" ||
-        sourceThread.session?.status === "starting" ||
-        sourceThread.session?.status === "running"
-      ) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Thread '${command.sourceThreadId}' has an active turn and cannot be handed off.`,
-        });
-      }
-      if (sourceThread.handoff !== null && !hasNativeMessageAfterPreviousImports(sourceThread)) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Thread '${command.sourceThreadId}' needs a native message before another handoff.`,
+          detail: sourceRejectionDetail,
         });
       }
 
       const importableMessages = sourceThread.messages.filter(isImportableHandoffMessage);
-      if (importableMessages.length === 0) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Thread '${command.sourceThreadId}' has no importable messages for handoff.`,
-        });
-      }
-
       const visibleImportCapped = importableMessages.length > VISIBLE_HANDOFF_IMPORT_MESSAGE_LIMIT;
       const visibleImportMessages = visibleImportCapped
         ? importableMessages.slice(-VISIBLE_HANDOFF_IMPORT_MESSAGE_LIMIT)
@@ -385,7 +329,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               type: "thread.message-sent",
               payload: {
                 threadId: command.targetThreadId,
-                messageId: makeImportedMessageId({
+                messageId: makeImportedHandoffMessageId({
                   targetThreadId: command.targetThreadId,
                   sourceMessageId: message.id,
                 }),
