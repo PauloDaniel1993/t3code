@@ -36,10 +36,10 @@
 
 ## 5. Server Handoff Command Handling
 
-- [ ] 5.1 Add thread handoff domain helpers for import eligibility, target validation, and deterministic imported message ids
+- [x] 5.1 Add thread handoff domain helpers for import eligibility, target validation, and deterministic imported message ids
 - [x] 5.2 Implement `thread.handoff.create` decider handling with server-derived source data
 - [x] 5.3 Emit target `thread.created`, imported `thread.message-sent`, and import activity events atomically
-- [ ] 5.4 Reject missing source, deleted/archived/running/waiting source, empty transcript, existing target id, and not-ready target provider
+- [x] 5.4 Reject missing source, deleted/archived/running/waiting source, empty transcript, existing target id, and not-ready target provider
 - [x] 5.5 Add chain handoff guard requiring a native message after previous imports
 - [x] 5.6 Add server tests for successful handoff, rejection cases, ordering, import caps, attachment-only messages, and source immutability
 
