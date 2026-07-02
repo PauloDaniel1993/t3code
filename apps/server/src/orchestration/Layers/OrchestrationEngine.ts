@@ -45,6 +45,8 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { validateReadyHandoffTargetModel } from "../threadHandoff/eligibility.ts";
 const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
   OrchestrationCommandPreviouslyRejectedError,
 );
@@ -88,6 +90,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
+  const providerRegistryOption = yield* Effect.serviceOption(ProviderRegistry);
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
@@ -124,6 +127,32 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             thread.id === command.sourceThreadId ? threadDetail.value : thread,
           ),
         };
+      }),
+    );
+  };
+
+  const validateHandoffTargetProvider = (
+    command: OrchestrationCommand,
+  ): Effect.Effect<void, OrchestrationCommandInvariantError> => {
+    if (command.type !== "thread.handoff.create" || Option.isNone(providerRegistryOption)) {
+      return Effect.void;
+    }
+
+    return providerRegistryOption.value.getProviders.pipe(
+      Effect.flatMap((providers) => {
+        const validation = validateReadyHandoffTargetModel({
+          providers,
+          modelSelection: command.targetModelSelection,
+        });
+        if (validation.ok) {
+          return Effect.void;
+        }
+        return Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: validation.detail,
+          }),
+        );
       }),
     );
   };
@@ -192,6 +221,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 }),
           ),
         );
+        yield* validateHandoffTargetProvider(envelope.command);
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
         const committedCommand = yield* sql
           .withTransaction(

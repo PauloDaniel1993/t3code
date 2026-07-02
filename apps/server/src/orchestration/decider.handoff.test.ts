@@ -1,3 +1,4 @@
+// oxlint-disable t3code/no-manual-effect-runtime-in-tests
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -12,9 +13,10 @@ import {
   type OrchestrationReadModel,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
@@ -63,6 +65,8 @@ type SeedOptions = {
   readonly archived?: boolean;
   readonly deleted?: boolean;
   readonly runningSession?: boolean;
+  readonly pendingApproval?: boolean;
+  readonly pendingUserInput?: boolean;
 };
 
 /**
@@ -200,6 +204,74 @@ const seedReadModel = (options: SeedOptions = {}) =>
       model = yield* projectEvent(model, sessionEvent);
     }
 
+    if (options.pendingApproval) {
+      model = yield* projectEvent(model, {
+        sequence: nextSequence(),
+        eventId: asEventId("evt-approval-requested"),
+        aggregateKind: "thread",
+        aggregateId: SOURCE_THREAD_ID,
+        type: "thread.activity-appended",
+        occurredAt: NOW,
+        commandId: asCommandId("cmd-approval-requested"),
+        causationEventId: null,
+        correlationId: asCommandId("cmd-approval-requested"),
+        metadata: {},
+        payload: {
+          threadId: SOURCE_THREAD_ID,
+          activity: {
+            id: asEventId("activity-approval-requested"),
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Approve command",
+            payload: {
+              requestId: "approval-1",
+              requestKind: "command",
+              detail: "Run command?",
+            },
+            turnId: null,
+            createdAt: NOW,
+          },
+        },
+      });
+    }
+
+    if (options.pendingUserInput) {
+      model = yield* projectEvent(model, {
+        sequence: nextSequence(),
+        eventId: asEventId("evt-user-input-requested"),
+        aggregateKind: "thread",
+        aggregateId: SOURCE_THREAD_ID,
+        type: "thread.activity-appended",
+        occurredAt: NOW,
+        commandId: asCommandId("cmd-user-input-requested"),
+        causationEventId: null,
+        correlationId: asCommandId("cmd-user-input-requested"),
+        metadata: {},
+        payload: {
+          threadId: SOURCE_THREAD_ID,
+          activity: {
+            id: asEventId("activity-user-input-requested"),
+            tone: "approval",
+            kind: "user-input.requested",
+            summary: "Provider needs input",
+            payload: {
+              requestId: "input-1",
+              questions: [
+                {
+                  id: "choice",
+                  header: "Choice",
+                  question: "Continue?",
+                  options: [{ label: "Continue", description: "Continue the turn." }],
+                },
+              ],
+            },
+            turnId: null,
+            createdAt: NOW,
+          },
+        },
+      });
+    }
+
     if (options.archived) {
       model = yield* projectEvent(model, {
         sequence: nextSequence(),
@@ -275,8 +347,15 @@ const eventAt = (events: ReadonlyArray<PlannedEvent>, index: number): PlannedEve
   return event;
 };
 
-it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
-  it.effect("emits target thread.created, imported messages, and import activity in order", () =>
+const effectIt = (
+  name: string,
+  body: () => Effect.Effect<unknown, object, Crypto.Crypto>,
+): void => {
+  it(name, () => Effect.runPromise(body().pipe(Effect.provide(NodeServices.layer))));
+};
+
+describe("decider thread.handoff.create flows", () => {
+  effectIt("emits target thread.created, imported messages, and import activity in order", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [
@@ -350,7 +429,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("leaves the source thread unchanged (source immutability)", () =>
+  effectIt("leaves the source thread unchanged (source immutability)", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "user-1", role: "user", text: "First request" }],
@@ -365,7 +444,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("imports attachment-only messages", () =>
+  effectIt("imports attachment-only messages", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "user-1", role: "user", text: "", attachments: [imageAttachment] }],
@@ -388,7 +467,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("skips streaming and empty messages when selecting importable transcript", () =>
+  effectIt("skips streaming and empty messages when selecting importable transcript", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [
@@ -410,7 +489,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("caps imported messages at VISIBLE_HANDOFF_IMPORT_MESSAGE_LIMIT", () =>
+  effectIt("caps imported messages at VISIBLE_HANDOFF_IMPORT_MESSAGE_LIMIT", () =>
     Effect.gen(function* () {
       const LIMIT = 2_000;
       const total = LIMIT + 5;
@@ -469,7 +548,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("allows a chain handoff once a native message follows prior imports", () =>
+  effectIt("allows a chain handoff once a native message follows prior imports", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         handoff: true,
@@ -500,7 +579,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
 
   // Rejection cases ---------------------------------------------------------
 
-  it.effect("rejects when the source thread is missing", () =>
+  effectIt("rejects when the source thread is missing", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "user-1", role: "user", text: "hi" }],
@@ -512,7 +591,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("rejects when the source thread is deleted", () =>
+  effectIt("rejects when the source thread is deleted", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         deleted: true,
@@ -523,7 +602,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("rejects when the source thread is archived", () =>
+  effectIt("rejects when the source thread is archived", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         archived: true,
@@ -534,7 +613,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("rejects when the source thread has an active running turn", () =>
+  effectIt("rejects when the source thread has an active running turn", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         runningSession: true,
@@ -545,7 +624,29 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("rejects a chain handoff without a native message since the last import", () =>
+  effectIt("rejects when the source thread has a pending approval", () =>
+    Effect.gen(function* () {
+      const readModel = yield* seedReadModel({
+        pendingApproval: true,
+        messages: [{ id: "user-1", role: "user", text: "hi" }],
+      });
+      const error = yield* Effect.flip(decide(readModel, handoffCommand()));
+      expect(error.message).toContain("has a pending approval and cannot be handed off");
+    }),
+  );
+
+  effectIt("rejects when the source thread is waiting for user input", () =>
+    Effect.gen(function* () {
+      const readModel = yield* seedReadModel({
+        pendingUserInput: true,
+        messages: [{ id: "user-1", role: "user", text: "hi" }],
+      });
+      const error = yield* Effect.flip(decide(readModel, handoffCommand()));
+      expect(error.message).toContain("is waiting for provider input and cannot be handed off");
+    }),
+  );
+
+  effectIt("rejects a chain handoff without a native message since the last import", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         handoff: true,
@@ -565,7 +666,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("rejects when the importable transcript is empty", () =>
+  effectIt("rejects when the importable transcript is empty", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "assistant-empty", role: "assistant", text: "   " }],
@@ -575,7 +676,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("rejects when the target thread id already exists", () =>
+  effectIt("rejects when the target thread id already exists", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "user-1", role: "user", text: "hi" }],
@@ -590,7 +691,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
 
   // Atomicity / ordering -----------------------------------------------------
 
-  it.effect("projects emitted events into a coherent target thread (atomic, ordered)", () =>
+  effectIt("projects emitted events into a coherent target thread (atomic, ordered)", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [
@@ -630,7 +731,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
 
   // Bootstrap complete / skip ------------------------------------------------
 
-  it.effect("completes a pending handoff bootstrap", () =>
+  effectIt("completes a pending handoff bootstrap", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "user-1", role: "user", text: "First request" }],
@@ -665,7 +766,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("skips a pending handoff bootstrap", () =>
+  effectIt("skips a pending handoff bootstrap", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "user-1", role: "user", text: "First request" }],
@@ -697,7 +798,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("rejects bootstrap complete when there is no pending handoff", () =>
+  effectIt("rejects bootstrap complete when there is no pending handoff", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "user-1", role: "user", text: "First request" }],
@@ -717,7 +818,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
     }),
   );
 
-  it.effect("rejects bootstrap skip when there is no pending handoff", () =>
+  effectIt("rejects bootstrap skip when there is no pending handoff", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
         messages: [{ id: "user-1", role: "user", text: "First request" }],
