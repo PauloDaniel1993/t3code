@@ -143,6 +143,13 @@ export function updateClientSettings(patch: ClientSettingsPatch): void {
   });
 }
 
+export function updateClientSettingsSnapshot(patch: ClientSettingsPatch): void {
+  replaceClientSettingsSnapshot({
+    ...getClientSettingsSnapshot(),
+    ...patch,
+  });
+}
+
 export function getClientSettings(): ClientSettings {
   return getClientSettingsSnapshot();
 }

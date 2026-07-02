@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { IsoDateTime, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
@@ -65,7 +66,7 @@ export type AppearanceBuiltInThemeId = typeof AppearanceBuiltInThemeId.Type;
 
 export const AppearanceThemeId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(128),
-  Schema.isPattern(/^[a-z][a-z0-9_-]*$/i),
+  Schema.isPattern(/^[a-z][a-z0-9_-]*$/),
 );
 export type AppearanceThemeId = typeof AppearanceThemeId.Type;
 
@@ -126,10 +127,11 @@ export const AppearanceTerminalFontSizePx = Schema.Int.check(
 );
 export type AppearanceTerminalFontSizePx = typeof AppearanceTerminalFontSizePx.Type;
 
-export const DEFAULT_APPEARANCE_UI_FONT_FAMILY = "var(--font-sans)";
-export const DEFAULT_APPEARANCE_MONO_FONT_FAMILY = "var(--font-mono)";
-export const READABLE_APPEARANCE_UI_FONT_FAMILY =
-  '"Atkinson Hyperlegible", "Atkinson Hyperlegible Next", var(--font-sans)';
+export const DEFAULT_APPEARANCE_UI_FONT_FAMILY =
+  '"DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+export const DEFAULT_APPEARANCE_MONO_FONT_FAMILY =
+  '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace';
+export const READABLE_APPEARANCE_UI_FONT_FAMILY = `"Atkinson Hyperlegible", "Atkinson Hyperlegible Next", ${DEFAULT_APPEARANCE_UI_FONT_FAMILY}`;
 
 export const HexColor = TrimmedString.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/));
 export type HexColor = typeof HexColor.Type;
@@ -180,44 +182,67 @@ const AppearanceSettingsValue = Schema.Struct({
   customThemes: Schema.Record(AppearanceThemeId, AppearanceTheme),
 });
 
+const AppearanceThemeVariantWire = Schema.Struct({
+  accent: Schema.optionalKey(Schema.String),
+  background: Schema.optionalKey(Schema.String),
+  foreground: Schema.optionalKey(Schema.String),
+  surface: Schema.optionalKey(Schema.String),
+  muted: Schema.optionalKey(Schema.String),
+  contrast: Schema.optionalKey(Schema.Number),
+  translucentSidebar: Schema.optionalKey(Schema.Boolean),
+});
+
+const AppearanceThemeVariantsWire = Schema.Struct({
+  light: Schema.optionalKey(AppearanceThemeVariantWire),
+  dark: Schema.optionalKey(AppearanceThemeVariantWire),
+});
+
+export const AppearanceThemeWire = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  name: Schema.optionalKey(Schema.String),
+  uiFontFamily: Schema.optionalKey(Schema.String),
+  monoFontFamily: Schema.optionalKey(Schema.String),
+  terminalFontFamily: Schema.optionalKey(Schema.String),
+  uiFontSizePx: Schema.optionalKey(Schema.Number),
+  chatFontSizePx: Schema.optionalKey(Schema.Number),
+  codeFontSizePx: Schema.optionalKey(Schema.Number),
+  terminalFontSizePx: Schema.optionalKey(Schema.Number),
+  density: Schema.optionalKey(Schema.String),
+  diffMarkerStyle: Schema.optionalKey(Schema.String),
+  variants: Schema.optionalKey(AppearanceThemeVariantsWire),
+});
+export type AppearanceThemeWire = typeof AppearanceThemeWire.Type;
+
+export const AppearanceSettingsWire = Schema.Struct({
+  colorScheme: Schema.optionalKey(Schema.String),
+  activeThemeId: Schema.optionalKey(Schema.String),
+  customThemeOrder: Schema.optionalKey(Schema.Array(Schema.String)),
+  customThemes: Schema.optionalKey(Schema.Record(Schema.String, AppearanceThemeWire)),
+});
+export type AppearanceSettingsWire = typeof AppearanceSettingsWire.Type;
+
 type AppearanceSettingsOutput = typeof AppearanceSettingsValue.Type;
+type AppearanceSettingsInput = AppearanceSettingsWire;
 
-const decodeAppearanceColorScheme = Schema.decodeUnknownSync(AppearanceColorScheme);
-const decodeAppearanceThemeId = Schema.decodeUnknownSync(AppearanceThemeId);
-const decodeAppearanceTheme = Schema.decodeUnknownSync(AppearanceTheme);
 const APPEARANCE_BUILT_IN_THEME_ID_SET = new Set<string>(APPEARANCE_BUILT_IN_THEME_IDS);
+const decodeAppearanceColorSchemeOption = Schema.decodeUnknownOption(AppearanceColorScheme);
+const decodeAppearanceThemeIdOption = Schema.decodeUnknownOption(AppearanceThemeId);
+const decodeAppearanceThemeOption = Schema.decodeUnknownOption(AppearanceTheme);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function decodeOptionalColorScheme(value: string | undefined): AppearanceColorScheme | null {
+  return value === undefined ? null : Option.getOrNull(decodeAppearanceColorSchemeOption(value));
 }
 
-function decodeOptionalColorScheme(value: unknown): AppearanceColorScheme | null {
-  try {
-    return decodeAppearanceColorScheme(value);
-  } catch {
-    return null;
-  }
+function decodeOptionalThemeId(value: string | undefined): AppearanceThemeId | null {
+  return value === undefined ? null : Option.getOrNull(decodeAppearanceThemeIdOption(value));
 }
 
-function decodeOptionalThemeId(value: unknown): AppearanceThemeId | null {
-  try {
-    return decodeAppearanceThemeId(value);
-  } catch {
-    return null;
-  }
+function decodeOptionalAppearanceTheme(value: AppearanceThemeWire): AppearanceTheme | null {
+  return Option.getOrNull(decodeAppearanceThemeOption(value));
 }
 
-function decodeOptionalAppearanceTheme(value: unknown): AppearanceTheme | null {
-  try {
-    return decodeAppearanceTheme(value);
-  } catch {
-    return null;
-  }
-}
-
-function normalizeAppearanceSettings(value: unknown): AppearanceSettingsOutput {
-  const input = isRecord(value) ? value : {};
-  const customThemesInput = isRecord(input.customThemes) ? input.customThemes : {};
+function normalizeAppearanceSettings(input: AppearanceSettingsInput): AppearanceSettingsOutput {
+  const customThemesInput = input.customThemes ?? {};
   const customThemes: Record<string, AppearanceTheme> = {};
 
   for (const [rawId, rawTheme] of Object.entries(customThemesInput)) {
@@ -236,8 +261,7 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettingsOutput {
 
   const orderedThemeIds: AppearanceThemeId[] = [];
   const seenThemeIds = new Set<string>();
-  const customThemeOrderInput = Array.isArray(input.customThemeOrder) ? input.customThemeOrder : [];
-  for (const rawId of customThemeOrderInput) {
+  for (const rawId of input.customThemeOrder ?? []) {
     const id = decodeOptionalThemeId(rawId);
     if (!id || seenThemeIds.has(id) || customThemes[id] === undefined) {
       continue;
@@ -268,7 +292,7 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettingsOutput {
   };
 }
 
-function encodeAppearanceSettings(value: AppearanceSettingsOutput): unknown {
+function encodeAppearanceSettings(value: AppearanceSettingsOutput): AppearanceSettingsInput {
   return {
     colorScheme: value.colorScheme,
     activeThemeId: value.activeThemeId,
@@ -277,7 +301,7 @@ function encodeAppearanceSettings(value: AppearanceSettingsOutput): unknown {
   };
 }
 
-export const AppearanceSettings = Schema.Unknown.pipe(
+export const AppearanceSettings = AppearanceSettingsWire.pipe(
   Schema.decodeTo(
     AppearanceSettingsValue,
     SchemaTransformation.transformOrFail({
@@ -946,7 +970,10 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
-  appearance: Schema.optionalKey(AppearanceSettings),
+  // Whole-object replacement for appearance settings. Full client-settings decode
+  // normalizes persisted data, but patches must reject malformed appearance
+  // payloads so a bad patch cannot silently replace custom themes with defaults.
+  appearance: Schema.optionalKey(AppearanceSettingsValue),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
