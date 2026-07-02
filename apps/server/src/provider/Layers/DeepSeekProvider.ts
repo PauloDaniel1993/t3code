@@ -21,7 +21,7 @@ const PROVIDER = ProviderDriverKind.make("deepseek");
 const DEEPSEEK_PRESENTATION = {
   displayName: "DeepSeek",
   showInteractionModeToggle: false,
-  requiresNewThreadForModelChange: true,
+  requiresNewThreadForModelChange: false,
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
