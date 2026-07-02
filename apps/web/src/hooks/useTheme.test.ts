@@ -221,6 +221,70 @@ describe("theme failure handling", () => {
     expect(getClientSettings().appearance.colorScheme).toBe("dark");
   });
 
+  it("reconciles storage events into the applied DOM class and settings snapshot", async () => {
+    const localStorage = createStorage();
+    let storageHandler: ((event: StorageEvent) => void) | undefined;
+    const toggle = vi.fn();
+    vi.doMock("react", () => ({
+      useCallback: <A>(callback: A) => callback,
+      useEffect: () => undefined,
+      useMemo: <A>(factory: () => A) => factory(),
+      useSyncExternalStore: (
+        subscribe: (listener: () => void) => () => void,
+        getSnapshot: () => unknown,
+      ) => {
+        const unsubscribe = subscribe(() => undefined);
+        unsubscribe();
+        return getSnapshot();
+      },
+    }));
+    vi.stubGlobal("window", {
+      addEventListener: (type: string, listener: (event: StorageEvent) => void) => {
+        if (type === "storage") storageHandler = listener;
+      },
+      dispatchEvent: () => true,
+      localStorage,
+      matchMedia: () => ({
+        matches: false,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+      removeEventListener: () => undefined,
+    });
+    vi.stubGlobal("document", {
+      body: {},
+      documentElement: {
+        classList: {
+          add: () => undefined,
+          remove: () => undefined,
+          toggle,
+        },
+        offsetHeight: 0,
+        style: {},
+      },
+      querySelector: () => null,
+    });
+    vi.stubGlobal("requestAnimationFrame", (callback: () => void) => {
+      callback();
+      return 1;
+    });
+
+    const { DEFAULT_CLIENT_SETTINGS } = await import("@t3tools/contracts/settings");
+    const { __setClientSettingsForTests, getClientSettings } =
+      await import("../clientSettingsStore");
+    __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
+    const { THEME_STORAGE_KEY, useTheme } = await import("./useTheme");
+
+    expect(useTheme().theme).toBe("system");
+
+    localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    storageHandler?.({ key: THEME_STORAGE_KEY } as StorageEvent);
+
+    expect(toggle).toHaveBeenCalledWith("dark", true);
+    expect(getClientSettings().appearance.colorScheme).toBe("dark");
+    expect(useTheme().theme).toBe("dark");
+  });
+
   it("preserves desktop sync causes and retries after a failed cosmetic sync", async () => {
     const cause = new Error("desktop IPC unavailable");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});

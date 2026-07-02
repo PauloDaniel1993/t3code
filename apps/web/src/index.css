@@ -36,11 +36,8 @@
 
 @theme inline {
   --animate-skeleton: skeleton 2s -1s infinite linear;
-  --font-sans:
-    "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
-    sans-serif;
-  --font-mono:
-    "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  --font-sans: var(--app-ui-font-family);
+  --font-mono: var(--app-mono-font-family);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-success-foreground: var(--success-foreground);
@@ -271,7 +268,13 @@
     sans-serif;
   --app-mono-font-family:
     "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
-  --app-terminal-font-family: var(--app-mono-font-family);
+  --app-terminal-font-family:
+    "JetBrainsMono NFM", "JetBrainsMono NF", "CaskaydiaCove NFM", "CaskaydiaCove NF",
+    "CaskaydiaCove Nerd Font Mono", "CaskaydiaCove Nerd Font", "CaskaydiaMono Nerd Font Mono",
+    "CaskaydiaMono Nerd Font", "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font",
+    "MesloLGS NF", "FiraCode Nerd Font Mono", "FiraCode Nerd Font", "Hack Nerd Font Mono",
+    "Hack Nerd Font", "Cascadia Code PL", "Cascadia Mono PL", "Cascadia Code", "Cascadia Mono",
+    "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
   --app-ui-font-size: 14px;
   --app-chat-font-size: 14px;
   --app-code-font-size: 12px;
@@ -339,7 +342,6 @@
 
 body {
   font-family: var(--app-ui-font-family);
-  font-size: var(--app-ui-font-size);
   margin: 0;
   padding: 0;
 }
@@ -356,6 +358,9 @@ body {
 }
 
 #root {
+  /* Plan 21: Default = exact baseline. Keep bare body text at browser baseline
+     while applying the appearance UI size inside the React app surface. */
+  font-size: var(--app-ui-font-size);
   height: 100%;
   width: 100%;
   max-width: 100%;
