@@ -164,6 +164,7 @@ const makeDefaultOrchestrationReadModel = () => {
         updatedAt: now,
         archivedAt: null,
         latestTurn: null,
+        handoff: null,
         messages: [],
         session: null,
         activities: [],
@@ -179,6 +180,7 @@ const makeDefaultOrchestrationThreadShell = (
   overrides: Partial<OrchestrationThreadShell> = {},
 ): OrchestrationThreadShell => {
   const now = "2026-01-01T00:00:00.000Z";
+  const { handoff = null, ...restOverrides } = overrides;
   return {
     id: defaultThreadId,
     projectId: defaultProjectId,
@@ -197,7 +199,8 @@ const makeDefaultOrchestrationThreadShell = (
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    ...overrides,
+    ...restOverrides,
+    handoff,
   };
 };
 
@@ -1243,7 +1246,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const response = yield* HttpClient.get("/");
       assert.equal(response.status, 200);
+      assert.equal(response.headers["cache-control"], "no-store");
+      assert.equal(response.headers["x-content-type-options"], "nosniff");
       assert.include(yield* response.text, "router-static-ok");
+
+      const fallbackResponse = yield* HttpClient.get("/@vite/client");
+      assert.equal(fallbackResponse.status, 200);
+      assert.equal(fallbackResponse.headers["cache-control"], "no-store");
+      assert.equal(fallbackResponse.headers["x-content-type-options"], "nosniff");
+      assert.include(yield* fallbackResponse.text, "router-static-ok");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -5494,6 +5505,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             updatedAt: now,
             archivedAt: null,
             latestTurn: null,
+            handoff: null,
             messages: [],
             session: null,
             activities: [],

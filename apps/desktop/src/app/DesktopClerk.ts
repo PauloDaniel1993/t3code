@@ -52,6 +52,10 @@ export class DesktopClerk extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopClerk") {}
 
+type DesktopClerkBridge = ReturnType<typeof createDesktopClerkBridge>;
+
+let earlyDesktopClerkBridge: DesktopClerkBridge | undefined;
+
 export function resolveDesktopClerkFrontendApiHostname(
   publishableKey: string | undefined,
 ): string | undefined {
@@ -86,7 +90,9 @@ export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   yield* Effect.acquireRelease(
     Effect.try({
-      try: () => createDesktopClerkBridge(environment.stateDir, environment.isDevelopment),
+      try: () =>
+        earlyDesktopClerkBridge ??
+        createDesktopClerkBridge(environment.stateDir, environment.isDevelopment),
       catch: (cause) =>
         new DesktopClerkBridgeInitializationError({
           stateDir: environment.stateDir,
@@ -96,7 +102,15 @@ export const make = Effect.gen(function* () {
     }),
     (bridge) =>
       Effect.try({
-        try: () => bridge.cleanup(),
+        try: () => {
+          try {
+            bridge.cleanup();
+          } finally {
+            if (bridge === earlyDesktopClerkBridge) {
+              earlyDesktopClerkBridge = undefined;
+            }
+          }
+        },
         catch: (cause) =>
           new DesktopClerkBridgeCleanupError({
             stateDir: environment.stateDir,
@@ -131,5 +145,12 @@ export const make = Effect.gen(function* () {
     }).pipe(Effect.withSpan("desktop.clerk.configure")),
   });
 });
+
+export function initializeDesktopClerkBridgeEarly(input: {
+  readonly stateDir: string;
+  readonly isDevelopment: boolean;
+}): void {
+  earlyDesktopClerkBridge ??= createDesktopClerkBridge(input.stateDir, input.isDevelopment);
+}
 
 export const layer = Layer.effect(DesktopClerk, make);

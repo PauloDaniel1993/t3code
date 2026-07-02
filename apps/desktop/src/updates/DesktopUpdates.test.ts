@@ -131,9 +131,11 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     processArch: "x64",
     appVersion: "1.2.3",
     appPath: "/repo",
+    executablePath: "/repo/T3 Code",
     isPackaged: true,
     resourcesPath: "/missing/resources",
     runningUnderArm64Translation: false,
+    localInstallMetadata: Option.none(),
   }).pipe(
     Layer.provide(
       Layer.mergeAll(

@@ -17,6 +17,7 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
+import { DEFAULT_TERMINAL_FONT_FAMILY } from "@t3tools/contracts/settings";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
@@ -33,6 +34,7 @@ import {
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { cn } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
+import { runWithDocumentScrollPreserved } from "~/lib/terminalFocus";
 import { useOpenInPreferredEditor } from "../editorPreferences";
 import {
   collectWrappedTerminalLinkLine,
@@ -59,16 +61,20 @@ import {
   type ThreadTerminalGroup,
 } from "../types";
 import { readLocalApi } from "~/localApi";
+import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useAttachedTerminalSession } from "../state/terminalSessions";
 import { serverEnvironment } from "../state/server";
 import { previewEnvironment } from "../state/preview";
 import { terminalEnvironment } from "../state/terminal";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useClientSettings } from "../hooks/useSettings";
+import { resolveAppearanceTheme } from "~/appearance/appearanceThemes";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
+const RESET_MOUSE_TRACKING_MODES = "\u001b[?9l\u001b[?1000l\u001b[?1002l\u001b[?1003l";
 
 function maxDrawerHeight(): number {
   if (typeof window === "undefined") return DEFAULT_THREAD_TERMINAL_HEIGHT;
@@ -92,6 +98,12 @@ function writeTerminalBuffer(terminal: Terminal, buffer: string): void {
   }
 }
 
+function resetTerminalMouseTracking(terminal: Terminal): void {
+  if (shouldResetStaleTerminalMouseTracking(true, false, terminal.modes.mouseTrackingMode)) {
+    terminal.write(RESET_MOUSE_TRACKING_MODES);
+  }
+}
+
 function fitTerminalSafely(fitAddon: FitAddon): boolean {
   try {
     fitAddon.fit();
@@ -99,6 +111,11 @@ function fitTerminalSafely(fitAddon: FitAddon): boolean {
   } catch {
     return false;
   }
+}
+
+function resolveTerminalFontFamily(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_TERMINAL_FONT_FAMILY;
 }
 
 function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefined): string {
@@ -268,6 +285,33 @@ export function shouldHandleTerminalSelectionMouseUp(
   return selectionGestureActive && button === 0;
 }
 
+export function shouldClearTerminalSelectionForBufferUpdate(
+  previousBuffer: string,
+  nextBuffer: string,
+): boolean {
+  return !(nextBuffer.length >= previousBuffer.length && nextBuffer.startsWith(previousBuffer));
+}
+
+export function shouldCopyTerminalSelectionShortcut(
+  event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+  hasSelection: boolean,
+): boolean {
+  if (!hasSelection || event.altKey || event.shiftKey) {
+    return false;
+  }
+  return (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c";
+}
+
+export function shouldResetStaleTerminalMouseTracking(
+  previousHasRunningSubprocess: boolean,
+  currentHasRunningSubprocess: boolean,
+  mouseTrackingMode: Terminal["modes"]["mouseTrackingMode"],
+): boolean {
+  return (
+    previousHasRunningSubprocess && !currentHasRunningSubprocess && mouseTrackingMode !== "none"
+  );
+}
+
 interface TerminalViewportProps {
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
@@ -310,6 +354,15 @@ export function TerminalViewport({
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const terminalTypography = useClientSettings((settings) => {
+    const activeTheme = resolveAppearanceTheme(settings.appearance).theme;
+    return {
+      fontFamily: resolveTerminalFontFamily(activeTheme.terminalFontFamily),
+      fontSize: activeTheme.terminalFontSizePx,
+    };
+  });
+  const terminalFontFamily = terminalTypography.fontFamily;
+  const terminalFontSize = terminalTypography.fontSize;
   const environmentId = threadRef.environmentId;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
@@ -367,11 +420,13 @@ export function TerminalViewport({
   const terminalError = terminalSession.error;
   const terminalStatus = terminalSession.status;
   const terminalVersion = terminalSession.version;
+  const terminalHasRunningSubprocess = terminalSession.hasRunningSubprocess;
   const previousSessionRef = useRef({
     buffer: terminalBuffer,
     error: terminalError,
     status: terminalStatus,
     version: terminalVersion,
+    hasRunningSubprocess: terminalHasRunningSubprocess,
   });
 
   useEffect(() => {
@@ -388,10 +443,9 @@ export function TerminalViewport({
     const terminal = new Terminal({
       cursorBlink: true,
       lineHeight: 1,
-      fontSize: 12,
+      fontSize: terminalFontSize,
       scrollback: 5_000,
-      fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: terminalFontFamily,
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);
@@ -405,6 +459,7 @@ export function TerminalViewport({
       status: "closed",
       error: null,
       version: 0,
+      hasRunningSubprocess: false,
     };
 
     const clearSelectionAction = () => {
@@ -472,15 +527,29 @@ export function TerminalViewport({
       selectionActionOpenRef.current = true;
       try {
         const clicked = await localApi.contextMenu.show(
-          [{ id: "add-to-chat", label: "Add to chat" }],
+          [
+            { id: "copy", label: "Copy" },
+            { id: "add-to-chat", label: "Add to chat" },
+          ],
           nextAction.position,
         );
-        if (requestId !== selectionActionRequestIdRef.current || clicked !== "add-to-chat") {
+        if (requestId !== selectionActionRequestIdRef.current) {
           return;
         }
-        handleAddTerminalContext(nextAction.selection);
-        terminalRef.current?.clearSelection();
-        terminalRef.current?.focus();
+        if (clicked === "copy") {
+          await writeTextToClipboard(nextAction.selection.text, "terminal selection");
+        } else if (clicked === "add-to-chat") {
+          handleAddTerminalContext(nextAction.selection);
+          terminalRef.current?.clearSelection();
+        } else {
+          return;
+        }
+        const terminalForFocus = terminalRef.current;
+        if (terminalForFocus) {
+          runWithDocumentScrollPreserved(() => {
+            terminalForFocus.focus();
+          });
+        }
       } finally {
         selectionActionOpenRef.current = false;
       }
@@ -497,6 +566,13 @@ export function TerminalViewport({
     };
 
     terminal.attachCustomKeyEventHandler((event) => {
+      if (shouldCopyTerminalSelectionShortcut(event, terminal.hasSelection())) {
+        event.preventDefault();
+        event.stopPropagation();
+        void writeTextToClipboard(terminal.getSelection(), "terminal selection");
+        return false;
+      }
+
       const currentKeybindings = keybindingsRef.current;
       const options = { context: { terminalFocus: true, terminalOpen: true } };
       if (
@@ -648,20 +724,22 @@ export function TerminalViewport({
         return;
       }
       selectionPointerRef.current = { x: event.clientX, y: event.clientY };
-      const delay = terminalSelectionActionDelayForClickCount(event.detail);
-      selectionActionTimerRef.current = window.setTimeout(() => {
-        selectionActionTimerRef.current = null;
-        window.requestAnimationFrame(() => {
-          void showSelectionAction();
-        });
-      }, delay);
     };
     const handlePointerDown = (event: PointerEvent) => {
       clearSelectionAction();
       selectionGestureActiveRef.current = event.button === 0;
     };
+    const handleContextMenu = (event: MouseEvent) => {
+      if (!localApi || !terminalRef.current?.hasSelection()) {
+        return;
+      }
+      event.preventDefault();
+      selectionPointerRef.current = { x: event.clientX, y: event.clientY };
+      void showSelectionAction();
+    };
     window.addEventListener("mouseup", handleMouseUp);
     mount.addEventListener("pointerdown", handlePointerDown);
+    mount.addEventListener("contextmenu", handleContextMenu);
 
     const themeObserver = new MutationObserver(() => {
       const activeTerminal = terminalRef.current;
@@ -697,6 +775,7 @@ export function TerminalViewport({
       }
       window.removeEventListener("mouseup", handleMouseUp);
       mount.removeEventListener("pointerdown", handlePointerDown);
+      mount.removeEventListener("contextmenu", handleContextMenu);
       themeObserver.disconnect();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -709,11 +788,31 @@ export function TerminalViewport({
 
   useEffect(() => {
     const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal) return;
+
+    terminal.options.fontFamily = terminalFontFamily;
+    terminal.options.fontSize = terminalFontSize;
+    const frame = window.requestAnimationFrame(() => {
+      if (fitAddon) {
+        fitTerminalSafely(fitAddon);
+      }
+      terminal.refresh(0, terminal.rows - 1);
+      void resizeTerminal(terminal.cols, terminal.rows);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [resizeTerminal, terminalFontFamily, terminalFontSize]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
     const current = {
       buffer: terminalBuffer,
       error: terminalError,
       status: terminalStatus,
       version: terminalVersion,
+      hasRunningSubprocess: terminalHasRunningSubprocess,
     };
     if (!terminal) {
       previousSessionRef.current = current;
@@ -722,18 +821,23 @@ export function TerminalViewport({
 
     const previous = previousSessionRef.current;
     if (current.version === previous.version) {
+      if (previous.hasRunningSubprocess && !current.hasRunningSubprocess) {
+        resetTerminalMouseTracking(terminal);
+        previousSessionRef.current = current;
+      }
       return;
     }
 
-    if (
-      current.buffer.length >= previous.buffer.length &&
-      current.buffer.startsWith(previous.buffer)
-    ) {
+    const shouldClearSelection = shouldClearTerminalSelectionForBufferUpdate(
+      previous.buffer,
+      current.buffer,
+    );
+    if (!shouldClearSelection) {
       terminal.write(current.buffer.slice(previous.buffer.length));
     } else {
       writeTerminalBuffer(terminal, current.buffer);
+      terminal.clearSelection();
     }
-    terminal.clearSelection();
 
     if (current.error !== null && current.error !== previous.error) {
       writeSystemMessage(terminal, current.error);
@@ -741,6 +845,9 @@ export function TerminalViewport({
 
     if (current.status === "running") {
       hasHandledExitRef.current = false;
+      if (previous.hasRunningSubprocess && !current.hasRunningSubprocess) {
+        resetTerminalMouseTracking(terminal);
+      }
     } else if (
       (current.status === "closed" || current.status === "exited") &&
       current.status !== previous.status &&
@@ -760,18 +867,29 @@ export function TerminalViewport({
 
     if (previous.version === 0 && autoFocus) {
       window.requestAnimationFrame(() => {
-        terminal.focus();
+        runWithDocumentScrollPreserved(() => {
+          terminal.focus();
+        });
       });
     }
     previousSessionRef.current = current;
-  }, [autoFocus, terminalBuffer, terminalError, terminalStatus, terminalVersion]);
+  }, [
+    autoFocus,
+    terminalBuffer,
+    terminalError,
+    terminalHasRunningSubprocess,
+    terminalStatus,
+    terminalVersion,
+  ]);
 
   useEffect(() => {
     if (!autoFocus) return;
     const terminal = terminalRef.current;
     if (!terminal) return;
     const frame = window.requestAnimationFrame(() => {
-      terminal.focus();
+      runWithDocumentScrollPreserved(() => {
+        terminal.focus();
+      });
     });
     return () => {
       window.cancelAnimationFrame(frame);

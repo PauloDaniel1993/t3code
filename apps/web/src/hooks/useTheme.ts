@@ -2,6 +2,11 @@ import type { DesktopBridge } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import {
+  getClientSettings,
+  useClientSettings,
+  useUpdateClientSettings,
+} from "../clientSettingsStore";
 
 const ThemePreference = Schema.Literals(["light", "dark", "system"]);
 type Theme = typeof ThemePreference.Type;
@@ -124,6 +129,10 @@ function getStored(): Theme {
   }
 }
 
+function getCurrentThemePreference(): Theme {
+  return getClientSettings().appearance.colorScheme;
+}
+
 function ensureThemeColorMetaTag(): HTMLMetaElement {
   let element = document.querySelector<HTMLMetaElement>(DYNAMIC_THEME_COLOR_SELECTOR);
   if (element) {
@@ -239,7 +248,7 @@ if (typeof document !== "undefined" && typeof window !== "undefined") {
 
 function getSnapshot(): ThemeSnapshot {
   if (typeof window === "undefined") return DEFAULT_THEME_SNAPSHOT;
-  const theme = getStored();
+  const theme = getCurrentThemePreference();
   const systemDark = theme === "system" ? getSystemDark() : false;
 
   if (lastSnapshot && lastSnapshot.theme === theme && lastSnapshot.systemDark === systemDark) {
@@ -261,7 +270,7 @@ function subscribe(listener: () => void): () => void {
   // Listen for system preference changes
   const mq = typeof window.matchMedia === "function" ? window.matchMedia(MEDIA_QUERY) : null;
   const handleChange = () => {
-    if (getStored() === "system") applyTheme("system", true);
+    if (getCurrentThemePreference() === "system") applyTheme("system", true);
     emitChange();
   };
   mq?.addEventListener("change", handleChange);
@@ -285,35 +294,44 @@ function subscribe(listener: () => void): () => void {
 
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-  const theme = snapshot.theme;
+  const theme = useClientSettings((settings) => settings.appearance.colorScheme);
+  const updateClientSettings = useUpdateClientSettings();
 
   const resolvedTheme: "light" | "dark" =
     theme === "system" ? (snapshot.systemDark ? "dark" : "light") : theme;
 
-  const setTheme = useCallback((next: Theme) => {
-    if (typeof window === "undefined") return;
-    try {
-      writeThemePreference(next);
-    } catch (cause) {
-      const error = isThemeStorageError(cause)
-        ? cause
-        : new ThemeStorageError({
-            operation: "write",
-            storageKey: STORAGE_KEY,
-            theme: next,
-            cause,
-          });
-      console.error(error.message, {
-        operation: error.operation,
-        storageKey: error.storageKey,
-        theme: next,
-        ...safeErrorLogAttributes(error),
+  const setTheme = useCallback(
+    (next: Theme) => {
+      if (typeof window === "undefined") return;
+      try {
+        writeThemePreference(next);
+      } catch (cause) {
+        const error = isThemeStorageError(cause)
+          ? cause
+          : new ThemeStorageError({
+              operation: "write",
+              storageKey: STORAGE_KEY,
+              theme: next,
+              cause,
+            });
+        console.error(error.message, {
+          operation: error.operation,
+          storageKey: error.storageKey,
+          theme: next,
+          ...safeErrorLogAttributes(error),
+        });
+      }
+      updateClientSettings({
+        appearance: {
+          ...getClientSettings().appearance,
+          colorScheme: next,
+        },
       });
-      return;
-    }
-    applyTheme(next, true);
-    emitChange();
-  }, []);
+      applyTheme(next, true);
+      emitChange();
+    },
+    [updateClientSettings],
+  );
 
   // Keep DOM in sync on mount/change
   useEffect(() => {

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   resolveTerminalSelectionActionPosition,
+  shouldClearTerminalSelectionForBufferUpdate,
+  shouldCopyTerminalSelectionShortcut,
   shouldHandleTerminalSelectionMouseUp,
+  shouldResetStaleTerminalMouseTracking,
   terminalSelectionActionDelayForClickCount,
 } from "./ThreadTerminalDrawer";
 
@@ -71,5 +74,56 @@ describe("resolveTerminalSelectionActionPosition", () => {
     expect(shouldHandleTerminalSelectionMouseUp(true, 0)).toBe(true);
     expect(shouldHandleTerminalSelectionMouseUp(false, 0)).toBe(false);
     expect(shouldHandleTerminalSelectionMouseUp(true, 1)).toBe(false);
+  });
+
+  it("keeps terminal selection for append-only buffer updates", () => {
+    expect(shouldClearTerminalSelectionForBufferUpdate("alpha", "alpha beta")).toBe(false);
+    expect(shouldClearTerminalSelectionForBufferUpdate("", "alpha")).toBe(false);
+  });
+
+  it("clears terminal selection when a buffer update rewrites existing output", () => {
+    expect(shouldClearTerminalSelectionForBufferUpdate("alpha", "beta")).toBe(true);
+    expect(shouldClearTerminalSelectionForBufferUpdate("alpha beta", "alpha")).toBe(true);
+  });
+
+  it("copies terminal selection on platform copy shortcuts", () => {
+    expect(
+      shouldCopyTerminalSelectionShortcut(
+        { key: "c", ctrlKey: true, metaKey: false, altKey: false, shiftKey: false },
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldCopyTerminalSelectionShortcut(
+        { key: "C", ctrlKey: false, metaKey: true, altKey: false, shiftKey: false },
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not intercept Ctrl+C when there is no terminal selection", () => {
+    expect(
+      shouldCopyTerminalSelectionShortcut(
+        { key: "c", ctrlKey: true, metaKey: false, altKey: false, shiftKey: false },
+        false,
+      ),
+    ).toBe(false);
+    expect(
+      shouldCopyTerminalSelectionShortcut(
+        { key: "c", ctrlKey: true, metaKey: false, altKey: false, shiftKey: true },
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it("resets stale terminal mouse tracking after a subprocess exits", () => {
+    expect(shouldResetStaleTerminalMouseTracking(true, false, "any")).toBe(true);
+    expect(shouldResetStaleTerminalMouseTracking(true, false, "drag")).toBe(true);
+  });
+
+  it("does not reset terminal mouse tracking while a subprocess is still active", () => {
+    expect(shouldResetStaleTerminalMouseTracking(true, true, "any")).toBe(false);
+    expect(shouldResetStaleTerminalMouseTracking(false, false, "any")).toBe(false);
+    expect(shouldResetStaleTerminalMouseTracking(true, false, "none")).toBe(false);
   });
 });
