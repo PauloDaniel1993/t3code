@@ -8,25 +8,17 @@ import {
   type ClientSettings,
 } from "@t3tools/contracts/settings";
 import { duplicateAppearanceTheme, updateCustomAppearanceTheme } from "./appearanceThemes";
+import { THEME_STORAGE_KEY, readThemePreference } from "./legacyTheme";
 
-export const LEGACY_THEME_STORAGE_KEY = "t3code:theme";
+export const LEGACY_THEME_STORAGE_KEY = THEME_STORAGE_KEY;
 export const MIGRATED_APPEARANCE_THEME_ID = "custom_migrated";
 export const MIGRATED_APPEARANCE_THEME_NAME = "Migrated";
 
-function readLegacyThemePreferenceFromStorage(): AppearanceColorScheme | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const raw = window.localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
-  return raw === "light" || raw === "dark" || raw === "system" ? raw : null;
-}
-
 export function readLegacyThemePreferenceSafely(
   onError?: (error: unknown) => void,
-): AppearanceColorScheme | null {
+): ReturnType<typeof readThemePreference> {
   try {
-    return readLegacyThemePreferenceFromStorage();
+    return readThemePreference();
   } catch (error) {
     onError?.(error);
     return null;

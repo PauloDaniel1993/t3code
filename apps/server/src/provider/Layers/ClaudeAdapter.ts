@@ -2717,6 +2717,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      case "task_updated": {
+        // Terminal states arrive via task_notification; the rest of the patch
+        // (pause/background bookkeeping) has no runtime event, so only a
+        // changed description is worth surfacing.
+        const updatedDescription = message.patch?.description?.trim();
+        if (updatedDescription) {
+          yield* offerRuntimeEvent({
+            ...base,
+            type: "task.progress",
+            payload: {
+              taskId: RuntimeTaskId.make(message.task_id),
+              description: updatedDescription,
+            },
+          });
+        }
+        return;
+      }
       case "files_persisted":
         yield* offerRuntimeEvent({
           ...base,

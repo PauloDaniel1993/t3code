@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import {
   APPEARANCE_BUILT_IN_THEME_IDS,
   AppearanceTheme,
+  DEFAULT_APPEARANCE_ACTIVE_THEME_ID,
   DEFAULT_APPEARANCE_CHAT_FONT_SIZE_PX,
   DEFAULT_APPEARANCE_CODE_FONT_SIZE_PX,
   DEFAULT_APPEARANCE_DENSITY,
@@ -11,6 +12,7 @@ import {
   DEFAULT_APPEARANCE_UI_FONT_FAMILY,
   DEFAULT_APPEARANCE_UI_FONT_SIZE_PX,
   DEFAULT_TERMINAL_FONT_FAMILY,
+  HexColor,
   READABLE_APPEARANCE_UI_FONT_FAMILY,
   type AppearanceBuiltInThemeId,
   type AppearanceColorScheme,
@@ -62,9 +64,9 @@ export interface AppearanceValidationResult {
 }
 
 export const MINIMUM_APPEARANCE_CONTRAST_RATIO = 4.5;
-export const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 const decodeAppearanceTheme = Schema.decodeUnknownSync(AppearanceTheme);
+const isHexColor = Schema.is(HexColor);
 const BUILT_IN_THEME_ID_SET = new Set<string>(APPEARANCE_BUILT_IN_THEME_IDS);
 
 const defaultLightVariant: AppearanceThemeVariant = {
@@ -346,6 +348,7 @@ export function duplicateAppearanceTheme(
     id,
     name,
   });
+  validateAppearanceThemeOrThrow(theme);
 
   return {
     ...appearance,
@@ -396,7 +399,10 @@ export function deleteCustomAppearanceTheme(
   const { [themeId]: _deleted, ...customThemes } = appearance.customThemes;
   return {
     ...appearance,
-    activeThemeId: appearance.activeThemeId === themeId ? "default" : appearance.activeThemeId,
+    activeThemeId:
+      appearance.activeThemeId === themeId
+        ? DEFAULT_APPEARANCE_ACTIVE_THEME_ID
+        : appearance.activeThemeId,
     customThemeOrder: appearance.customThemeOrder.filter((id) => id !== themeId),
     customThemes,
   };
@@ -453,14 +459,14 @@ export function resetCustomAppearanceThemeField(
 }
 
 export function validateHexColor(value: string): AppearanceValidationResult {
-  return HEX_COLOR_PATTERN.test(value.trim())
+  return isHexColor(value.trim())
     ? { isValid: true, error: null }
     : { isValid: false, error: "Use a #RRGGBB color." };
 }
 
 function parseHexColor(value: string): { r: number; g: number; b: number } | null {
   const color = value.trim();
-  if (!HEX_COLOR_PATTERN.test(color)) {
+  if (!isHexColor(color)) {
     return null;
   }
   return {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings } from "@t3tools/contracts/settings";
+import {
+  DEFAULT_APPEARANCE_SETTINGS,
+  type AppearanceSettings,
+  type AppearanceTheme,
+} from "@t3tools/contracts/settings";
 import {
   BUILT_IN_APPEARANCE_THEMES,
   deleteCustomAppearanceTheme,
@@ -48,6 +52,38 @@ describe("appearance theme domain", () => {
       id: "custom_default_2",
       name: "Default copy 2",
     });
+  });
+
+  it("validates duplicated themes before persisting the copy", () => {
+    const invalidTheme: AppearanceTheme = {
+      ...BUILT_IN_APPEARANCE_THEMES.default,
+      id: "custom_invalid",
+      name: "Invalid",
+      variants: {
+        ...BUILT_IN_APPEARANCE_THEMES.default.variants,
+        light: {
+          ...BUILT_IN_APPEARANCE_THEMES.default.variants.light,
+          foreground: "#FFFFFF",
+        },
+      },
+    };
+    const appearance: AppearanceSettings = {
+      ...DEFAULT_APPEARANCE_SETTINGS,
+      activeThemeId: "custom_invalid",
+      customThemeOrder: ["custom_invalid"],
+      customThemes: {
+        custom_invalid: invalidTheme,
+      },
+    };
+
+    expect(() =>
+      duplicateAppearanceTheme(appearance, "custom_invalid", {
+        id: "custom_invalid_copy",
+        name: "Invalid copy",
+      }),
+    ).toThrow("Foreground and background need at least 4.5:1 contrast.");
+    expect(appearance.customThemeOrder).toEqual(["custom_invalid"]);
+    expect(appearance.customThemes).not.toHaveProperty("custom_invalid_copy");
   });
 
   it("renames custom themes with trimmed names", () => {

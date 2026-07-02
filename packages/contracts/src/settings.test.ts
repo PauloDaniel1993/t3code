@@ -10,6 +10,7 @@ import {
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 import {
+  AppearanceSettings,
   AppearanceTheme,
   ClientSettingsPatch,
   ClientSettingsSchema,
@@ -100,6 +101,29 @@ describe("ClientSettings word wrap", () => {
 });
 
 describe("ClientSettings.appearance", () => {
+  it("rejects malformed appearance patches without changing existing custom themes", () => {
+    const existingSettings = decodeClientSettings({
+      appearance: {
+        colorScheme: "dark",
+        activeThemeId: "custom_readable",
+        customThemeOrder: ["custom_readable"],
+        customThemes: {
+          custom_readable: makeCustomAppearanceTheme(),
+        },
+      },
+    });
+
+    expect(() =>
+      decodeClientSettingsPatch({
+        appearance: {
+          customThemes: 42,
+        },
+      }),
+    ).toThrow();
+    expect(existingSettings.appearance.customThemeOrder).toEqual(["custom_readable"]);
+    expect(existingSettings.appearance.customThemes.custom_readable?.name).toBe("Readable Copy");
+  });
+
   it("defaults missing appearance settings to built-in Default in System mode", () => {
     const decoded = decodeClientSettings({});
 
@@ -190,6 +214,57 @@ describe("ClientSettings.appearance", () => {
     expect(decoded.appearance.activeThemeId).toBe(DEFAULT_APPEARANCE_ACTIVE_THEME_ID);
     expect(decoded.appearance.customThemeOrder).toEqual(["custom_valid"]);
     expect(Object.keys(decoded.appearance.customThemes)).toEqual(["custom_valid"]);
+  });
+
+  it("discards uppercase built-in shadow custom theme ids", () => {
+    const decoded = decodeClientSettings({
+      appearance: {
+        activeThemeId: "Default",
+        customThemeOrder: ["Default", "custom_valid"],
+        customThemes: {
+          Default: makeCustomAppearanceTheme({ id: "Default", name: "Shadow Default" }),
+          custom_valid: makeCustomAppearanceTheme({ id: "custom_valid", name: "Valid" }),
+        },
+      },
+    });
+
+    expect(decoded.appearance.activeThemeId).toBe(DEFAULT_APPEARANCE_ACTIVE_THEME_ID);
+    expect(decoded.appearance.customThemeOrder).toEqual(["custom_valid"]);
+    expect(decoded.appearance.customThemes).not.toHaveProperty("Default");
+    expect(decoded.appearance.customThemes.custom_valid?.name).toBe("Valid");
+  });
+
+  it("keeps the appearance encoded type structural", () => {
+    type AppearanceSettingsEncoded = Schema.Codec.Encoded<typeof AppearanceSettings>;
+    type ExpectedAppearanceSettingsEncoded = {
+      readonly colorScheme?: string;
+      readonly activeThemeId?: string;
+      readonly customThemeOrder?: ReadonlyArray<string>;
+      readonly customThemes?: Record<string, Record<string, unknown>>;
+    };
+    const encodedTypeIsStructural: AppearanceSettingsEncoded extends ExpectedAppearanceSettingsEncoded
+      ? true
+      : never = true;
+    const decoded = decodeClientSettings({
+      appearance: {
+        colorScheme: "dark",
+        activeThemeId: "custom_readable",
+        customThemeOrder: ["custom_readable"],
+        customThemes: {
+          custom_readable: makeCustomAppearanceTheme(),
+        },
+      },
+    });
+
+    expect(encodedTypeIsStructural).toBe(true);
+    expect(encodeClientSettings(decoded).appearance).toEqual({
+      colorScheme: "dark",
+      activeThemeId: "custom_readable",
+      customThemeOrder: ["custom_readable"],
+      customThemes: {
+        custom_readable: decoded.appearance.customThemes.custom_readable,
+      },
+    });
   });
 
   it("rejects unsafe custom theme colors, sizes, density, variant data, and id shape", () => {
