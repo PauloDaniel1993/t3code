@@ -30,7 +30,7 @@ import {
 } from "./TextGenerationUtils.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 
-const DEEPSEEK_TEXT_GENERATION_TIMEOUT_MS = 180_000;
+const DEEPSEEK_TEXT_GENERATION_TIMEOUT_MS = 90_000;
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
