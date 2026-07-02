@@ -4,7 +4,6 @@ import type {
   OrchestrationCheckpointSummary,
   OrchestrationLatestTurn,
   OrchestrationMessage,
-  OrchestrationMessageSource,
   OrchestrationProposedPlan,
   OrchestrationSession,
   ProjectScript as ContractProjectScript,
@@ -38,9 +37,8 @@ export interface ChatImageAttachment extends ContractChatImageAttachment {
 
 export type ChatAttachment = ChatImageAttachment;
 
-export interface ChatMessage extends Omit<OrchestrationMessage, "attachments" | "source"> {
+export interface ChatMessage extends Omit<OrchestrationMessage, "attachments"> {
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
-  readonly source?: OrchestrationMessageSource | undefined;
 }
 
 export type ProposedPlan = OrchestrationProposedPlan;
@@ -48,9 +46,7 @@ export type TurnDiffFileChange = OrchestrationCheckpointFile;
 export type TurnDiffSummary = OrchestrationCheckpointSummary;
 
 export type Project = EnvironmentProject;
-export interface Thread extends Omit<EnvironmentThread, "messages"> {
-  readonly messages: ReadonlyArray<ChatMessage>;
-}
+export type Thread = EnvironmentThread;
 export type ThreadShell = EnvironmentThreadShell;
 
 export interface ThreadTurnState {

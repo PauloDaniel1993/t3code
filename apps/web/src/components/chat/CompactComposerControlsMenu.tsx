@@ -1,6 +1,6 @@
 import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
-import { EllipsisIcon, GitBranchPlusIcon, ListTodoIcon } from "lucide-react";
+import { EllipsisIcon, ListTodoIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import {
   Menu,
@@ -20,10 +20,8 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   runtimeMode: RuntimeMode;
   showInteractionModeToggle: boolean;
   traitsMenuContent?: ReactNode;
-  handoffDisabledReason: string | null;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
-  onOpenHandoff: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   return (
@@ -85,23 +83,6 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
                 : `Show ${props.planSidebarLabel.toLowerCase()} sidebar`}
             </MenuItem>
           </>
-        ) : null}
-        <MenuDivider />
-        <MenuItem
-          disabled={Boolean(props.handoffDisabledReason)}
-          onClick={() => {
-            if (!props.handoffDisabledReason) {
-              props.onOpenHandoff();
-            }
-          }}
-        >
-          <GitBranchPlusIcon className="size-4 shrink-0" />
-          Hand off
-        </MenuItem>
-        {props.handoffDisabledReason ? (
-          <div className="px-2 py-1 text-muted-foreground text-xs">
-            {props.handoffDisabledReason}
-          </div>
         ) : null}
       </MenuPopup>
     </Menu>

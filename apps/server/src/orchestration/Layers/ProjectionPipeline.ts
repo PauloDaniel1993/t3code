@@ -565,7 +565,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       for (const message of messages) {
         if (
           message.role === "user" &&
-          message.source !== "handoff-import" &&
           (latestUserMessageAt === null || message.createdAt > latestUserMessageAt)
         ) {
           latestUserMessageAt = message.createdAt;
@@ -605,7 +604,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             latestTurnId: null,
-            handoff: event.payload.handoff,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
             archivedAt: null,
@@ -766,53 +764,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        case "thread.handoff-bootstrap-completed": {
-          const existingRow = yield* projectionThreadRepository.getById({
-            threadId: event.payload.threadId,
-          });
-          if (Option.isNone(existingRow) || existingRow.value.handoff === null) {
-            return;
-          }
-          yield* projectionThreadRepository.upsert({
-            ...existingRow.value,
-            handoff: {
-              ...existingRow.value.handoff,
-              bootstrapStatus: "completed",
-              bootstrapMessageId: event.payload.bootstrapMessageId,
-              bootstrapCompletedAt: event.payload.completedAt,
-              ...(event.payload.compressionSummaries !== undefined
-                ? {
-                    compression: {
-                      summaries: event.payload.compressionSummaries,
-                    },
-                  }
-                : {}),
-            },
-            updatedAt: event.occurredAt,
-          });
-          return;
-        }
-
-        case "thread.handoff-bootstrap-skipped": {
-          const existingRow = yield* projectionThreadRepository.getById({
-            threadId: event.payload.threadId,
-          });
-          if (Option.isNone(existingRow) || existingRow.value.handoff === null) {
-            return;
-          }
-          yield* projectionThreadRepository.upsert({
-            ...existingRow.value,
-            handoff: {
-              ...existingRow.value.handoff,
-              bootstrapStatus: "skipped",
-              bootstrapSkippedAt: event.payload.skippedAt,
-              bootstrapSkipReason: event.payload.reason,
-            },
-            updatedAt: event.occurredAt,
-          });
-          return;
-        }
-
         case "thread.reverted": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -891,13 +842,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,
-            source: event.payload.source,
-            ...(event.payload.sourceThreadId !== undefined
-              ? { sourceThreadId: event.payload.sourceThreadId }
-              : {}),
-            ...(event.payload.sourceMessageId !== undefined
-              ? { sourceMessageId: event.payload.sourceMessageId }
-              : {}),
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
           });

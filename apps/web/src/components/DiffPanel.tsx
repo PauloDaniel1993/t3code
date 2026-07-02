@@ -6,7 +6,6 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import type { ScopedThreadRef, TurnId } from "@t3tools/contracts";
-import type { AppearanceDiffMarkerStyle } from "@t3tools/contracts/settings";
 import {
   ArrowRightIcon,
   CheckIcon,
@@ -19,7 +18,6 @@ import {
   TextWrapIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { resolveAppearanceTheme } from "~/appearance/appearanceThemes";
 import { useOpenInPreferredEditor } from "../editorPreferences";
 import { type DraftId } from "../composerDraftStore";
 import { openDiffFilePrimaryAction } from "../diffFileActions";
@@ -85,9 +83,8 @@ const DIFF_PANEL_UNSAFE_CSS = `
 [data-file],
 [data-error-wrapper],
 [data-virtualizer-buffer] {
-  --diffs-header-font-family: var(--app-ui-font-family) !important;
-  --diffs-font-family: var(--app-mono-font-family) !important;
-  --diffs-font-size: var(--app-code-font-size) !important;
+  --diffs-header-font-family: var(--font-sans) !important;
+  --diffs-font-family: var(--font-mono) !important;
   --diffs-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
   --diffs-light-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
   --diffs-dark-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
@@ -129,7 +126,7 @@ const DIFF_PANEL_UNSAFE_CSS = `
   background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
   border-bottom: 1px solid var(--border) !important;
   align-items: center !important;
-  font-family: var(--app-ui-font-family) !important;
+  font-family: var(--font-sans) !important;
   font-size: 12px !important;
   line-height: 1 !important;
   min-height: 32px !important;
@@ -149,7 +146,7 @@ const DIFF_PANEL_UNSAFE_CSS = `
 
 [data-diffs-header] [data-additions-count],
 [data-diffs-header] [data-deletions-count] {
-  font-family: var(--app-mono-font-family) !important;
+  font-family: var(--font-mono) !important;
   font-size: 11px !important;
   font-variant-numeric: tabular-nums;
   line-height: 1 !important;
@@ -169,7 +166,7 @@ const DIFF_PANEL_UNSAFE_CSS = `
   text-decoration: underline;
   text-decoration-color: transparent;
   text-underline-offset: 2px;
-  font-family: var(--app-ui-font-family) !important;
+  font-family: var(--font-sans) !important;
 }
 
 [data-title]:hover {
@@ -185,15 +182,9 @@ interface DiffPanelProps {
 
 export { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 
-function resolveDiffIndicators(style: AppearanceDiffMarkerStyle): "bars" | "classic" {
-  return style === "color-and-markers" ? "classic" : "bars";
-}
-
 export default function DiffPanel({ mode = "inline", composerDraftTarget }: DiffPanelProps) {
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
-  const activeAppearanceTheme = resolveAppearanceTheme(settings.appearance).theme;
-  const diffIndicators = resolveDiffIndicators(activeAppearanceTheme.diffMarkerStyle);
   const [diffRenderMode, setDiffRenderMode] = useState<DiffRenderMode>("stacked");
   const [wordWrap, setWordWrap] = useState(settings.wordWrap);
   const [diffIgnoreWhitespace, setDiffIgnoreWhitespace] = useState(settings.diffIgnoreWhitespace);
@@ -851,7 +842,6 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
                   }}
                   options={{
                     diffStyle: diffRenderMode === "split" ? "split" : "unified",
-                    diffIndicators,
                     lineDiffType: "none",
                     overflow: wordWrap ? "wrap" : "scroll",
                     theme: resolveDiffThemeName(resolvedTheme),

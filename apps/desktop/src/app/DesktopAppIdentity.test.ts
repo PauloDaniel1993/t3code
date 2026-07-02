@@ -21,11 +21,9 @@ const defaultEnvironmentInput = {
   processArch: "arm64",
   appVersion: "1.2.3",
   appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
-  executablePath: "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
   isPackaged: true,
   resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
   runningUnderArm64Translation: false,
-  localInstallMetadata: Option.none(),
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
 type TestEnvironmentInput = Partial<DesktopEnvironment.MakeDesktopEnvironmentInput> & {
@@ -33,7 +31,6 @@ type TestEnvironmentInput = Partial<DesktopEnvironment.MakeDesktopEnvironmentInp
 };
 
 interface ElectronAppCalls {
-  readonly appUserModelId: string[];
   readonly setAboutPanelOptions: Array<Electron.AboutPanelOptionsOptions>;
   readonly setDockIcon: string[];
   readonly setName: string[];
@@ -56,10 +53,7 @@ const makeElectronAppLayer = (calls: ElectronAppCalls) =>
       Effect.sync(() => {
         calls.setAboutPanelOptions.push(options);
       }),
-    setAppUserModelId: (id) =>
-      Effect.sync(() => {
-        calls.appUserModelId.push(id);
-      }),
+    setAppUserModelId: () => Effect.void,
     requestSingleInstanceLock: Effect.succeed(true),
     isDefaultProtocolClient: () => Effect.succeed(false),
     setAsDefaultProtocolClient: () => Effect.succeed(true),
@@ -118,7 +112,6 @@ const withIdentity = <A, E, R>(
   } = {},
 ) => {
   const calls: ElectronAppCalls = input.calls ?? {
-    appUserModelId: [],
     setAboutPanelOptions: [],
     setDockIcon: [],
     setName: [],
@@ -152,18 +145,9 @@ describe("DesktopAppIdentity", () => {
     withIdentity(
       Effect.gen(function* () {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
         const userDataPath = yield* identity.resolveUserDataPath;
 
-        assert.equal(
-          userDataPath,
-          environment.path.join(
-            defaultEnvironmentInput.homeDirectory,
-            "Library",
-            "Application Support",
-            "T3 Code (Alpha)",
-          ),
-        );
+        assert.equal(userDataPath, "/Users/alice/Library/Application Support/T3 Code (Alpha)");
       }),
       { legacyPathExists: true },
     ),
@@ -198,7 +182,6 @@ describe("DesktopAppIdentity", () => {
 
   it.effect("configures app identity from the environment commit override", () => {
     const calls: ElectronAppCalls = {
-      appUserModelId: [],
       setAboutPanelOptions: [],
       setDockIcon: [],
       setName: [],
@@ -213,7 +196,6 @@ describe("DesktopAppIdentity", () => {
         assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code (Alpha)");
         assert.equal(calls.setAboutPanelOptions[0]?.applicationVersion, "1.2.3");
         assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
-        assert.deepEqual(calls.appUserModelId, []);
         assert.deepEqual(calls.setDockIcon, ["/icon.png"]);
       }),
       {
@@ -224,36 +206,6 @@ describe("DesktopAppIdentity", () => {
           },
         },
         pngIconPath: Option.some("/icon.png"),
-      },
-    );
-  });
-
-  it.effect("configures local Windows identity overrides", () => {
-    const calls: ElectronAppCalls = {
-      appUserModelId: [],
-      setAboutPanelOptions: [],
-      setDockIcon: [],
-      setName: [],
-    };
-
-    return withIdentity(
-      Effect.gen(function* () {
-        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        yield* identity.configure;
-
-        assert.deepEqual(calls.setName, ["T3 Code (alpha.local)"]);
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code (alpha.local)");
-        assert.deepEqual(calls.appUserModelId, ["com.t3tools.t3code.alpha.local"]);
-      }),
-      {
-        calls,
-        environment: {
-          platform: "win32",
-          env: {
-            T3CODE_DESKTOP_DISPLAY_NAME: "T3 Code (alpha.local)",
-            T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code.alpha.local",
-          },
-        },
       },
     );
   });

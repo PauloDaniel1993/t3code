@@ -47,7 +47,6 @@ export function buildLocalDraftThread(
     archivedAt: null,
     deletedAt: null,
     latestTurn: null,
-    handoff: null,
     branch: draftThread.branch,
     worktreePath: draftThread.worktreePath,
     checkpoints: [],
@@ -385,26 +384,9 @@ export async function waitForStartedServerThread(
   });
 }
 
-/**
- * How long a steer dispatch may stay "busy" before we force-clear it, even if
- * no acknowledgement signal is observed. This is a safety net so the composer
- * can never wedge: the message-landed/session-advanced signals normally win
- * this race well before the timeout elapses.
- */
-export const STEER_DISPATCH_FALLBACK_MS = 2_000;
-
 export interface LocalDispatchSnapshot {
   startedAt: string;
   preparingWorktree: boolean;
-  /**
-   * True when this dispatch is a steer: it was submitted while a turn was
-   * already running and continues that same turn. A steer never changes the
-   * turn's identity/timestamps, so it cannot be acknowledged via
-   * `latestTurnChanged` like a turn-starting dispatch can.
-   */
-  wasSteer: boolean;
-  /** Server-recorded user message count captured at dispatch time. */
-  userMessageCount: number;
   latestTurnTurnId: TurnId | null;
   latestTurnRequestedAt: string | null;
   latestTurnStartedAt: string | null;
@@ -413,35 +395,15 @@ export interface LocalDispatchSnapshot {
   sessionUpdatedAt: string | null;
 }
 
-function countUserMessages(thread: Thread | undefined): number {
-  if (!thread) return 0;
-  let count = 0;
-  for (const message of thread.messages) {
-    if (message.role === "user") count += 1;
-  }
-  return count;
-}
-
 export function createLocalDispatchSnapshot(
   activeThread: Thread | undefined,
-  options?: { preparingWorktree?: boolean; phase?: SessionPhase },
+  options?: { preparingWorktree?: boolean },
 ): LocalDispatchSnapshot {
   const latestTurn = activeThread?.latestTurn ?? null;
   const session = activeThread?.session ?? null;
-  // A steer continues an already-running turn: the session's active turn is
-  // the latest turn. Prefer the explicit phase when provided, otherwise fall
-  // back to the session status.
-  const running = options?.phase ? options.phase === "running" : session?.status === "running";
-  const wasSteer =
-    running &&
-    latestTurn?.turnId != null &&
-    session?.activeTurnId != null &&
-    session.activeTurnId === latestTurn.turnId;
   return {
     startedAt: new Date().toISOString(),
     preparingWorktree: Boolean(options?.preparingWorktree),
-    wasSteer,
-    userMessageCount: countUserMessages(activeThread),
     latestTurnTurnId: latestTurn?.turnId ?? null,
     latestTurnRequestedAt: latestTurn?.requestedAt ?? null,
     latestTurnStartedAt: latestTurn?.startedAt ?? null,
@@ -456,7 +418,6 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   phase: SessionPhase;
   latestTurn: Thread["latestTurn"] | null;
   session: Thread["session"] | null;
-  userMessageCount: number;
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
   threadError: string | null | undefined;
@@ -470,19 +431,6 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 
   const latestTurn = input.latestTurn ?? null;
   const session = input.session ?? null;
-
-  // A steer continues the same running turn, so the turn's identity and
-  // timestamps never change — `latestTurnChanged` would stay false for the rest
-  // of the turn and wedge the composer. Acknowledge a steer as soon as the
-  // server records the steered message (user count advances) or the session
-  // advances. A bounded fallback timer (see STEER_DISPATCH_FALLBACK_MS) clears
-  // the dispatch in the rare case neither signal is observed.
-  if (input.localDispatch.wasSteer) {
-    const messageLanded = input.userMessageCount > input.localDispatch.userMessageCount;
-    const sessionAdvanced = input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null);
-    return messageLanded || sessionAdvanced;
-  }
-
   const latestTurnChanged =
     input.localDispatch.latestTurnTurnId !== (latestTurn?.turnId ?? null) ||
     input.localDispatch.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||

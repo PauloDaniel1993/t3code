@@ -12,12 +12,9 @@ packages/*/dist
 .env.local
 build/
 .logs/
-.tmp/
 release/
 release-mock/
 .t3
-.t3-dev/
-.t3-sidebar-test/
 .idea/
 apps/web/.playwright
 apps/web/playwright-report

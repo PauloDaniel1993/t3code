@@ -47,7 +47,6 @@ import {
   CircleAlertIcon,
   EyeIcon,
   GlobeIcon,
-  GitBranchPlusIcon,
   HammerIcon,
   MessageCircleIcon,
   MousePointerClickIcon,
@@ -70,7 +69,6 @@ import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
-  isImportedHandoffTimelineMessage,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -136,7 +134,6 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
-  onToggleImportFold: (foldId: string) => void;
 }
 
 interface TimelineRowActivityState {
@@ -218,17 +215,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
-  const [expandedImportFoldIds, setExpandedImportFoldIds] = useState<ReadonlySet<string>>(
-    new Set(),
-  );
-  // Toggling a fold inserts/removes rows between the fold row and the final
-  // message. Suppress end-pinning while the data change and row measurements
-  // settle so the clicked trigger stays in view.
-  const [foldToggleSettling, setFoldToggleSettling] = useState(false);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
 
   const onToggleTurnFold = useCallback((turnId: TurnId) => {
-    setFoldToggleSettling(true);
     setExpandedTurnIds((existing) => {
       const next = new Set(existing);
       if (next.has(turnId)) {
@@ -272,35 +261,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     },
     [listRef],
   );
-  const onToggleImportFold = useCallback((foldId: string) => {
-    setFoldToggleSettling(true);
-    setExpandedImportFoldIds((existing) => {
-      const next = new Set(existing);
-      if (next.has(foldId)) {
-        next.delete(foldId);
-      } else {
-        next.add(foldId);
-      }
-      return next;
-    });
-  }, []);
-  useEffect(() => {
-    if (!foldToggleSettling) {
-      return;
-    }
-    let secondFrameId: number | null = null;
-    const firstFrameId = window.requestAnimationFrame(() => {
-      secondFrameId = window.requestAnimationFrame(() => {
-        setFoldToggleSettling(false);
-      });
-    });
-    return () => {
-      window.cancelAnimationFrame(firstFrameId);
-      if (secondFrameId !== null) {
-        window.cancelAnimationFrame(secondFrameId);
-      }
-    };
-  }, [foldToggleSettling]);
 
   // An in-session interrupt leaves its turn expanded so the user keeps their
   // place; the next turn (or a reload, since this is local state) folds it.
@@ -339,7 +299,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         runningTurnId,
         expandedTurnIds,
         expandedWorkGroupIds,
-        expandedImportFoldIds,
         isWorking,
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
@@ -351,7 +310,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       runningTurnId,
       expandedTurnIds,
       expandedWorkGroupIds,
-      expandedImportFoldIds,
       isWorking,
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
@@ -463,7 +421,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
-      onToggleImportFold,
     }),
     [
       timestampFormat,
@@ -478,7 +435,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
-      onToggleImportFold,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -526,7 +482,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
             contentInsetEndAdjustment={contentInsetEndAdjustment}
             maintainScrollAtEnd={
-              anchoredEndSpace || foldToggleSettling
+              anchoredEndSpace
                 ? false
                 : {
                     animated: false,
@@ -855,12 +811,10 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       data-timeline-row-kind={row.kind}
       data-message-id={row.kind === "message" ? row.message.id : undefined}
       data-message-role={row.kind === "message" ? row.message.role : undefined}
-      data-message-source={row.kind === "message" ? row.message.source : undefined}
     >
       {row.kind === "work" ? <WorkGroupSection groupedEntries={row.groupedEntries} /> : null}
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
-      {row.kind === "import-fold" ? <ImportFoldTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
@@ -891,12 +845,10 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   ];
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
   const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
-  const importedHandoffMessage = isImportedHandoffTimelineMessage(row.message);
-  const canRevertAgentWork = typeof row.revertTurnCount === "number" && !importedHandoffMessage;
+  const canRevertAgentWork = typeof row.revertTurnCount === "number";
 
   return (
     <div className="group flex flex-col items-end gap-1">
-      {importedHandoffMessage ? <ImportedMessageMarker className="max-w-[80%] pe-1" /> : null}
       <div className="relative max-w-[80%] rounded-2xl border border-border bg-secondary p-3">
         {regularImages.length > 0 && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
@@ -1002,30 +954,6 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
   );
 }
 
-function ImportFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "import-fold" }> }) {
-  const ctx = use(TimelineRowCtx);
-  const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
-  const label = row.expanded
-    ? `Hide ${row.count} imported ${row.count === 1 ? "message" : "messages"}`
-    : `Show ${row.count} imported ${row.count === 1 ? "message" : "messages"}`;
-
-  return (
-    <div className="border-b border-border/60 pb-2 pt-1">
-      <button
-        type="button"
-        aria-expanded={row.expanded}
-        data-scroll-anchor-ignore
-        onClick={() => ctx.onToggleImportFold(row.id)}
-        className="flex cursor-pointer select-none items-center gap-1.5 rounded-md px-1 text-xs text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
-      >
-        <GitBranchPlusIcon className="size-3.5" aria-hidden />
-        <span>{label}</span>
-        <Icon className="size-3.5" />
-      </button>
-    </div>
-  );
-}
-
 function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-fold" }> }) {
   const ctx = use(TimelineRowCtx);
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
@@ -1049,12 +977,10 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
-  const importedHandoffMessage = isImportedHandoffTimelineMessage(row.message);
 
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        {importedHandoffMessage ? <ImportedMessageMarker className="mb-1" /> : null}
         <ChatMarkdown
           text={messageText}
           cwd={ctx.markdownCwd}
@@ -1087,17 +1013,6 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         ) : null}
       </div>
     </>
-  );
-}
-
-function ImportedMessageMarker({ className }: { className?: string }) {
-  return (
-    <div className={cn("flex items-center", className)}>
-      <span className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-muted/45 px-1.5 py-0.5 font-medium text-[11px] text-muted-foreground leading-none">
-        <GitBranchPlusIcon className="size-3" aria-hidden />
-        Imported
-      </span>
-    </div>
   );
 }
 

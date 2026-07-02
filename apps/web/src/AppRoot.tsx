@@ -4,7 +4,6 @@ import { ElectronBrowserHost } from "./browser/ElectronBrowserHost";
 import { PreviewAutomationHosts } from "./components/preview/PreviewAutomationHosts";
 import { AppAtomRegistryProvider } from "./rpc/atomRegistry";
 import type { AppRouter } from "./router";
-import { AppearanceRuntime } from "./appearance/AppearanceRuntime";
 
 /**
  * Owns renderer-wide providers. The Electron browser host intentionally sits
@@ -14,7 +13,6 @@ import { AppearanceRuntime } from "./appearance/AppearanceRuntime";
 export function AppRoot({ router }: { readonly router: AppRouter }) {
   return (
     <AppAtomRegistryProvider>
-      <AppearanceRuntime />
       <RouterProvider router={router} />
       <PreviewAutomationHosts />
       <ElectronBrowserHost />

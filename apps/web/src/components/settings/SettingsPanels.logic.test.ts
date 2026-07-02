@@ -101,30 +101,4 @@ describe("buildProviderInstanceUpdatePatch", () => {
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
   });
-
-  it("can reset dependent text generation selections while updating an instance", () => {
-    const instanceId = ProviderInstanceId.make("deepseek");
-    const nextInstance = {
-      driver: ProviderDriverKind.make("deepseek"),
-      enabled: false,
-      config: {},
-    } satisfies ProviderInstanceConfig;
-
-    const patch = buildProviderInstanceUpdatePatch({
-      settings: DEFAULT_SERVER_SETTINGS,
-      instanceId,
-      instance: nextInstance,
-      driver: ProviderDriverKind.make("deepseek"),
-      isDefault: true,
-      textGenerationModelSelection: DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
-      handoffCompressionModelSelection: DEFAULT_SERVER_SETTINGS.handoffCompressionModelSelection,
-    });
-
-    expect(patch.textGenerationModelSelection).toBe(
-      DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
-    );
-    expect(patch.handoffCompressionModelSelection).toBe(
-      DEFAULT_SERVER_SETTINGS.handoffCompressionModelSelection,
-    );
-  });
 });

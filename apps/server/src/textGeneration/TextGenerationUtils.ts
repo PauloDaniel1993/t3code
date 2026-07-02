@@ -19,18 +19,6 @@ export function limitSection(value: string, maxChars: number): string {
   return `${truncated}\n\n[truncated]`;
 }
 
-/** Truncate a text section by preserving deterministic head and tail samples. */
-export function limitHeadTailSection(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  if (maxChars <= 64) return limitSection(value, maxChars);
-
-  const marker = "\n\n[truncated middle]\n\n";
-  const available = Math.max(0, maxChars - marker.length);
-  const headChars = Math.ceil(available * 0.6);
-  const tailChars = Math.max(0, available - headChars);
-  return `${value.slice(0, headChars)}${marker}${value.slice(value.length - tailChars)}`;
-}
-
 /** Normalise a raw commit subject to imperative-mood, ≤72 chars, no trailing period. */
 export function sanitizeCommitSubject(raw: string): string {
   const singleLine = raw.trim().split(/\r?\n/g)[0]?.trim() ?? "";
@@ -73,21 +61,6 @@ export function sanitizeThreadTitle(raw: string): string {
   }
 
   return `${normalized.slice(0, 47).trimEnd()}...`;
-}
-
-/** Normalise a handoff message summary to a bounded, non-empty markdown block. */
-export function sanitizeHandoffSummary(raw: string): string {
-  const normalized = raw
-    .trim()
-    .replace(/\r\n/g, "\n")
-    .replace(/\n{4,}/g, "\n\n\n");
-  if (normalized.length === 0) {
-    return "No useful details were recovered from this oversized imported message.";
-  }
-  if (normalized.length <= 4_000) {
-    return normalized;
-  }
-  return limitHeadTailSection(normalized, 4_000);
 }
 
 /** CLI name to human-readable label, e.g. "codex" → "Codex CLI (`codex`)" */

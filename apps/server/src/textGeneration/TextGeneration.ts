@@ -7,13 +7,7 @@ import { TextGenerationError } from "@t3tools/contracts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 
-export type TextGenerationProvider =
-  | "codex"
-  | "claudeAgent"
-  | "cursor"
-  | "deepseek"
-  | "grok"
-  | "opencode";
+export type TextGenerationProvider = "codex" | "claudeAgent" | "cursor" | "grok" | "opencode";
 
 export interface CommitMessageGenerationInput {
   cwd: string;
@@ -73,20 +67,6 @@ export interface ThreadTitleGenerationResult {
   title: string;
 }
 
-export interface HandoffSummaryGenerationInput {
-  cwd: string;
-  sourceThreadTitle: string;
-  role: "user" | "assistant" | "system";
-  messageText: string;
-  attachmentMetadata: ReadonlyArray<string>;
-  /** What model and provider to use for generation. */
-  modelSelection: ModelSelection;
-}
-
-export interface HandoffSummaryGenerationResult {
-  summary: string;
-}
-
 export interface TextGenerationService {
   generateCommitMessage(
     input: CommitMessageGenerationInput,
@@ -94,9 +74,6 @@ export interface TextGenerationService {
   generatePrContent(input: PrContentGenerationInput): Promise<PrContentGenerationResult>;
   generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
   generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
-  generateHandoffSummary(
-    input: HandoffSummaryGenerationInput,
-  ): Promise<HandoffSummaryGenerationResult>;
 }
 
 /**
@@ -132,13 +109,6 @@ export class TextGeneration extends Context.Service<
     readonly generateThreadTitle: (
       input: ThreadTitleGenerationInput,
     ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
-
-    /**
-     * Generate a bounded summary for an oversized imported handoff message.
-     */
-    readonly generateHandoffSummary: (
-      input: HandoffSummaryGenerationInput,
-    ) => Effect.Effect<HandoffSummaryGenerationResult, TextGenerationError>;
   }
 >()("t3/textGeneration/TextGeneration") {}
 
@@ -149,8 +119,7 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle"
-  | "generateHandoffSummary";
+  | "generateThreadTitle";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -189,10 +158,6 @@ export const makeTextGenerationFromRegistry = (
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
-      ),
-    generateHandoffSummary: (input) =>
-      resolveInstance(registry, "generateHandoffSummary", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateHandoffSummary(input)),
       ),
   });
 

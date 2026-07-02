@@ -20,14 +20,8 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
-import {
-  getHandoffSourceRejectionDetail,
-  isImportableHandoffMessage,
-  makeImportedHandoffMessageId,
-} from "./threadHandoff/eligibility.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-const VISIBLE_HANDOFF_IMPORT_MESSAGE_LIMIT = 2_000;
 
 function withEventBase(
   input: Pick<OrchestrationCommand, "commandId"> & {
@@ -245,137 +239,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
-          handoff: null,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
       };
-    }
-
-    case "thread.handoff.create": {
-      const sourceThread = yield* requireThread({
-        readModel,
-        command,
-        threadId: command.sourceThreadId,
-      });
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: sourceThread.projectId,
-      });
-      yield* requireThreadAbsent({
-        readModel,
-        command,
-        threadId: command.targetThreadId,
-      });
-      const sourceRejectionDetail = getHandoffSourceRejectionDetail(sourceThread);
-      if (sourceRejectionDetail !== null) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: sourceRejectionDetail,
-        });
-      }
-
-      const importableMessages = sourceThread.messages.filter(isImportableHandoffMessage);
-      const visibleImportCapped = importableMessages.length > VISIBLE_HANDOFF_IMPORT_MESSAGE_LIMIT;
-      const visibleImportMessages = visibleImportCapped
-        ? importableMessages.slice(-VISIBLE_HANDOFF_IMPORT_MESSAGE_LIMIT)
-        : importableMessages;
-
-      const threadCreatedEvent: Omit<OrchestrationEvent, "sequence"> = {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.targetThreadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        })),
-        type: "thread.created",
-        payload: {
-          threadId: command.targetThreadId,
-          projectId: sourceThread.projectId,
-          title: `Handoff: ${sourceThread.title}`,
-          modelSelection: command.targetModelSelection,
-          runtimeMode: sourceThread.runtimeMode,
-          interactionMode: sourceThread.interactionMode,
-          branch: sourceThread.branch,
-          worktreePath: sourceThread.worktreePath,
-          handoff: {
-            schemaVersion: 1,
-            sourceThreadId: sourceThread.id,
-            sourceTitle: sourceThread.title,
-            sourceProviderInstanceId: sourceThread.modelSelection.instanceId,
-            targetProviderInstanceId: command.targetModelSelection.instanceId,
-            importedMessageCount: visibleImportMessages.length,
-            ...(visibleImportCapped ? { visibleImportCapped: true } : {}),
-            bootstrapStatus: "pending",
-            bootstrapMessageId: null,
-          },
-          createdAt: command.createdAt,
-          updatedAt: command.createdAt,
-        },
-      };
-
-      const importedMessageEvents: ReadonlyArray<Omit<OrchestrationEvent, "sequence">> =
-        yield* Effect.forEach(visibleImportMessages, (message) =>
-          Effect.gen(function* () {
-            return {
-              ...(yield* withEventBase({
-                aggregateKind: "thread",
-                aggregateId: command.targetThreadId,
-                occurredAt: command.createdAt,
-                commandId: command.commandId,
-              })),
-              causationEventId: threadCreatedEvent.eventId,
-              type: "thread.message-sent",
-              payload: {
-                threadId: command.targetThreadId,
-                messageId: makeImportedHandoffMessageId({
-                  targetThreadId: command.targetThreadId,
-                  sourceMessageId: message.id,
-                }),
-                role: message.role,
-                text: message.text,
-                ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-                turnId: null,
-                streaming: false,
-                source: "handoff-import",
-                sourceThreadId: sourceThread.id,
-                sourceMessageId: message.id,
-                createdAt: message.createdAt,
-                updatedAt: message.updatedAt,
-              },
-            } satisfies Omit<OrchestrationEvent, "sequence">;
-          }),
-        );
-
-      const activityEvent: Omit<OrchestrationEvent, "sequence"> = {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.targetThreadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        })),
-        causationEventId: threadCreatedEvent.eventId,
-        type: "thread.activity-appended",
-        payload: {
-          threadId: command.targetThreadId,
-          activity: {
-            id: EventId.make(`${command.commandId}:handoff-import`),
-            tone: "info",
-            kind: "thread.handoff.imported",
-            summary: `Imported ${visibleImportMessages.length} messages from ${sourceThread.title}.`,
-            payload: {
-              sourceThreadId: sourceThread.id,
-              importedMessageCount: visibleImportMessages.length,
-              visibleImportCapped,
-            },
-            turnId: null,
-            createdAt: command.createdAt,
-          },
-        },
-      };
-
-      return [threadCreatedEvent, ...importedMessageEvents, activityEvent];
     }
 
     case "thread.delete": {
@@ -565,7 +432,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: command.message.attachments,
           turnId: null,
           streaming: false,
-          source: "user",
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -755,7 +621,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.delta,
           turnId: command.turnId ?? null,
           streaming: true,
-          source: "provider",
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -783,7 +648,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: "",
           turnId: command.turnId ?? null,
           streaming: false,
-          source: "provider",
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -885,69 +749,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           activity: command.activity,
-        },
-      };
-    }
-
-    case "thread.handoff.bootstrap.complete": {
-      const thread = yield* requireThread({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
-      if (thread.handoff === null || thread.handoff.bootstrapStatus !== "pending") {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Thread '${command.threadId}' has no pending handoff bootstrap to complete.`,
-        });
-      }
-      return {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.completedAt,
-          commandId: command.commandId,
-          metadata: {
-            providerTurnId: command.providerTurnId,
-          },
-        })),
-        type: "thread.handoff-bootstrap-completed",
-        payload: {
-          threadId: command.threadId,
-          bootstrapMessageId: command.bootstrapMessageId,
-          providerTurnId: command.providerTurnId,
-          ...(command.compressionSummaries !== undefined
-            ? { compressionSummaries: command.compressionSummaries }
-            : {}),
-          completedAt: command.completedAt,
-        },
-      };
-    }
-
-    case "thread.handoff.bootstrap.skip": {
-      const thread = yield* requireThread({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
-      if (thread.handoff === null || thread.handoff.bootstrapStatus !== "pending") {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Thread '${command.threadId}' has no pending handoff bootstrap to skip.`,
-        });
-      }
-      return {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.skippedAt,
-          commandId: command.commandId,
-        })),
-        type: "thread.handoff-bootstrap-skipped",
-        payload: {
-          threadId: command.threadId,
-          reason: command.reason,
-          skippedAt: command.skippedAt,
         },
       };
     }

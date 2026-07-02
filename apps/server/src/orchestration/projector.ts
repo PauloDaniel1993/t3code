@@ -283,7 +283,6 @@ export function projectEvent(
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn: null,
-            handoff: payload.handoff,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             archivedAt: null,
@@ -403,13 +402,6 @@ export function projectEvent(
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
-            source: payload.source,
-            ...(payload.sourceThreadId !== undefined
-              ? { sourceThreadId: payload.sourceThreadId }
-              : {}),
-            ...(payload.sourceMessageId !== undefined
-              ? { sourceMessageId: payload.sourceMessageId }
-              : {}),
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
           },
@@ -699,51 +691,6 @@ export function projectEvent(
           };
         }),
       );
-
-    case "thread.handoff-bootstrap-completed":
-      return Effect.succeed({
-        ...nextBase,
-        threads: nextBase.threads.map((thread) =>
-          thread.id === event.payload.threadId && thread.handoff !== null
-            ? {
-                ...thread,
-                handoff: {
-                  ...thread.handoff,
-                  bootstrapStatus: "completed",
-                  bootstrapMessageId: event.payload.bootstrapMessageId,
-                  bootstrapCompletedAt: event.payload.completedAt,
-                  ...(event.payload.compressionSummaries !== undefined
-                    ? {
-                        compression: {
-                          summaries: event.payload.compressionSummaries,
-                        },
-                      }
-                    : {}),
-                },
-                updatedAt: event.occurredAt,
-              }
-            : thread,
-        ),
-      });
-
-    case "thread.handoff-bootstrap-skipped":
-      return Effect.succeed({
-        ...nextBase,
-        threads: nextBase.threads.map((thread) =>
-          thread.id === event.payload.threadId && thread.handoff !== null
-            ? {
-                ...thread,
-                handoff: {
-                  ...thread.handoff,
-                  bootstrapStatus: "skipped",
-                  bootstrapSkippedAt: event.payload.skippedAt,
-                  bootstrapSkipReason: event.payload.reason,
-                },
-                updatedAt: event.occurredAt,
-              }
-            : thread,
-        ),
-      });
 
     default:
       return Effect.succeed(nextBase);

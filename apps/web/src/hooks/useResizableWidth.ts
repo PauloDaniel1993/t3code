@@ -10,12 +10,11 @@ export interface UseResizableWidthOptions {
   readonly storageKey: string;
   readonly defaultWidth: number;
   readonly minWidth: number;
-  /** Optional upper bound. Omit to allow unrestricted growth. */
-  readonly maxWidth?: number;
+  readonly maxWidth: number;
   /**
    * Which edge of the host element carries the drag handle:
-   *   - "left"  -> panel grows leftward (right-anchored panels)
-   *   - "right" -> panel grows rightward (left-anchored panels)
+   *   - "left"  → panel grows leftward (right-anchored panels)
+   *   - "right" → panel grows rightward (left-anchored panels)
    */
   readonly edge: "left" | "right";
 }
@@ -30,7 +29,7 @@ export interface ResizableWidthHandlers {
 /**
  * Width state for a side-anchored panel resized via a drag handle on the
  * specified edge. Width is read from localStorage on mount and persisted on
- * drag-end (not on every rAF tick, which would otherwise be ~60 writes/sec).
+ * drag-end (not on every rAF tick — would otherwise be ~60 writes/sec).
  *
  * The hook updates an internal `width` state during drag (so the panel
  * follows the cursor live) and only commits to localStorage when the user
@@ -45,11 +44,7 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
   const clamp = useCallback(
     (value: number): number => {
       if (!Number.isFinite(value)) return defaultWidth;
-      const cappedValue =
-        typeof maxWidth === "number" && Number.isFinite(maxWidth)
-          ? Math.min(maxWidth, value)
-          : value;
-      return Math.max(minWidth, cappedValue);
+      return Math.max(minWidth, Math.min(maxWidth, value));
     },
     [defaultWidth, maxWidth, minWidth],
   );
