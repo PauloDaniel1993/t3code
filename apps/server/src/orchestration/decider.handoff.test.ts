@@ -305,7 +305,7 @@ it.layer(NodeServices.layer)("decider thread.handoff.create flows", (it) => {
         expect(created.aggregateId).toBe(TARGET_THREAD_ID);
         expect(created.payload.threadId).toBe(TARGET_THREAD_ID);
         expect(created.payload.projectId).toBe(PROJECT_ID);
-        expect(created.payload.title).toBe("Source Thread");
+        expect(created.payload.title).toBe("Handoff: Source Thread");
         expect(created.payload.modelSelection.instanceId).toBe("deepseek");
         expect(created.payload.handoff).not.toBeNull();
         expect(created.payload.handoff?.sourceThreadId).toBe(SOURCE_THREAD_ID);
