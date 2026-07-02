@@ -1708,6 +1708,65 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("maps Claude task_updated patches without emitting runtime warnings", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-updated-1",
+        patch: { status: "running", description: "Refining the migration plan" },
+        session_id: "sdk-session-task-updated",
+        uuid: "task-updated-uuid-1",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-updated-1",
+        patch: { status: "completed", end_time: 42 },
+        session_id: "sdk-session-task-updated",
+        uuid: "task-updated-uuid-2",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("50 millis");
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const progressEvent = runtimeEvents.find((event) => event.type === "task.progress");
+      assert.equal(progressEvent?.type, "task.progress");
+      if (progressEvent?.type === "task.progress") {
+        assert.equal(progressEvent.payload.description, "Refining the migration plan");
+        assert.equal(String(progressEvent.payload.taskId), "task-updated-1");
+      }
+      assert.equal(
+        runtimeEvents.filter((event) => event.type === "runtime.warning").length,
+        0,
+        "task_updated messages should not surface as runtime warnings",
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("emits thread token usage updates from Claude task progress", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

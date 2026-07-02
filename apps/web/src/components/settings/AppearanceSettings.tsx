@@ -1,21 +1,8 @@
 import { CopyIcon, PaletteIcon, PenLineIcon, Trash2Icon, TypeIcon } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  DEFAULT_APPEARANCE_CHAT_FONT_SIZE_PX,
-  DEFAULT_APPEARANCE_CODE_FONT_SIZE_PX,
   DEFAULT_APPEARANCE_SETTINGS,
-  DEFAULT_APPEARANCE_TERMINAL_FONT_SIZE_PX,
-  DEFAULT_APPEARANCE_UI_FONT_SIZE_PX,
   DEFAULT_TERMINAL_FONT_FAMILY,
-  MAX_APPEARANCE_CHAT_FONT_SIZE_PX,
-  MAX_APPEARANCE_CODE_FONT_SIZE_PX,
-  MAX_APPEARANCE_TERMINAL_FONT_SIZE_PX,
-  MAX_APPEARANCE_UI_FONT_SIZE_PX,
-  MIN_APPEARANCE_CHAT_FONT_SIZE_PX,
-  MIN_APPEARANCE_CODE_FONT_SIZE_PX,
-  MIN_APPEARANCE_TERMINAL_FONT_SIZE_PX,
-  MIN_APPEARANCE_UI_FONT_SIZE_PX,
-  READABLE_APPEARANCE_UI_FONT_FAMILY,
   type AppearanceColorScheme,
   type AppearanceDensity,
   type AppearanceDiffMarkerStyle,
@@ -34,7 +21,6 @@ import {
   resolveAppearanceTheme,
   setCustomAppearanceThemeVariantColor,
   updateCustomAppearanceTheme,
-  validateHexColor,
   type AppearanceThemeTopLevelField,
   type AppearanceThemeVariantField,
   type AppearanceVariantKey,
@@ -61,23 +47,25 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
-
-const THEME_MODE_OPTIONS: ReadonlyArray<{ value: AppearanceColorScheme; label: string }> = [
-  { value: "system", label: "System" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-];
-
-const DENSITY_OPTIONS: ReadonlyArray<{ value: AppearanceDensity; label: string }> = [
-  { value: "compact", label: "Compact" },
-  { value: "default", label: "Default" },
-  { value: "comfortable", label: "Comfortable" },
-];
-
-const DIFF_MARKER_OPTIONS: ReadonlyArray<{ value: AppearanceDiffMarkerStyle; label: string }> = [
-  { value: "color", label: "Color" },
-  { value: "color-and-markers", label: "+/- markers" },
-];
+import {
+  COLOR_FIELDS,
+  COLOR_SWATCHES,
+  DENSITY_OPTIONS,
+  DIFF_MARKER_OPTIONS,
+  FONT_SIZE_CSS_VARIABLES,
+  FONT_SIZE_ROWS,
+  MONO_FONT_OPTIONS,
+  THEME_MODE_OPTIONS,
+  UI_FONT_OPTIONS,
+  clampInt,
+  createDebouncedCommit,
+  fontOptionLabel,
+  getFontSizeDefaults,
+  normalizeHexColorInput,
+  validateHexColorInput,
+  type DebouncedCommit,
+  type FontSizeField,
+} from "./AppearanceSettings.logic";
 
 const MODE_PREVIEW_LINES = {
   system: {
@@ -108,77 +96,6 @@ const MODE_PREVIEW_LINES = {
   }
 >;
 
-const UI_FONT_OPTIONS = [
-  { label: "DM Sans", value: "var(--font-sans)" },
-  {
-    label: "System",
-    value: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-  },
-  { label: "Inter", value: "Inter, var(--font-sans)" },
-  { label: "Segoe UI", value: '"Segoe UI", system-ui, sans-serif' },
-  { label: "Atkinson Hyperlegible", value: READABLE_APPEARANCE_UI_FONT_FAMILY },
-] as const;
-
-const MONO_FONT_OPTIONS = [
-  { label: "System Mono", value: "var(--font-mono)" },
-  { label: "Cascadia Code", value: '"Cascadia Code", "Cascadia Mono", var(--font-mono)' },
-  { label: "JetBrains Mono", value: '"JetBrains Mono", var(--font-mono)' },
-  { label: "Consolas", value: "Consolas, var(--font-mono)" },
-  { label: "SF Mono", value: '"SF Mono", "SFMono-Regular", var(--font-mono)' },
-] as const;
-
-const COLOR_SWATCHES = ["#6366F1", "#2563EB", "#059669", "#D97706", "#E11D48", "#525252"] as const;
-
-const FONT_SIZE_CSS_VARIABLES: Record<FontSizeField, string> = {
-  uiFontSizePx: "--app-ui-font-size",
-  chatFontSizePx: "--app-chat-font-size",
-  codeFontSizePx: "--app-code-font-size",
-  terminalFontSizePx: "--app-terminal-font-size",
-};
-
-const COLOR_FIELDS = [
-  { field: "accent", label: "Accent" },
-  { field: "background", label: "Background" },
-  { field: "foreground", label: "Foreground" },
-  { field: "surface", label: "Surface" },
-  { field: "muted", label: "Muted" },
-] as const satisfies ReadonlyArray<{
-  field: Extract<
-    AppearanceThemeVariantField,
-    "accent" | "background" | "foreground" | "surface" | "muted"
-  >;
-  label: string;
-}>;
-
-function clampInt(value: number | null, min: number, max: number): number {
-  if (value === null || !Number.isFinite(value)) {
-    return min;
-  }
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function fontOptionLabel(
-  value: string,
-  options: ReadonlyArray<{ readonly label: string; readonly value: string }>,
-): string {
-  return options.find((option) => option.value === value)?.label ?? "Custom";
-}
-
-function getFontSizeDefaults(field: FontSizeField): number {
-  switch (field) {
-    case "uiFontSizePx":
-      return DEFAULT_APPEARANCE_UI_FONT_SIZE_PX;
-    case "chatFontSizePx":
-      return DEFAULT_APPEARANCE_CHAT_FONT_SIZE_PX;
-    case "codeFontSizePx":
-      return DEFAULT_APPEARANCE_CODE_FONT_SIZE_PX;
-    case "terminalFontSizePx":
-      return DEFAULT_APPEARANCE_TERMINAL_FONT_SIZE_PX;
-  }
-}
-
-type FontSizeField = "uiFontSizePx" | "chatFontSizePx" | "codeFontSizePx" | "terminalFontSizePx";
-
 interface FontSizeControlProps {
   readonly label: string;
   readonly value: number;
@@ -188,6 +105,33 @@ interface FontSizeControlProps {
   readonly disabled: boolean;
   readonly onPreview?: (next: number) => void;
   readonly onChange: (next: number) => void;
+}
+
+function useDebouncedCommit<T>(
+  commit: (value: T) => void,
+  delayMs: number,
+  cleanup: "flush" | "cancel",
+): DebouncedCommit<T> {
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
+  const debouncedRef = useRef<DebouncedCommit<T> | null>(null);
+  if (debouncedRef.current === null) {
+    debouncedRef.current = createDebouncedCommit((value) => commitRef.current(value), delayMs);
+  }
+  const debounced = debouncedRef.current;
+
+  useEffect(
+    () => () => {
+      if (cleanup === "flush") {
+        debounced.flush();
+      } else {
+        debounced.cancel();
+      }
+    },
+    [cleanup, debounced],
+  );
+
+  return debounced;
 }
 
 function FontSizeControl({
@@ -201,46 +145,17 @@ function FontSizeControl({
   onChange,
 }: FontSizeControlProps) {
   const [draftValue, setDraftValue] = useState(value);
-  const pendingValueRef = useRef<number | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onChangeRef = useRef(onChange);
-
-  useEffect(() => {
-    onChangeRef.current = onChange;
-  }, [onChange]);
+  const debouncedChange = useDebouncedCommit(onChange, 180, "flush");
 
   useEffect(() => {
     setDraftValue(value);
   }, [value]);
 
-  const flushPending = useCallback(() => {
-    if (timeoutRef.current !== null) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-    const pendingValue = pendingValueRef.current;
-    pendingValueRef.current = null;
-    if (pendingValue !== null) {
-      onChangeRef.current(pendingValue);
-    }
-  }, []);
-
-  useEffect(
-    () => () => {
-      flushPending();
-    },
-    [flushPending],
-  );
-
   const update = (next: number | null) => {
     const normalized = clampInt(next, min, max);
     setDraftValue(normalized);
     onPreview?.(normalized);
-    pendingValueRef.current = normalized;
-    if (timeoutRef.current !== null) {
-      clearTimeout(timeoutRef.current);
-    }
-    timeoutRef.current = setTimeout(flushPending, 180);
+    debouncedChange.set(normalized);
   };
 
   return (
@@ -254,7 +169,7 @@ function FontSizeControl({
         disabled={disabled}
         aria-label={label}
         onChange={(event) => update(Number(event.currentTarget.value))}
-        onBlur={flushPending}
+        onBlur={debouncedChange.flush}
         className="min-w-0 accent-primary disabled:opacity-50"
       />
       <NumberField
@@ -266,7 +181,7 @@ function FontSizeControl({
         disabled={disabled}
         className="w-20"
         onValueChange={update}
-        onBlur={flushPending}
+        onBlur={debouncedChange.flush}
       >
         <NumberFieldGroup className="h-7 w-24 rounded-md sm:h-6.5">
           <NumberFieldDecrement
@@ -314,8 +229,6 @@ interface ColorFieldProps {
 function ColorField({ label, value, disabled, resetAction, onCommit }: ColorFieldProps) {
   const [draft, setDraft] = useState(value);
   const [error, setError] = useState<string | null>(null);
-  const colorCommitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingColorRef = useRef<string | null>(null);
 
   useEffect(() => {
     setDraft(value);
@@ -324,9 +237,9 @@ function ColorField({ label, value, disabled, resetAction, onCommit }: ColorFiel
 
   const commit = useCallback(
     (nextValue: string) => {
-      const normalized = nextValue.trim().toUpperCase();
+      const normalized = normalizeHexColorInput(nextValue);
       setDraft(normalized);
-      const hexValidation = validateHexColor(normalized);
+      const hexValidation = validateHexColorInput(normalized);
       if (!hexValidation.isValid) {
         setError(hexValidation.error);
         return;
@@ -344,44 +257,22 @@ function ColorField({ label, value, disabled, resetAction, onCommit }: ColorFiel
     },
     [onCommit, value],
   );
-
-  const flushPendingColor = useCallback(() => {
-    if (colorCommitTimeoutRef.current !== null) {
-      clearTimeout(colorCommitTimeoutRef.current);
-      colorCommitTimeoutRef.current = null;
-    }
-    const pendingColor = pendingColorRef.current;
-    pendingColorRef.current = null;
-    if (pendingColor) {
-      commit(pendingColor);
-    }
-  }, [commit]);
-
-  useEffect(
-    () => () => {
-      if (colorCommitTimeoutRef.current !== null) {
-        clearTimeout(colorCommitTimeoutRef.current);
-      }
-    },
-    [],
-  );
+  const debouncedColorCommit = useDebouncedCommit(commit, 250, "cancel");
 
   const scheduleColorCommit = (nextValue: string) => {
-    const normalized = nextValue.trim().toUpperCase();
+    const normalized = normalizeHexColorInput(nextValue);
     setDraft(normalized);
-    const hexValidation = validateHexColor(normalized);
+    const hexValidation = validateHexColorInput(normalized);
     if (!hexValidation.isValid) {
       setError(hexValidation.error);
       return;
     }
     setError(null);
-    pendingColorRef.current = normalized;
-    if (colorCommitTimeoutRef.current !== null) {
-      clearTimeout(colorCommitTimeoutRef.current);
-    }
-    colorCommitTimeoutRef.current = setTimeout(flushPendingColor, 250);
+    debouncedColorCommit.set(normalized);
   };
-  const displayedColor = validateHexColor(draft).isValid ? draft : value;
+  const displayedColor = validateHexColorInput(draft).isValid
+    ? normalizeHexColorInput(draft)
+    : value;
 
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
@@ -404,7 +295,7 @@ function ColorField({ label, value, disabled, resetAction, onCommit }: ColorFiel
             disabled={disabled}
             aria-label={`Pick ${label} color`}
             onChange={(event) => scheduleColorCommit(event.currentTarget.value)}
-            onBlur={flushPendingColor}
+            onBlur={debouncedColorCommit.flush}
             className="absolute inset-0 size-full cursor-pointer opacity-0 disabled:cursor-default"
           />
         </label>
@@ -651,43 +542,6 @@ export function AppearanceSettingsPanel() {
     );
   };
 
-  const fontRows: ReadonlyArray<{
-    field: FontSizeField;
-    title: string;
-    description: string;
-    min: number;
-    max: number;
-  }> = [
-    {
-      field: "uiFontSizePx",
-      title: "UI font size",
-      description: "Adjust the base size used for T3 Code controls.",
-      min: MIN_APPEARANCE_UI_FONT_SIZE_PX,
-      max: MAX_APPEARANCE_UI_FONT_SIZE_PX,
-    },
-    {
-      field: "chatFontSizePx",
-      title: "Chat font size",
-      description: "Adjust the base size used for assistant and user messages.",
-      min: MIN_APPEARANCE_CHAT_FONT_SIZE_PX,
-      max: MAX_APPEARANCE_CHAT_FONT_SIZE_PX,
-    },
-    {
-      field: "codeFontSizePx",
-      title: "Code font size",
-      description: "Adjust inline code, code blocks, and diff text.",
-      min: MIN_APPEARANCE_CODE_FONT_SIZE_PX,
-      max: MAX_APPEARANCE_CODE_FONT_SIZE_PX,
-    },
-    {
-      field: "terminalFontSizePx",
-      title: "Terminal font size",
-      description: "Adjust open terminal sessions and future terminals.",
-      min: MIN_APPEARANCE_TERMINAL_FONT_SIZE_PX,
-      max: MAX_APPEARANCE_TERMINAL_FONT_SIZE_PX,
-    },
-  ];
-
   return (
     <SettingsPageContainer>
       <SettingsSection
@@ -894,7 +748,7 @@ export function AppearanceSettingsPanel() {
             />
           }
         />
-        {fontRows.map((row) => (
+        {FONT_SIZE_ROWS.map((row) => (
           <SettingsRow
             key={row.field}
             title={row.title}

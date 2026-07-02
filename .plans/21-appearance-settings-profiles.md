@@ -110,3 +110,9 @@ AppearanceThemeVariant: {
 - Hook/migration tests cover legacy migration, bootstrap mirror writes, storage failure handling, and desktop sync.
 - Settings UI tests should cover Appearance nav, built-in read-only state, custom duplicate/edit flow, slider numeric value, invalid color errors, and restore defaults.
 - Required gates before completion: `vp check` and `vp run typecheck`.
+
+## Interim Notes
+
+- Appearance patches are strict whole-object replacements. Full settings decode still normalizes persisted data, but malformed `appearance` patches reject instead of falling back to defaults.
+- Tailwind `--font-sans` and `--font-mono` alias the runtime appearance font variables. The literal default stacks live on `--app-*` fallbacks and are bound to `BUILT_IN_APPEARANCE_THEMES.default` by test.
+- Appearance settings panel helpers and debounced commit behavior live in `AppearanceSettings.logic.ts`; sliders flush pending commits on unmount, while color picker commits cancel on unmount.
