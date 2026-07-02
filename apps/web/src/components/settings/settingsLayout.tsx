@@ -29,7 +29,7 @@ export function SettingsSection({
   children: ReactNode;
 }) {
   return (
-    <section {...sectionProps} className={cn("space-y-2.5", className)}>
+    <section {...sectionProps} className={cn("settings-density-section flex flex-col", className)}>
       <div className="flex items-center justify-between px-1">
         <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground/50">
           <span className="inline-block h-px w-3 bg-border" aria-hidden />
@@ -66,13 +66,13 @@ export function SettingsRow({
     <div
       {...rowProps}
       className={cn(
-        "border-t border-border/60 px-4 first:border-t-0 sm:px-5",
-        children ? "pt-3.5 pb-0" : "py-3.5",
+        "settings-density-row border-t border-border/60 px-4 first:border-t-0 sm:px-5",
+        children && "settings-density-row-with-children",
         className,
       )}
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 flex-1 space-y-1">
+      <div className="settings-density-row-inner flex flex-col sm:flex-row sm:items-center sm:justify-between">
+        <div className="settings-density-row-copy flex min-w-0 flex-1 flex-col">
           <div className="flex min-h-5 items-center gap-1.5">
             <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">
               {title}
@@ -85,7 +85,7 @@ export function SettingsRow({
           {status ? <div className="pt-0.5 text-[11px] text-muted-foreground">{status}</div> : null}
         </div>
         {control ? (
-          <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+          <div className="settings-density-control-group flex w-full shrink-0 items-center sm:w-auto sm:justify-end">
             {control}
           </div>
         ) : null}
@@ -127,8 +127,10 @@ export function SettingsPageContainer({
   className?: string;
 }) {
   return (
-    <div className="scrollbar-gutter-both flex-1 overflow-y-auto p-6 sm:p-8">
-      <div className={cn("mx-auto flex w-full max-w-3xl flex-col gap-8", className)}>
+    <div className="settings-density-page scrollbar-gutter-both flex-1 overflow-y-auto">
+      <div
+        className={cn("settings-density-stack mx-auto flex w-full max-w-3xl flex-col", className)}
+      >
         {children}
       </div>
     </div>

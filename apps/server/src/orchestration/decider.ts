@@ -349,7 +349,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.targetThreadId,
           projectId: sourceThread.projectId,
-          title: sourceThread.title,
+          title: `Handoff: ${sourceThread.title}`,
           modelSelection: command.targetModelSelection,
           runtimeMode: sourceThread.runtimeMode,
           interactionMode: sourceThread.interactionMode,
