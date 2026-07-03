@@ -37,6 +37,8 @@ Alternatives considered:
 
 Provider-facing tool metadata and developer instructions should advertise one to ten questions per prompt. Runtime adapters should preserve valid batches as-is. If a provider or tool request supplies more than ten questions, the server should fail the request predictably instead of silently truncating answers or showing a partial prompt.
 
+When the T3 MCP `request_user_input` tool is attached, provider-native structured question tools should be rejected rather than bridged into the same pending-input UI. This makes the T3-owned tool the enforced path and avoids smaller upstream caps or conflicting tool schemas winning by accident. Provider-native question bridges remain as fallbacks for sessions where the T3 MCP tool is not attached.
+
 Rationale: a hard cap must be visible where agents form tool calls, while internal event schemas can remain stable. Rejecting over-limit requests is safer than partial display because each omitted question could be a required decision.
 
 Alternatives considered:

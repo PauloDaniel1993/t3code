@@ -12,7 +12,9 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  buildPendingUserInputAnswers,
   buildThreadFeed,
+  derivePendingUserInputs,
   deriveThreadFeedPresentation,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
@@ -53,6 +55,14 @@ function makeThread(
     ...input,
   };
 }
+
+const makeUserInputQuestion = (index: number) => ({
+  id: `question-${index}`,
+  header: `Question ${index}`,
+  question: `Question ${index}?`,
+  options: [{ label: `Answer ${index}`, description: `Answer ${index}` }],
+  multiSelect: false,
+});
 
 describe("buildThreadFeed", () => {
   it("keeps historic work entries attributed to their turns", () => {
@@ -470,6 +480,60 @@ describe("buildThreadFeed", () => {
     expect(expanded.at(-1)).toMatchObject({
       type: "work-toggle",
       expanded: true,
+    });
+  });
+});
+
+describe("mobile pending user input helpers", () => {
+  it("preserves ten pending user-input questions in order", () => {
+    const questions = Array.from({ length: 10 }, (_, index) => makeUserInputQuestion(index + 1));
+
+    expect(
+      derivePendingUserInputs([
+        makeActivity({
+          id: EventId.make("activity-user-input-ten"),
+          kind: "user-input.requested",
+          summary: "User input requested",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: {
+            requestId: "req-user-input-ten",
+            questions,
+          },
+        }),
+      ]),
+    ).toEqual([
+      {
+        requestId: "req-user-input-ten",
+        createdAt: "2026-04-01T00:00:01.000Z",
+        questions,
+      },
+    ]);
+  });
+
+  it("builds complete answers for ten pending user-input questions", () => {
+    const questions = Array.from({ length: 10 }, (_, index) => makeUserInputQuestion(index + 1));
+
+    expect(
+      buildPendingUserInputAnswers(
+        questions,
+        Object.fromEntries(
+          questions.map((question, index) => [
+            question.id,
+            { selectedOptionLabel: `Answer ${index + 1}` },
+          ]),
+        ),
+      ),
+    ).toEqual({
+      "question-1": "Answer 1",
+      "question-2": "Answer 2",
+      "question-3": "Answer 3",
+      "question-4": "Answer 4",
+      "question-5": "Answer 5",
+      "question-6": "Answer 6",
+      "question-7": "Answer 7",
+      "question-8": "Answer 8",
+      "question-9": "Answer 9",
+      "question-10": "Answer 10",
     });
   });
 });

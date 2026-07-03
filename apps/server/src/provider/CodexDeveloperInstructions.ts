@@ -1,8 +1,12 @@
+import { T3_MCP_USER_INPUT_TOOL_INSTRUCTIONS } from "./T3McpUserInputTool.ts";
+
 const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## T3 Code collaborative browser
 
 You are running inside T3 Code. The \`t3-code\` MCP server is the product-native collaborative browser shared with the user. When it exposes \`preview_*\` tools, prefer those tools for browser navigation, inspection, interaction, screenshots, and recordings.
+
+${T3_MCP_USER_INPUT_TOOL_INSTRUCTIONS}
 
 For browser work, first call \`preview_status\`. If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
 
@@ -82,6 +86,8 @@ You SHOULD ask many questions, but each question must:
 * confirm/lock an assumption, OR
 * choose between meaningful tradeoffs.
 * not be answerable by non-mutating commands.
+
+Use one \`request_user_input\` call for at most ten questions; split larger batches into follow-up requests.
 
 Use the \`request_user_input\` tool only for decisions that materially change the plan, for confirming important assumptions, or for information that cannot be discovered via non-mutating exploration.
 

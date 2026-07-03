@@ -70,6 +70,21 @@ describe("ProviderRuntimeEvent", () => {
   });
 
   it("decodes user-input.requested with structured questions", () => {
+    const questions = Array.from({ length: 10 }, (_, index) => ({
+      id: `question-${index + 1}`,
+      header: `Question ${index + 1}`,
+      question: `Question ${index + 1}?`,
+      options: [
+        {
+          label: "workspace-write",
+          description: "Allow edits in workspace only",
+        },
+        {
+          label: "danger-full-access",
+          description: "Allow unrestricted access",
+        },
+      ],
+    }));
     const parsed = decodeRuntimeEvent({
       type: "user-input.requested",
       eventId: "event-2",
@@ -79,23 +94,7 @@ describe("ProviderRuntimeEvent", () => {
       threadId: "thread-2",
       requestId: "request-1",
       payload: {
-        questions: [
-          {
-            id: "sandbox_mode",
-            header: "Sandbox",
-            question: "Which mode should be used?",
-            options: [
-              {
-                label: "workspace-write",
-                description: "Allow edits in workspace only",
-              },
-              {
-                label: "danger-full-access",
-                description: "Allow unrestricted access",
-              },
-            ],
-          },
-        ],
+        questions,
       },
     });
 
@@ -103,7 +102,9 @@ describe("ProviderRuntimeEvent", () => {
     if (parsed.type !== "user-input.requested") {
       throw new Error("expected user-input.requested");
     }
-    expect(parsed.payload.questions[0]?.id).toBe("sandbox_mode");
+    expect(parsed.payload.questions).toHaveLength(10);
+    expect(parsed.payload.questions[0]?.id).toBe("question-1");
+    expect(parsed.payload.questions[9]?.id).toBe("question-10");
     expect(parsed.payload.questions[0]?.options).toHaveLength(2);
   });
 

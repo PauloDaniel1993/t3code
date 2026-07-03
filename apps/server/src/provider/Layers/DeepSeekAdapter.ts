@@ -29,6 +29,7 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import type { DeepSeekAdapterShape } from "../Services/DeepSeekAdapter.ts";
+import { T3_MCP_USER_INPUT_DEEPSEEK_UNSUPPORTED_MESSAGE } from "../T3McpUserInputTool.ts";
 import {
   deepseekModelsFromSettings,
   readDeepSeekApiKey,
@@ -581,7 +582,14 @@ export function makeDeepSeekAdapter(
       _threadId: ThreadId,
       _requestId: ApprovalRequestId,
       _answers: ProviderUserInputAnswers,
-    ) => Effect.fail(unsupportedRequest("user-input.respond"));
+    ) =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "user-input.respond",
+          detail: T3_MCP_USER_INPUT_DEEPSEEK_UNSUPPORTED_MESSAGE,
+        }),
+      );
 
     const readThread: DeepSeekAdapterShape["readThread"] = (threadId) =>
       Effect.gen(function* () {

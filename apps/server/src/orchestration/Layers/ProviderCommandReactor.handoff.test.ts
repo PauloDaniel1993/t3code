@@ -301,6 +301,7 @@ describe("ProviderCommandReactor handoff bootstrap wrapping", () => {
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
+      requestUserInput: () => unsupported(),
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),

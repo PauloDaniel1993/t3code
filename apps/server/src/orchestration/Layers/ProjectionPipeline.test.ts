@@ -1954,19 +1954,17 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
             summary: "User input requested",
             payload: {
               requestId: "user-input-request-stale-1",
-              questions: [
-                {
-                  id: "sandbox_mode",
-                  header: "Sandbox",
-                  question: "Which mode should be used?",
-                  options: [
-                    {
-                      label: "workspace-write",
-                      description: "Allow workspace writes only",
-                    },
-                  ],
-                },
-              ],
+              questions: Array.from({ length: 10 }, (_, index) => ({
+                id: `question-${index + 1}`,
+                header: `Question ${index + 1}`,
+                question: `Question ${index + 1}?`,
+                options: [
+                  {
+                    label: "Continue",
+                    description: "Continue",
+                  },
+                ],
+              })),
             },
             turnId: null,
             createdAt: "2026-02-26T12:35:02.000Z",

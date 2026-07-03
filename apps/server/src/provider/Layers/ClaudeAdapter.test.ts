@@ -14,6 +14,7 @@ import type {
 import {
   ApprovalRequestId,
   ClaudeSettings,
+  EnvironmentId,
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
@@ -34,9 +35,11 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -266,6 +269,17 @@ async function readFirstPromptMessage(
 
 const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
+const makeClaudeAskQuestion = (index: number) => ({
+  question: `Question ${index}?`,
+  header: `Question ${index}`,
+  options: [
+    {
+      label: `Answer ${index}`,
+      description: `Answer ${index}`,
+    },
+  ],
+  multiSelect: false,
+});
 
 describe("ClaudeAdapterLive", () => {
   it.effect("returns validation error for non-claude provider on startSession", () => {
@@ -3608,6 +3622,61 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("denies native AskUserQuestion when the T3 MCP user-input tool is attached", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      yield* Effect.sync(() =>
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("environment-claude-mcp"),
+          threadId: THREAD_ID,
+          providerSessionId: "provider-session-claude-mcp",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          endpoint: "http://127.0.0.1:4310/mcp",
+          authorizationHeader: "Bearer test-token",
+        }),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const permissionResult = yield* Effect.promise(() =>
+        canUseTool(
+          "AskUserQuestion",
+          {
+            questions: [makeClaudeAskQuestion(1)],
+          },
+          {
+            signal: new AbortController().signal,
+            toolUseID: "tool-ask-native-denied",
+          },
+        ),
+      );
+
+      assert.equal((permissionResult as PermissionResult).behavior, "deny");
+      assert.equal(
+        (permissionResult as PermissionResult & { message?: string }).message,
+        T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE,
+      );
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID))),
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("routes AskUserQuestion through user-input flow even in full-access mode", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -3670,6 +3739,130 @@ describe("ClaudeAdapterLive", () => {
       const updatedInput = (permissionResult as { updatedInput: Record<string, unknown> })
         .updatedInput;
       assert.deepEqual(updatedInput.answers, { "Deploy to which env?": "Staging" });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("preserves ten AskUserQuestion prompts in order", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const questions = Array.from({ length: 10 }, (_, index) => makeClaudeAskQuestion(index + 1));
+      const permissionPromise = canUseTool(
+        "AskUserQuestion",
+        { questions },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-ask-ten",
+        },
+      );
+
+      const requestedEvent = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(requestedEvent._tag, "Some");
+      if (requestedEvent._tag !== "Some" || requestedEvent.value.type !== "user-input.requested") {
+        assert.fail("Expected user-input.requested event");
+        return;
+      }
+
+      assert.equal(requestedEvent.value.payload.questions.length, 10);
+      assert.equal(requestedEvent.value.payload.questions[0]?.id, "Question 1?");
+      assert.equal(requestedEvent.value.payload.questions[9]?.id, "Question 10?");
+
+      yield* adapter.respondToUserInput(
+        session.threadId,
+        ApprovalRequestId.make(String(requestedEvent.value.requestId)),
+        Object.fromEntries(
+          questions.map((question, index) => [question.question, `Answer ${index + 1}`]),
+        ),
+      );
+
+      const resolvedEvent = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(resolvedEvent._tag, "Some");
+      if (resolvedEvent._tag !== "Some" || resolvedEvent.value.type !== "user-input.resolved") {
+        assert.fail("Expected user-input.resolved event");
+        return;
+      }
+      assert.deepEqual(Object.keys(resolvedEvent.value.payload.answers), [
+        "Question 1?",
+        "Question 2?",
+        "Question 3?",
+        "Question 4?",
+        "Question 5?",
+        "Question 6?",
+        "Question 7?",
+        "Question 8?",
+        "Question 9?",
+        "Question 10?",
+      ]);
+
+      const permissionResult = yield* Effect.promise(() => permissionPromise);
+      assert.equal((permissionResult as PermissionResult).behavior, "allow");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("denies oversized AskUserQuestion prompts with a clear message", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const permissionResult = yield* Effect.promise(() =>
+        canUseTool(
+          "AskUserQuestion",
+          {
+            questions: Array.from({ length: 11 }, (_, index) => makeClaudeAskQuestion(index + 1)),
+          },
+          {
+            signal: new AbortController().signal,
+            toolUseID: "tool-ask-oversized",
+          },
+        ),
+      );
+
+      assert.equal((permissionResult as PermissionResult).behavior, "deny");
+      assert.include(
+        String((permissionResult as PermissionResult & { message?: string }).message),
+        "1 to 10",
+      );
+      assert.include(
+        String((permissionResult as PermissionResult & { message?: string }).message),
+        "11",
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
