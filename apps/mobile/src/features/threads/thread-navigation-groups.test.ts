@@ -43,6 +43,7 @@ function makeThread(
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     ...input,
+    handoff: input.handoff ?? null,
   };
 }
 
