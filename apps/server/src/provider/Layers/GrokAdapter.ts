@@ -12,6 +12,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -35,6 +36,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -73,6 +75,15 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
+
+function isAcpRequestError(cause: unknown): cause is EffectAcpErrors.AcpRequestError {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "_tag" in cause &&
+    cause._tag === "AcpRequestError"
+  );
+}
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -261,12 +272,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
     const mapAcpCallbackFailure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
-        Effect.mapError(
-          (cause) =>
-            new EffectAcpErrors.AcpTransportError({
-              detail: "Failed to process Grok ACP callback.",
-              cause,
-            }),
+        Effect.mapError((cause) =>
+          isAcpRequestError(cause)
+            ? cause
+            : new EffectAcpErrors.AcpTransportError({
+                detail: "Failed to process Grok ACP callback.",
+                cause,
+              }),
         ),
       );
 
@@ -615,6 +627,26 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   mapAcpCallbackFailure(
                     Effect.gen(function* () {
                       yield* logNative(input.threadId, method, params);
+                      if (mcpSession !== undefined) {
+                        return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+                          T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE,
+                          {
+                            tool: method,
+                            preferredTool: "t3-code.request_user_input",
+                          },
+                        );
+                      }
+                      const questions = extractXAiAskUserQuestions(params);
+                      const validation = validateUserInputQuestionBatch(questions);
+                      if (validation._tag === "Invalid") {
+                        return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+                          validation.message,
+                          {
+                            count: validation.count,
+                            max: validation.max,
+                          },
+                        );
+                      }
                       const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
                       const runtimeRequestId = RuntimeRequestId.make(requestId);
                       const resolution = yield* Deferred.make<PendingUserInputResolution>();
@@ -627,7 +659,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         threadId: input.threadId,
                         turnId,
                         requestId: runtimeRequestId,
-                        payload: { questions: extractXAiAskUserQuestions(params) },
+                        payload: { questions: validation.questions },
                         raw: {
                           source: "acp.grok.extension",
                           method,

@@ -21,6 +21,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -43,6 +44,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -84,6 +86,15 @@ const CURSOR_RESUME_VERSION = 1 as const;
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
+
+function isAcpRequestError(cause: unknown): cause is EffectAcpErrors.AcpRequestError {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "_tag" in cause &&
+    cause._tag === "AcpRequestError"
+  );
+}
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -352,12 +363,13 @@ export function makeCursorAdapter(
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
     const mapExtensionFailure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
-        Effect.mapError(
-          (cause) =>
-            new EffectAcpErrors.AcpTransportError({
-              detail: "Failed to process Cursor ACP extension event.",
-              cause,
-            }),
+        Effect.mapError((cause) =>
+          isAcpRequestError(cause)
+            ? cause
+            : new EffectAcpErrors.AcpTransportError({
+                detail: "Failed to process Cursor ACP extension event.",
+                cause,
+              }),
         ),
       );
 
@@ -579,6 +591,26 @@ export function makeCursorAdapter(
                     params,
                     "acp.cursor.extension",
                   );
+                  if (mcpSession !== undefined) {
+                    return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+                      T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE,
+                      {
+                        tool: "cursor/ask_question",
+                        preferredTool: "t3-code.request_user_input",
+                      },
+                    );
+                  }
+                  const questions = extractAskQuestions(params);
+                  const validation = validateUserInputQuestionBatch(questions);
+                  if (validation._tag === "Invalid") {
+                    return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+                      validation.message,
+                      {
+                        count: validation.count,
+                        max: validation.max,
+                      },
+                    );
+                  }
                   const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
                   const runtimeRequestId = RuntimeRequestId.make(requestId);
                   const answers = yield* Deferred.make<ProviderUserInputAnswers>();
@@ -590,7 +622,7 @@ export function makeCursorAdapter(
                     threadId: input.threadId,
                     turnId: ctx?.activeTurnId,
                     requestId: runtimeRequestId,
-                    payload: { questions: extractAskQuestions(params) },
+                    payload: { questions: validation.questions },
                     raw: {
                       source: "acp.cursor.extension",
                       method: "cursor/ask_question",

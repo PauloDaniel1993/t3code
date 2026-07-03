@@ -24,6 +24,17 @@ The system SHALL advertise ten as the maximum number of questions for one `reque
 - **WHEN** an agent receives the `request_user_input` tool definition or related usage instructions
 - **THEN** the definition or instructions state that one prompt may include up to ten questions
 
+### Requirement: T3 MCP user-input supersedes provider-native question tools
+
+When the `t3-code` MCP `request_user_input` tool is attached to a provider session, the system SHALL reject provider-native structured question tools instead of opening the T3 pending-input UI through those native fallback paths.
+
+#### Scenario: Provider-native question tool is rejected while T3 MCP is available
+
+- **GIVEN** a provider session has the `t3-code` MCP `request_user_input` tool attached
+- **WHEN** the provider attempts to use a provider-native structured question tool
+- **THEN** the provider-native request is rejected with a provider-visible message directing the provider to the T3 MCP `request_user_input` tool
+- **AND** the system does not create a pending user-input request from the provider-native fallback path
+
 ### Requirement: Over-limit batches fail predictably
 
 The system MUST NOT silently truncate structured user-input prompts that contain more than ten questions.

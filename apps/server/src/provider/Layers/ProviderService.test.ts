@@ -23,6 +23,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -303,8 +304,7 @@ function makeProviderServiceLayer() {
       directoryLayer,
 
       runtimeRepositoryLayer,
-      NodeServices.layer,
-    ),
+    ).pipe(Layer.provideMerge(NodeServices.layer)),
   );
 
   return {
@@ -353,8 +353,7 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
       ),
       directoryLayer,
       runtimeRepositoryLayer,
-      NodeServices.layer,
-    );
+    ).pipe(Layer.provideMerge(NodeServices.layer));
     const scope = yield* Scope.make();
     const runtimeServices = yield* Layer.build(providerLayer).pipe(Scope.provide(scope));
 
@@ -924,6 +923,72 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, session.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("brokers MCP user-input requests through canonical runtime events", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-mcp-user-input");
+      const requested =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.requested" }>>();
+      const resolved =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.resolved" }>>();
+
+      yield* Stream.runForEach(provider.streamEvents, (event) => {
+        if (event.threadId !== threadId) return Effect.void;
+        if (event.type === "user-input.requested") {
+          return Deferred.succeed(requested, event).pipe(Effect.asVoid);
+        }
+        if (event.type === "user-input.resolved") {
+          return Deferred.succeed(resolved, event).pipe(Effect.asVoid);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const requestFiber = yield* provider
+        .requestUserInput({
+          threadId,
+          providerInstanceId: codexInstanceId,
+          questions: [
+            {
+              id: "scope",
+              header: "Scope",
+              question: "Which scope should T3 use?",
+              options: [
+                { label: "Current", description: "Use the current project only." },
+                { label: "All", description: "Use every available project." },
+              ],
+              multiSelect: false,
+            },
+          ],
+        })
+        .pipe(Effect.forkScoped);
+
+      const requestedEvent = yield* Deferred.await(requested);
+      assert.equal(requestedEvent.provider, CODEX_DRIVER);
+      assert.equal(requestedEvent.providerInstanceId, codexInstanceId);
+      assert.equal(requestedEvent.payload.questions.length, 1);
+      assert.equal(requestedEvent.payload.questions[0]?.id, "scope");
+      assert.equal(requestedEvent.raw?.source, "t3.mcp.tool");
+      assert.equal(requestedEvent.requestId !== undefined, true);
+      if (requestedEvent.requestId === undefined) {
+        throw new Error("expected MCP user-input event request id");
+      }
+
+      const answers = { scope: "Current" };
+      yield* provider.respondToUserInput({
+        threadId,
+        requestId: asRequestId(String(requestedEvent.requestId)),
+        answers,
+      });
+
+      assert.deepEqual(yield* Fiber.join(requestFiber), answers);
+      const resolvedEvent = yield* Deferred.await(resolved);
+      assert.equal(resolvedEvent.requestId, requestedEvent.requestId);
+      assert.deepEqual(resolvedEvent.payload.answers, answers);
+      assert.equal(routing.codex.respondToUserInput.mock.calls.length, 0);
     }),
   );
 

@@ -102,6 +102,7 @@ function createProviderServiceHarness() {
     sendTurn: () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
+    requestUserInput: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
@@ -2950,6 +2951,17 @@ describe("ProviderRuntimeIngestion", () => {
   it("projects structured user input request and resolution as thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
+    const questions = Array.from({ length: 10 }, (_, index) => ({
+      id: `question-${index + 1}`,
+      header: `Question ${index + 1}`,
+      question: `Question ${index + 1}?`,
+      options: [
+        {
+          label: `Answer ${index + 1}`,
+          description: `Answer ${index + 1}`,
+        },
+      ],
+    }));
 
     harness.emit({
       type: "user-input.requested",
@@ -2960,19 +2972,7 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-user-input"),
       requestId: ApprovalRequestId.make("req-user-input-1"),
       payload: {
-        questions: [
-          {
-            id: "sandbox_mode",
-            header: "Sandbox",
-            question: "Which mode should be used?",
-            options: [
-              {
-                label: "workspace-write",
-                description: "Allow workspace writes only",
-              },
-            ],
-          },
-        ],
+        questions,
       },
     });
 
@@ -2986,7 +2986,7 @@ describe("ProviderRuntimeIngestion", () => {
       requestId: ApprovalRequestId.make("req-user-input-1"),
       payload: {
         answers: {
-          sandbox_mode: "workspace-write",
+          "question-1": "Answer 1",
         },
       },
     });
@@ -3005,7 +3005,12 @@ describe("ProviderRuntimeIngestion", () => {
     const requested = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-requested",
     );
+    const requestedPayload =
+      requested?.payload && typeof requested.payload === "object"
+        ? (requested.payload as Record<string, unknown>)
+        : undefined;
     expect(requested?.kind).toBe("user-input.requested");
+    expect((requestedPayload?.questions as ReadonlyArray<unknown> | undefined)?.length).toBe(10);
 
     const resolved = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-resolved",
@@ -3016,7 +3021,7 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
     expect(resolved?.kind).toBe("user-input.resolved");
     expect(resolvedPayload?.answers).toEqual({
-      sandbox_mode: "workspace-write",
+      "question-1": "Answer 1",
     });
   });
 

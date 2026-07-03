@@ -17,7 +17,7 @@ import type {
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { View, type GestureResponderEvent } from "react-native";
+import { ScrollView, useWindowDimensions, View, type GestureResponderEvent } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -210,6 +210,7 @@ const WorkingDurationPill = memo(function WorkingDurationPill(props: {
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const { onOpenDrawer } = props;
 
+  const windowDimensions = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const agentLabel = `${props.selectedThread.modelSelection.instanceId} agent`;
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
@@ -244,6 +245,12 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const composerOverlapHeight = composerChrome + composerBottomInset;
   const activeWorkIndicatorHeight = props.activeWorkStartedAt ? WORKING_INDICATOR_HEIGHT : 0;
   const estimatedOverlayHeight = composerOverlapHeight + activeWorkIndicatorHeight + 8;
+  const pendingOverlayAvailableHeight =
+    windowDimensions.height - insets.top - composerOverlapHeight - activeWorkIndicatorHeight - 32;
+  const pendingOverlayMaxHeight = Math.max(
+    180,
+    Math.min(windowDimensions.height * 0.58, pendingOverlayAvailableHeight),
+  );
   const { contentInsetEndAdjustment, onComposerLayout } = useKeyboardChatComposerInset(
     listRef,
     composerOverlayRef,
@@ -432,7 +439,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 ) : null}
 
                 {props.activePendingApproval || props.activePendingUserInput ? (
-                  <View className="gap-3 px-4 pb-3" style={{ flexShrink: 0 }}>
+                  <ScrollView
+                    className="px-4 pb-3"
+                    contentContainerStyle={{ gap: 12 }}
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                    style={{ flexShrink: 1, maxHeight: pendingOverlayMaxHeight }}
+                  >
                     {props.activePendingApproval ? (
                       <PendingApprovalCard
                         approval={props.activePendingApproval}
@@ -451,7 +464,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                         onSubmit={props.onSubmitUserInput}
                       />
                     ) : null}
-                  </View>
+                  </ScrollView>
                 ) : null}
               </View>
 

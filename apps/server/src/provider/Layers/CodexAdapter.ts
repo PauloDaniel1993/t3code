@@ -23,6 +23,7 @@ import {
   ProviderApprovalDecision,
   ThreadId,
   ProviderSendTurnInput,
+  type UserInputQuestion,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
@@ -38,6 +39,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
@@ -331,8 +333,10 @@ function toCanonicalUserInputAnswers(
   );
 }
 
-function toUserInputQuestions(questions: ReadonlyArray<CodexToolUserInputQuestion>) {
-  const parsedQuestions = questions
+function toUserInputQuestions(
+  questions: ReadonlyArray<CodexToolUserInputQuestion>,
+): ReadonlyArray<UserInputQuestion> {
+  return questions
     .map((question) => {
       const options =
         question.options
@@ -361,8 +365,6 @@ function toUserInputQuestions(questions: ReadonlyArray<CodexToolUserInputQuestio
       };
     })
     .filter((question) => question !== undefined);
-
-  return parsedQuestions.length > 0 ? parsedQuestions : undefined;
 }
 
 function toThreadState(
@@ -512,16 +514,26 @@ function mapToRuntimeEvents(
       const payload =
         readPayload(EffectCodexSchema.ServerRequest__ToolRequestUserInputParams, event.payload) ??
         readPayload(EffectCodexSchema.ToolRequestUserInputParams, event.payload);
-      const questions = payload ? toUserInputQuestions(payload.questions) : undefined;
-      if (!questions) {
-        return [];
+      const questions = payload ? toUserInputQuestions(payload.questions) : [];
+      const validation = validateUserInputQuestionBatch(questions);
+      if (validation._tag === "Invalid") {
+        return [
+          {
+            ...runtimeEventBase(event, canonicalThreadId),
+            type: "runtime.error",
+            payload: {
+              message: validation.message,
+              class: "provider_error",
+            },
+          },
+        ];
       }
       return [
         {
           ...runtimeEventBase(event, canonicalThreadId),
           type: "user-input.requested",
           payload: {
-            questions,
+            questions: validation.questions,
           },
         },
       ];
@@ -1404,6 +1416,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(serviceTier ? { serviceTier } : {}),
           ...(mcpSession
             ? {
+                forceT3McpUserInput: true,
                 environment: {
                   ...(options?.environment ?? process.env),
                   T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),

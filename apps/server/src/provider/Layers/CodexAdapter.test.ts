@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
   CodexSettings,
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -35,6 +36,7 @@ import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
@@ -57,6 +59,17 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
+const makeCodexUserInputQuestion = (index: number) => ({
+  id: `question_${index}`,
+  header: `Question ${index}`,
+  question: `Question ${index}?`,
+  options: [
+    {
+      label: `Answer ${index}`,
+      description: `Answer ${index}`,
+    },
+  ],
+});
 
 class FakeCodexRuntime implements CodexSessionRuntimeShape {
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
@@ -286,6 +299,46 @@ validationLayer("CodexAdapterLive validation", (it) => {
         runtimeMode: "full-access",
       });
     }),
+  );
+
+  it.effect("forces T3 MCP user input when the Codex session has a T3 MCP server", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const threadId = asThreadId("thread-codex-mcp-user-input");
+      yield* Effect.sync(() =>
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("environment-codex-mcp"),
+          threadId,
+          providerSessionId: "provider-session-codex-mcp",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          endpoint: "http://127.0.0.1:4311/mcp",
+          authorizationHeader: "Bearer codex-token",
+        }),
+      );
+
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const options = validationRuntimeFactory.factory.mock.calls[0]?.[0];
+      NodeAssert.equal(options?.forceT3McpUserInput, true);
+      NodeAssert.deepStrictEqual(options?.appServerArgs, [
+        "-c",
+        "mcp_servers.t3-code.url=http://127.0.0.1:4311/mcp",
+        "-c",
+        'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+      ]);
+      NodeAssert.equal(options?.environment?.T3_MCP_BEARER_TOKEN, "codex-token");
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() =>
+          McpProviderSession.clearMcpProviderSession(asThreadId("thread-codex-mcp-user-input")),
+        ),
+      ),
+    ),
   );
 });
 
@@ -973,19 +1026,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             itemId: "item-user-input-1",
             threadId: "thread-1",
             turnId: "turn-1",
-            questions: [
-              {
-                id: "sandbox_mode",
-                header: "Sandbox",
-                question: "Which mode should be used?",
-                options: [
-                  {
-                    label: "workspace-write",
-                    description: "Allow workspace writes only",
-                  },
-                ],
-              },
-            ],
+            questions: Array.from({ length: 10 }, (_, index) =>
+              makeCodexUserInputQuestion(index + 1),
+            ),
           },
         } satisfies ProviderEvent);
         yield* runtime.emit({
@@ -998,8 +1041,8 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           requestId: ApprovalRequestId.make("req-user-input-1"),
           payload: {
             answers: {
-              sandbox_mode: {
-                answers: ["workspace-write"],
+              question_1: {
+                answers: ["Answer 1"],
               },
             },
           },
@@ -1009,7 +1052,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         NodeAssert.equal(events[0]?.type, "user-input.requested");
         if (events[0]?.type === "user-input.requested") {
           NodeAssert.equal(events[0].requestId, "req-user-input-1");
-          NodeAssert.equal(events[0].payload.questions[0]?.id, "sandbox_mode");
+          NodeAssert.equal(events[0].payload.questions.length, 10);
+          NodeAssert.equal(events[0].payload.questions[0]?.id, "question_1");
+          NodeAssert.equal(events[0].payload.questions[9]?.id, "question_10");
           NodeAssert.equal(events[0].payload.questions[0]?.multiSelect, false);
         }
 
@@ -1017,10 +1062,44 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         if (events[1]?.type === "user-input.resolved") {
           NodeAssert.equal(events[1].requestId, "req-user-input-1");
           NodeAssert.deepEqual(events[1].payload.answers, {
-            sandbox_mode: "workspace-write",
+            question_1: "Answer 1",
           });
         }
       }),
+  );
+
+  it.effect("maps oversized requestUserInput requests to runtime errors", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-user-input-oversized"),
+        kind: "request",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/tool/requestUserInput",
+        requestId: ApprovalRequestId.make("req-user-input-oversized"),
+        payload: {
+          itemId: "item-user-input-oversized",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          questions: Array.from({ length: 11 }, (_, index) =>
+            makeCodexUserInputQuestion(index + 1),
+          ),
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "runtime.error") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.payload.class, "provider_error");
+      NodeAssert.match(firstEvent.value.payload.message, /1 to 10/u);
+      NodeAssert.match(firstEvent.value.payload.message, /11/u);
+    }),
   );
 
   it.effect("unwraps Codex token usage payloads for context window events", () =>

@@ -53,6 +53,7 @@ import {
   getProviderOptionDescriptors,
   resolvePromptInjectedEffort,
 } from "@t3tools/shared/model";
+import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -70,6 +71,7 @@ import * as Stream from "effect/Stream";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   getClaudeModelCapabilities,
@@ -187,6 +189,7 @@ interface ClaudeSessionContext {
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
+  readonly hasT3McpUserInputTool: boolean;
   readonly turns: Array<{
     id: TurnId;
     items: Array<unknown>;
@@ -3144,6 +3147,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           readonly toolUseID?: string;
         },
       ) {
+        if (context.hasT3McpUserInputTool) {
+          return {
+            behavior: "deny",
+            message: T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE,
+          } satisfies PermissionResult;
+        }
+
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
 
         // Parse questions from the SDK's AskUserQuestion input.
@@ -3166,11 +3176,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : false,
           }),
         );
+        const validation = validateUserInputQuestionBatch(questions);
+        if (validation._tag === "Invalid") {
+          return {
+            behavior: "deny",
+            message: validation.message,
+          } satisfies PermissionResult;
+        }
 
         const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
         let aborted = false;
         const pendingInput: PendingUserInput = {
-          questions,
+          questions: validation.questions,
           answers: answersDeferred,
         };
 
@@ -3188,7 +3205,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               }
             : {}),
           requestId: asRuntimeRequestId(requestId),
-          payload: { questions },
+          payload: { questions: validation.questions },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
           }),
@@ -3567,6 +3584,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         resumeSessionId: sessionId,
         pendingApprovals,
         pendingUserInputs,
+        hasT3McpUserInputTool: mcpSession !== undefined,
         turns: [],
         inFlightTools,
         claudeTasks,

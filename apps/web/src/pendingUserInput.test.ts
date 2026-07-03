@@ -153,6 +153,36 @@ describe("buildPendingUserInputAnswers", () => {
   it("returns null when any question is unanswered", () => {
     expect(buildPendingUserInputAnswers([singleSelectQuestion], {})).toBeNull();
   });
+
+  it("builds answer maps for ten-question prompts in order", () => {
+    const questions = Array.from({ length: 10 }, (_, index) => ({
+      id: `question-${index + 1}`,
+      header: `Question ${index + 1}`,
+      question: `Question ${index + 1}?`,
+      options: [
+        {
+          label: `Answer ${index + 1}`,
+          description: `Answer ${index + 1}`,
+        },
+      ],
+      multiSelect: false,
+    }));
+    const answers = buildPendingUserInputAnswers(
+      questions,
+      Object.fromEntries(
+        questions.map((question, index) => [
+          question.id,
+          { selectedOptionLabels: [`Answer ${index + 1}`] },
+        ]),
+      ),
+    );
+
+    expect(Object.keys(answers ?? {})).toEqual(questions.map((question) => question.id));
+    expect(answers).toMatchObject({
+      "question-1": "Answer 1",
+      "question-10": "Answer 10",
+    });
+  });
 });
 
 describe("pending user input question progress", () => {
@@ -245,6 +275,28 @@ describe("pending user input question progress", () => {
       resolvedAnswer: ["Server", "Web"],
       canAdvance: true,
       isComplete: true,
+    });
+  });
+
+  it("clamps active progress across a ten-question prompt", () => {
+    const tenQuestions = Array.from({ length: 10 }, (_, index) => ({
+      id: `question-${index + 1}`,
+      header: `Question ${index + 1}`,
+      question: `Question ${index + 1}?`,
+      options: [{ label: "Continue", description: "Continue" }],
+      multiSelect: false,
+    }));
+
+    expect(derivePendingUserInputProgress(tenQuestions, {}, 9)).toMatchObject({
+      questionIndex: 9,
+      activeQuestion: tenQuestions[9],
+      isLastQuestion: true,
+      answeredQuestionCount: 0,
+      isComplete: false,
+    });
+    expect(derivePendingUserInputProgress(tenQuestions, {}, 99)).toMatchObject({
+      questionIndex: 9,
+      activeQuestion: tenQuestions[9],
     });
   });
 });
