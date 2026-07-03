@@ -227,6 +227,13 @@ beforeEach(() => {
 const advanceTestClock = (ms: number) =>
   TestClock.adjust(`${ms} millis`).pipe(Effect.andThen(Effect.yieldNow));
 
+const makeOpenCodeQuestion = (index: number) => ({
+  header: `Question ${index}`,
+  question: `Question ${index}?`,
+  options: [{ label: `Answer ${index}`, description: `Answer ${index}` }],
+  multiple: false,
+});
+
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
@@ -914,6 +921,86 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(sessions.length, 1);
       NodeAssert.equal(sessions[0]?.threadId, "thread-native-log-failure");
       NodeAssert.deepEqual(closeCallsDuringRun, []);
+    }),
+  );
+
+  it.effect("emits ten OpenCode question prompts in order", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-ten-questions");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "question.asked",
+          properties: {
+            id: "question-request-ten",
+            sessionID: "http://127.0.0.1:9999/session",
+            questions: Array.from({ length: 10 }, (_, index) => makeOpenCodeQuestion(index + 1)),
+          },
+        },
+      ];
+      const eventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.threadId === threadId && event.type === "user-input.requested",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const event = yield* Fiber.join(eventFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(event._tag, "Some");
+      if (event._tag !== "Some" || event.value.type !== "user-input.requested") {
+        return;
+      }
+      NodeAssert.equal(event.value.payload.questions.length, 10);
+      NodeAssert.equal(event.value.payload.questions[0]?.id, "question-0-question-1");
+      NodeAssert.equal(event.value.payload.questions[9]?.id, "question-9-question-10");
+      NodeAssert.deepEqual(
+        event.value.payload.questions.map((question) => question.question),
+        Array.from({ length: 10 }, (_, index) => `Question ${index + 1}?`),
+      );
+    }),
+  );
+
+  it.effect("emits a runtime error for oversized OpenCode question prompts", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-oversized-questions");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "question.asked",
+          properties: {
+            id: "question-request-oversized",
+            sessionID: "http://127.0.0.1:9999/session",
+            questions: Array.from({ length: 11 }, (_, index) => makeOpenCodeQuestion(index + 1)),
+          },
+        },
+      ];
+      const eventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "runtime.error"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const event = yield* Fiber.join(eventFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(event._tag, "Some");
+      if (event._tag !== "Some" || event.value.type !== "runtime.error") {
+        return;
+      }
+      NodeAssert.equal(event.value.payload.class, "provider_error");
+      NodeAssert.match(event.value.payload.message, /1 to 10/u);
+      NodeAssert.match(event.value.payload.message, /11/u);
     }),
   );
 });

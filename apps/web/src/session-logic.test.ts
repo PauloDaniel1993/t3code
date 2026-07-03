@@ -178,6 +178,19 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
+  const makeUserInputQuestion = (index: number) => ({
+    id: `question-${index}`,
+    header: `Question ${index}`,
+    question: `Question ${index}?`,
+    options: [
+      {
+        label: "Continue",
+        description: "Continue",
+      },
+    ],
+    multiSelect: false,
+  });
+
   it("tracks open structured prompts and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -306,6 +319,31 @@ describe("derivePendingUserInputs", () => {
     ];
 
     expect(derivePendingUserInputs(activities)).toEqual([]);
+  });
+
+  it("preserves ten structured pending user-input questions in order", () => {
+    const questions = Array.from({ length: 10 }, (_, index) => makeUserInputQuestion(index + 1));
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-ten",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-ten",
+          questions,
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)).toEqual([
+      {
+        requestId: "req-user-input-ten",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        questions,
+      },
+    ]);
   });
 });
 

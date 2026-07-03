@@ -67,6 +67,10 @@
       "types": "./src/toolActivity.ts",
       "import": "./src/toolActivity.ts"
     },
+    "./userInput": {
+      "types": "./src/userInput.ts",
+      "import": "./src/userInput.ts"
+    },
     "./Struct": {
       "types": "./src/Struct.ts",
       "import": "./src/Struct.ts"
