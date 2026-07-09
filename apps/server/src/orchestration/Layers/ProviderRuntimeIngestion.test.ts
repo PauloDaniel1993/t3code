@@ -720,6 +720,182 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("attaches model reroute metadata to the completed assistant message", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "model.rerouted",
+      eventId: asEventId("evt-model-rerouted"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute"),
+      payload: {
+        fromModel: "claude-fable-5",
+        toModel: "claude-opus-4-8",
+        reason: "refusal",
+        category: "cyber",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reroute-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute"),
+      itemId: asItemId("item-reroute"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "served by fallback",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-reroute-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute"),
+      itemId: asItemId("item-reroute"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-reroute" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-reroute",
+    );
+    expect(message?.modelReroute).toEqual({
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "refusal",
+      category: "cyber",
+    });
+  });
+
+  it("attaches model reroute metadata to exactly one assistant message per turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "model.rerouted",
+      eventId: asEventId("evt-model-rerouted-multi"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute-multi"),
+      payload: {
+        fromModel: "claude-fable-5",
+        toModel: "claude-opus-4-8",
+        reason: "session-model-swap",
+      },
+    });
+    for (const item of ["item-multi-a", "item-multi-b"]) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-delta-${item}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reroute-multi"),
+        itemId: asItemId(item),
+        payload: {
+          streamKind: "assistant_text",
+          delta: `text for ${item}`,
+        },
+      });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId(`evt-completed-${item}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reroute-multi"),
+        itemId: asItemId(item),
+        payload: {
+          itemType: "assistant_message",
+          status: "completed",
+        },
+      });
+    }
+
+    const thread = await waitForThread(harness.readModel, (entry) => {
+      const turnMessages = entry.messages.filter(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-multi-a" || message.id === "assistant:item-multi-b",
+      );
+      return turnMessages.length === 2 && turnMessages.every((message) => !message.streaming);
+    });
+    const reroutedMessages = thread.messages.filter(
+      (entry: ProviderRuntimeTestMessage) => entry.modelReroute !== undefined,
+    );
+    expect(reroutedMessages).toHaveLength(1);
+  });
+
+  it("clears stashed model reroute metadata when the turn completes", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "model.rerouted",
+      eventId: asEventId("evt-model-rerouted-stale"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute-stale"),
+      payload: {
+        fromModel: "claude-fable-5",
+        toModel: "claude-opus-4-8",
+        reason: "refusal",
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-stale"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute-stale"),
+      status: "completed",
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-completed-after-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute-stale"),
+      itemId: asItemId("item-after-turn"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        detail: "late assistant text",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-after-turn" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-after-turn",
+    );
+    expect(message?.modelReroute).toBeUndefined();
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

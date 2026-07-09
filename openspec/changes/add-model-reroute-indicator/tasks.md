@@ -14,14 +14,14 @@
 
 ## 3. Orchestration pipeline
 
-- [ ] 3.1 In `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts`: add a reroute stash keyed `${threadId}:${turnId}` (mirror `bufferedProposedPlanById` ~834-856) and a handler for `event.type === "model.rerouted"` that stores the payload when `turnId` is present
-- [ ] 3.2 In `finalizeAssistantMessage` (~920-964): attach the stashed `modelReroute` to the `thread.message.assistant.complete` command and invalidate the stash on first attachment (exactly one badged message per turn)
-- [ ] 3.3 Clear leftover stashes on `turn.completed` (~1542-1576) and `session.exited` (~1578-1580)
-- [ ] 3.4 In `apps/server/src/orchestration/decider.ts` (~765-791): copy `command.modelReroute` into the `thread.message-sent` payload (optional spread)
-- [ ] 3.5 In `apps/server/src/orchestration/projector.ts` (~384-441): include `modelReroute` when building `OrchestrationMessage`; preserve prior value in the existing-entry merge when the new payload omits it (same style as `attachments`)
-- [ ] 3.6 In `apps/server/src/orchestration/Layers/ProjectionPipeline.ts` (~863-905): pass `modelReroute` to the repo upsert with fallback to `previousMessage?.modelReroute` (mirror `nextAttachments` ~880-885)
-- [ ] 3.7 Ingestion tests: `model.rerouted` then assistant completion → command carries `modelReroute` exactly once per turn; stash cleared on `turn.completed`
-- [ ] 3.8 Pipeline test: message-sent with `modelReroute` followed by a streaming upsert without it → column preserved
+- [x] 3.1 In `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts`: add a reroute stash keyed `${threadId}:${turnId}` (mirror `bufferedProposedPlanById` ~834-856) and a handler for `event.type === "model.rerouted"` that stores the payload when `turnId` is present
+- [x] 3.2 In `finalizeAssistantMessage` (~920-964): attach the stashed `modelReroute` to the `thread.message.assistant.complete` command and invalidate the stash on first attachment (exactly one badged message per turn)
+- [x] 3.3 Clear leftover stashes on `turn.completed` (~1542-1576) and `session.exited` (~1578-1580)
+- [x] 3.4 In `apps/server/src/orchestration/decider.ts` (~765-791): copy `command.modelReroute` into the `thread.message-sent` payload (optional spread)
+- [x] 3.5 In `apps/server/src/orchestration/projector.ts` (~384-441): include `modelReroute` when building `OrchestrationMessage`; preserve prior value in the existing-entry merge when the new payload omits it (same style as `attachments`)
+- [x] 3.6 In `apps/server/src/orchestration/Layers/ProjectionPipeline.ts` (~863-905): pass `modelReroute` to the repo upsert with fallback to `previousMessage?.modelReroute` (mirror `nextAttachments` ~880-885)
+- [x] 3.7 Ingestion tests: `model.rerouted` then assistant completion → command carries `modelReroute` exactly once per turn; stash cleared on `turn.completed`
+- [x] 3.8 Pipeline test: message-sent with `modelReroute` followed by a streaming upsert without it → column preserved
 
 ## 4. Claude adapter detection
 

@@ -596,6 +596,134 @@ it.layer(
   );
 });
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-model-reroute-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("preserves stored model reroute metadata across upserts that omit it", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-01-01T00:00:00.000Z";
+        const later = "2026-01-01T00:00:01.000Z";
+
+        yield* eventStore.append({
+          type: "project.created",
+          eventId: EventId.make("evt-reroute-1"),
+          aggregateKind: "project",
+          aggregateId: ProjectId.make("project-reroute"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-reroute-1"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-reroute-1"),
+          metadata: {},
+          payload: {
+            projectId: ProjectId.make("project-reroute"),
+            title: "Project Reroute",
+            workspaceRoot: "/tmp/project-reroute",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* eventStore.append({
+          type: "thread.created",
+          eventId: EventId.make("evt-reroute-2"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-reroute"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-reroute-2"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-reroute-2"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-reroute"),
+            projectId: ProjectId.make("project-reroute"),
+            title: "Thread Reroute",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-fable-5",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-reroute-3"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-reroute"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-reroute-3"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-reroute-3"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-reroute"),
+            messageId: MessageId.make("message-reroute"),
+            role: "assistant",
+            text: "served by fallback",
+            turnId: null,
+            streaming: false,
+            modelReroute: {
+              fromModel: "claude-fable-5",
+              toModel: "claude-opus-4-8",
+              reason: "refusal",
+            },
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-reroute-4"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-reroute"),
+          occurredAt: later,
+          commandId: CommandId.make("cmd-reroute-4"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-reroute-4"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-reroute"),
+            messageId: MessageId.make("message-reroute"),
+            role: "assistant",
+            text: " and more text",
+            turnId: null,
+            streaming: true,
+            createdAt: now,
+            updatedAt: later,
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const rows = yield* sql<{
+          readonly modelRerouteJson: string | null;
+        }>`
+          SELECT model_reroute_json AS "modelRerouteJson"
+          FROM projection_thread_messages
+          WHERE message_id = 'message-reroute'
+        `;
+        assert.equal(rows.length, 1);
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        assert.deepEqual(JSON.parse(rows[0]?.modelRerouteJson ?? "null"), {
+          fromModel: "claude-fable-5",
+          toModel: "claude-opus-4-8",
+          reason: "refusal",
+        });
+      }),
+    );
+  },
+);
+
 it.layer(
   Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-rollback-")),
 )("OrchestrationProjectionPipeline", (it) => {

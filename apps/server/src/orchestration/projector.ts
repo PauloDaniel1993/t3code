@@ -410,6 +410,7 @@ export function projectEvent(
             ...(payload.sourceMessageId !== undefined
               ? { sourceMessageId: payload.sourceMessageId }
               : {}),
+            ...(payload.modelReroute !== undefined ? { modelReroute: payload.modelReroute } : {}),
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
           },
@@ -433,6 +434,9 @@ export function projectEvent(
                     turnId: message.turnId,
                     ...(message.attachments !== undefined
                       ? { attachments: message.attachments }
+                      : {}),
+                    ...(message.modelReroute !== undefined
+                      ? { modelReroute: message.modelReroute }
                       : {}),
                   }
                 : entry,

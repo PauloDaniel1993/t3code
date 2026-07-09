@@ -790,6 +790,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           turnId: command.turnId ?? null,
           streaming: false,
           source: "provider",
+          ...(command.modelReroute !== undefined ? { modelReroute: command.modelReroute } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
