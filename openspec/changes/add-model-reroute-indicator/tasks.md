@@ -7,10 +7,10 @@
 
 ## 2. Persistence
 
-- [ ] 2.1 Create migration `apps/server/src/persistence/Migrations/033_ProjectionThreadMessagesModelReroute.ts`: `ALTER TABLE projection_thread_messages ADD COLUMN model_reroute_json TEXT` (match style of `007`); register it alongside existing migrations
-- [ ] 2.2 Add `modelReroute` to the `ProjectionThreadMessage` schema in `apps/server/src/persistence/Services/ProjectionThreadMessages.ts` (~25-38)
-- [ ] 2.3 In `apps/server/src/persistence/Layers/ProjectionThreadMessages.ts`: add `model_reroute_json` to the row schema (JSON-string codec), include it in insert and COALESCE-preserving upsert (mirror `attachments_json` at ~84-91, 105-108), and in all SELECTs + `toProjectionThreadMessage`
-- [ ] 2.4 Add `model_reroute_json` to `ProjectionSnapshotQuery.ts`: `ProjectionThreadMessageDbRowSchema` (~73-81), `mapMessageRow` (~263-276), and both message SELECT statements (~441, ~808)
+- [x] 2.1 Create migration `apps/server/src/persistence/Migrations/033_ProjectionThreadMessageModelReroute.ts`: `ALTER TABLE projection_thread_messages ADD COLUMN model_reroute_json TEXT` (match style of `007`); register it alongside existing migrations
+- [x] 2.2 Add `modelReroute` to the `ProjectionThreadMessage` schema in `apps/server/src/persistence/Services/ProjectionThreadMessages.ts` (~25-38)
+- [x] 2.3 In `apps/server/src/persistence/Layers/ProjectionThreadMessages.ts`: add `model_reroute_json` to the row schema (JSON-string codec), include it in insert and COALESCE-preserving upsert (mirror `attachments_json` at ~84-91, 105-108), and in all SELECTs + `toProjectionThreadMessage`
+- [x] 2.4 Add `model_reroute_json` to `ProjectionSnapshotQuery.ts`: `ProjectionThreadMessageDbRowSchema` (~73-81), `mapMessageRow` (~263-276), and both message SELECT statements (~441, ~808)
 
 ## 3. Orchestration pipeline
 

@@ -9,6 +9,7 @@
 import {
   ChatAttachment,
   MessageId,
+  MessageModelReroute,
   OrchestrationMessageRole,
   ThreadId,
   TurnId,
@@ -33,6 +34,7 @@ export const ProjectionThreadMessage = Schema.Struct({
   source: OrchestrationMessageSource,
   sourceThreadId: Schema.optionalKey(ThreadId),
   sourceMessageId: Schema.optionalKey(MessageId),
+  modelReroute: Schema.optional(MessageModelReroute),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
