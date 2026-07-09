@@ -396,6 +396,16 @@ describe("OrchestrationEngine", () => {
               threadDetailReadCount += 1;
               return threadId === sourceThread.id ? Option.some(sourceThread) : Option.none();
             }),
+          getThreadDetailSnapshot: (threadId) =>
+            Effect.sync(() => {
+              threadDetailReadCount += 1;
+              return threadId === sourceThread.id
+                ? Option.some({
+                    snapshotSequence: projectionSnapshot.snapshotSequence,
+                    thread: sourceThread,
+                  })
+                : Option.none();
+            }),
         }),
       ),
       Layer.provide(
@@ -568,6 +578,15 @@ describe("OrchestrationEngine", () => {
           getThreadDetailById: (threadId) =>
             Effect.succeed(
               threadId === sourceThread.id ? Option.some(sourceThread) : Option.none(),
+            ),
+          getThreadDetailSnapshot: (threadId) =>
+            Effect.succeed(
+              threadId === sourceThread.id
+                ? Option.some({
+                    snapshotSequence: projectionSnapshot.snapshotSequence,
+                    thread: sourceThread,
+                  })
+                : Option.none(),
             ),
         }),
       ),
