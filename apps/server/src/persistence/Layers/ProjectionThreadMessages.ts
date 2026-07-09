@@ -8,6 +8,7 @@ import * as Struct from "effect/Struct";
 import {
   ChatAttachment,
   MessageId,
+  MessageModelReroute,
   messageSourceFromRole,
   OrchestrationMessageSource,
   ThreadId,
@@ -30,6 +31,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     source: Schema.NullOr(OrchestrationMessageSource),
     sourceThreadId: Schema.NullOr(ThreadId),
     sourceMessageId: Schema.NullOr(MessageId),
+    modelReroute: Schema.NullOr(Schema.fromJsonString(MessageModelReroute)),
   }),
 );
 
@@ -49,6 +51,7 @@ function toProjectionThreadMessage(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+    ...(row.modelReroute !== null ? { modelReroute: row.modelReroute } : {}),
   };
 }
 
@@ -60,6 +63,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
     execute: (row) => {
       const nextAttachmentsJson =
         row.attachments !== undefined ? JSON.stringify(row.attachments) : null;
+      const nextModelRerouteJson =
+        row.modelReroute !== undefined ? JSON.stringify(row.modelReroute) : null;
       return sql`
         INSERT INTO projection_thread_messages (
           message_id,
@@ -72,6 +77,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           source,
           source_thread_id,
           source_message_id,
+          model_reroute_json,
           created_at,
           updated_at
         )
@@ -93,6 +99,14 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.source},
           ${row.sourceThreadId ?? null},
           ${row.sourceMessageId ?? null},
+          COALESCE(
+            ${nextModelRerouteJson},
+            (
+              SELECT model_reroute_json
+              FROM projection_thread_messages
+              WHERE message_id = ${row.messageId}
+            )
+          ),
           ${row.createdAt},
           ${row.updatedAt}
         )
@@ -110,6 +124,10 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           source = excluded.source,
           source_thread_id = excluded.source_thread_id,
           source_message_id = excluded.source_message_id,
+          model_reroute_json = COALESCE(
+            excluded.model_reroute_json,
+            projection_thread_messages.model_reroute_json
+          ),
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
       `;
@@ -132,6 +150,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           source,
           source_thread_id AS "sourceThreadId",
           source_message_id AS "sourceMessageId",
+          model_reroute_json AS "modelReroute",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
@@ -156,6 +175,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           source,
           source_thread_id AS "sourceThreadId",
           source_message_id AS "sourceMessageId",
+          model_reroute_json AS "modelReroute",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
