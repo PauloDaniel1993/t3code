@@ -460,6 +460,88 @@ effectIt("derives historical thread.message-sent source from role", () =>
   }),
 );
 
+effectIt("preserves model reroute metadata on thread.message-sent payloads", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadMessageSentPayload({
+      threadId: "thread-1",
+      messageId: "msg-rerouted",
+      role: "assistant",
+      text: "served by fallback",
+      turnId: null,
+      streaming: false,
+      modelReroute: {
+        fromModel: "claude-fable-5",
+        toModel: "claude-opus-4-8",
+        reason: "refusal",
+        category: "cyber",
+        explanation: "Request declined by safety classifiers.",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    NodeAssert.deepStrictEqual(parsed.modelReroute, {
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "refusal",
+      category: "cyber",
+      explanation: "Request declined by safety classifiers.",
+    });
+  }),
+);
+
+effectIt("decodes messages and payloads without model reroute metadata", () =>
+  Effect.gen(function* () {
+    const payload = yield* decodeThreadMessageSentPayload({
+      threadId: "thread-1",
+      messageId: "msg-plain",
+      role: "assistant",
+      text: "regular response",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const message = yield* decodeOrchestrationMessage({
+      id: "msg-plain",
+      role: "assistant",
+      text: "regular response",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    NodeAssert.strictEqual(payload.modelReroute, undefined);
+    NodeAssert.strictEqual(message.modelReroute, undefined);
+  }),
+);
+
+effectIt("preserves model reroute metadata on orchestration messages", () =>
+  Effect.gen(function* () {
+    const message = yield* decodeOrchestrationMessage({
+      id: "msg-rerouted",
+      role: "assistant",
+      text: "served by fallback",
+      turnId: null,
+      streaming: false,
+      modelReroute: {
+        fromModel: "claude-fable-5",
+        toModel: "claude-opus-4-8",
+        reason: "session-model-swap",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    NodeAssert.deepStrictEqual(message.modelReroute, {
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "session-model-swap",
+    });
+  }),
+);
+
 effectIt("decodes thread.meta-updated payloads with explicit provider", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadMetaUpdatedPayload({

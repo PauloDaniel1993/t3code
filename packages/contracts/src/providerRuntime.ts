@@ -556,6 +556,8 @@ const ModelReroutedPayload = Schema.Struct({
   fromModel: TrimmedNonEmptyStringSchema,
   toModel: TrimmedNonEmptyStringSchema,
   reason: TrimmedNonEmptyStringSchema,
+  category: Schema.optional(TrimmedNonEmptyStringSchema),
+  explanation: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ModelReroutedPayload = typeof ModelReroutedPayload.Type;
 
