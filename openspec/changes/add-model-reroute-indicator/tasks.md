@@ -1,9 +1,9 @@
 ## 1. Contracts
 
-- [ ] 1.1 Extend `ModelReroutedPayload` in `packages/contracts/src/providerRuntime.ts` (~555-560) with optional `category` and `explanation` fields
-- [ ] 1.2 Add exported `MessageModelReroute` struct (`fromModel`, `toModel`, `reason`, optional `category`/`explanation`) in `packages/contracts/src/orchestration.ts`
-- [ ] 1.3 Add optional `modelReroute` to `OrchestrationMessage` wire+value schemas (~242-268), `ThreadMessageSentPayload` wire+value (~1017-1062), and the `thread.message.assistant.complete` command schema
-- [ ] 1.4 Add contract round-trip tests: decode `ThreadMessageSentPayload`/`OrchestrationMessage` with and without `modelReroute` (mirror handoff-source tests in `orchestration.test.ts` ~423-451)
+- [x] 1.1 Extend `ModelReroutedPayload` in `packages/contracts/src/providerRuntime.ts` (~555-560) with optional `category` and `explanation` fields
+- [x] 1.2 Add exported `MessageModelReroute` struct (`fromModel`, `toModel`, `reason`, optional `category`/`explanation`) in `packages/contracts/src/orchestration.ts`
+- [x] 1.3 Add optional `modelReroute` to `OrchestrationMessage` wire+value schemas (~242-268), `ThreadMessageSentPayload` wire+value (~1017-1062), and the `thread.message.assistant.complete` command schema
+- [x] 1.4 Add contract round-trip tests: decode `ThreadMessageSentPayload`/`OrchestrationMessage` with and without `modelReroute` (mirror handoff-source tests in `orchestration.test.ts` ~423-451)
 
 ## 2. Persistence
 
