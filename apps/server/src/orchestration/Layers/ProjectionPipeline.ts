@@ -883,6 +883,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   attachments: event.payload.attachments,
                 })
               : previousMessage?.attachments;
+          const nextModelReroute = event.payload.modelReroute ?? previousMessage?.modelReroute;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
@@ -898,6 +899,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.sourceMessageId !== undefined
               ? { sourceMessageId: event.payload.sourceMessageId }
               : {}),
+            ...(nextModelReroute !== undefined ? { modelReroute: nextModelReroute } : {}),
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
           });
