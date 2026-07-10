@@ -1,6 +1,9 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+// Fork migrations must stay idempotent: existing databases migrated this
+// schema under the old single-sequence ids (999), so the DDL may already be
+// applied when the fork ledger replays it.
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
