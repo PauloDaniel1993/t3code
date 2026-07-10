@@ -64,7 +64,7 @@ export type RequestUserInputResult = typeof RequestUserInputResult.Type;
 const dependencies = [McpInvocationContext.McpInvocationContext, ProviderService.ProviderService];
 
 export const RequestUserInputTool = Tool.make("request_user_input", {
-  description: `Preferred T3 Code tool for asking the user up to ${MAX_USER_INPUT_QUESTIONS} structured questions through the T3 Code UI and waiting for their answers. Use this instead of provider-native question tools when it is available; split larger batches across multiple calls.`,
+  description: `Required T3 Code tool for asking the user up to ${MAX_USER_INPUT_QUESTIONS} structured questions through the T3 Code UI and waiting for their answers. Always use this when available instead of provider-native or host-injected question tools; split larger batches across multiple calls.`,
   parameters: RequestUserInputParameters,
   success: RequestUserInputResult,
   failure: Schema.String,

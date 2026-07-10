@@ -51,8 +51,11 @@ it("exports a ten-question request_user_input MCP schema", () => {
   };
 
   expect(RequestUserInputTool.description).toContain(`up to ${MAX_USER_INPUT_QUESTIONS}`);
-  expect(RequestUserInputTool.description).toContain("Preferred T3 Code tool");
-  expect(RequestUserInputTool.description).toContain("instead of provider-native question tools");
+  expect(RequestUserInputTool.description).toContain("Required T3 Code tool");
+  expect(RequestUserInputTool.description).toContain("Always use this when available");
+  expect(RequestUserInputTool.description).toContain(
+    "instead of provider-native or host-injected question tools",
+  );
   expect(schema.type).toBe("object");
   expect(schema.properties?.questions?.type).toBe("array");
   expect(schemaHas(schema.properties?.questions, "minItems", 1)).toBe(true);
