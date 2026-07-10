@@ -3,9 +3,47 @@ import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  formatRerouteModelName,
+  getMessageModelReroute,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
 } from "./MessagesTimeline.logic";
+
+describe("formatRerouteModelName", () => {
+  it("maps known model families to display names by prefix", () => {
+    expect(formatRerouteModelName("claude-opus-4-8")).toBe("Opus 4.8");
+    expect(formatRerouteModelName("claude-opus-4-8-20260115")).toBe("Opus 4.8");
+    expect(formatRerouteModelName("claude-fable-5")).toBe("Fable 5");
+    expect(formatRerouteModelName("claude-fable-5-20260601")).toBe("Fable 5");
+    expect(formatRerouteModelName("claude-opus-4-7")).toBe("Opus 4.7");
+  });
+
+  it("falls back to the raw model id for unknown models", () => {
+    expect(formatRerouteModelName("some-future-model-9")).toBe("some-future-model-9");
+  });
+});
+
+describe("getMessageModelReroute", () => {
+  it("returns the reroute metadata when present", () => {
+    expect(
+      getMessageModelReroute({
+        modelReroute: {
+          fromModel: "claude-fable-5",
+          toModel: "claude-opus-4-8",
+          reason: "refusal",
+        },
+      }),
+    ).toEqual({
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "refusal",
+    });
+  });
+
+  it("returns undefined for messages without reroute metadata", () => {
+    expect(getMessageModelReroute({})).toBeUndefined();
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
