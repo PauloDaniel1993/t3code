@@ -4,6 +4,7 @@ import {
   HandoffThreadMetadata,
   IsoDateTime,
   MessageId,
+  MessageModelReroute,
   messageSourceFromRole,
   NonNegativeInt,
   OrchestrationCheckpointFile,
@@ -78,6 +79,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     source: Schema.NullOr(OrchestrationMessageSource),
     sourceThreadId: Schema.NullOr(ThreadId),
     sourceMessageId: Schema.NullOr(MessageId),
+    modelReroute: Schema.NullOr(Schema.fromJsonString(MessageModelReroute)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
@@ -274,6 +276,7 @@ function mapMessageRow(
     source: row.source ?? messageSourceFromRole(row.role),
     ...(row.sourceThreadId !== null ? { sourceThreadId: row.sourceThreadId } : {}),
     ...(row.sourceMessageId !== null ? { sourceMessageId: row.sourceMessageId } : {}),
+    ...(row.modelReroute !== null ? { modelReroute: row.modelReroute } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -448,6 +451,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           source,
           source_thread_id AS "sourceThreadId",
           source_message_id AS "sourceMessageId",
+          model_reroute_json AS "modelReroute",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
@@ -815,6 +819,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           source,
           source_thread_id AS "sourceThreadId",
           source_message_id AS "sourceMessageId",
+          model_reroute_json AS "modelReroute",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages

@@ -239,6 +239,15 @@ export const messageSourceFromRole = (
   return role;
 };
 
+export const MessageModelReroute = Schema.Struct({
+  fromModel: TrimmedNonEmptyString,
+  toModel: TrimmedNonEmptyString,
+  reason: TrimmedNonEmptyString,
+  category: Schema.optional(TrimmedNonEmptyString),
+  explanation: Schema.optional(TrimmedNonEmptyString),
+});
+export type MessageModelReroute = typeof MessageModelReroute.Type;
+
 const OrchestrationMessageWire = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
@@ -249,6 +258,7 @@ const OrchestrationMessageWire = Schema.Struct({
   source: Schema.optionalKey(OrchestrationMessageSource),
   sourceThreadId: Schema.optionalKey(ThreadId),
   sourceMessageId: Schema.optionalKey(MessageId),
+  modelReroute: Schema.optionalKey(MessageModelReroute),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -263,6 +273,7 @@ const OrchestrationMessageValue = Schema.Struct({
   source: OrchestrationMessageSource,
   sourceThreadId: Schema.optionalKey(ThreadId),
   sourceMessageId: Schema.optionalKey(MessageId),
+  modelReroute: Schema.optionalKey(MessageModelReroute),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -834,6 +845,7 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   messageId: MessageId,
   delta: Schema.String,
   turnId: Schema.optional(TurnId),
+  modelReroute: Schema.optional(MessageModelReroute),
   createdAt: IsoDateTime,
 });
 
@@ -843,6 +855,7 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   turnId: Schema.optional(TurnId),
+  modelReroute: Schema.optional(MessageModelReroute),
   createdAt: IsoDateTime,
 });
 
@@ -1047,6 +1060,7 @@ const ThreadMessageSentPayloadWire = Schema.Struct({
   source: Schema.optionalKey(OrchestrationMessageSource),
   sourceThreadId: Schema.optionalKey(ThreadId),
   sourceMessageId: Schema.optionalKey(MessageId),
+  modelReroute: Schema.optionalKey(MessageModelReroute),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1062,6 +1076,7 @@ const ThreadMessageSentPayloadValue = Schema.Struct({
   source: OrchestrationMessageSource,
   sourceThreadId: Schema.optionalKey(ThreadId),
   sourceMessageId: Schema.optionalKey(MessageId),
+  modelReroute: Schema.optionalKey(MessageModelReroute),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

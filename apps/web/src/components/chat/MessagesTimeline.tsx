@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type MessageId,
+  type MessageModelReroute,
   type ScopedThreadRef,
   type ServerProviderSkill,
   type TurnId,
@@ -53,6 +54,7 @@ import {
   MousePointerClickIcon,
   PaintbrushIcon,
   MinusIcon,
+  ShuffleIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
@@ -69,6 +71,7 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  formatRerouteModelName,
   normalizeCompactToolLabel,
   isImportedHandoffTimelineMessage,
   resolveAssistantMessageCopyState,
@@ -1055,6 +1058,9 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     <>
       <div className="relative min-w-0 px-1 py-0.5">
         {importedHandoffMessage ? <ImportedMessageMarker className="mb-1" /> : null}
+        {row.message.modelReroute ? (
+          <ModelRerouteMarker reroute={row.message.modelReroute} className="mb-1" />
+        ) : null}
         <ChatMarkdown
           text={messageText}
           cwd={ctx.markdownCwd}
@@ -1097,6 +1103,38 @@ function ImportedMessageMarker({ className }: { className?: string }) {
         <GitBranchPlusIcon className="size-3" aria-hidden />
         Imported
       </span>
+    </div>
+  );
+}
+
+function ModelRerouteMarker({
+  reroute,
+  className,
+}: {
+  reroute: MessageModelReroute;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex items-center", className)}>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-muted/45 px-1.5 py-0.5 font-medium text-[11px] text-muted-foreground leading-none" />
+          }
+        >
+          <ShuffleIcon className="size-3" aria-hidden />
+          Rerouted to {formatRerouteModelName(reroute.toModel)}
+        </TooltipTrigger>
+        <TooltipPopup>
+          Request to {formatRerouteModelName(reroute.fromModel)} was served by{" "}
+          {formatRerouteModelName(reroute.toModel)}.
+          {reroute.explanation
+            ? ` ${reroute.explanation}`
+            : reroute.category
+              ? ` Reason: ${reroute.category}.`
+              : ""}
+        </TooltipPopup>
+      </Tooltip>
     </div>
   );
 }

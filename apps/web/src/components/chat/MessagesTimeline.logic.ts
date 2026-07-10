@@ -193,6 +193,30 @@ export function isImportedHandoffTimelineMessage(message: Pick<ChatMessage, "sou
   return message.source === "handoff-import";
 }
 
+export function getMessageModelReroute(
+  message: Pick<ChatMessage, "modelReroute">,
+): ChatMessage["modelReroute"] {
+  return message.modelReroute;
+}
+
+const REROUTE_MODEL_DISPLAY_NAMES: ReadonlyArray<readonly [string, string]> = [
+  ["claude-opus-4-8", "Opus 4.8"],
+  ["claude-opus-4-7", "Opus 4.7"],
+  ["claude-opus-4-6", "Opus 4.6"],
+  ["claude-fable-5", "Fable 5"],
+  ["claude-sonnet-5", "Sonnet 5"],
+  ["claude-haiku-4-5", "Haiku 4.5"],
+];
+
+export function formatRerouteModelName(modelId: string): string {
+  for (const [prefix, displayName] of REROUTE_MODEL_DISPLAY_NAMES) {
+    if (modelId.startsWith(prefix)) {
+      return displayName;
+    }
+  }
+  return modelId;
+}
+
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
   const lastAssistantMessageIdByResponseKey = new Map<string, string>();
   let nullTurnResponseIndex = 0;

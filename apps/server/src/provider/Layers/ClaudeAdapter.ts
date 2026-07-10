@@ -137,6 +137,15 @@ interface ClaudeTurnState {
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
+  modelReroute?: ClaudeModelReroute;
+}
+
+interface ClaudeModelReroute {
+  readonly fromModel: string;
+  readonly toModel: string;
+  readonly reason: string;
+  readonly category?: string;
+  readonly explanation?: string;
 }
 
 interface AssistantTextBlockState {
@@ -2508,6 +2517,49 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
+    // The SDK's refusal fallback swap is persistent for the session and only
+    // announced once; later turns reveal it solely through the serving model
+    // reported on top-level assistant messages (subagents may legitimately run
+    // on other models, so nested messages are excluded).
+    const turnState = context.turnState;
+    if (
+      turnState !== undefined &&
+      turnState.modelReroute === undefined &&
+      message.parent_tool_use_id === null &&
+      context.currentApiModelId !== undefined
+    ) {
+      const requestedBaseModel = context.currentApiModelId.replace(/\[1m\]$/, "");
+      const servedModel = message.message?.model;
+      if (
+        typeof servedModel === "string" &&
+        servedModel.length > 0 &&
+        !servedModel.startsWith(requestedBaseModel)
+      ) {
+        const reroute: ClaudeModelReroute = {
+          fromModel: requestedBaseModel,
+          toModel: servedModel,
+          reason: "session-model-swap",
+        };
+        turnState.modelReroute = reroute;
+        const rerouteStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          eventId: rerouteStamp.eventId,
+          provider: PROVIDER,
+          createdAt: rerouteStamp.createdAt,
+          threadId: context.session.threadId,
+          turnId: asCanonicalTurnId(turnState.turnId),
+          providerRefs: nativeProviderRefs(context),
+          type: "model.rerouted",
+          payload: reroute,
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/assistant",
+            payload: message,
+          },
+        });
+      }
+    }
+
     const content = message.message?.content;
     if (Array.isArray(content)) {
       for (const block of content) {
@@ -2780,6 +2832,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           message,
         );
         return;
+      case "model_refusal_fallback": {
+        const reroute: ClaudeModelReroute = {
+          fromModel: message.original_model,
+          toModel: message.fallback_model,
+          reason: "refusal",
+          ...(message.api_refusal_category ? { category: message.api_refusal_category } : {}),
+          ...(message.api_refusal_explanation
+            ? { explanation: message.api_refusal_explanation }
+            : {}),
+        };
+        if (context.turnState) {
+          context.turnState.modelReroute = reroute;
+        }
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "model.rerouted",
+          payload: reroute,
+        });
+        return;
+      }
       default:
         yield* emitRuntimeWarning(
           context,
