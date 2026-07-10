@@ -330,6 +330,8 @@ validationLayer("CodexAdapterLive validation", (it) => {
         "mcp_servers.t3-code.url=http://127.0.0.1:4311/mcp",
         "-c",
         'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+        "-c",
+        `mcp_servers.t3-code.tool_timeout_sec=${McpProviderSession.T3_MCP_TOOL_TIMEOUT_SECONDS}`,
       ]);
       NodeAssert.equal(options?.environment?.T3_MCP_BEARER_TOKEN, "codex-token");
     }).pipe(
