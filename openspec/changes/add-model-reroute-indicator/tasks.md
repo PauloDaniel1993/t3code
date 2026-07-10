@@ -44,5 +44,5 @@
 
 ## 7. Optional follow-ups (not required for apply completion)
 
-- [ ] 7.1 Attach the stashed `modelReroute` to assistant delta commands (`ProviderRuntimeIngestion.ts` ~1387-1405 and `flushBufferedAssistantMessage`) so the badge appears while the fallback leg is still streaming
+- [x] 7.1 Attach the stashed `modelReroute` to assistant delta commands (`ProviderRuntimeIngestion.ts` ~1387-1405 and `flushBufferedAssistantMessage`) so the badge appears while the fallback leg is still streaming
 - [ ] 7.2 Mobile: render the reroute indicator in `apps/mobile` thread detail (no badge infra exists there today)
