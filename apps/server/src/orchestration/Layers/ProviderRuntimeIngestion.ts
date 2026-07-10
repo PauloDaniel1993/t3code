@@ -900,6 +900,9 @@ const make = Effect.gen(function* () {
         return false;
       }
 
+      const modelReroute = input.turnId
+        ? yield* takeModelReroute(input.threadId, input.turnId)
+        : undefined;
       yield* orchestrationEngine.dispatch({
         type: "thread.message.assistant.delta",
         commandId: yield* providerCommandId(input.event, input.commandTag),
@@ -907,6 +910,7 @@ const make = Effect.gen(function* () {
         messageId: input.messageId,
         delta: bufferedText,
         ...(input.turnId ? { turnId: input.turnId } : {}),
+        ...(modelReroute !== undefined ? { modelReroute } : {}),
         createdAt: input.createdAt,
       });
       return true;
@@ -1422,6 +1426,7 @@ const make = Effect.gen(function* () {
         if (assistantDeliveryMode === "buffered") {
           const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
           if (spillChunk.length > 0) {
+            const modelReroute = turnId ? yield* takeModelReroute(thread.id, turnId) : undefined;
             yield* orchestrationEngine.dispatch({
               type: "thread.message.assistant.delta",
               commandId: yield* providerCommandId(event, "assistant-delta-buffer-spill"),
@@ -1429,10 +1434,12 @@ const make = Effect.gen(function* () {
               messageId: assistantMessageId,
               delta: spillChunk,
               ...(turnId ? { turnId } : {}),
+              ...(modelReroute !== undefined ? { modelReroute } : {}),
               createdAt: now,
             });
           }
         } else {
+          const modelReroute = turnId ? yield* takeModelReroute(thread.id, turnId) : undefined;
           yield* orchestrationEngine.dispatch({
             type: "thread.message.assistant.delta",
             commandId: yield* providerCommandId(event, "assistant-delta"),
@@ -1440,6 +1447,7 @@ const make = Effect.gen(function* () {
             messageId: assistantMessageId,
             delta: assistantDelta,
             ...(turnId ? { turnId } : {}),
+            ...(modelReroute !== undefined ? { modelReroute } : {}),
             createdAt: now,
           });
         }

@@ -841,6 +841,121 @@ describe("ProviderRuntimeIngestion", () => {
     expect(reroutedMessages).toHaveLength(1);
   });
 
+  it("attaches model reroute metadata to streaming deltas before completion", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-03-28T08:00:00.000Z";
+
+    // Observing the turn start proves the runtime event subscription is live
+    // before the reroute event is emitted. The forked stream consumer may not
+    // be attached yet when the first event is published, so re-emit the probe
+    // until it lands — the identical eventId keeps re-emits idempotent via
+    // command receipt dedup.
+    for (let attempt = 0; ; attempt += 1) {
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-turn-started-reroute-streaming"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reroute-streaming"),
+      });
+      try {
+        await waitForThread(
+          harness.readModel,
+          (thread) =>
+            thread.session?.status === "running" &&
+            thread.session?.activeTurnId === "turn-reroute-streaming",
+          250,
+        );
+        break;
+      } catch (error) {
+        if (attempt >= 15) {
+          throw error;
+        }
+      }
+    }
+
+    harness.emit({
+      type: "model.rerouted",
+      eventId: asEventId("evt-model-rerouted-streaming"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute-streaming"),
+      payload: {
+        fromModel: "claude-fable-5",
+        toModel: "claude-opus-4-8",
+        reason: "refusal",
+      },
+    });
+    await harness.drain();
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-streaming-delta-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute-streaming"),
+      itemId: asItemId("item-streaming"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "fallback leg is streaming",
+      },
+    });
+
+    // The badge data must be visible while the message is still streaming.
+    const streamingThread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-streaming" &&
+          message.streaming &&
+          message.modelReroute !== undefined,
+      ),
+    );
+    const streamingMessage = streamingThread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming",
+    );
+    expect(streamingMessage?.modelReroute).toEqual({
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "refusal",
+    });
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-streaming-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reroute-streaming"),
+      itemId: asItemId("item-streaming"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const completedThread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-streaming" && !message.streaming,
+      ),
+    );
+    const completedMessage = completedThread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming",
+    );
+    expect(completedMessage?.modelReroute).toEqual({
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "refusal",
+    });
+    expect(
+      completedThread.messages.filter(
+        (entry: ProviderRuntimeTestMessage) => entry.modelReroute !== undefined,
+      ),
+    ).toHaveLength(1);
+  });
+
   it("clears stashed model reroute metadata when the turn completes", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

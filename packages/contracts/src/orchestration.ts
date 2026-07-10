@@ -845,6 +845,7 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   messageId: MessageId,
   delta: Schema.String,
   turnId: Schema.optional(TurnId),
+  modelReroute: Schema.optional(MessageModelReroute),
   createdAt: IsoDateTime,
 });
 
