@@ -942,6 +942,270 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("emits one model.rerouted event for an explicit refusal fallback message", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+        ),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "model_refusal_fallback",
+        trigger: "refusal",
+        direction: "retry",
+        original_model: "claude-fable-5",
+        fallback_model: "claude-opus-4-8",
+        request_id: null,
+        api_refusal_category: "cyber",
+        api_refusal_explanation: "Request declined by safety classifiers.",
+        content: "",
+        uuid: "fallback-1",
+        session_id: "sdk-session-reroute",
+      } as unknown as SDKMessage);
+      // The fallback leg is served by opus; the assistant message must not
+      // trigger a second reroute event for the same turn.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-reroute",
+        uuid: "assistant-reroute-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-reroute-1",
+          model: "claude-opus-4-8-20260115",
+          content: [{ type: "text", text: "Served by fallback." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-reroute",
+        uuid: "result-reroute-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const reroutes = runtimeEvents.filter((event) => event.type === "model.rerouted");
+      assert.equal(reroutes.length, 1);
+      const reroute = reroutes[0];
+      if (reroute?.type === "model.rerouted") {
+        assert.equal(String(reroute.turnId), String(turn.turnId));
+        assert.deepEqual(reroute.payload, {
+          fromModel: "claude-fable-5",
+          toModel: "claude-opus-4-8",
+          reason: "refusal",
+          category: "cyber",
+          explanation: "Request declined by safety classifiers.",
+        });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("emits one model.rerouted event per turn for a sticky session model swap", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello again",
+        attachments: [],
+      });
+
+      for (const uuid of ["assistant-swap-1", "assistant-swap-2"]) {
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-swap",
+          uuid,
+          parent_tool_use_id: null,
+          message: {
+            id: `message-${uuid}`,
+            model: "claude-opus-4-8-20260115",
+            content: [{ type: "text", text: "Still served by opus." }],
+          },
+        } as unknown as SDKMessage);
+      }
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-swap",
+        uuid: "result-swap-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const reroutes = runtimeEvents.filter((event) => event.type === "model.rerouted");
+      assert.equal(reroutes.length, 1);
+      const reroute = reroutes[0];
+      if (reroute?.type === "model.rerouted") {
+        assert.deepEqual(reroute.payload, {
+          fromModel: "claude-fable-5",
+          toModel: "claude-opus-4-8-20260115",
+          reason: "session-model-swap",
+        });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not emit model.rerouted for subagent assistant messages", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "explore the repo",
+        attachments: [],
+      });
+
+      // A subagent runs on another model; the main loop stays on fable.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent",
+        uuid: "assistant-subagent-1",
+        parent_tool_use_id: "tool-subagent-1",
+        message: {
+          id: "assistant-message-subagent-1",
+          model: "claude-haiku-4-5",
+          content: [{ type: "text", text: "Subagent findings." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent",
+        uuid: "assistant-main-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-main-1",
+          model: "claude-fable-5-20260601",
+          content: [{ type: "text", text: "Main loop response." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-subagent",
+        uuid: "result-subagent-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.equal(runtimeEvents.filter((event) => event.type === "model.rerouted").length, 0);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not emit model.rerouted when the served model matches a 1m-suffixed slug", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-1m",
+        uuid: "assistant-1m-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-1m-1",
+          model: "claude-fable-5-20260601",
+          content: [{ type: "text", text: "Served by the requested family." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-1m",
+        uuid: "result-1m-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.equal(runtimeEvents.filter((event) => event.type === "model.rerouted").length, 0);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("steers a running turn instead of opening a new one on mid-turn sendTurn", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
