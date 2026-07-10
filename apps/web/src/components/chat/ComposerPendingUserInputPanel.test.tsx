@@ -2,7 +2,10 @@ import { ApprovalRequestId, type UserInputQuestion } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import {
+  ComposerPendingUserInputPanel,
+  shouldAutoAdvancePendingUserInputSelection,
+} from "./ComposerPendingUserInputPanel";
 import type { PendingUserInput } from "../../session-logic";
 
 function makeQuestion(index: number): UserInputQuestion {
@@ -29,6 +32,44 @@ const pendingUserInput: PendingUserInput = {
 };
 
 describe("ComposerPendingUserInputPanel", () => {
+  it("only auto-advances single-select questions", () => {
+    expect(shouldAutoAdvancePendingUserInputSelection({ multiSelect: false })).toBe(true);
+    expect(shouldAutoAdvancePendingUserInputSelection({ multiSelect: true })).toBe(false);
+  });
+
+  it("renders all selected options without advancing a multi-select question", () => {
+    const multiSelectPrompt: PendingUserInput = {
+      requestId: ApprovalRequestId.make("req-user-input-multi"),
+      createdAt: "2026-04-01T00:00:01.000Z",
+      questions: [
+        {
+          id: "clients",
+          header: "Clients",
+          question: "Which clients should support this?",
+          options: [
+            { label: "Web", description: "Web client" },
+            { label: "Mobile", description: "Mobile client" },
+          ],
+          multiSelect: true,
+        },
+      ],
+    };
+    const markup = renderToStaticMarkup(
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={[multiSelectPrompt]}
+        respondingRequestIds={[]}
+        answers={{ clients: { selectedOptionLabels: ["Web", "Mobile"] } }}
+        questionIndex={0}
+        onToggleOption={() => {}}
+        onAdvance={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Select one or more options.");
+    expect(markup).toContain("Web");
+    expect(markup).toContain("Mobile");
+  });
+
   it("renders first and last positions for a ten-question prompt", () => {
     const firstMarkup = renderToStaticMarkup(
       <ComposerPendingUserInputPanel
