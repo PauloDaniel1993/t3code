@@ -32,10 +32,10 @@
 
 ## 5. Web UI
 
-- [ ] 5.1 In `apps/web/src/components/chat/MessagesTimeline.logic.ts`: add `getMessageModelReroute(message)` and `formatRerouteModelName(modelId)` (prefix table: `claude-opus-4-8*` → "Opus 4.8", `claude-fable-5*` → "Fable 5", `claude-opus-4-7*` → "Opus 4.7"; fallback to raw id), next to `isImportedHandoffTimelineMessage` (~192-194)
-- [ ] 5.2 In `MessagesTimeline.tsx`: add `ModelRerouteMarker` component modeled on `ImportedMessageMarker` (~1093-1102) — pill badge, icon, "Rerouted to {name}", tooltip with "Request to {fromModel} was served by {toModel}" plus category/explanation when present
-- [ ] 5.3 Render the marker in `AssistantTimelineRow` (~1049-1091) next to the handoff marker (~1057), gated on `row.message.modelReroute`
-- [ ] 5.4 Logic tests: `formatRerouteModelName` mapping and badge-presence derivation
+- [x] 5.1 In `apps/web/src/components/chat/MessagesTimeline.logic.ts`: add `getMessageModelReroute(message)` and `formatRerouteModelName(modelId)` (prefix table: `claude-opus-4-8*` → "Opus 4.8", `claude-fable-5*` → "Fable 5", `claude-opus-4-7*` → "Opus 4.7"; fallback to raw id), next to `isImportedHandoffTimelineMessage` (~192-194)
+- [x] 5.2 In `MessagesTimeline.tsx`: add `ModelRerouteMarker` component modeled on `ImportedMessageMarker` (~1093-1102) — pill badge, icon, "Rerouted to {name}", tooltip with "Request to {fromModel} was served by {toModel}" plus category/explanation when present
+- [x] 5.3 Render the marker in `AssistantTimelineRow` (~1049-1091) next to the handoff marker (~1057), gated on `row.message.modelReroute`
+- [x] 5.4 Logic tests: `formatRerouteModelName` mapping and badge-presence derivation
 
 ## 6. Verification
 
