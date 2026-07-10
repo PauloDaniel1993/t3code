@@ -1,4 +1,3 @@
-import { ProviderUserInputAnswers } from "@t3tools/contracts";
 import { MAX_USER_INPUT_QUESTIONS } from "@t3tools/shared/userInput";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
@@ -30,11 +29,13 @@ const RequestUserInputQuestion = Schema.Struct({
     description: "Single-sentence question to show to the user.",
   }),
   options: Schema.Array(UserInputQuestionOption).check(Schema.isMinLength(2)).annotate({
-    description: "Two or more mutually exclusive answer options.",
+    description:
+      "Two or more answer options. They are mutually exclusive unless multiSelect is true.",
   }),
   multiSelect: Schema.optional(
     Schema.Boolean.annotate({
-      description: "Set true only when the user may select more than one option.",
+      description:
+        "Set true when the user may select one or more options. Selected labels are returned as a string array; otherwise the answer is a string.",
     }),
   ),
 }).annotate({
@@ -52,9 +53,26 @@ export const RequestUserInputParameters = Schema.Struct({
 });
 export type RequestUserInputParameters = typeof RequestUserInputParameters.Type;
 
+export const RequestUserInputAnswer = Schema.Union([
+  NonEmptyText.annotate({
+    description: "A single-select option label or a custom text answer.",
+  }),
+  Schema.Array(NonEmptyText).check(Schema.isMinLength(1)).annotate({
+    description: "One or more selected option labels for a multi-select question.",
+  }),
+]).annotate({
+  description:
+    "A string for single-select or custom answers, or a non-empty string array for multi-select answers.",
+});
+export type RequestUserInputAnswer = typeof RequestUserInputAnswer.Type;
+
+export const RequestUserInputAnswers = Schema.Record(Schema.String, RequestUserInputAnswer);
+export type RequestUserInputAnswers = typeof RequestUserInputAnswers.Type;
+
 export const RequestUserInputResult = Schema.Struct({
-  answers: ProviderUserInputAnswers.annotate({
-    description: "Answer map keyed by question id.",
+  answers: RequestUserInputAnswers.annotate({
+    description:
+      "Answer map keyed by question id. Multi-select option replies are arrays of selected labels.",
   }),
 }).annotate({
   description: "Structured answers returned by the user.",
@@ -64,7 +82,7 @@ export type RequestUserInputResult = typeof RequestUserInputResult.Type;
 const dependencies = [McpInvocationContext.McpInvocationContext, ProviderService.ProviderService];
 
 export const RequestUserInputTool = Tool.make("request_user_input", {
-  description: `Required T3 Code tool for asking the user up to ${MAX_USER_INPUT_QUESTIONS} structured questions through the T3 Code UI and waiting for their answers. Always use this when available instead of provider-native or host-injected question tools; split larger batches across multiple calls.`,
+  description: `Required T3 Code tool for asking the user up to ${MAX_USER_INPUT_QUESTIONS} structured questions through the T3 Code UI and waiting for their answers. Set multiSelect to true when a question allows multiple choices; its selected labels are returned as a string array. Always use this when available instead of provider-native or host-injected question tools; split larger batches across multiple calls.`,
   parameters: RequestUserInputParameters,
   success: RequestUserInputResult,
   failure: Schema.String,

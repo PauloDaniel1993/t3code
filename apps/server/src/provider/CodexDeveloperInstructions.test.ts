@@ -16,6 +16,8 @@ describe("Codex developer instructions", () => {
         "Do not call a provider-native or host-injected question tool",
       );
       expect(instructions).toContain("Those tools are disabled in that state");
+      expect(instructions).toContain("Set `multiSelect: true`");
+      expect(instructions).toContain("returned as arrays of selected labels");
     }
   });
 
