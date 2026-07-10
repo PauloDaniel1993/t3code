@@ -119,6 +119,10 @@
       "types": "./src/state/terminal.ts",
       "default": "./src/state/terminal.ts"
     },
+    "./state/user-input": {
+      "types": "./src/state/userInput.ts",
+      "default": "./src/state/userInput.ts"
+    },
     "./state/threads": {
       "types": "./src/state/threads.ts",
       "default": "./src/state/threads.ts"

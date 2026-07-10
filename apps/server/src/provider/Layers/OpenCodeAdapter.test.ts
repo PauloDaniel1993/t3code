@@ -14,6 +14,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { beforeEach } from "vite-plus/test";
 
 import {
+  EnvironmentId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -21,6 +22,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
@@ -59,6 +61,7 @@ const runtimeMock = {
     closeCalls: [] as string[],
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
+    mcpAddCalls: [] as Array<unknown>,
     promptAsyncError: null as Error | null,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
@@ -72,6 +75,7 @@ const runtimeMock = {
     this.state.closeCalls.length = 0;
     this.state.revertCalls.length = 0;
     this.state.promptCalls.length = 0;
+    this.state.mcpAddCalls.length = 0;
     this.state.promptAsyncError = null;
     this.state.closeError = null;
     this.state.messages = [];
@@ -167,6 +171,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           })(),
         }),
       },
+      mcp: {
+        add: async (input: unknown) => {
+          runtimeMock.state.mcpAddCalls.push(input);
+          return { data: true };
+        },
+      },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
     Effect.fail(
@@ -197,6 +207,9 @@ const openCodeAdapterTestSettings = Schema.decodeSync(OpenCodeSettings)({
   binaryPath: "fake-opencode",
   serverUrl: "http://127.0.0.1:9999",
   serverPassword: "secret-password",
+});
+const openCodeAdapterLocalTestSettings = Schema.decodeSync(OpenCodeSettings)({
+  binaryPath: "fake-opencode",
 });
 
 const OpenCodeAdapterTestLayer = Layer.effect(
@@ -254,6 +267,56 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       ]);
     }),
   );
+
+  it.effect("configures the T3 MCP server with the long user-input timeout", () => {
+    const localLayer = Layer.effect(
+      OpenCodeAdapter,
+      makeOpenCodeAdapter(openCodeAdapterLocalTestSettings),
+    ).pipe(
+      Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const threadId = asThreadId("thread-opencode-mcp-user-input");
+
+    return Effect.gen(function* () {
+      yield* Effect.sync(() =>
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("environment-opencode-mcp"),
+          threadId,
+          providerSessionId: "provider-session-opencode-mcp",
+          providerInstanceId: ProviderInstanceId.make("opencode"),
+          endpoint: "http://127.0.0.1:4312/mcp",
+          authorizationHeader: "Bearer opencode-token",
+        }),
+      );
+
+      const adapter = yield* OpenCodeAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      NodeAssert.deepEqual(runtimeMock.state.mcpAddCalls, [
+        {
+          name: "t3-code",
+          config: {
+            type: "remote",
+            url: "http://127.0.0.1:4312/mcp",
+            headers: { Authorization: "Bearer opencode-token" },
+            oauth: false,
+            timeout: McpProviderSession.T3_MCP_TOOL_TIMEOUT_MS,
+          },
+        },
+      ]);
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
+      Effect.provide(localLayer),
+    );
+  });
 
   it.effect("stops a configured-server session without trying to own server lifecycle", () =>
     Effect.gen(function* () {

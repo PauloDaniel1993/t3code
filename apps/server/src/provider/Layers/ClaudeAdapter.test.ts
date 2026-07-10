@@ -3910,6 +3910,11 @@ describe("ClaudeAdapterLive", () => {
       yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
 
       const createInput = harness.getLastCreateQueryInput();
+      const t3McpServer = createInput?.options.mcpServers?.["t3-code"];
+      assert.equal(t3McpServer?.type, "http");
+      if (t3McpServer?.type === "http") {
+        assert.equal(t3McpServer.timeout, McpProviderSession.T3_MCP_TOOL_TIMEOUT_MS);
+      }
       const canUseTool = createInput?.options.canUseTool;
       assert.equal(typeof canUseTool, "function");
       if (!canUseTool) {

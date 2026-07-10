@@ -16,6 +16,8 @@ import {
   buildThreadFeed,
   derivePendingUserInputs,
   deriveThreadFeedPresentation,
+  setPendingUserInputCustomAnswer,
+  togglePendingUserInputOptionSelection,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
 } from "./threadActivity";
@@ -519,7 +521,7 @@ describe("mobile pending user input helpers", () => {
         Object.fromEntries(
           questions.map((question, index) => [
             question.id,
-            { selectedOptionLabel: `Answer ${index + 1}` },
+            { selectedOptionLabels: [`Answer ${index + 1}`] },
           ]),
         ),
       ),
@@ -535,5 +537,38 @@ describe("mobile pending user input helpers", () => {
       "question-9": "Answer 9",
       "question-10": "Answer 10",
     });
+  });
+
+  it("toggles multiple options and builds array replies", () => {
+    const question = {
+      id: "areas",
+      header: "Areas",
+      question: "Which areas should this change cover?",
+      options: [
+        { label: "Server", description: "Server" },
+        { label: "Web", description: "Web" },
+      ],
+      multiSelect: true,
+    } as const;
+    const firstDraft = togglePendingUserInputOptionSelection(question, undefined, "Server");
+    const secondDraft = togglePendingUserInputOptionSelection(question, firstDraft, "Web");
+
+    expect(secondDraft).toEqual({
+      customAnswer: "",
+      selectedOptionLabels: ["Server", "Web"],
+    });
+    expect(buildPendingUserInputAnswers([question], { areas: secondDraft })).toEqual({
+      areas: ["Server", "Web"],
+    });
+    expect(togglePendingUserInputOptionSelection(question, secondDraft, "Server")).toEqual({
+      customAnswer: "",
+      selectedOptionLabels: ["Web"],
+    });
+  });
+
+  it("clears multi-select options while a custom answer is active", () => {
+    expect(
+      setPendingUserInputCustomAnswer({ selectedOptionLabels: ["Server", "Web"] }, "All clients"),
+    ).toEqual({ customAnswer: "All clients" });
   });
 });

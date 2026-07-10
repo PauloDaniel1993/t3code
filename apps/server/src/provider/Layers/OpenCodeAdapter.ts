@@ -1114,6 +1114,7 @@ export function makeOpenCodeAdapter(
                         Authorization: mcpSession.authorizationHeader,
                       },
                       oauth: false,
+                      timeout: McpProviderSession.T3_MCP_TOOL_TIMEOUT_MS,
                     },
                   }),
                 );
