@@ -25,10 +25,10 @@
 
 ## 4. Claude adapter detection
 
-- [ ] 4.1 Add mutable `modelReroute` field to `ClaudeTurnState` in `apps/server/src/provider/Layers/ClaudeAdapter.ts` (~125-140)
-- [ ] 4.2 Add `case "model_refusal_fallback":` to `handleSystemMessage` (before `default:` at ~2783): stash `{fromModel: original_model, toModel: fallback_model, reason: "refusal", category: api_refusal_category, explanation: api_refusal_explanation}` on turn state and emit `model.rerouted`
-- [ ] 4.3 Add the per-turn served-model check in `handleAssistantMessage` (~2461): only for `parent_tool_use_id === null`, when no reroute is stashed for the turn and `context.currentApiModelId` is set; compare served `message.message.model` against the requested slug (strip `[1m]` suffix, prefix match); on mismatch stash + emit once with `reason: "session-model-swap"`
-- [ ] 4.4 Adapter tests with a fake SDK stream: (a) fallback system message → one `model.rerouted` with from/to/category; (b) top-level assistant on another model family → one event per turn, not repeated; (c) `parent_tool_use_id` set → no event; (d) prefix match incl. `[1m]`-suffixed requested model → no event
+- [x] 4.1 Add mutable `modelReroute` field to `ClaudeTurnState` in `apps/server/src/provider/Layers/ClaudeAdapter.ts` (~125-140)
+- [x] 4.2 Add `case "model_refusal_fallback":` to `handleSystemMessage` (before `default:` at ~2783): stash `{fromModel: original_model, toModel: fallback_model, reason: "refusal", category: api_refusal_category, explanation: api_refusal_explanation}` on turn state and emit `model.rerouted`
+- [x] 4.3 Add the per-turn served-model check in `handleAssistantMessage` (~2461): only for `parent_tool_use_id === null`, when no reroute is stashed for the turn and `context.currentApiModelId` is set; compare served `message.message.model` against the requested slug (strip `[1m]` suffix, prefix match); on mismatch stash + emit once with `reason: "session-model-swap"`
+- [x] 4.4 Adapter tests with a fake SDK stream: (a) fallback system message → one `model.rerouted` with from/to/category; (b) top-level assistant on another model family → one event per turn, not repeated; (c) `parent_tool_use_id` set → no event; (d) prefix match incl. `[1m]`-suffixed requested model → no event
 
 ## 5. Web UI
 
