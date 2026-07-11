@@ -7,6 +7,10 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  partitionClientChatAttachments,
+  type ClientChatImageAttachment,
+} from "@t3tools/client-runtime/state/attachments";
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import {
   createContext,
@@ -68,6 +72,7 @@ import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { PdfAttachmentCard } from "./PdfAttachmentCard";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
@@ -836,8 +841,6 @@ function TimelineMinimap({
 // TimelineRowContent — the actual row component
 // ---------------------------------------------------------------------------
 
-type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
-type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
 type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"][number];
 type TimelineRow = MessagesTimelineRow;
 
@@ -876,7 +879,9 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const userImages = row.message.attachments ?? [];
+  const { images: userImages, documents: userDocuments } = partitionClientChatAttachments(
+    row.message.attachments ?? [],
+  );
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const previewAnnotations: ParsedPreviewAnnotation[] = [];
@@ -901,9 +906,16 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     <div className="group flex flex-col items-end gap-1">
       {importedHandoffMessage ? <ImportedMessageMarker className="max-w-[80%] pe-1" /> : null}
       <div className="relative max-w-[80%] rounded-2xl border border-border bg-secondary p-3">
+        {userDocuments.length > 0 ? (
+          <div className="mb-2 flex max-w-[420px] flex-col gap-2">
+            {userDocuments.map((document) => (
+              <PdfAttachmentCard key={document.id} attachment={document} mode="history" />
+            ))}
+          </div>
+        ) : null}
         {regularImages.length > 0 && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-            {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
+            {regularImages.map((image) => (
               <div
                 key={image.id}
                 className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
@@ -1444,7 +1456,7 @@ const UserMessageElementContextChip = memo(function UserMessageElementContextChi
 
 function UserMessagePreviewAnnotationCard(props: {
   annotation: ParsedPreviewAnnotation;
-  image: NonNullable<TimelineMessage["attachments"]>[number] | null;
+  image: ClientChatImageAttachment | null;
 }) {
   const ctx = use(TimelineRowCtx);
   return (

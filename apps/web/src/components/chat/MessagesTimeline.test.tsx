@@ -305,6 +305,87 @@ describe("MessagesTimeline", () => {
     expect(onAnchorSizeChanged).toHaveBeenCalledWith(secondEntry.message.id, 240);
   });
 
+  it("renders mixed images and PDFs through type-specific history paths", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const entry = {
+      ...buildUserTimelineEntry("Review both files."),
+      message: {
+        ...buildUserTimelineEntry("Review both files.").message,
+        attachments: [
+          {
+            type: "image" as const,
+            id: "image-1",
+            name: "screen.png",
+            mimeType: "image/png",
+            sizeBytes: 128,
+            previewUrl: "blob:screen",
+          },
+          {
+            type: "document" as const,
+            id: "pdf-1",
+            name: "requirements.pdf",
+            mimeType: "application/pdf" as const,
+            sizeBytes: 2_048,
+            assetUrl: "/attachments/signed-pdf",
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain('aria-label="Preview screen.png"');
+    expect(markup).toContain('src="blob:screen"');
+    expect(markup).toContain('data-pdf-attachment-card="true"');
+    expect(markup).toContain("requirements.pdf");
+    expect(markup).toContain('aria-label="Open requirements.pdf"');
+    expect(markup).toContain('download="requirements.pdf"');
+    expect(markup).toContain('href="/attachments/signed-pdf"');
+  });
+
+  it("keeps reconnect-hydrated PDF metadata visible until its signed URL resolves", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const document = {
+      type: "document" as const,
+      id: "pdf-reconnect",
+      name: "reconnect.pdf",
+      mimeType: "application/pdf" as const,
+      sizeBytes: 4_096,
+    };
+    const entry = {
+      ...buildUserTimelineEntry(""),
+      message: {
+        ...buildUserTimelineEntry("").message,
+        attachments: [document],
+      },
+    };
+
+    const metadataOnlyMarkup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+    const promotedMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              attachments: [{ ...document, assetUrl: "/attachments/refreshed-signed-pdf" }],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(metadataOnlyMarkup).toContain("reconnect.pdf");
+    expect(metadataOnlyMarkup).not.toContain("href=");
+    expect(metadataOnlyMarkup.match(/disabled=""/g)).toHaveLength(2);
+    expect(promotedMarkup).toContain('href="/attachments/refreshed-signed-pdf"');
+  });
+
   it("renders collapse controls for long user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

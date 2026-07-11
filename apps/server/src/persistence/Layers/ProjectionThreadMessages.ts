@@ -35,6 +35,10 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   }),
 );
 
+const ActiveProjectionMessageAttachmentsDbRow = Schema.Struct({
+  attachments: Schema.fromJsonString(Schema.Array(ChatAttachment)),
+});
+
 function toProjectionThreadMessage(
   row: Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,
 ): ProjectionThreadMessage {
@@ -184,6 +188,22 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       `,
   });
 
+  const listActiveProjectionMessageAttachmentRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ActiveProjectionMessageAttachmentsDbRow,
+    execute: () =>
+      sql`
+        SELECT
+          message.attachments_json AS "attachments"
+        FROM projection_thread_messages AS message
+        LEFT JOIN projection_threads AS thread
+          ON thread.thread_id = message.thread_id
+        WHERE message.attachments_json IS NOT NULL
+          AND (thread.thread_id IS NULL OR thread.deleted_at IS NULL)
+        ORDER BY message.created_at ASC, message.message_id ASC
+      `,
+  });
+
   const deleteProjectionThreadMessageRows = SqlSchema.void({
     Request: DeleteProjectionThreadMessagesInput,
     execute: ({ threadId }) =>
@@ -214,6 +234,15 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       Effect.map((rows) => rows.map(toProjectionThreadMessage)),
     );
 
+  const listActiveAttachments: ProjectionThreadMessageRepositoryShape["listActiveAttachments"] =
+    () =>
+      listActiveProjectionMessageAttachmentRows(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionThreadMessageRepository.listActiveAttachments:query"),
+        ),
+        Effect.map((rows) => rows.flatMap((row) => row.attachments)),
+      );
+
   const deleteByThreadId: ProjectionThreadMessageRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadMessageRows(input).pipe(
       Effect.mapError(
@@ -225,6 +254,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
     upsert,
     getByMessageId,
     listByThreadId,
+    listActiveAttachments,
     deleteByThreadId,
   } satisfies ProjectionThreadMessageRepositoryShape;
 });

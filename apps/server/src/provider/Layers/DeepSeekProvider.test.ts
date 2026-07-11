@@ -135,6 +135,69 @@ describe("buildDeepSeekProviderSnapshot (provider readiness)", () => {
 });
 
 describe("DeepSeekAdapter", () => {
+  it.effect("rejects PDF turns explicitly before dispatching to DeepSeek", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeDeepSeekAdapter(readySettings(), { environment: READY_ENV });
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: PROVIDER,
+        runtimeMode: "full-access",
+      });
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "Review this PDF",
+          attachments: [
+            {
+              type: "document",
+              id: "deepseek-pdf-12345678-1234-1234-1234-123456789abc",
+              name: "requirements.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 9,
+            },
+          ],
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderAdapterRequestError);
+      assert.equal(error.detail, "PDF attachments are unsupported by the DeepSeek provider.");
+    }).pipe(Effect.provide(adapterLayer(sseHttpClientLayer("")))),
+  );
+
+  it.effect("rejects unknown attachment variants instead of silently dropping them", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeDeepSeekAdapter(readySettings(), { environment: READY_ENV });
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: PROVIDER,
+        runtimeMode: "full-access",
+      });
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "Review this attachment",
+          attachments: [
+            {
+              type: "archive",
+              id: "deepseek-archive-12345678-1234-1234-1234-123456789abc",
+              name: "source.zip",
+              mimeType: "application/zip",
+              sizeBytes: 9,
+            } as never,
+          ],
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderAdapterRequestError);
+      assert.equal(
+        error.detail,
+        "Attachment type 'archive' is unsupported by the DeepSeek provider.",
+      );
+    }).pipe(Effect.provide(adapterLayer(sseHttpClientLayer("")))),
+  );
+
   // it.live: the streaming path reads a real Web ReadableStream and races it
   // against a wall-clock timeout, so it must run on the live runtime/clock
   // rather than the default TestClock.

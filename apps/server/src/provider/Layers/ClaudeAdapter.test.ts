@@ -37,7 +37,11 @@ import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
+import {
+  ProviderAdapterProcessError,
+  ProviderAdapterRequestError,
+  ProviderAdapterValidationError,
+} from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
@@ -759,6 +763,216 @@ describe("ClaudeAdapterLive", () => {
           },
         },
       ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("embeds a PDF-only turn as a Claude document block", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-pdf-"));
+    const harness = makeHarness({ cwd: "/tmp/project-claude-pdf", baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachment = {
+        type: "document" as const,
+        id: "thread-claude-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "requirements.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 9,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, "%PDF-1.7");
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, attachments: [attachment] });
+
+      const promptMessage = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(promptMessage?.message.content, [
+        {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: "JVBERi0xLjc=",
+          },
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("preserves text, PDF, and image ordering in Claude user messages", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-mixed-"));
+    const harness = makeHarness({ cwd: "/tmp/project-claude-mixed", baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const pdf = {
+        type: "document" as const,
+        id: "thread-claude-mixed-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "spec.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 4,
+      };
+      const image = {
+        type: "image" as const,
+        id: "thread-claude-mixed-image-12345678-1234-1234-1234-123456789abc",
+        name: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 2,
+      };
+      for (const [attachment, bytes] of [
+        [pdf, Uint8Array.from([1, 2, 3, 4])],
+        [image, Uint8Array.from([5, 6])],
+      ] as const) {
+        const filePath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+        NodeFS.mkdirSync(NodePath.dirname(filePath), { recursive: true });
+        NodeFS.writeFileSync(filePath, bytes);
+      }
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Review these in order",
+        attachments: [pdf, image],
+      });
+
+      const promptMessage = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(promptMessage?.message.content, [
+        { type: "text", text: "Review these in order" },
+        {
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: "AQIDBA==" },
+        },
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: "BQY=" },
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects a missing Claude PDF without dispatching a prompt", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-missing-pdf-"));
+    const harness = makeHarness({ cwd: "/tmp/project-claude-missing-pdf", baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const result = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "Read this",
+          attachments: [
+            {
+              type: "document",
+              id: "thread-claude-missing-12345678-1234-1234-1234-123456789abc",
+              name: "missing.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 1,
+            },
+          ],
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.instanceOf(result.failure, ProviderAdapterRequestError);
+        assert.equal(result.failure.detail, "Failed to read attachment file.");
+      }
+
+      const sessionsAfterFailure = yield* adapter.listSessions();
+      const sessionAfterFailure = sessionsAfterFailure.find(
+        (candidate) => candidate.threadId === session.threadId,
+      );
+      assert.equal(sessionAfterFailure?.status, "ready");
+      assert.isUndefined(sessionAfterFailure?.activeTurnId);
+
+      const nextTurn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Continue without the attachment",
+        attachments: [],
+      });
+      const sessionsAfterRetry = yield* adapter.listSessions();
+      const sessionAfterRetry = sessionsAfterRetry.find(
+        (candidate) => candidate.threadId === session.threadId,
+      );
+      assert.equal(sessionAfterRetry?.status, "running");
+      assert.equal(String(sessionAfterRetry?.activeTurnId), String(nextTurn.turnId));
+
+      const promptMessage = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(promptMessage?.message.content, [
+        { type: "text", text: "Continue without the attachment" },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects image MIME types unsupported by Claude", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const error = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "Read this",
+          attachments: [
+            {
+              type: "image",
+              id: "thread-claude-svg-12345678-1234-1234-1234-123456789abc",
+              name: "unsafe.svg",
+              mimeType: "image/svg+xml",
+              sizeBytes: 1,
+            },
+          ],
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderAdapterRequestError);
+      assert.equal(error.detail, "Unsupported Claude image attachment type 'image/svg+xml'.");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

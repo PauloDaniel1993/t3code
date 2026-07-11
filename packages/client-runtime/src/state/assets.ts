@@ -1,4 +1,9 @@
-import { AssetResource, EnvironmentId, WS_METHODS } from "@t3tools/contracts";
+import {
+  type AssetCreateUrlResult,
+  AssetResource,
+  EnvironmentId,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -41,6 +46,14 @@ export function resolveAssetUrl(httpBaseUrl: string, relativeUrl: string): strin
   } catch {
     return null;
   }
+}
+
+export function resolveUnexpiredAssetUrl(
+  httpBaseUrl: string,
+  result: AssetCreateUrlResult,
+  nowMs: number,
+): string | null {
+  return result.expiresAt > nowMs ? resolveAssetUrl(httpBaseUrl, result.relativeUrl) : null;
 }
 
 export function createAssetEnvironmentAtoms<R, E>(

@@ -33,7 +33,6 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
@@ -44,6 +43,7 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
+import { mapAcpAttachments } from "../acp/AcpAttachmentMapping.ts";
 import type * as AcpSessionRuntime from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
@@ -982,42 +982,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               });
 
               const text = input.input?.trim();
-              const imagePromptParts = yield* Effect.forEach(
-                input.attachments ?? [],
-                (attachment) =>
-                  Effect.gen(function* () {
-                    const attachmentPath = resolveAttachmentPath({
-                      attachmentsDir: serverConfig.attachmentsDir,
-                      attachment,
-                    });
-                    if (!attachmentPath) {
-                      return yield* new ProviderAdapterRequestError({
-                        provider: PROVIDER,
-                        method: "session/prompt",
-                        detail: `Invalid attachment id '${attachment.id}'.`,
-                      });
-                    }
-                    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapterRequestError({
-                            provider: PROVIDER,
-                            method: "session/prompt",
-                            detail: cause.message,
-                            cause,
-                          }),
-                      ),
-                    );
-                    return {
-                      type: "image",
-                      data: Buffer.from(bytes).toString("base64"),
-                      mimeType: attachment.mimeType,
-                    } satisfies EffectAcpSchema.ContentBlock;
-                  }),
-              );
+              const attachmentPromptParts = yield* mapAcpAttachments({
+                provider: PROVIDER,
+                method: "session/prompt",
+                attachmentsDir: serverConfig.attachmentsDir,
+                attachments: input.attachments,
+                fileSystem,
+              });
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
                 ...(text ? [{ type: "text" as const, text }] : []),
-                ...imagePromptParts,
+                ...attachmentPromptParts,
               ];
 
               if (promptParts.length === 0) {

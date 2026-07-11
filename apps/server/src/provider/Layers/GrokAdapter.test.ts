@@ -26,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { grokPromptSettlementBelongsToContext, makeGrokAdapter } from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
@@ -123,6 +124,144 @@ it("requires a settlement to match the live Grok turn", () => {
 });
 
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
+  it.effect("sends mixed image and PDF attachments to Grok in exact ACP order", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-pdf-attachments");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-pdf-")),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => NodeFSP.rm(tempDir, { recursive: true, force: true })),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({ T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      const { attachmentsDir } = yield* ServerConfig;
+      const image = {
+        type: "image" as const,
+        id: "grok-image-12345678-1234-1234-1234-123456789abc",
+        name: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+      };
+      const pdf = {
+        type: "document" as const,
+        id: "grok-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "requirements.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 8,
+      };
+      const imagePath = NodePath.join(attachmentsDir, attachmentRelativePath(image));
+      const pdfPath = NodePath.join(attachmentsDir, attachmentRelativePath(pdf));
+      yield* Effect.promise(() =>
+        NodeFSP.mkdir(NodePath.dirname(imagePath), { recursive: true }).then(async () => {
+          await NodeFSP.writeFile(imagePath, Uint8Array.from([1, 2, 3]));
+          await NodeFSP.writeFile(pdfPath, "%PDF-1.7");
+        }),
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Review these",
+        attachments: [image, pdf],
+      });
+      yield* waitForFileContent(requestLogPath, 80, '"method":"session/prompt"');
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptRequest = requests.find((entry) => entry.method === "session/prompt");
+      assert.deepStrictEqual((promptRequest?.params as { prompt?: unknown })?.prompt, [
+        { type: "text", text: "Review these" },
+        { type: "image", data: "AQID", mimeType: "image/png" },
+        {
+          type: "resource_link",
+          name: "requirements.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          uri: NodeURL.pathToFileURL(pdfPath).href,
+        },
+      ]);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("settles a missing Grok PDF before starting the next text turn", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-missing-pdf-state");
+      const wrapperPath = yield* Effect.promise(() => makeMockGrokWrapper());
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const nextTurnCompleted = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          if (event.threadId === threadId) {
+            runtimeEvents.push(event);
+          }
+        }).pipe(
+          Effect.andThen(
+            event.threadId === threadId && event.type === "turn.completed"
+              ? Deferred.succeed(nextTurnCompleted, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Read this",
+          attachments: [
+            {
+              type: "document",
+              id: "grok-missing-12345678-1234-1234-1234-123456789abc",
+              name: "missing.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 1,
+            },
+          ],
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "ProviderAdapterRequestError");
+      }
+      const sessionsAfterFailure = yield* adapter.listSessions();
+      const sessionAfterFailure = sessionsAfterFailure.find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      assert.equal(sessionAfterFailure?.status, "ready");
+      assert.isUndefined(sessionAfterFailure?.activeTurnId);
+
+      const nextTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Continue without the attachment",
+        attachments: [],
+      });
+      yield* Deferred.await(nextTurnCompleted);
+      const turnStartedEvents = runtimeEvents.filter((event) => event.type === "turn.started");
+      assert.equal(turnStartedEvents.length, 1);
+      assert.equal(String(turnStartedEvents[0]?.turnId), String(nextTurn.turnId));
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-mock-thread");

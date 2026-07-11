@@ -25,7 +25,7 @@ import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { resolveExistingAttachmentFilePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
@@ -40,6 +40,7 @@ import {
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   buildOpenCodePermissionRules,
+  findUnsupportedOpenCodeAttachmentType,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   openCodeQuestionId,
@@ -1247,14 +1248,29 @@ export function makeOpenCodeAdapter(
       }
 
       const text = input.input?.trim();
+      const unsupportedAttachmentType = findUnsupportedOpenCodeAttachmentType(input.attachments);
+      if (unsupportedAttachmentType !== undefined) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session.prompt_async",
+          detail: `Unsupported attachment type '${unsupportedAttachmentType}'.`,
+        });
+      }
       const fileParts = toOpenCodeFileParts({
         attachments: input.attachments,
         resolveAttachmentPath: (attachment) =>
-          resolveAttachmentPath({
+          resolveExistingAttachmentFilePath({
             attachmentsDir: serverConfig.attachmentsDir,
             attachment,
           }),
       });
+      if (fileParts.length !== (input.attachments?.length ?? 0)) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session.prompt_async",
+          detail: "One or more attachment files are missing or invalid.",
+        });
+      }
       if ((!text || text.length === 0) && fileParts.length === 0) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,

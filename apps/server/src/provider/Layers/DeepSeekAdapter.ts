@@ -311,11 +311,26 @@ export function makeDeepSeekAdapter(
             detail: "DeepSeek already has a turn in progress for this thread.",
           });
         }
-        if ((input.attachments ?? []).length > 0) {
+        for (const attachment of input.attachments ?? []) {
+          const attachmentType: string = attachment.type;
+          switch (attachment.type) {
+            case "document":
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "chat.completions",
+                detail: "PDF attachments are unsupported by the DeepSeek provider.",
+              });
+            case "image":
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "chat.completions",
+                detail: "Image attachments are unsupported by the DeepSeek provider.",
+              });
+          }
           return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "chat.completions",
-            detail: "DeepSeek adapter currently supports text-only turns.",
+            detail: `Attachment type '${attachmentType}' is unsupported by the DeepSeek provider.`,
           });
         }
         const text = input.input?.trim();

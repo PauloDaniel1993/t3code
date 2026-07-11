@@ -1503,9 +1503,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
-    input: ProviderSendTurnInput,
     attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
   ) {
+    const attachmentType: string = attachment.type;
+    if (attachmentType !== "image" && attachmentType !== "document") {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "turn/start",
+        detail: `Unsupported attachment type '${attachmentType}'.`,
+      });
+    }
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: serverConfig.attachmentsDir,
       attachment,
@@ -1517,29 +1524,56 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         detail: `Invalid attachment id '${attachment.id}'.`,
       });
     }
-    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ProviderAdapterRequestError({
+    switch (attachment.type) {
+      case "image": {
+        const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/start",
+                detail: `Failed to read attachment file: ${cause.message}.`,
+                cause,
+              }),
+          ),
+        );
+        return {
+          type: "image" as const,
+          url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+        };
+      }
+      case "document": {
+        const fileInfo = yield* fileSystem.stat(attachmentPath).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/start",
+                detail: `Failed to read attachment file: ${cause.message}.`,
+                cause,
+              }),
+          ),
+        );
+        if (fileInfo.type !== "File") {
+          return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "turn/start",
-            detail: `Failed to read attachment file: ${cause.message}.`,
-            cause,
-          }),
-      ),
-    );
-    return {
-      type: "image" as const,
-      url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-    };
+            detail: `Attachment '${attachment.name}' is not a file.`,
+          });
+        }
+        return {
+          type: "mention" as const,
+          name: attachment.name,
+          path: attachmentPath,
+        };
+      }
+    }
   });
 
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
-    const codexAttachments = yield* Effect.forEach(
-      input.attachments ?? [],
-      (attachment) => resolveAttachment(input, attachment),
-      { concurrency: 1 },
-    );
+    const codexAttachments = yield* Effect.forEach(input.attachments ?? [], resolveAttachment, {
+      concurrency: 1,
+    });
 
     const session = yield* requireSession(input.threadId);
     const reasoningEffort =

@@ -85,6 +85,15 @@ export interface ProjectionThreadMessageRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessage>, ProjectionRepositoryError>;
 
   /**
+   * List attachment metadata referenced by messages in non-deleted or not-yet-
+   * projected threads. The latter keeps projector bootstrap cleanup conservative.
+   */
+  readonly listActiveAttachments: () => Effect.Effect<
+    ReadonlyArray<ChatAttachment>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Delete projected thread messages by thread.
    */
   readonly deleteByThreadId: (

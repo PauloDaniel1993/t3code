@@ -93,6 +93,7 @@ const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
 export type ResolvedAsset =
   | { readonly kind: "file"; readonly path: string }
+  | { readonly kind: "attachment"; readonly path: string }
   | { readonly kind: "project-favicon-fallback" };
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
@@ -386,7 +387,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       Effect.orElseSucceed(() => Option.none()),
     );
     return Option.isSome(info) && info.value.type === "File"
-      ? ({ kind: "file", path: attachmentPath } satisfies ResolvedAsset)
+      ? ({ kind: "attachment", path: attachmentPath } satisfies ResolvedAsset)
       : null;
   }
 
