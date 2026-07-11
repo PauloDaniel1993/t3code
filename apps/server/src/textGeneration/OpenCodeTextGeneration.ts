@@ -17,7 +17,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import * as ServerConfig from "../config.ts";
-import { resolveAttachmentPath } from "../attachmentStore.ts";
+import { resolveExistingAttachmentFilePath } from "../attachmentStore.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
@@ -378,11 +378,29 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       });
     }
 
+    const unsupportedAttachmentType = OpenCodeRuntime.findUnsupportedOpenCodeAttachmentType(
+      input.attachments,
+    );
+    if (unsupportedAttachmentType !== undefined) {
+      return yield* new TextGenerationError({
+        operation: input.operation,
+        detail: `Unsupported attachment type '${unsupportedAttachmentType}'.`,
+      });
+    }
     const fileParts = OpenCodeRuntime.toOpenCodeFileParts({
       attachments: input.attachments,
       resolveAttachmentPath: (attachment) =>
-        resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
+        resolveExistingAttachmentFilePath({
+          attachmentsDir: serverConfig.attachmentsDir,
+          attachment,
+        }),
     });
+    if (fileParts.length !== (input.attachments?.length ?? 0)) {
+      return yield* new TextGenerationError({
+        operation: input.operation,
+        detail: "One or more attachment files are missing or invalid.",
+      });
+    }
 
     const runAgainstServer = Effect.fn("runOpenCodeJson.runAgainstServer")(
       function* (server: Pick<OpenCodeRuntime.OpenCodeServerConnection, "url">) {

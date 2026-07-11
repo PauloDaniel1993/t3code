@@ -59,6 +59,14 @@ const imageAttachment: ChatAttachment = {
   sizeBytes: 1024,
 };
 
+const pdfAttachment: ChatAttachment = {
+  type: "document",
+  id: "att-2",
+  name: "requirements.pdf",
+  mimeType: "application/pdf",
+  sizeBytes: 2048,
+};
+
 type SeedOptions = {
   readonly messages?: ReadonlyArray<SeededMessage>;
   readonly handoff?: boolean;
@@ -444,10 +452,17 @@ describe("decider thread.handoff.create flows", () => {
     }),
   );
 
-  effectIt("imports attachment-only messages", () =>
+  effectIt("imports attachment-only messages with mixed image and PDF metadata", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel({
-        messages: [{ id: "user-1", role: "user", text: "", attachments: [imageAttachment] }],
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            text: "",
+            attachments: [imageAttachment, pdfAttachment],
+          },
+        ],
       });
 
       const events = asArray(yield* decide(readModel, handoffCommand()));
@@ -462,7 +477,7 @@ describe("decider thread.handoff.create flows", () => {
       if (imported.type === "thread.message-sent") {
         expect(imported.payload.messageId).toBe(importedMessageId("user-1"));
         expect(imported.payload.text).toBe("");
-        expect(imported.payload.attachments).toEqual([imageAttachment]);
+        expect(imported.payload.attachments).toEqual([imageAttachment, pdfAttachment]);
       }
     }),
   );

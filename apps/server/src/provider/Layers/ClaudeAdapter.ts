@@ -947,6 +947,17 @@ function buildClaudeImageContentBlock(input: {
   };
 }
 
+function buildClaudeDocumentContentBlock(input: { readonly bytes: Uint8Array }) {
+  return {
+    type: "document",
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: Buffer.from(input.bytes).toString("base64"),
+    },
+  };
+}
+
 const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   input: ProviderSendTurnInput,
   dependencies: {
@@ -963,11 +974,18 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   }
 
   for (const attachment of input.attachments ?? []) {
-    if (attachment.type !== "image") {
-      continue;
+    const attachmentType: string = attachment.type;
+    if (attachmentType !== "image" && attachmentType !== "document") {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "turn/start",
+        detail: `Unsupported attachment type '${attachmentType}'.`,
+      });
     }
-
-    if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
+    if (
+      attachment.type === "image" &&
+      !SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)
+    ) {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: "turn/start",
@@ -999,12 +1017,19 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
       ),
     );
 
-    sdkContent.push(
-      buildClaudeImageContentBlock({
-        mimeType: attachment.mimeType,
-        bytes,
-      }),
-    );
+    switch (attachment.type) {
+      case "image":
+        sdkContent.push(
+          buildClaudeImageContentBlock({
+            mimeType: attachment.mimeType,
+            bytes,
+          }),
+        );
+        break;
+      case "document":
+        sdkContent.push(buildClaudeDocumentContentBlock({ bytes }));
+        break;
+    }
   }
 
   return buildUserMessage({ sdkContent });
@@ -3753,6 +3778,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ? input.modelSelection
         : undefined;
 
+    // Materialize attachments before opening or steering a turn. A missing
+    // attachment is a request-validation failure and must not leave a
+    // synthetic running turn behind or close an existing synthetic turn.
+    const message = yield* buildUserMessageEffect(input, {
+      fileSystem,
+      attachmentsDir: serverConfig.attachmentsDir,
+      boundInstanceId,
+    });
+
     // A sendTurn while a real turn is running is a steer: the message is
     // queued into the live SDK agent loop and the work continues as the same
     // turn — no synthetic turn boundary. Stale synthetic turns (from
@@ -3828,12 +3862,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         providerRefs: {},
       });
     }
-
-    const message = yield* buildUserMessageEffect(input, {
-      fileSystem,
-      attachmentsDir: serverConfig.attachmentsDir,
-      boundInstanceId,
-    });
 
     yield* Queue.offer(context.promptQueue, {
       type: "message",

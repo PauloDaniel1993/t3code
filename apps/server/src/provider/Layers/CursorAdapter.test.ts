@@ -26,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
@@ -168,6 +169,158 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("sends mixed image and PDF attachments to Cursor in exact ACP order", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const { attachmentsDir } = yield* ServerConfig;
+      const threadId = ThreadId.make("cursor-pdf-attachments");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-pdf-")),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => NodeFSP.rm(tempDir, { recursive: true, force: true })),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const argvLogPath = NodePath.join(tempDir, "argv.txt");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const image = {
+        type: "image" as const,
+        id: "cursor-image-12345678-1234-1234-1234-123456789abc",
+        name: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+      };
+      const pdf = {
+        type: "document" as const,
+        id: "cursor-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "requirements.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 8,
+      };
+      const imagePath = NodePath.join(attachmentsDir, attachmentRelativePath(image));
+      const pdfPath = NodePath.join(attachmentsDir, attachmentRelativePath(pdf));
+      yield* Effect.promise(() =>
+        NodeFSP.mkdir(NodePath.dirname(imagePath), { recursive: true }).then(async () => {
+          await NodeFSP.writeFile(imagePath, Uint8Array.from([1, 2, 3]));
+          await NodeFSP.writeFile(pdfPath, "%PDF-1.7");
+        }),
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Review these",
+        attachments: [image, pdf],
+      });
+      const requests = yield* waitForJsonLogMatch(
+        requestLogPath,
+        (entry) => entry.method === "session/prompt",
+      );
+      const promptRequest = requests.find((entry) => entry.method === "session/prompt");
+      assert.deepStrictEqual((promptRequest?.params as { prompt?: unknown })?.prompt, [
+        { type: "text", text: "Review these" },
+        { type: "image", data: "AQID", mimeType: "image/png" },
+        {
+          type: "resource_link",
+          name: "requirements.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          uri: NodeURL.pathToFileURL(pdfPath).href,
+        },
+      ]);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("keeps the Cursor session ready after a missing PDF and starts the next turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-missing-pdf-state");
+      const wrapperPath = yield* Effect.promise(() => makeMockAgentWrapper());
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const nextTurnCompleted = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          if (event.threadId === threadId) {
+            runtimeEvents.push(event);
+          }
+        }).pipe(
+          Effect.andThen(
+            event.threadId === threadId && event.type === "turn.completed"
+              ? Deferred.succeed(nextTurnCompleted, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      const result = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Read this",
+          attachments: [
+            {
+              type: "document",
+              id: "cursor-missing-12345678-1234-1234-1234-123456789abc",
+              name: "missing.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 1,
+            },
+          ],
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "ProviderAdapterRequestError");
+        if (result.failure._tag === "ProviderAdapterRequestError") {
+          assert.match(result.failure.detail, /Failed to read attachment 'missing\.pdf'/u);
+        }
+      }
+      const sessionsAfterFailure = yield* adapter.listSessions();
+      const sessionAfterFailure = sessionsAfterFailure.find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      assert.equal(sessionAfterFailure?.status, "ready");
+      assert.isUndefined(sessionAfterFailure?.activeTurnId);
+
+      const nextTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Continue without the attachment",
+        attachments: [],
+      });
+      yield* Deferred.await(nextTurnCompleted);
+
+      const turnStartedEvents = runtimeEvents.filter((event) => event.type === "turn.started");
+      assert.equal(turnStartedEvents.length, 1);
+      assert.equal(String(turnStartedEvents[0]?.turnId), String(nextTurn.turnId));
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

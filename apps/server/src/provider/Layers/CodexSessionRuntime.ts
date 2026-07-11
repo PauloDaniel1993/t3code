@@ -111,12 +111,14 @@ export interface CodexSessionRuntimeOptions {
   readonly forceT3McpUserInput?: boolean;
 }
 
+export type CodexSessionRuntimeAttachment = Extract<
+  EffectCodexSchema.V2TurnStartParams__UserInput,
+  { readonly type: "image" | "mention" }
+>;
+
 export interface CodexSessionRuntimeSendTurnInput {
   readonly input?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexSessionRuntimeAttachment>;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
@@ -350,10 +352,7 @@ export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
   readonly prompt?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexSessionRuntimeAttachment>;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;

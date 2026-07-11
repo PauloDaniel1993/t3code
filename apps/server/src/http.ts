@@ -30,6 +30,10 @@ import {
   FALLBACK_PROJECT_FAVICON_SVG,
   resolveAsset,
 } from "./assets/AssetAccess.ts";
+import {
+  attachmentContentDisposition,
+  decodeAttachmentDownloadName,
+} from "./assets/AttachmentDownload.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
@@ -194,10 +198,8 @@ export const assetRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
 
-    const asset = yield* resolveAsset(
-      suffix.slice(0, separatorIndex),
-      suffix.slice(separatorIndex + 1),
-    );
+    const requestedFileName = suffix.slice(separatorIndex + 1);
+    const asset = yield* resolveAsset(suffix.slice(0, separatorIndex), requestedFileName);
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
@@ -217,6 +219,13 @@ export const assetRouteLayer = HttpRouter.add(
       headers: {
         "Cache-Control": "private, max-age=3600",
         "X-Content-Type-Options": "nosniff",
+        ...(asset.kind === "attachment" && url.value.searchParams.get("download") === "1"
+          ? {
+              "Content-Disposition": attachmentContentDisposition(
+                decodeAttachmentDownloadName(requestedFileName) ?? "attachment.pdf",
+              ),
+            }
+          : {}),
       },
     }).pipe(
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),

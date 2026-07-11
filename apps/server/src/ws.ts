@@ -67,7 +67,10 @@ import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
-import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
+import {
+  dispatchNormalizedCommandWithCleanup,
+  normalizeDispatchCommand,
+} from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -948,7 +951,8 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
-              const normalizedCommand = yield* normalizeDispatchCommand(command);
+              const normalized = yield* normalizeDispatchCommand(command);
+              const normalizedCommand = normalized.command;
               const shouldStopSessionAfterArchive =
                 normalizedCommand.type === "thread.archive"
                   ? yield* projectionSnapshotQuery
@@ -964,11 +968,14 @@ const makeWsRpcLayer = (
                         Effect.orElseSucceed(() => false),
                       )
                   : false;
-              const result = yield* dispatchNormalizedCommand(normalizedCommand);
+              const result = yield* dispatchNormalizedCommandWithCleanup(
+                normalized,
+                dispatchNormalizedCommand,
+              );
               if (normalizedCommand.type === "thread.archive") {
                 if (shouldStopSessionAfterArchive) {
                   yield* Effect.gen(function* () {
-                    const stopCommand = yield* normalizeDispatchCommand({
+                    const normalizedStopCommand = yield* normalizeDispatchCommand({
                       type: "thread.session.stop",
                       commandId: CommandId.make(
                         `session-stop-for-archive:${normalizedCommand.commandId}`,
@@ -977,7 +984,10 @@ const makeWsRpcLayer = (
                       createdAt: yield* nowIso,
                     });
 
-                    yield* dispatchNormalizedCommand(stopCommand);
+                    yield* dispatchNormalizedCommandWithCleanup(
+                      normalizedStopCommand,
+                      dispatchNormalizedCommand,
+                    );
                   }).pipe(
                     Effect.catchCause((cause) =>
                       Effect.logWarning("failed to stop provider session during archive", {

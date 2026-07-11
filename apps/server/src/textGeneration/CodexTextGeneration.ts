@@ -115,7 +115,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     );
 
   const materializeImageAttachments = Effect.fn("materializeImageAttachments")(function* (
-    _operation:
+    operation:
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
@@ -129,8 +129,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
     const imagePaths: string[] = [];
     for (const attachment of attachments) {
-      if (attachment.type !== "image") {
-        continue;
+      if (attachment.type === "document") {
+        return yield* new TextGenerationError({
+          operation,
+          detail: "PDF attachments are unsupported by Codex structured text generation.",
+        });
       }
 
       const resolvedPath = resolveAttachmentPath({

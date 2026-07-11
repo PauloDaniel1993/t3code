@@ -36,6 +36,7 @@ import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import { ServerConfig } from "../../config.ts";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
@@ -411,6 +412,61 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         effort: "high",
         serviceTier: "priority",
       });
+    }),
+  );
+
+  it.effect("keeps Codex ready after a missing PDF and dispatches the next text turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-missing-pdf-state");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      const result = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Read this",
+          attachments: [
+            {
+              type: "document",
+              id: "codex-missing-12345678-1234-1234-1234-123456789abc",
+              name: "missing.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 1,
+            },
+          ],
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+        if (result.failure._tag === "ProviderAdapterRequestError") {
+          NodeAssert.match(result.failure.detail, /Failed to read attachment file:/u);
+        }
+      }
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+      const sessionsAfterFailure = yield* adapter.listSessions();
+      const sessionAfterFailure = sessionsAfterFailure.find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(sessionAfterFailure?.status, "ready");
+      NodeAssert.equal(sessionAfterFailure?.activeTurnId, undefined);
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Continue without the attachment",
+        attachments: [],
+      });
+      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls, [
+        [{ input: "Continue without the attachment" }],
+      ]);
     }),
   );
 
@@ -1254,6 +1310,82 @@ scopedFailureLayer("CodexAdapterLive scoped startup failure", (it) => {
     }),
   );
 });
+
+it.effect("maps ordered image and PDF attachments to exact Codex turn inputs", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-pdf-"));
+    const runtimeFactory = makeRuntimeFactory();
+    const scope = yield* Scope.make("sequential");
+    let scopeClosed = false;
+
+    try {
+      const layer = Layer.effect(
+        CodexAdapter,
+        Effect.gen(function* () {
+          const codexConfig = decodeCodexSettings({});
+          return yield* makeCodexAdapter(codexConfig, { makeRuntime: runtimeFactory.factory });
+        }),
+      ).pipe(
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), tempDir)),
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      const context = yield* Layer.buildWithScope(layer, scope);
+      const adapter = yield* Effect.service(CodexAdapter).pipe(Effect.provide(context));
+      const { attachmentsDir } = yield* Effect.service(ServerConfig).pipe(Effect.provide(context));
+      const image = {
+        type: "image" as const,
+        id: "codex-image-12345678-1234-1234-1234-123456789abc",
+        name: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+      };
+      const pdf = {
+        type: "document" as const,
+        id: "codex-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "requirements.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 8,
+      };
+      const imagePath = NodePath.join(attachmentsDir, attachmentRelativePath(image));
+      const pdfPath = NodePath.join(attachmentsDir, attachmentRelativePath(pdf));
+      NodeFS.mkdirSync(NodePath.dirname(imagePath), { recursive: true });
+      NodeFS.writeFileSync(imagePath, Uint8Array.from([1, 2, 3]));
+      NodeFS.writeFileSync(pdfPath, "%PDF-1.7");
+
+      const threadId = asThreadId("thread-codex-pdf");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = runtimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Review these",
+        attachments: [image, pdf],
+      });
+
+      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls.at(-1)?.[0], {
+        input: "Review these",
+        attachments: [
+          { type: "image", url: "data:image/png;base64,AQID" },
+          { type: "mention", name: "requirements.pdf", path: pdfPath },
+        ],
+      });
+
+      yield* Scope.close(scope, Exit.void);
+      scopeClosed = true;
+    } finally {
+      if (!scopeClosed) {
+        yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
+      }
+      NodeFS.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }),
+);
 
 it.effect("flushes managed native logs when the adapter layer shuts down", () =>
   Effect.gen(function* () {

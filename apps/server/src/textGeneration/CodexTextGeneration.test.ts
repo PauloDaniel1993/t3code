@@ -453,6 +453,41 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
+  it.effect("rejects PDFs instead of silently dropping them from Codex text generation", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ branch: "should-not-run" }),
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const result = yield* textGeneration
+            .generateBranchName({
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              cwd: process.cwd(),
+              message: "Review the attached requirements.",
+              attachments: [
+                {
+                  type: "document",
+                  id: "thread-branch-pdf-attachment",
+                  name: "requirements.pdf",
+                  mimeType: "application/pdf",
+                  sizeBytes: 9,
+                },
+              ],
+            })
+            .pipe(Effect.result);
+
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure).toBeInstanceOf(TextGenerationError);
+            expect(result.failure.message).toContain(
+              "PDF attachments are unsupported by Codex structured text generation.",
+            );
+          }
+        }),
+    ),
+  );
+
   it.effect("resolves persisted attachment ids to files for codex image inputs", () =>
     withFakeCodexEnv(
       {

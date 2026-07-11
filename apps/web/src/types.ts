@@ -1,5 +1,4 @@
 import type {
-  ChatImageAttachment as ContractChatImageAttachment,
   OrchestrationCheckpointFile,
   OrchestrationCheckpointSummary,
   OrchestrationLatestTurn,
@@ -11,6 +10,11 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
 } from "@t3tools/contracts";
+import type {
+  ClientChatAttachment,
+  ClientChatDocumentAttachment,
+  ClientChatImageAttachment,
+} from "@t3tools/client-runtime/state/attachments";
 import type {
   EnvironmentProject,
   EnvironmentThread,
@@ -32,11 +36,9 @@ export interface ThreadTerminalGroup {
   splitDirection?: "horizontal" | "vertical";
 }
 
-export interface ChatImageAttachment extends ContractChatImageAttachment {
-  readonly previewUrl?: string;
-}
-
-export type ChatAttachment = ChatImageAttachment;
+export type ChatImageAttachment = ClientChatImageAttachment;
+export type ChatDocumentAttachment = ClientChatDocumentAttachment;
+export type ChatAttachment = ClientChatAttachment;
 
 export interface ChatMessage extends Omit<OrchestrationMessage, "attachments" | "source"> {
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;

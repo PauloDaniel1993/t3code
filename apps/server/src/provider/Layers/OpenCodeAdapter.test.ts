@@ -1,4 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeAssert from "node:assert/strict";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -30,6 +33,7 @@ import {
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   type OpenCodeRuntimeShape,
+  toOpenCodeFileParts,
 } from "../opencodeRuntime.ts";
 import {
   appendOpenCodeAssistantTextDelta,
@@ -247,7 +251,89 @@ const makeOpenCodeQuestion = (index: number) => ({
   multiple: false,
 });
 
+it("maps PDFs to OpenCode file parts with an exact platform-safe local URL", () => {
+  const attachmentPath = NodePath.join(process.cwd(), "attachments", "requirements 1.pdf");
+  const parts = toOpenCodeFileParts({
+    attachments: [
+      {
+        type: "document",
+        id: "opencode-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "requirements.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 123,
+      },
+    ],
+    resolveAttachmentPath: () => attachmentPath,
+  });
+
+  NodeAssert.deepStrictEqual(parts, [
+    {
+      type: "file",
+      mime: "application/pdf",
+      filename: "requirements.pdf",
+      url: NodeURL.pathToFileURL(attachmentPath).href,
+    },
+  ]);
+});
+
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  it.effect("rejects a missing PDF instead of silently dropping its file part", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-missing-pdf");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      });
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Read this",
+          attachments: [
+            {
+              type: "document",
+              id: "opencode-missing-12345678-1234-1234-1234-123456789abc",
+              name: "missing.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 1,
+            },
+          ],
+        })
+        .pipe(Effect.flip);
+
+      NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
+      if (error._tag === "ProviderAdapterRequestError") {
+        NodeAssert.equal(error.detail, "One or more attachment files are missing or invalid.");
+      }
+      NodeAssert.deepStrictEqual(runtimeMock.state.promptCalls, []);
+
+      const sessionsAfterFailure = yield* adapter.listSessions();
+      const sessionAfterFailure = sessionsAfterFailure.find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(sessionAfterFailure?.status, "ready");
+      NodeAssert.equal(sessionAfterFailure?.activeTurnId, undefined);
+
+      const nextTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Continue without the attachment",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+        attachments: [],
+      });
+      const sessionsAfterRetry = yield* adapter.listSessions();
+      const sessionAfterRetry = sessionsAfterRetry.find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(sessionAfterRetry?.status, "running");
+      NodeAssert.equal(String(sessionAfterRetry?.activeTurnId), String(nextTurn.turnId));
+      NodeAssert.equal(runtimeMock.state.promptCalls.length, 1);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

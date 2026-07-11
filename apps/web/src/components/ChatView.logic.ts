@@ -8,9 +8,10 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   type TurnId,
+  type UploadChatAttachment,
 } from "@t3tools/contracts";
-import { type ChatMessage, type SessionPhase, type Thread } from "../types";
-import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
+import { type ChatAttachment, type ChatMessage, type SessionPhase, type Thread } from "../types";
+import { type ComposerAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadDetails } from "../state/threads";
@@ -141,14 +142,22 @@ export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
 }
 
 export function revokeUserMessagePreviewUrls(message: ChatMessage): void {
+  revokeUserMessagePreviewUrlsExcept(message, new Set());
+}
+
+export function revokeUserMessagePreviewUrlsExcept(
+  message: ChatMessage,
+  retainedUrls: ReadonlySet<string>,
+): void {
   if (message.role !== "user" || !message.attachments) {
     return;
   }
   for (const attachment of message.attachments) {
-    if (attachment.type !== "image") {
+    const url = attachment.type === "image" ? attachment.previewUrl : attachment.assetUrl;
+    if (!url || retainedUrls.has(url)) {
       continue;
     }
-    revokeBlobPreviewUrl(attachment.previewUrl);
+    revokeBlobPreviewUrl(url);
   }
 }
 
@@ -165,6 +174,38 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
   return previewUrls;
 }
 
+export function revokeUserMessageDocumentAssetUrls(message: ChatMessage): void {
+  if (message.role !== "user" || !message.attachments) {
+    return;
+  }
+  for (const attachment of message.attachments) {
+    if (attachment.type === "document") {
+      revokeBlobPreviewUrl(attachment.assetUrl);
+    }
+  }
+}
+
+export function applyResolvedAttachmentAssetUrls(
+  messages: ReadonlyArray<ChatMessage>,
+  assetUrlById: ReadonlyMap<string, string>,
+): ReadonlyArray<ChatMessage> {
+  return messages.map((message) => {
+    if (!message.attachments || message.attachments.length === 0) {
+      return message;
+    }
+    let changed = false;
+    const attachments = message.attachments.map((attachment) => {
+      const assetUrl = assetUrlById.get(attachment.id);
+      if (!assetUrl) return attachment;
+      changed = true;
+      return attachment.type === "image"
+        ? { ...attachment, previewUrl: assetUrl }
+        : { ...attachment, assetUrl };
+    });
+    return changed ? { ...message, attachments } : message;
+  });
+}
+
 export interface PullRequestDialogState {
   initialReference: string | null;
   key: number;
@@ -178,13 +219,89 @@ export function readFileAsDataUrl(file: File): Promise<string> {
         resolve(reader.result);
         return;
       }
-      reject(new Error("Could not read image data."));
+      reject(new Error("Could not read attachment data."));
     });
     reader.addEventListener("error", () => {
-      reject(reader.error ?? new Error("Failed to read image."));
+      reject(reader.error ?? new Error("Failed to read attachment."));
     });
     reader.readAsDataURL(file);
   });
+}
+
+export async function serializeComposerAttachments(
+  attachments: ReadonlyArray<ComposerAttachment>,
+  readFile: (file: File) => Promise<string> = readFileAsDataUrl,
+): Promise<UploadChatAttachment[]> {
+  return await Promise.all(
+    attachments.map(async (attachment): Promise<UploadChatAttachment> => {
+      const dataUrl = await readFile(attachment.file);
+      return attachment.type === "image"
+        ? {
+            type: "image",
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            dataUrl,
+          }
+        : {
+            type: "document",
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            dataUrl,
+          };
+    }),
+  );
+}
+
+export function buildOptimisticComposerAttachments(
+  attachments: ReadonlyArray<ComposerAttachment>,
+): ChatAttachment[] {
+  return attachments.map((attachment) =>
+    attachment.type === "image"
+      ? {
+          type: "image",
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          previewUrl: attachment.previewUrl,
+        }
+      : {
+          type: "document",
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          assetUrl: attachment.assetUrl,
+        },
+  );
+}
+
+/** Keep a newer in-flight draft intact while restoring text from a failed send. */
+export function mergeFailedComposerPrompt(currentPrompt: string, failedPrompt: string): string {
+  if (failedPrompt.length === 0 || currentPrompt === failedPrompt) {
+    return currentPrompt;
+  }
+  if (currentPrompt.length === 0) {
+    return failedPrompt;
+  }
+  return `${failedPrompt}\n\n${currentPrompt}`;
+}
+
+/** Merge failed-send context snapshots after newer draft items without duplicating ids. */
+export function mergeComposerDraftItemsById<T extends { readonly id: string }>(
+  currentItems: ReadonlyArray<T>,
+  failedItems: ReadonlyArray<T>,
+): T[] {
+  const ids = new Set(currentItems.map((item) => item.id));
+  const merged = [...currentItems];
+  for (const item of failedItems) {
+    if (ids.has(item.id)) continue;
+    ids.add(item.id);
+    merged.push(item);
+  }
+  return merged;
 }
 
 export function resolveSendEnvMode(input: {
@@ -194,29 +311,30 @@ export function resolveSendEnvMode(input: {
   return input.isGitRepo ? input.requestedEnvMode : "local";
 }
 
-export function cloneComposerImageForRetry(
-  image: ComposerImageAttachment,
-): ComposerImageAttachment {
-  if (typeof URL === "undefined" || !image.previewUrl.startsWith("blob:")) {
-    return image;
+export function cloneComposerAttachmentForRetry(
+  attachment: ComposerAttachment,
+): ComposerAttachment {
+  const objectUrl = attachment.type === "image" ? attachment.previewUrl : attachment.assetUrl;
+  if (typeof URL === "undefined" || !objectUrl.startsWith("blob:")) {
+    return attachment;
   }
   try {
-    return {
-      ...image,
-      previewUrl: URL.createObjectURL(image.file),
-    };
+    const nextObjectUrl = URL.createObjectURL(attachment.file);
+    return attachment.type === "image"
+      ? { ...attachment, previewUrl: nextObjectUrl }
+      : { ...attachment, assetUrl: nextObjectUrl };
   } catch {
-    return image;
+    return attachment;
   }
 }
 
 export function deriveComposerSendState(options: {
   prompt: string;
-  imageCount: number;
+  attachmentCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   /**
    * Optional element-pick attachment count. Element contexts contribute to
-   * "sendable content" exactly like images and (text-bearing) terminal
+   * "sendable content" exactly like attachments and (text-bearing) terminal
    * contexts do: a prompt of just element chips is still a valid send.
    */
   elementContextCount?: number;
@@ -237,7 +355,7 @@ export function deriveComposerSendState(options: {
     expiredTerminalContextCount,
     hasSendableContent:
       trimmedPrompt.length > 0 ||
-      options.imageCount > 0 ||
+      options.attachmentCount > 0 ||
       sendableTerminalContexts.length > 0 ||
       elementContextCount > 0,
   };
