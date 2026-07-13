@@ -132,6 +132,7 @@ import { closePreviewSession } from "./preview/closePreviewSession";
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { ProjectBrowserPanel } from "./project-browser/ProjectBrowserPanel";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -160,8 +161,15 @@ import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
+  derivePhysicalProjectKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
+import {
+  selectProjectBrowserLayout,
+  selectProjectBrowserRuntime,
+  useProjectBrowserStore,
+} from "../projectBrowserStore";
+import { promoteRightPanelBrowserToProject } from "../projectBrowserWorkflows";
 import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerAttachment,
@@ -1380,6 +1388,7 @@ function ChatViewContent(props: ChatViewProps) {
   const activeFileSurface =
     activeRightPanelSurface?.kind === "file" ? activeRightPanelSurface : null;
   const activePreviewState = useThreadPreviewState(activeThreadRef);
+  const projectBrowserRouteByTabId = useProjectBrowserStore((state) => state.routeByTabId);
   const panelTerminalIds = useMemo(
     () =>
       new Set(
@@ -1394,14 +1403,20 @@ function ChatViewContent(props: ChatViewProps) {
   const canMaximizeRightPanel = rightPanelOpen && !shouldUsePlanSidebarSheet;
   const rightPanelMaximized =
     canMaximizeRightPanel && maximizedRightPanelThreadKey === routeThreadKey;
-  const inlineRightPanelOwnsTitleBar = rightPanelOpen && !shouldUsePlanSidebarSheet;
 
   useEffect(() => {
     if (!activeThreadRef) return;
-    useRightPanelStore
+    const threadTabIds = Object.keys(activePreviewState.sessions).filter(
+      (tabId) => projectBrowserRouteByTabId[tabId] === undefined,
+    );
+    useRightPanelStore.getState().reconcileBrowserSurfaces(activeThreadRef, threadTabIds);
+    useProjectBrowserStore
       .getState()
-      .reconcileBrowserSurfaces(activeThreadRef, Object.keys(activePreviewState.sessions));
-  }, [activePreviewState.sessions, activeThreadRef]);
+      .reconcileAuthoritativeTabs(
+        activeThreadRef,
+        new Set(Object.keys(activePreviewState.sessions)),
+      );
+  }, [activePreviewState.sessions, activeThreadRef, projectBrowserRouteByTabId]);
 
   const planSidebarOpen = activeRightPanelKind === "plan";
 
@@ -1532,6 +1547,48 @@ function ChatViewContent(props: ChatViewProps) {
     [retryEnvironment],
   );
   const projectGroupingSettings = selectProjectGroupingSettings(settings);
+  const activeLogicalProjectKey = activeProject
+    ? deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings)
+    : null;
+  const activePhysicalProjectKey = activeProject ? derivePhysicalProjectKey(activeProject) : null;
+  const projectBrowserRuntime = useProjectBrowserStore((state) =>
+    selectProjectBrowserRuntime(state.runtimeByProjectKey, activeLogicalProjectKey),
+  );
+  const projectBrowserLayout = useProjectBrowserStore((state) =>
+    selectProjectBrowserLayout(state.layoutByProjectKey, activeLogicalProjectKey),
+  );
+  const projectBrowserActive = useProjectBrowserStore((state) =>
+    projectBrowserRuntime.tabs.some((tab) => state.activityByTabId[tab.tabId] !== undefined),
+  );
+  const inlineRightPanelOwnsTitleBar =
+    (rightPanelOpen || projectBrowserLayout.isOpen) && !shouldUsePlanSidebarSheet;
+  const previousLogicalProjectKeyByPhysicalKeyRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const previous = previousLogicalProjectKeyByPhysicalKeyRef.current;
+    const next = new Map(
+      allProjects.map((project) => [
+        derivePhysicalProjectKey(project),
+        deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings),
+      ]),
+    );
+    const unchanged =
+      previous.size === next.size && [...next].every(([key, value]) => previous.get(key) === value);
+    if (unchanged) return;
+    const transitions = allProjects.map((project) => {
+      const physicalProjectKey = derivePhysicalProjectKey(project);
+      const nextLogicalProjectKey = next.get(physicalProjectKey)!;
+      return {
+        physicalProjectKey,
+        previousLogicalProjectKey: previous.get(physicalProjectKey) ?? nextLogicalProjectKey,
+        nextLogicalProjectKey,
+      };
+    });
+    previousLogicalProjectKeyByPhysicalKeyRef.current = next;
+    useProjectBrowserStore.getState().reconcileGrouping({
+      transitions,
+      activePhysicalProjectKey,
+    });
+  }, [activePhysicalProjectKey, allProjects, projectGroupingSettings]);
   const logicalProjectEnvironments = useMemo(() => {
     if (!activeProject) return [];
     const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
@@ -3181,6 +3238,10 @@ function ChatViewContent(props: ChatViewProps) {
     }
     useRightPanelStore.getState().toggleVisibility(activeThreadRef);
   }, [activeThreadRef, closePlanSidebar, closePreviewPanel, planSidebarOpen, rightPanelOpen]);
+  const toggleProjectBrowser = useCallback(() => {
+    if (!activeLogicalProjectKey || !isElectron) return;
+    useProjectBrowserStore.getState().toggle(activeLogicalProjectKey);
+  }, [activeLogicalProjectKey]);
   const toggleRightPanelMaximized = useCallback(() => {
     if (!canMaximizeRightPanel) return;
     setMaximizedRightPanelThreadKey((threadKey) =>
@@ -3233,6 +3294,29 @@ function ChatViewContent(props: ChatViewProps) {
       setActivePreviewTab(activeThreadRef, nextActiveSurface.resourceId);
     }
   }, [activeThreadRef]);
+  const pinRightPanelBrowser = useCallback(
+    (surface: Extract<RightPanelSurface, { kind: "preview" }>) => {
+      if (
+        !activeThreadRef ||
+        !activeLogicalProjectKey ||
+        !activePhysicalProjectKey ||
+        !surface.resourceId
+      ) {
+        return;
+      }
+      if (
+        promoteRightPanelBrowserToProject({
+          logicalProjectKey: activeLogicalProjectKey,
+          physicalProjectKey: activePhysicalProjectKey,
+          threadRef: activeThreadRef,
+          surface,
+        })
+      ) {
+        syncActivePreviewSurface();
+      }
+    },
+    [activeLogicalProjectKey, activePhysicalProjectKey, activeThreadRef, syncActivePreviewSurface],
+  );
   const closeRightPanelSurface = useCallback(
     (surface: RightPanelSurface) => {
       if (!activeThreadRef) return;
@@ -3964,6 +4048,13 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "projectBrowser.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleProjectBrowser();
+        return;
+      }
+
       if (command === "terminal.split") {
         event.preventDefault();
         event.stopPropagation();
@@ -4059,6 +4150,7 @@ function ChatViewContent(props: ChatViewProps) {
     keybindings,
     onToggleDiff,
     toggleRightPanel,
+    toggleProjectBrowser,
     toggleTerminalVisibility,
     composerRef,
   ]);
@@ -5246,8 +5338,14 @@ function ChatViewContent(props: ChatViewProps) {
       rightPanelAvailable={activeProject !== null}
       rightPanelOpen={rightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
+      projectBrowserAvailable={isElectron && activeProject !== null}
+      projectBrowserOpen={projectBrowserLayout.isOpen}
+      projectBrowserTabCount={projectBrowserRuntime.tabs.length}
+      projectBrowserActive={projectBrowserActive}
+      projectBrowserShortcutLabel={shortcutLabelForCommand(keybindings, "projectBrowser.toggle")}
       onToggleTerminal={toggleTerminalVisibility}
       onToggleRightPanel={toggleRightPanel}
+      onToggleProjectBrowser={toggleProjectBrowser}
     />
   );
   const panelLayoutControls = (
@@ -5349,7 +5447,9 @@ function ChatViewContent(props: ChatViewProps) {
         onTargetChange={setSelectedHandoffModelSelection}
         onSubmit={onSubmitHandoff}
       />
-      {rightPanelOpen && !shouldUsePlanSidebarSheet ? panelLayoutControls : null}
+      {(rightPanelOpen || projectBrowserLayout.isOpen) && !shouldUsePlanSidebarSheet
+        ? panelLayoutControls
+        : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-col overflow-hidden",
@@ -5373,7 +5473,7 @@ function ChatViewContent(props: ChatViewProps) {
             COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
           )}
         >
-          {!rightPanelOpen ? panelLayoutControls : null}
+          {!rightPanelOpen && !projectBrowserLayout.isOpen ? panelLayoutControls : null}
           <ChatHeader
             activeThreadEnvironmentId={activeThread.environmentId}
             activeThreadId={activeThread.id}
@@ -5651,6 +5751,7 @@ function ChatViewContent(props: ChatViewProps) {
           onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
           onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
           onCloseAllSurfaces={closeAllRightPanelSurfaces}
+          onPinBrowser={pinRightPanelBrowser}
           onCopyFilePath={copyRightPanelFilePath}
           onAddBrowser={createBrowserSurface}
           onAddTerminal={addTerminalSurface}
@@ -5678,6 +5779,7 @@ function ChatViewContent(props: ChatViewProps) {
             onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
             onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
             onCloseAllSurfaces={closeAllRightPanelSurfaces}
+            onPinBrowser={pinRightPanelBrowser}
             onCopyFilePath={copyRightPanelFilePath}
             onAddBrowser={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
@@ -5690,6 +5792,23 @@ function ChatViewContent(props: ChatViewProps) {
             {rightPanelContent}
           </RightPanelTabs>
         </RightPanelSheet>
+      ) : null}
+
+      {isElectron &&
+      projectBrowserLayout.isOpen &&
+      activeLogicalProjectKey &&
+      activePhysicalProjectKey &&
+      activeThreadRef ? (
+        <Suspense fallback={null}>
+          <ProjectBrowserPanel
+            key={activeLogicalProjectKey}
+            logicalProjectKey={activeLogicalProjectKey}
+            activeThreadRef={activeThreadRef}
+            activePhysicalProjectKey={activePhysicalProjectKey}
+            configuredUrls={configuredPreviewUrls}
+            overlay={shouldUsePlanSidebarSheet}
+          />
+        </Suspense>
       ) : null}
 
       {expandedImage && (
