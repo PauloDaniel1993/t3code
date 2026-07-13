@@ -28,6 +28,7 @@
 - [x] 4.2 Partition timeline attachments by discriminant so image thumbnails and preview-annotation handoff remain image-only while PDFs render as document cards.
 - [x] 4.3 Connect optimistic blob URLs and persisted signed asset URLs to PDF cards, disabling open/download controls while a URL is missing or expired and avoiding broken previews.
 - [x] 4.4 Add component and history tests for accessible labels, keyboard operation, metadata-only states, optimistic-to-server URL promotion, reconnect hydration, and mixed image/PDF rendering.
+- [ ] 4.5 Fix the PDF attachment card's open action (external-link icon in `PdfAttachmentCard`) not opening the PDF; verify `assetUrl`/signed URL resolution and `target="_blank"` behavior in both draft and history modes, and add a regression test.
 
 ## 5. Provider Delivery
 
