@@ -5447,9 +5447,6 @@ function ChatViewContent(props: ChatViewProps) {
         onTargetChange={setSelectedHandoffModelSelection}
         onSubmit={onSubmitHandoff}
       />
-      {(rightPanelOpen || projectBrowserLayout.isOpen) && !shouldUsePlanSidebarSheet
-        ? panelLayoutControls
-        : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-col overflow-hidden",
@@ -5488,6 +5485,8 @@ function ChatViewContent(props: ChatViewProps) {
             keybindings={keybindings}
             availableEditors={availableEditors}
             rightPanelOpen={rightPanelOpen}
+            projectBrowserOpen={projectBrowserLayout.isOpen}
+            projectBrowserAvailable={isElectron && activeProject !== null}
             gitCwd={gitCwd}
             onRunProjectScript={runProjectScript}
             onAddProjectScript={saveProjectScript}
@@ -5810,6 +5809,14 @@ function ChatViewContent(props: ChatViewProps) {
           />
         </Suspense>
       ) : null}
+
+      {/* Must come after the right panel and Project Browser in DOM order:
+          Chromium resolves -webkit-app-region overlaps by document order (not
+          z-index), so this no-drag cluster only carves the panels' drag-region
+          tab bars out of the window-drag area if it is rendered after them. */}
+      {(rightPanelOpen || projectBrowserLayout.isOpen) && !shouldUsePlanSidebarSheet
+        ? panelLayoutControls
+        : null}
 
       {expandedImage && (
         <ExpandedImageDialog
