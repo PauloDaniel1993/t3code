@@ -6,6 +6,7 @@ import type {
   PreviewAutomationResizeResult,
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
+  PreviewAutomationTabList,
   PreviewTabId,
 } from "@t3tools/contracts";
 
@@ -47,6 +48,7 @@ const invokeTargeted = <A>(
 };
 
 const handlers = {
+  preview_tabs: () => invoke<PreviewAutomationTabList>("listTabs", {}),
   preview_status: (input) => invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
   preview_open: (input) =>
     invokeTargeted<PreviewAutomationStatus>("open", {
