@@ -22,13 +22,11 @@ import * as TextGeneration from "./TextGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
-  buildHandoffSummaryPrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   normalizeCliError,
-  sanitizeHandoffSummary,
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
@@ -87,8 +85,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle"
-      | "generateHandoffSummary",
+      | "generateThreadTitle",
     value: unknown,
     detail: string,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -118,8 +115,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle"
-      | "generateHandoffSummary";
+      | "generateThreadTitle";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -359,33 +355,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       };
     });
 
-  const generateHandoffSummary: TextGeneration.TextGeneration["Service"]["generateHandoffSummary"] =
-    Effect.fn("ClaudeTextGeneration.generateHandoffSummary")(function* (input) {
-      const { prompt, outputSchema } = buildHandoffSummaryPrompt({
-        sourceThreadTitle: input.sourceThreadTitle,
-        role: input.role,
-        messageText: input.messageText,
-        attachmentMetadata: input.attachmentMetadata,
-      });
-
-      const generated = yield* runClaudeJson({
-        operation: "generateHandoffSummary",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        summary: sanitizeHandoffSummary(generated.summary),
-      };
-    });
-
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
-    generateHandoffSummary,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

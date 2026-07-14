@@ -29,10 +29,10 @@ export const SAFE_IMAGE_FILE_EXTENSIONS = new Set([
   ".webp",
 ]);
 
-function parseBase64DataUrlInternal(
+export function parseBase64DataUrl(
   dataUrl: string,
-): { readonly mimeType: string | null; readonly base64: string } | null {
-  const match = /^data:([^,]*),([a-z0-9+/=\r\n ]+)$/i.exec(dataUrl.trim());
+): { readonly mimeType: string; readonly base64: string } | null {
+  const match = /^data:([^,]+),([a-z0-9+/=\r\n ]+)$/i.exec(dataUrl.trim());
   if (!match) return null;
 
   const headerParts: Array<string> = [];
@@ -42,7 +42,7 @@ function parseBase64DataUrlInternal(
       headerParts.push(trimmed);
     }
   }
-  if (headerParts.length < 1) {
+  if (headerParts.length < 2) {
     return null;
   }
   const trailingToken = headerParts.at(-1)?.toLowerCase();
@@ -50,24 +50,11 @@ function parseBase64DataUrlInternal(
     return null;
   }
 
-  const mimeType = headerParts.length > 1 ? (headerParts[0]?.toLowerCase() ?? null) : null;
+  const mimeType = headerParts[0]?.toLowerCase();
   const base64 = match[2]?.replace(/\s+/g, "");
-  if (!base64) return null;
+  if (!mimeType || !base64) return null;
 
   return { mimeType, base64 };
-}
-
-export function parseBase64DataUrl(
-  dataUrl: string,
-): { readonly mimeType: string; readonly base64: string } | null {
-  const parsed = parseBase64DataUrlInternal(dataUrl);
-  return parsed?.mimeType ? { mimeType: parsed.mimeType, base64: parsed.base64 } : null;
-}
-
-export function parseBase64DataUrlWithOptionalMimeType(
-  dataUrl: string,
-): { readonly mimeType: string | null; readonly base64: string } | null {
-  return parseBase64DataUrlInternal(dataUrl);
 }
 
 export function inferImageExtension(input: { mimeType: string; fileName?: string }): string {

@@ -1,22 +1,15 @@
 import * as React from "react";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
-import type { SidebarOrganization } from "@t3tools/contracts/settings";
 import {
   getThreadSortTimestamp,
   sortThreads,
   toSortableTimestamp,
   type ThreadSortInput,
 } from "../lib/threadSort";
-import type { Project, SidebarThreadSummary, Thread } from "../types";
+import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
-import { migrateSidebarCategoryAssignments } from "../sidebarOrganization/assignments";
-import {
-  hideSidebarCategory,
-  UNCATEGORIZED_CATEGORY_ID,
-  unhideSidebarCategory,
-} from "../sidebarOrganization/categories";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -44,97 +37,6 @@ export interface ThreadStatusPill {
   colorClass: string;
   dotClass: string;
   pulse: boolean;
-}
-
-export function resolveSidebarOrganizationMigration(input: {
-  sidebarOrganization: SidebarOrganization;
-  projects: ReadonlyArray<Pick<Project, "environmentId" | "workspaceRoot" | "repositoryIdentity">>;
-}): {
-  readonly sidebarOrganization: SidebarOrganization;
-  readonly shouldPersist: boolean;
-} {
-  const sidebarOrganization = migrateSidebarCategoryAssignments(
-    input.sidebarOrganization,
-    input.projects,
-  );
-  return {
-    sidebarOrganization,
-    shouldPersist: sidebarOrganization !== input.sidebarOrganization,
-  };
-}
-
-export function canHideSidebarCategoryHeader(input: {
-  categoryId: string;
-  archivedAt: string | null;
-}): boolean {
-  return input.categoryId !== UNCATEGORIZED_CATEGORY_ID && input.archivedAt === null;
-}
-
-export function canUnhideSidebarCategoryHeader(input: {
-  categoryId: string;
-  archivedAt: string | null;
-}): boolean {
-  return input.categoryId !== UNCATEGORIZED_CATEGORY_ID && input.archivedAt !== null;
-}
-
-export function resolveSidebarCategoryHeaderHide(input: {
-  sidebarOrganization: SidebarOrganization;
-  categoryId: string;
-  archivedAt: string | null;
-  hiddenAt: string;
-}): {
-  readonly sidebarOrganization: SidebarOrganization;
-  readonly shouldPersist: boolean;
-} {
-  if (
-    !canHideSidebarCategoryHeader({
-      categoryId: input.categoryId,
-      archivedAt: input.archivedAt,
-    })
-  ) {
-    return {
-      sidebarOrganization: input.sidebarOrganization,
-      shouldPersist: false,
-    };
-  }
-
-  const sidebarOrganization = hideSidebarCategory(input.sidebarOrganization, {
-    categoryId: input.categoryId,
-    archivedAt: input.hiddenAt,
-  });
-
-  return {
-    sidebarOrganization,
-    shouldPersist: sidebarOrganization !== input.sidebarOrganization,
-  };
-}
-
-export function resolveSidebarCategoryHeaderUnhide(input: {
-  sidebarOrganization: SidebarOrganization;
-  categoryId: string;
-  archivedAt: string | null;
-}): {
-  readonly sidebarOrganization: SidebarOrganization;
-  readonly shouldPersist: boolean;
-} {
-  if (
-    !canUnhideSidebarCategoryHeader({
-      categoryId: input.categoryId,
-      archivedAt: input.archivedAt,
-    })
-  ) {
-    return {
-      sidebarOrganization: input.sidebarOrganization,
-      shouldPersist: false,
-    };
-  }
-
-  const sidebarOrganization = unhideSidebarCategory(input.sidebarOrganization, input.categoryId);
-
-  return {
-    sidebarOrganization,
-    shouldPersist: sidebarOrganization !== input.sidebarOrganization,
-  };
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {

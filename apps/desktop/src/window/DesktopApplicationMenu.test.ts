@@ -23,11 +23,9 @@ const environmentInput = {
   processArch: "arm64",
   appVersion: "1.2.3",
   appPath: "/repo",
-  executablePath: "/repo/T3 Code",
   isPackaged: false,
   resourcesPath: "/repo/resources",
   runningUnderArm64Translation: false,
-  localInstallMetadata: Option.none(),
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
 const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {

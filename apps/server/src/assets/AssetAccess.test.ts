@@ -1,13 +1,11 @@
-// oxlint-disable t3code/no-manual-effect-runtime-in-tests
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ThreadId } from "@t3tools/contracts";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
-import * as Scope from "effect/Scope";
-import { describe, expect, it } from "vite-plus/test";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -25,12 +23,8 @@ const testLayer = Layer.mergeAll(
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
-const effectIt = <A, E>(name: string, effect: () => Effect.Effect<A, E, Scope.Scope>): void => {
-  it(name, () => Effect.runPromise(Effect.scoped(effect())));
-};
-
 describe("AssetAccess", () => {
-  effectIt("issues workspace URLs that resolve the entry file and sibling assets", () =>
+  it.effect("issues workspace URLs that resolve the entry file and sibling assets", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -71,7 +65,7 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  effectIt("rejects workspace files outside the authorized root", () =>
+  it.effect("rejects workspace files outside the authorized root", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -105,7 +99,7 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  effectIt("preserves non-missing canonical path failures when issuing asset URLs", () =>
+  it.effect("preserves non-missing canonical path failures when issuing asset URLs", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -147,7 +141,7 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  effectIt("issues exact workspace URLs for image previews", () =>
+  it.effect("issues exact workspace URLs for image previews", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -183,7 +177,7 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  effectIt("issues exact attachment capabilities by attachment id", () =>
+  it.effect("issues exact attachment capabilities by attachment id", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -201,41 +195,13 @@ describe("AssetAccess", () => {
       const token = suffix.slice(0, separatorIndex);
 
       expect(yield* resolveAsset(token, "ignored.png")).toEqual({
-        kind: "attachment",
+        kind: "file",
         path: attachmentPath,
       });
     }).pipe(Effect.provide(testLayer)),
   );
 
-  effectIt("issues and resolves exact PDF attachment capabilities", () =>
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const attachmentId = "thread-pdf-00000000-0000-4000-8000-000000000001";
-      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.pdf`);
-      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
-      yield* fileSystem.writeFile(attachmentPath, Buffer.from("%PDF-1.7"));
-
-      const result = yield* issueAssetUrl({
-        resource: { _tag: "attachment", attachmentId },
-      });
-      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-      const separatorIndex = suffix.indexOf("/");
-      const token = suffix.slice(0, separatorIndex);
-
-      expect(result.relativeUrl.endsWith(`${attachmentId}.pdf`)).toBe(true);
-      expect(yield* resolveAsset(token, `${attachmentId}.pdf`)).toEqual({
-        kind: "attachment",
-        path: attachmentPath,
-      });
-
-      yield* fileSystem.remove(attachmentPath);
-      expect(yield* resolveAsset(token, `${attachmentId}.pdf`)).toBeNull();
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  effectIt("issues project favicon capabilities with a signed fallback", () =>
+  it.effect("issues project favicon capabilities with a signed fallback", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -273,7 +239,7 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  effectIt("preserves structured project favicon resolution causes", () =>
+  it.effect("preserves structured project favicon resolution causes", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const root = yield* fileSystem.makeTempDirectoryScoped({

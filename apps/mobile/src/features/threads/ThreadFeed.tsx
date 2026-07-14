@@ -1,17 +1,7 @@
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
-import type {
-  ChatDocumentAttachment,
-  EnvironmentId,
-  MessageId,
-  ThreadId,
-  TurnId,
-} from "@t3tools/contracts";
-import {
-  attachmentDownloadUrl,
-  formatAttachmentSize,
-} from "@t3tools/client-runtime/state/attachments";
+import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { SymbolView } from "expo-symbols";
 import { HeaderHeightContext } from "@react-navigation/elements";
@@ -36,7 +26,6 @@ import {
 } from "react-native-nitro-markdown";
 import {
   ActivityIndicator,
-  Alert,
   Image,
   Linking,
   Platform,
@@ -58,6 +47,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
   FadeIn,
   FadeInUp,
+  FadeOut,
   LinearTransition,
   type SharedValue,
 } from "react-native-reanimated";
@@ -173,100 +163,6 @@ function MessageAttachmentImage(props: {
     <TouchableOpacity activeOpacity={0.7} onPress={() => props.onPressImage(uri)}>
       <Image source={{ uri }} className={props.className} resizeMode="cover" />
     </TouchableOpacity>
-  );
-}
-
-function MessageAttachmentDocument(props: {
-  readonly environmentId: EnvironmentId;
-  readonly attachment: ChatDocumentAttachment;
-  readonly tone?: "default" | "user";
-  readonly className?: string;
-}) {
-  const uri = useAssetUrl(props.environmentId, {
-    _tag: "attachment",
-    attachmentId: props.attachment.id,
-  });
-  const themeForegroundColor = String(useThemeColor("--color-foreground"));
-  const themeMutedColor = String(useThemeColor("--color-muted-foreground"));
-  const foregroundColor = props.tone === "user" ? "#ffffff" : themeForegroundColor;
-  const mutedColor = props.tone === "user" ? "rgba(255,255,255,0.78)" : themeMutedColor;
-  const openUrl = (target: string, action: "open" | "download") => {
-    void Linking.openURL(target).catch(() => {
-      Alert.alert(
-        action === "open" ? "Couldn't open PDF" : "Couldn't download PDF",
-        "The attachment link is unavailable. Try again after reconnecting.",
-      );
-    });
-  };
-
-  return (
-    <View
-      className={cn(
-        "min-h-11 min-w-0 flex-row items-center gap-2 rounded-[14px] border px-3 py-2",
-        props.tone === "user"
-          ? "border-white/20 bg-white/10"
-          : "border-black/10 bg-black/[0.03] dark:border-white/10 dark:bg-white/[0.04]",
-        props.className,
-      )}
-    >
-      <View className="size-9 shrink-0 items-center justify-center rounded-lg bg-red-500/15">
-        {uri === null ? (
-          <ActivityIndicator size="small" />
-        ) : (
-          <SymbolView name="doc.fill" size={18} tintColor="#dc2626" type="monochrome" />
-        )}
-      </View>
-      <View className="min-w-0 flex-1">
-        <Text
-          className="font-t3-medium text-sm"
-          numberOfLines={1}
-          style={{ color: foregroundColor }}
-        >
-          {props.attachment.name}
-        </Text>
-        <Text className="text-xs" style={{ color: mutedColor }}>
-          PDF {"\u00b7"} {formatAttachmentSize(props.attachment.sizeBytes)}
-        </Text>
-      </View>
-      <View className="-my-2 -mr-2 flex-row items-center">
-        <Pressable
-          accessibilityRole="link"
-          accessibilityLabel={`Open PDF ${props.attachment.name}`}
-          accessibilityHint="Opens the attached PDF in another app"
-          accessibilityState={{ disabled: uri === null }}
-          disabled={uri === null}
-          className="min-h-11 min-w-11 items-center justify-center"
-          onPress={() => {
-            if (uri) openUrl(uri, "open");
-          }}
-        >
-          <SymbolView
-            name="arrow.up.right"
-            size={14}
-            tintColor={uri === null ? mutedColor : foregroundColor}
-            type="monochrome"
-          />
-        </Pressable>
-        <Pressable
-          accessibilityRole="link"
-          accessibilityLabel={`Download PDF ${props.attachment.name}`}
-          accessibilityHint="Downloads the attached PDF using its original filename"
-          accessibilityState={{ disabled: uri === null }}
-          disabled={uri === null}
-          className="min-h-11 min-w-11 items-center justify-center"
-          onPress={() => {
-            if (uri) openUrl(attachmentDownloadUrl(uri, props.attachment.name), "download");
-          }}
-        >
-          <SymbolView
-            name="arrow.down"
-            size={14}
-            tintColor={uri === null ? mutedColor : foregroundColor}
-            type="monochrome"
-          />
-        </Pressable>
-      </View>
-    </View>
   );
 }
 
@@ -891,20 +787,13 @@ function renderFeedEntry(
               />
             ) : null}
             {attachments.map((attachment) => {
-              return attachment.type === "image" ? (
+              return (
                 <MessageAttachmentImage
                   key={attachment.id}
                   environmentId={props.environmentId}
                   attachmentId={attachment.id}
                   className="aspect-[1.3] w-full rounded-[14px] bg-white/15"
                   onPressImage={props.onPressImage}
-                />
-              ) : (
-                <MessageAttachmentDocument
-                  key={attachment.id}
-                  environmentId={props.environmentId}
-                  attachment={attachment}
-                  tone="user"
                 />
               );
             })}
@@ -959,20 +848,13 @@ function renderFeedEntry(
           )
         ) : null}
         {attachments.map((attachment) => {
-          return attachment.type === "image" ? (
+          return (
             <MessageAttachmentImage
               key={attachment.id}
               environmentId={props.environmentId}
               attachmentId={attachment.id}
               className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-neutral-200 dark:bg-neutral-800"
               onPressImage={props.onPressImage}
-            />
-          ) : (
-            <MessageAttachmentDocument
-              key={attachment.id}
-              environmentId={props.environmentId}
-              attachment={attachment}
-              className="mt-1.5"
             />
           );
         })}

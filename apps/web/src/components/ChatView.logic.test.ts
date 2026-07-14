@@ -1,34 +1,19 @@
-import {
-  EnvironmentId,
-  MessageId,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  TurnId,
-} from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
+import { describe, expect, it } from "vite-plus/test";
 
-import type { ChatMessage, Thread } from "../types";
+import type { Thread } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
-  applyResolvedAttachmentAssetUrls,
-  buildOptimisticComposerAttachments,
   buildExpiredTerminalContextToastCopy,
   buildThreadTurnInterruptInput,
-  cloneComposerAttachmentForRetry,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
-  mergeComposerDraftItemsById,
-  mergeFailedComposerPrompt,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
   resolveSendEnvMode,
-  revokeUserMessagePreviewUrls,
-  revokeUserMessagePreviewUrlsExcept,
-  serializeComposerAttachments,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
 
@@ -59,7 +44,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     archivedAt: null,
     deletedAt: null,
     latestTurn: null,
-    handoff: null,
     branch: null,
     worktreePath: null,
     ...overrides,
@@ -85,35 +69,6 @@ const readySession = {
   lastError: null,
   updatedAt: "2026-03-29T00:00:10.000Z",
 };
-
-const steerTurn = {
-  turnId: TurnId.make("turn-running"),
-  state: "running" as const,
-  requestedAt: "2026-03-29T00:01:00.000Z",
-  startedAt: "2026-03-29T00:01:01.000Z",
-  completedAt: null,
-  assistantMessageId: null,
-};
-
-const steerSession = {
-  ...readySession,
-  status: "running" as const,
-  activeTurnId: steerTurn.turnId,
-  updatedAt: "2026-03-29T00:01:01.000Z",
-};
-
-function makeUserMessage(id: string): ChatMessage {
-  return {
-    id: MessageId.make(id),
-    role: "user",
-    text: "steer",
-    turnId: null,
-    streaming: false,
-    source: "user",
-    createdAt: now,
-    updatedAt: now,
-  };
-}
 
 describe("buildThreadTurnInterruptInput", () => {
   it("targets the session's active running turn", () => {
@@ -143,7 +98,7 @@ describe("deriveComposerSendState", () => {
   it("treats expired terminal pills as non-sendable content", () => {
     const state = deriveComposerSendState({
       prompt: "\uFFFC",
-      attachmentCount: 0,
+      imageCount: 0,
       terminalContexts: [
         {
           id: "ctx-expired",
@@ -167,7 +122,7 @@ describe("deriveComposerSendState", () => {
   it("keeps text sendable while excluding expired terminal pills", () => {
     const state = deriveComposerSendState({
       prompt: `yoo \uFFFC waddup`,
-      attachmentCount: 0,
+      imageCount: 0,
       terminalContexts: [
         {
           id: "ctx-expired",
@@ -190,7 +145,7 @@ describe("deriveComposerSendState", () => {
   it("treats element contexts as sendable content (no text, no images, no terminals)", () => {
     const state = deriveComposerSendState({
       prompt: "",
-      attachmentCount: 0,
+      imageCount: 0,
       terminalContexts: [],
       elementContextCount: 1,
     });
@@ -204,188 +159,11 @@ describe("deriveComposerSendState", () => {
     expect(
       deriveComposerSendState({
         prompt: "",
-        attachmentCount: 0,
+        imageCount: 0,
         terminalContexts: [],
         elementContextCount: 0,
       }).hasSendableContent,
     ).toBe(false);
-  });
-
-  it("treats a PDF-only draft as sendable content", () => {
-    expect(
-      deriveComposerSendState({
-        prompt: "",
-        attachmentCount: 1,
-        terminalContexts: [],
-      }).hasSendableContent,
-    ).toBe(true);
-  });
-});
-
-describe("applyResolvedAttachmentAssetUrls", () => {
-  it("promotes reconnect metadata to image preview and PDF asset URLs by discriminant", () => {
-    const message: ChatMessage = {
-      ...makeUserMessage("attachments"),
-      attachments: [
-        {
-          type: "image",
-          id: "image-1",
-          name: "screen.png",
-          mimeType: "image/png",
-          sizeBytes: 12,
-        },
-        {
-          type: "document",
-          id: "pdf-1",
-          name: "spec.pdf",
-          mimeType: "application/pdf",
-          sizeBytes: 24,
-        },
-      ],
-    };
-
-    const [promoted] = applyResolvedAttachmentAssetUrls(
-      [message],
-      new Map([
-        ["image-1", "/signed/image"],
-        ["pdf-1", "/signed/pdf"],
-      ]),
-    );
-
-    expect(promoted?.attachments).toEqual([
-      expect.objectContaining({ type: "image", previewUrl: "/signed/image" }),
-      expect.objectContaining({ type: "document", assetUrl: "/signed/pdf" }),
-    ]);
-  });
-});
-
-describe("PDF optimistic URL lifecycle", () => {
-  it("clones a PDF blob URL for failed-send recovery", () => {
-    const originalCreateObjectUrl = URL.createObjectURL;
-    URL.createObjectURL = vi.fn(() => "blob:retry-pdf");
-    try {
-      const file = new File(["%PDF-"], "retry.pdf", { type: "application/pdf" });
-      expect(
-        cloneComposerAttachmentForRetry({
-          type: "document",
-          id: "pdf-retry",
-          name: file.name,
-          mimeType: "application/pdf",
-          sizeBytes: file.size,
-          assetUrl: "blob:original-pdf",
-          file,
-        }),
-      ).toMatchObject({ type: "document", assetUrl: "blob:retry-pdf", file });
-    } finally {
-      URL.createObjectURL = originalCreateObjectUrl;
-    }
-  });
-
-  it("releases document blob URLs when optimistic messages are discarded", () => {
-    const originalRevokeObjectUrl = URL.revokeObjectURL;
-    const revoke = vi.fn();
-    URL.revokeObjectURL = revoke;
-    try {
-      revokeUserMessagePreviewUrls({
-        ...makeUserMessage("pdf-cleanup"),
-        attachments: [
-          {
-            type: "document",
-            id: "pdf-cleanup",
-            name: "cleanup.pdf",
-            mimeType: "application/pdf",
-            sizeBytes: 10,
-            assetUrl: "blob:cleanup-pdf",
-          },
-        ],
-      });
-      expect(revoke).toHaveBeenCalledWith("blob:cleanup-pdf");
-    } finally {
-      URL.revokeObjectURL = originalRevokeObjectUrl;
-    }
-  });
-
-  it("keeps blob URLs that failed-send recovery retained in the live draft", () => {
-    const originalRevokeObjectUrl = URL.revokeObjectURL;
-    const revoke = vi.fn();
-    URL.revokeObjectURL = revoke;
-    try {
-      revokeUserMessagePreviewUrlsExcept(
-        {
-          ...makeUserMessage("pdf-retained"),
-          attachments: [
-            {
-              type: "document",
-              id: "pdf-retained",
-              name: "retained.pdf",
-              mimeType: "application/pdf",
-              sizeBytes: 10,
-              assetUrl: "blob:retained-pdf",
-            },
-          ],
-        },
-        new Set(["blob:retained-pdf"]),
-      );
-      expect(revoke).not.toHaveBeenCalled();
-    } finally {
-      URL.revokeObjectURL = originalRevokeObjectUrl;
-    }
-  });
-});
-
-describe("composer attachment send snapshots", () => {
-  const imageFile = new File(["image"], "screen.png", { type: "image/png" });
-  const pdfFile = new File(["%PDF-"], "spec.pdf", { type: "application/pdf" });
-  const attachments = [
-    {
-      type: "image" as const,
-      id: "image-1",
-      name: imageFile.name,
-      mimeType: imageFile.type,
-      sizeBytes: imageFile.size,
-      previewUrl: "blob:image",
-      file: imageFile,
-    },
-    {
-      type: "document" as const,
-      id: "pdf-1",
-      name: pdfFile.name,
-      mimeType: "application/pdf" as const,
-      sizeBytes: pdfFile.size,
-      assetUrl: "blob:pdf",
-      file: pdfFile,
-    },
-  ];
-
-  it("serializes plan follow-up attachments without dropping type or order", async () => {
-    await expect(
-      serializeComposerAttachments(attachments, async (file) => `data:${file.name}`),
-    ).resolves.toEqual([
-      expect.objectContaining({ type: "image", name: "screen.png", dataUrl: "data:screen.png" }),
-      expect.objectContaining({ type: "document", name: "spec.pdf", dataUrl: "data:spec.pdf" }),
-    ]);
-    expect(buildOptimisticComposerAttachments(attachments)).toEqual([
-      expect.objectContaining({ type: "image", previewUrl: "blob:image" }),
-      expect.objectContaining({ type: "document", assetUrl: "blob:pdf" }),
-    ]);
-  });
-
-  it("restores failed text alongside a newer draft and deduplicates recovered contexts", () => {
-    expect(mergeFailedComposerPrompt("newer draft", "failed message")).toBe(
-      "failed message\n\nnewer draft",
-    );
-    expect(
-      mergeComposerDraftItemsById(
-        [{ id: "new", value: 1 }],
-        [
-          { id: "old", value: 2 },
-          { id: "new", value: 3 },
-        ],
-      ),
-    ).toEqual([
-      { id: "new", value: 1 },
-      { id: "old", value: 2 },
-    ]);
   });
 });
 
@@ -582,7 +360,6 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         phase: "ready",
         latestTurn: completedTurn,
         session: readySession,
-        userMessageCount: 0,
         hasPendingApproval: false,
         hasPendingUserInput: false,
         threadError: null,
@@ -608,7 +385,6 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         phase: "ready",
         latestTurn: newerTurn,
         session: { ...readySession, updatedAt: newerTurn.completedAt },
-        userMessageCount: 0,
         hasPendingApproval: false,
         hasPendingUserInput: false,
         threadError: null,
@@ -639,7 +415,6 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
           status: "running",
           activeTurnId: TurnId.make("turn-other"),
         },
-        userMessageCount: 0,
         hasPendingApproval: false,
         hasPendingUserInput: false,
         threadError: null,
@@ -655,7 +430,6 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
           status: "running",
           activeTurnId: runningTurn.turnId,
         },
-        userMessageCount: 0,
         hasPendingApproval: false,
         hasPendingUserInput: false,
         threadError: null,
@@ -670,7 +444,6 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       phase: "ready" as const,
       latestTurn: null,
       session: null,
-      userMessageCount: 0,
       hasPendingApproval: false,
       hasPendingUserInput: false,
       threadError: null,
@@ -679,94 +452,5 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingApproval: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
-  });
-});
-
-describe("createLocalDispatchSnapshot steer detection", () => {
-  it("flags a dispatch into the active running turn as a steer", () => {
-    const snapshot = createLocalDispatchSnapshot(
-      makeThread({
-        latestTurn: steerTurn,
-        session: steerSession,
-        messages: [makeUserMessage("m1")],
-      }),
-      { phase: "running" },
-    );
-
-    expect(snapshot.wasSteer).toBe(true);
-    expect(snapshot.userMessageCount).toBe(1);
-  });
-
-  it("does not flag the first message of a turn as a steer", () => {
-    const snapshot = createLocalDispatchSnapshot(
-      makeThread({ latestTurn: completedTurn, session: readySession }),
-      { phase: "ready" },
-    );
-
-    expect(snapshot.wasSteer).toBe(false);
-    expect(snapshot.userMessageCount).toBe(0);
-  });
-});
-
-describe("hasServerAcknowledgedLocalDispatch steer path", () => {
-  const steerDispatch = () =>
-    createLocalDispatchSnapshot(
-      makeThread({
-        latestTurn: steerTurn,
-        session: steerSession,
-        messages: [makeUserMessage("m1")],
-      }),
-      { phase: "running" },
-    );
-
-  const runningInput = (localDispatch: ReturnType<typeof steerDispatch>) => ({
-    localDispatch,
-    phase: "running" as const,
-    latestTurn: steerTurn,
-    // The same running turn — turn identity/timestamps never change for a steer.
-    session: steerSession,
-    userMessageCount: 1,
-    hasPendingApproval: false,
-    hasPendingUserInput: false,
-    threadError: null,
-  });
-
-  it("stays busy until the steered message lands (regression for the wedge)", () => {
-    // Same turn, same session, same user message count as the snapshot: the old
-    // `latestTurnChanged` heuristic would never acknowledge here.
-    expect(hasServerAcknowledgedLocalDispatch(runningInput(steerDispatch()))).toBe(false);
-  });
-
-  it("acknowledges once the steered user message is server-recorded", () => {
-    expect(
-      hasServerAcknowledgedLocalDispatch({
-        ...runningInput(steerDispatch()),
-        userMessageCount: 2,
-      }),
-    ).toBe(true);
-  });
-
-  it("acknowledges once the session advances", () => {
-    expect(
-      hasServerAcknowledgedLocalDispatch({
-        ...runningInput(steerDispatch()),
-        session: { ...steerSession, updatedAt: "2026-03-29T00:01:05.000Z" },
-      }),
-    ).toBe(true);
-  });
-
-  it("acknowledges a steer immediately on pending interaction or error", () => {
-    expect(
-      hasServerAcknowledgedLocalDispatch({
-        ...runningInput(steerDispatch()),
-        hasPendingApproval: true,
-      }),
-    ).toBe(true);
-    expect(
-      hasServerAcknowledgedLocalDispatch({
-        ...runningInput(steerDispatch()),
-        threadError: "boom",
-      }),
-    ).toBe(true);
   });
 });

@@ -30,8 +30,6 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   rightPanelOpen: boolean;
-  projectBrowserOpen: boolean;
-  projectBrowserAvailable: boolean;
   gitCwd: string | null;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
@@ -66,8 +64,6 @@ export const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   rightPanelOpen,
-  projectBrowserOpen,
-  projectBrowserAvailable,
   gitCwd,
   onRunProjectScript,
   onAddProjectScript,
@@ -101,14 +97,7 @@ export const ChatHeader = memo(function ChatHeader({
         data-chat-header-actions
         className={cn(
           "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
-          // The absolutely-positioned titlebar controls overlay the header
-          // only while no side panel is open; reserve their width then. The
-          // Project Browser toggle adds a third icon on desktop.
-          rightPanelOpen || projectBrowserOpen
-            ? "pr-0"
-            : projectBrowserAvailable
-              ? "pr-24"
-              : "pr-16",
+          rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >
         {activeProjectScripts && (

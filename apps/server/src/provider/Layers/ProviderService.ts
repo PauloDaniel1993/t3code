@@ -10,11 +10,8 @@
  * @module ProviderServiceLive
  */
 import {
-  ApprovalRequestId,
-  EventId,
   ModelSelection,
   NonNegativeInt,
-  RuntimeRequestId,
   ThreadId,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
@@ -26,14 +23,9 @@ import {
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
-  type ProviderUserInputAnswers,
-  type UserInputQuestion,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
-import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -76,14 +68,6 @@ export interface ProviderServiceLiveOptions {
 
 type ProviderServiceMethod<Name extends keyof ProviderService.ProviderService["Service"]> =
   ProviderService.ProviderService["Service"][Name];
-
-interface PendingMcpUserInput {
-  readonly threadId: ThreadId;
-  readonly provider: ProviderDriverKind;
-  readonly providerInstanceId: ProviderInstanceId;
-  readonly questions: ReadonlyArray<UserInputQuestion>;
-  readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
-}
 
 const ProviderRollbackConversationInput = Schema.Struct({
   threadId: ThreadId,
@@ -226,17 +210,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   // no-op.
   const canonicalEventLogger = options?.canonicalEventLogger ?? eventLoggers.canonical;
 
-  const crypto = yield* Crypto.Crypto;
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
-  const pendingMcpUserInputs = yield* Ref.make(new Map<ApprovalRequestId, PendingMcpUserInput>());
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-  const nextEventId = crypto.randomUUIDv4.pipe(Effect.orDie, Effect.map(EventId.make));
-  const nextApprovalRequestId = crypto.randomUUIDv4.pipe(
-    Effect.orDie,
-    Effect.map(ApprovalRequestId.make),
-  );
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
       Effect.tap((credential) =>
@@ -260,65 +237,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.flatMap((canonicalEvent) => PubSub.publish(runtimeEventPubSub, canonicalEvent)),
       Effect.asVoid,
     );
-
-  const makeMcpUserInputRaw = (payload: unknown) => ({
-    source: "t3.mcp.tool" as const,
-    method: "request_user_input",
-    payload,
-  });
-
-  const publishMcpUserInputResolved = (
-    requestId: ApprovalRequestId,
-    pending: PendingMcpUserInput,
-    answers: ProviderUserInputAnswers,
-  ) =>
-    Effect.gen(function* () {
-      yield* publishRuntimeEvent({
-        type: "user-input.resolved",
-        eventId: yield* nextEventId,
-        provider: pending.provider,
-        providerInstanceId: pending.providerInstanceId,
-        threadId: pending.threadId,
-        requestId: RuntimeRequestId.make(requestId),
-        createdAt: yield* nowIso,
-        payload: { answers },
-        raw: makeMcpUserInputRaw({
-          questions: pending.questions,
-          answers,
-        }),
-      });
-    });
-
-  const completeMcpUserInput = (
-    requestId: ApprovalRequestId,
-    answers: ProviderUserInputAnswers,
-  ): Effect.Effect<boolean> =>
-    Effect.gen(function* () {
-      const pending = yield* Ref.get(pendingMcpUserInputs).pipe(
-        Effect.map((requests) => requests.get(requestId)),
-      );
-      if (!pending) return false;
-      yield* Ref.update(pendingMcpUserInputs, (requests) => {
-        const next = new Map(requests);
-        next.delete(requestId);
-        return next;
-      });
-      yield* Deferred.succeed(pending.answers, answers);
-      yield* publishMcpUserInputResolved(requestId, pending, answers);
-      return true;
-    });
-
-  const cancelPendingMcpUserInputsForThread = (threadId: ThreadId): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const pendingEntries = yield* Ref.get(pendingMcpUserInputs).pipe(
-        Effect.map((requests) =>
-          Array.from(requests).filter(([, pending]) => pending.threadId === threadId),
-        ),
-      );
-      for (const [requestId] of pendingEntries) {
-        yield* completeMcpUserInput(requestId, {});
-      }
-    }).pipe(Effect.asVoid);
 
   const requireBindingInstanceId = (
     operation: string,
@@ -874,61 +792,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
-  const requestUserInput: ProviderServiceMethod<"requestUserInput"> = Effect.fn("requestUserInput")(
-    function* (input) {
-      const validation = validateUserInputQuestionBatch(input.questions);
-      if (validation._tag === "Invalid") {
-        return yield* new ProviderValidationError({
-          operation: "ProviderService.requestUserInput",
-          issue: validation.message,
-        });
-      }
-
-      const instanceInfo = yield* registry.getInstanceInfo(input.providerInstanceId);
-      const requestId = yield* nextApprovalRequestId;
-      const answers = yield* Deferred.make<ProviderUserInputAnswers>();
-      const pending: PendingMcpUserInput = {
-        threadId: input.threadId,
-        provider: instanceInfo.driverKind,
-        providerInstanceId: input.providerInstanceId,
-        questions: validation.questions,
-        answers,
-      };
-
-      yield* Ref.update(pendingMcpUserInputs, (requests) => {
-        const next = new Map(requests);
-        next.set(requestId, pending);
-        return next;
-      });
-
-      yield* publishRuntimeEvent({
-        type: "user-input.requested",
-        eventId: yield* nextEventId,
-        provider: instanceInfo.driverKind,
-        providerInstanceId: input.providerInstanceId,
-        threadId: input.threadId,
-        requestId: RuntimeRequestId.make(requestId),
-        createdAt: yield* nowIso,
-        payload: { questions: validation.questions },
-        raw: makeMcpUserInputRaw({
-          questions: validation.questions,
-        }),
-      });
-
-      return yield* Deferred.await(answers).pipe(
-        Effect.onInterrupt(() => completeMcpUserInput(requestId, {})),
-        Effect.ensuring(
-          Ref.update(pendingMcpUserInputs, (requests) => {
-            if (!requests.has(requestId)) return requests;
-            const next = new Map(requests);
-            next.delete(requestId);
-            return next;
-          }),
-        ),
-      );
-    },
-  );
-
   const respondToUserInput: ProviderServiceMethod<"respondToUserInput"> = Effect.fn(
     "respondToUserInput",
   )(function* (rawInput) {
@@ -939,27 +802,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
-      const pending = yield* Ref.get(pendingMcpUserInputs).pipe(
-        Effect.map((requests) => requests.get(input.requestId)),
-      );
-      if (pending) {
-        if (pending.threadId !== input.threadId) {
-          return yield* toValidationError(
-            "ProviderService.respondToUserInput",
-            `Cannot respond to user input request '${input.requestId}' from thread '${input.threadId}' because it belongs to thread '${pending.threadId}'.`,
-          );
-        }
-        metricProvider = pending.provider;
-        yield* Effect.annotateCurrentSpan({
-          "provider.operation": "respond-to-mcp-user-input",
-          "provider.kind": pending.provider,
-          "provider.thread_id": input.threadId,
-          "provider.request_id": input.requestId,
-        });
-        yield* completeMcpUserInput(input.requestId, input.answers);
-        return;
-      }
-
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.respondToUserInput",
@@ -1007,7 +849,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (routed.isActive) {
           yield* routed.adapter.stopSession(routed.threadId);
         }
-        yield* cancelPendingMcpUserInputsForThread(input.threadId);
         yield* clearMcpSession(input.threadId);
         yield* directory.upsert({
           threadId: input.threadId,
@@ -1189,7 +1030,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ),
     ).pipe(Effect.asVoid);
     yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(Effect.asVoid);
-    yield* Effect.forEach(threadIds, cancelPendingMcpUserInputsForThread).pipe(Effect.asVoid);
     yield* McpSessionRegistry.revokeAllActiveMcpCredentials();
     McpProviderSession.clearAllMcpProviderSessions();
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
@@ -1233,7 +1073,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     sendTurn,
     interruptTurn,
     respondToRequest,
-    requestUserInput,
     respondToUserInput,
     stopSession,
     listSessions,

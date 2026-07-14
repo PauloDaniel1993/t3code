@@ -69,7 +69,6 @@ export function applyThreadDetailEvent(
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
           latestTurn: null,
-          handoff: event.payload.handoff,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
           archivedAt: null,
@@ -188,13 +187,6 @@ export function applyThreadDetailEvent(
           : {}),
         turnId: event.payload.turnId,
         streaming: event.payload.streaming,
-        source: event.payload.source,
-        ...(event.payload.sourceThreadId !== undefined
-          ? { sourceThreadId: event.payload.sourceThreadId }
-          : {}),
-        ...(event.payload.sourceMessageId !== undefined
-          ? { sourceMessageId: event.payload.sourceMessageId }
-          : {}),
         createdAt: event.payload.createdAt,
         updatedAt: event.payload.updatedAt,
       };

@@ -8,7 +8,7 @@ import type { PendingUserInput, PendingUserInputDraftAnswer } from "../../lib/th
 export interface PendingUserInputCardProps {
   readonly pendingUserInput: PendingUserInput;
   readonly drafts: Record<string, PendingUserInputDraftAnswer>;
-  readonly answers: Record<string, string | string[]> | null;
+  readonly answers: Record<string, string> | null;
   readonly respondingUserInputId: ApprovalRequestId | null;
   readonly onSelectOption: (
     requestId: ApprovalRequestId,
@@ -42,16 +42,10 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
             <Text className="font-sans text-base leading-snug text-neutral-950 dark:text-neutral-50">
               {question.question}
             </Text>
-            {question.multiSelect ? (
-              <Text className="font-sans text-xs text-neutral-500 dark:text-neutral-400">
-                Select one or more options.
-              </Text>
-            ) : null}
             <View className="flex-row flex-wrap gap-2.5">
               {question.options.map((option) => {
                 const selected =
-                  draft?.selectedOptionLabels?.includes(option.label) === true &&
-                  !draft.customAnswer?.trim().length;
+                  draft?.selectedOptionLabel === option.label && !draft.customAnswer?.trim().length;
                 return (
                   <Pressable
                     key={option.label}

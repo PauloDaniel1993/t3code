@@ -34,7 +34,6 @@ import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQu
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ServerConfig } from "../../config.ts";
-import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 
 const makeProjectionPipelinePrefixedTestLayer = (prefix: string) =>
   OrchestrationProjectionPipelineLive.pipe(
@@ -246,7 +245,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-safe-")))(
   "OrchestrationProjectionPipeline",
   (it) => {
-    it.effect("preserves mixed image and PDF attachment metadata as-is", () =>
+    it.effect("preserves mixed image attachment metadata as-is", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
         const eventStore = yield* OrchestrationEventStore;
@@ -277,10 +276,10 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
                 sizeBytes: 5,
               },
               {
-                type: "document",
+                type: "image",
                 id: "thread-attachments-safe-att-2",
-                name: "requirements.pdf",
-                mimeType: "application/pdf",
+                name: "not-image.png",
+                mimeType: "image/png",
                 sizeBytes: 5,
               },
             ],
@@ -312,10 +311,10 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
             sizeBytes: 5,
           },
           {
-            type: "document",
+            type: "image",
             id: "thread-attachments-safe-att-2",
-            name: "requirements.pdf",
-            mimeType: "application/pdf",
+            name: "not-image.png",
+            mimeType: "image/png",
             sizeBytes: 5,
           },
         ]);
@@ -458,17 +457,11 @@ it.layer(
 )("OrchestrationProjectionPipeline", (it) => {
   it.effect("overwrites stored attachment references when a message updates attachments", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
-      const { attachmentsDir } = yield* ServerConfig;
       const now = "2026-01-01T00:00:00.000Z";
       const later = "2026-01-01T00:00:01.000Z";
-      const replacedAttachmentId = "thread-overwrite-00000000-0000-4000-8000-000000000001";
-      const keptAttachmentId = "thread-overwrite-00000000-0000-4000-8000-000000000002";
-      const otherThreadAttachmentId = "thread-overwrite-extra-00000000-0000-4000-8000-000000000003";
 
       yield* eventStore.append({
         type: "project.created",
@@ -534,10 +527,10 @@ it.layer(
           text: "first image",
           attachments: [
             {
-              type: "document",
-              id: replacedAttachmentId,
-              name: "old.pdf",
-              mimeType: "application/pdf",
+              type: "image",
+              id: "thread-overwrite-att-1",
+              name: "file.png",
+              mimeType: "image/png",
               sizeBytes: 5,
             },
           ],
@@ -565,10 +558,10 @@ it.layer(
           text: "",
           attachments: [
             {
-              type: "document",
-              id: keptAttachmentId,
-              name: "new.pdf",
-              mimeType: "application/pdf",
+              type: "image",
+              id: "thread-overwrite-att-2",
+              name: "file.png",
+              mimeType: "image/png",
               sizeBytes: 5,
             },
           ],
@@ -578,14 +571,6 @@ it.layer(
           updatedAt: later,
         },
       });
-
-      const replacedPath = path.join(attachmentsDir, `${replacedAttachmentId}.pdf`);
-      const keptPath = path.join(attachmentsDir, `${keptAttachmentId}.pdf`);
-      const otherThreadPath = path.join(attachmentsDir, `${otherThreadAttachmentId}.pdf`);
-      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
-      yield* fileSystem.writeFileString(replacedPath, "old");
-      yield* fileSystem.writeFileString(keptPath, "new");
-      yield* fileSystem.writeFileString(otherThreadPath, "other");
 
       yield* projectionPipeline.bootstrap;
 
@@ -600,161 +585,27 @@ it.layer(
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       assert.deepEqual(JSON.parse(rows[0]?.attachmentsJson ?? "null"), [
         {
-          type: "document",
-          id: keptAttachmentId,
-          name: "new.pdf",
-          mimeType: "application/pdf",
+          type: "image",
+          id: "thread-overwrite-att-2",
+          name: "file.png",
+          mimeType: "image/png",
           sizeBytes: 5,
         },
       ]);
-      assert.isFalse(yield* exists(replacedPath));
-      assert.isTrue(yield* exists(keptPath));
-      assert.isTrue(yield* exists(otherThreadPath));
     }),
   );
 });
 
-it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-model-reroute-")))(
-  "OrchestrationProjectionPipeline",
-  (it) => {
-    it.effect("preserves stored model reroute metadata across upserts that omit it", () =>
-      Effect.gen(function* () {
-        const projectionPipeline = yield* OrchestrationProjectionPipeline;
-        const eventStore = yield* OrchestrationEventStore;
-        const sql = yield* SqlClient.SqlClient;
-        const now = "2026-01-01T00:00:00.000Z";
-        const later = "2026-01-01T00:00:01.000Z";
-
-        yield* eventStore.append({
-          type: "project.created",
-          eventId: EventId.make("evt-reroute-1"),
-          aggregateKind: "project",
-          aggregateId: ProjectId.make("project-reroute"),
-          occurredAt: now,
-          commandId: CommandId.make("cmd-reroute-1"),
-          causationEventId: null,
-          correlationId: CommandId.make("cmd-reroute-1"),
-          metadata: {},
-          payload: {
-            projectId: ProjectId.make("project-reroute"),
-            title: "Project Reroute",
-            workspaceRoot: "/tmp/project-reroute",
-            defaultModelSelection: null,
-            scripts: [],
-            createdAt: now,
-            updatedAt: now,
-          },
-        });
-
-        yield* eventStore.append({
-          type: "thread.created",
-          eventId: EventId.make("evt-reroute-2"),
-          aggregateKind: "thread",
-          aggregateId: ThreadId.make("thread-reroute"),
-          occurredAt: now,
-          commandId: CommandId.make("cmd-reroute-2"),
-          causationEventId: null,
-          correlationId: CommandId.make("cmd-reroute-2"),
-          metadata: {},
-          payload: {
-            threadId: ThreadId.make("thread-reroute"),
-            projectId: ProjectId.make("project-reroute"),
-            title: "Thread Reroute",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("claudeAgent"),
-              model: "claude-fable-5",
-            },
-            runtimeMode: "full-access",
-            branch: null,
-            worktreePath: null,
-            createdAt: now,
-            updatedAt: now,
-          },
-        });
-
-        yield* eventStore.append({
-          type: "thread.message-sent",
-          eventId: EventId.make("evt-reroute-3"),
-          aggregateKind: "thread",
-          aggregateId: ThreadId.make("thread-reroute"),
-          occurredAt: now,
-          commandId: CommandId.make("cmd-reroute-3"),
-          causationEventId: null,
-          correlationId: CommandId.make("cmd-reroute-3"),
-          metadata: {},
-          payload: {
-            threadId: ThreadId.make("thread-reroute"),
-            messageId: MessageId.make("message-reroute"),
-            role: "assistant",
-            text: "served by fallback",
-            turnId: null,
-            streaming: false,
-            modelReroute: {
-              fromModel: "claude-fable-5",
-              toModel: "claude-opus-4-8",
-              reason: "refusal",
-            },
-            createdAt: now,
-            updatedAt: now,
-          },
-        });
-
-        yield* eventStore.append({
-          type: "thread.message-sent",
-          eventId: EventId.make("evt-reroute-4"),
-          aggregateKind: "thread",
-          aggregateId: ThreadId.make("thread-reroute"),
-          occurredAt: later,
-          commandId: CommandId.make("cmd-reroute-4"),
-          causationEventId: null,
-          correlationId: CommandId.make("cmd-reroute-4"),
-          metadata: {},
-          payload: {
-            threadId: ThreadId.make("thread-reroute"),
-            messageId: MessageId.make("message-reroute"),
-            role: "assistant",
-            text: " and more text",
-            turnId: null,
-            streaming: true,
-            createdAt: now,
-            updatedAt: later,
-          },
-        });
-
-        yield* projectionPipeline.bootstrap;
-
-        const rows = yield* sql<{
-          readonly modelRerouteJson: string | null;
-        }>`
-          SELECT model_reroute_json AS "modelRerouteJson"
-          FROM projection_thread_messages
-          WHERE message_id = 'message-reroute'
-        `;
-        assert.equal(rows.length, 1);
-        // @effect-diagnostics-next-line preferSchemaOverJson:off
-        assert.deepEqual(JSON.parse(rows[0]?.modelRerouteJson ?? "null"), {
-          fromModel: "claude-fable-5",
-          toModel: "claude-opus-4-8",
-          reason: "refusal",
-        });
-      }),
-    );
-  },
-);
-
 it.layer(
   Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-rollback-")),
 )("OrchestrationProjectionPipeline", (it) => {
-  it.effect("does not clean up replaced PDFs when the projector transaction rolls back", () =>
+  it.effect("does not persist attachment files when projector transaction rolls back", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
       const path = yield* Path.Path;
       const sql = yield* SqlClient.SqlClient;
-      const { attachmentsDir } = yield* ServerConfig;
       const now = "2026-01-01T00:00:00.000Z";
-      const attachmentId = "thread-rollback-00000000-0000-4000-8000-000000000001";
 
       const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
         eventStore
@@ -808,41 +659,6 @@ it.layer(
         },
       });
 
-      yield* appendAndProject({
-        type: "thread.message-sent",
-        eventId: EventId.make("evt-rollback-3"),
-        aggregateKind: "thread",
-        aggregateId: ThreadId.make("thread-rollback"),
-        occurredAt: now,
-        commandId: CommandId.make("cmd-rollback-3"),
-        causationEventId: null,
-        correlationId: CorrelationId.make("cmd-rollback-3"),
-        metadata: {},
-        payload: {
-          threadId: ThreadId.make("thread-rollback"),
-          messageId: MessageId.make("message-rollback"),
-          role: "user",
-          text: "Keep until the update commits",
-          attachments: [
-            {
-              type: "document",
-              id: attachmentId,
-              name: "rollback.pdf",
-              mimeType: "application/pdf",
-              sizeBytes: 5,
-            },
-          ],
-          turnId: null,
-          streaming: false,
-          createdAt: now,
-          updatedAt: now,
-        },
-      });
-
-      const attachmentPath = path.join(attachmentsDir, `${attachmentId}.pdf`);
-      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
-      yield* fileSystem.writeFileString(attachmentPath, "keep");
-
       yield* sql`
         CREATE TRIGGER fail_thread_messages_projection_state_update
         BEFORE UPDATE ON projection_state
@@ -855,20 +671,28 @@ it.layer(
       const result = yield* Effect.result(
         appendAndProject({
           type: "thread.message-sent",
-          eventId: EventId.make("evt-rollback-4"),
+          eventId: EventId.make("evt-rollback-3"),
           aggregateKind: "thread",
           aggregateId: ThreadId.make("thread-rollback"),
           occurredAt: now,
-          commandId: CommandId.make("cmd-rollback-4"),
+          commandId: CommandId.make("cmd-rollback-3"),
           causationEventId: null,
-          correlationId: CorrelationId.make("cmd-rollback-4"),
+          correlationId: CorrelationId.make("cmd-rollback-3"),
           metadata: {},
           payload: {
             threadId: ThreadId.make("thread-rollback"),
             messageId: MessageId.make("message-rollback"),
             role: "user",
-            text: "",
-            attachments: [],
+            text: "Rollback me",
+            attachments: [
+              {
+                type: "image",
+                id: "thread-rollback-att-1",
+                name: "rollback.png",
+                mimeType: "image/png",
+                sizeBytes: 5,
+              },
+            ],
             turnId: null,
             streaming: false,
             createdAt: now,
@@ -885,8 +709,11 @@ it.layer(
         FROM projection_thread_messages
         WHERE message_id = 'message-rollback'
       `;
-      assert.equal(rows[0]?.count ?? 0, 1);
-      assert.isTrue(yield* exists(attachmentPath));
+      assert.equal(rows[0]?.count ?? 0, 0);
+
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachmentPath = path.join(attachmentsDir, "thread-rollback-att-1.png");
+      assert.isFalse(yield* exists(attachmentPath));
       yield* sql`DROP TRIGGER IF EXISTS fail_thread_messages_projection_state_update`;
     }),
   );
@@ -1053,10 +880,10 @@ it.layer(
           text: "Remove",
           attachments: [
             {
-              type: "document",
+              type: "image",
               id: removeAttachmentId,
-              name: "remove.pdf",
-              mimeType: "application/pdf",
+              name: "remove.png",
+              mimeType: "image/png",
               sizeBytes: 5,
             },
           ],
@@ -1068,11 +895,11 @@ it.layer(
       });
 
       const keepPath = path.join(attachmentsDir, `${keepAttachmentId}.png`);
-      const removePath = path.join(attachmentsDir, `${removeAttachmentId}.pdf`);
+      const removePath = path.join(attachmentsDir, `${removeAttachmentId}.png`);
       yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
       yield* fileSystem.writeFileString(keepPath, "keep");
       yield* fileSystem.writeFileString(removePath, "remove");
-      const otherThreadPath = path.join(attachmentsDir, `${otherThreadAttachmentId}.pdf`);
+      const otherThreadPath = path.join(attachmentsDir, `${otherThreadAttachmentId}.png`);
       yield* fileSystem.writeFileString(otherThreadPath, "other");
       assert.isTrue(yield* exists(keepPath));
       assert.isTrue(yield* exists(removePath));
@@ -1186,10 +1013,10 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
             text: "Delete",
             attachments: [
               {
-                type: "document",
+                type: "image",
                 id: attachmentId,
-                name: "delete.pdf",
-                mimeType: "application/pdf",
+                name: "delete.png",
+                mimeType: "image/png",
                 sizeBytes: 5,
               },
             ],
@@ -1200,10 +1027,10 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           },
         });
 
-        const threadAttachmentPath = path.join(attachmentsDir, `${attachmentId}.pdf`);
+        const threadAttachmentPath = path.join(attachmentsDir, `${attachmentId}.png`);
         const otherThreadAttachmentPath = path.join(
           attachmentsDir,
-          `${otherThreadAttachmentId}.pdf`,
+          `${otherThreadAttachmentId}.png`,
         );
         yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
         yield* fileSystem.writeFileString(threadAttachmentPath, "delete");
@@ -2127,17 +1954,19 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
             summary: "User input requested",
             payload: {
               requestId: "user-input-request-stale-1",
-              questions: Array.from({ length: 10 }, (_, index) => ({
-                id: `question-${index + 1}`,
-                header: `Question ${index + 1}`,
-                question: `Question ${index + 1}?`,
-                options: [
-                  {
-                    label: "Continue",
-                    description: "Continue",
-                  },
-                ],
-              })),
+              questions: [
+                {
+                  id: "sandbox_mode",
+                  header: "Sandbox",
+                  question: "Which mode should be used?",
+                  options: [
+                    {
+                      label: "workspace-write",
+                      description: "Allow workspace writes only",
+                    },
+                  ],
+                },
+              ],
             },
             turnId: null,
             createdAt: "2026-02-26T12:35:02.000Z",
@@ -2717,122 +2546,6 @@ const engineLayer = it.layer(
   ),
 );
 
-const seedPdfHandoff = Effect.fn("seedPdfHandoff")(function* (suffix: string) {
-  const engine = yield* OrchestrationEngineService;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const sql = yield* SqlClient.SqlClient;
-  const { attachmentsDir } = yield* ServerConfig;
-  const createdAt = "2026-01-01T00:00:00.000Z";
-  const projectId = ProjectId.make(`project-handoff-${suffix}`);
-  const sourceThreadId = ThreadId.make(`thread-handoff-${suffix}-source`);
-  const targetThreadId = ThreadId.make(`thread-handoff-${suffix}-target`);
-  const messageId = MessageId.make(`message-handoff-${suffix}`);
-  const attachmentId = `${sourceThreadId}-00000000-0000-4000-8000-000000000001`;
-  const attachment = {
-    type: "document" as const,
-    id: attachmentId,
-    name: `${suffix}.pdf`,
-    mimeType: "application/pdf" as const,
-    sizeBytes: 8,
-  };
-
-  yield* engine.dispatch({
-    type: "project.create",
-    commandId: CommandId.make(`cmd-handoff-${suffix}-project`),
-    projectId,
-    title: `Handoff ${suffix}`,
-    workspaceRoot: `/tmp/project-handoff-${suffix}`,
-    defaultModelSelection: {
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-5-codex",
-    },
-    createdAt,
-  });
-  yield* engine.dispatch({
-    type: "thread.create",
-    commandId: CommandId.make(`cmd-handoff-${suffix}-source`),
-    threadId: sourceThreadId,
-    projectId,
-    title: `Source ${suffix}`,
-    modelSelection: {
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-5-codex",
-    },
-    interactionMode: "default",
-    runtimeMode: "full-access",
-    branch: null,
-    worktreePath: null,
-    createdAt,
-  });
-  yield* engine.dispatch({
-    type: "thread.turn.start",
-    commandId: CommandId.make(`cmd-handoff-${suffix}-turn`),
-    threadId: sourceThreadId,
-    message: {
-      messageId,
-      role: "user",
-      text: "Review the attached PDF.",
-      attachments: [attachment],
-    },
-    interactionMode: "default",
-    runtimeMode: "full-access",
-    createdAt,
-  });
-
-  const pdfPath = path.join(attachmentsDir, `${attachmentId}.pdf`);
-  yield* fileSystem.writeFileString(pdfPath, "%PDF-1.7");
-
-  yield* engine.dispatch({
-    type: "thread.handoff.create",
-    commandId: CommandId.make(`cmd-handoff-${suffix}-create`),
-    sourceThreadId,
-    targetThreadId,
-    targetModelSelection: {
-      instanceId: ProviderInstanceId.make("claude"),
-      model: "claude-opus-4.8",
-    },
-    createdAt,
-  });
-
-  const importedRows = yield* sql<{ readonly attachmentsJson: string | null }>`
-    SELECT attachments_json AS "attachmentsJson"
-    FROM projection_thread_messages
-    WHERE thread_id = ${targetThreadId}
-      AND source = 'handoff-import'
-  `;
-  assert.equal(importedRows.length, 1);
-  assert.include(importedRows[0]?.attachmentsJson ?? "", attachmentId);
-  assert.equal(resolveAttachmentPathById({ attachmentsDir, attachmentId }), pdfPath);
-
-  const assertTargetPdfResolvable = Effect.fn("assertTargetPdfResolvable")(function* () {
-    assert.equal(resolveAttachmentPathById({ attachmentsDir, attachmentId }), pdfPath);
-    assert.equal(yield* fileSystem.readFileString(pdfPath), "%PDF-1.7");
-  });
-
-  const deleteTargetAndAssertUnreferencedCleanup = Effect.fn(
-    "deleteTargetAndAssertUnreferencedCleanup",
-  )(function* () {
-    yield* engine.dispatch({
-      type: "thread.delete",
-      commandId: CommandId.make(`cmd-handoff-${suffix}-target-delete`),
-      threadId: targetThreadId,
-    });
-    assert.isNull(resolveAttachmentPathById({ attachmentsDir, attachmentId }));
-  });
-
-  return {
-    assertTargetPdfResolvable,
-    attachment,
-    createdAt,
-    deleteTargetAndAssertUnreferencedCleanup,
-    engine,
-    messageId,
-    sourceThreadId,
-    targetThreadId,
-  } as const;
-});
-
 engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
   it.effect("projects dispatched engine events immediately", () =>
     Effect.gen(function* () {
@@ -2927,62 +2640,6 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           defaultModelSelection: '{"instanceId":"codex","model":"gpt-5"}',
         },
       ]);
-    }),
-  );
-
-  it.effect("keeps a handed-off PDF resolvable when source attachments are replaced", () =>
-    Effect.gen(function* () {
-      const scenario = yield* seedPdfHandoff("replace");
-
-      yield* scenario.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-handoff-replace-source-message"),
-        threadId: scenario.sourceThreadId,
-        message: {
-          messageId: scenario.messageId,
-          role: "user",
-          text: "Attachment replaced.",
-          attachments: [],
-        },
-        interactionMode: "default",
-        runtimeMode: "full-access",
-        createdAt: scenario.createdAt,
-      });
-
-      yield* scenario.assertTargetPdfResolvable();
-      yield* scenario.deleteTargetAndAssertUnreferencedCleanup();
-    }),
-  );
-
-  it.effect("keeps a handed-off PDF resolvable when source history is reverted", () =>
-    Effect.gen(function* () {
-      const scenario = yield* seedPdfHandoff("revert");
-
-      yield* scenario.engine.dispatch({
-        type: "thread.revert.complete",
-        commandId: CommandId.make("cmd-handoff-revert-source-complete"),
-        threadId: scenario.sourceThreadId,
-        turnCount: 0,
-        createdAt: scenario.createdAt,
-      });
-
-      yield* scenario.assertTargetPdfResolvable();
-      yield* scenario.deleteTargetAndAssertUnreferencedCleanup();
-    }),
-  );
-
-  it.effect("keeps a handed-off PDF resolvable when its source thread is deleted", () =>
-    Effect.gen(function* () {
-      const scenario = yield* seedPdfHandoff("delete");
-
-      yield* scenario.engine.dispatch({
-        type: "thread.delete",
-        commandId: CommandId.make("cmd-handoff-delete-source-delete"),
-        threadId: scenario.sourceThreadId,
-      });
-
-      yield* scenario.assertTargetPdfResolvable();
-      yield* scenario.deleteTargetAndAssertUnreferencedCleanup();
     }),
   );
 });

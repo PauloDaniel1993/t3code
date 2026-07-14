@@ -19,9 +19,6 @@ const emitInterleavedAssistantToolCalls =
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
-const askQuestionCount = parseNonNegativeInt(process.env.T3_ACP_ASK_QUESTION_COUNT) ?? 1;
-const xAiAskUserQuestionCount =
-  parseNonNegativeInt(process.env.T3_ACP_XAI_ASK_USER_QUESTION_COUNT) ?? 1;
 const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
@@ -59,43 +56,6 @@ let currentFast = false;
 let promptCount = 0;
 let overlappingFirstPromptId: string | undefined;
 const cancelledSessions = new Set<string>();
-
-function parseNonNegativeInt(value: string | undefined): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
-}
-
-function makeCursorAskQuestions(count: number) {
-  return Array.from({ length: count }, (_, index) => {
-    const ordinal = index + 1;
-    return {
-      id: count === 1 ? "scope" : `scope-${ordinal}`,
-      prompt: count === 1 ? "Which scope?" : `Which scope ${ordinal}?`,
-      options: [
-        { id: "workspace", label: "Workspace" },
-        { id: "session", label: "Session" },
-      ],
-    };
-  });
-}
-
-function makeXAiAskUserQuestions(count: number) {
-  return Array.from({ length: count }, (_, index) => {
-    const ordinal = index + 1;
-    return {
-      question:
-        count === 1 ? "Which scope should Grok use?" : `Which scope should Grok use ${ordinal}?`,
-      multiSelect: null,
-      options: [
-        { label: "Workspace", description: "Use the current workspace" },
-        { label: "Session", description: "Only use this session" },
-      ],
-    };
-  });
-}
 
 function promptIdFromRequestMeta(
   request: Pick<AcpSchema.PromptRequest, "_meta">,
@@ -798,7 +758,16 @@ const program = Effect.gen(function* () {
         yield* agent.client.extRequest("cursor/ask_question", {
           toolCallId: "ask-question-tool-call-1",
           title: "Question",
-          questions: makeCursorAskQuestions(askQuestionCount),
+          questions: [
+            {
+              id: "scope",
+              prompt: "Which scope?",
+              options: [
+                { id: "workspace", label: "Workspace" },
+                { id: "session", label: "Session" },
+              ],
+            },
+          ],
         });
 
         return { stopReason: "end_turn" };
@@ -810,7 +779,16 @@ const program = Effect.gen(function* () {
           params: {
             sessionId: requestedSessionId,
             toolCallId: "ask-user-question-tool-call-1",
-            questions: makeXAiAskUserQuestions(xAiAskUserQuestionCount),
+            questions: [
+              {
+                question: "Which scope should Grok use?",
+                multiSelect: null,
+                options: [
+                  { label: "Workspace", description: "Use the current workspace" },
+                  { label: "Session", description: "Only use this session" },
+                ],
+              },
+            ],
             mode: "default",
           },
         });

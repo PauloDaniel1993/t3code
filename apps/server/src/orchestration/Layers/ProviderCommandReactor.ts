@@ -1,19 +1,12 @@
 import {
   type ChatAttachment,
   CommandId,
-  DEFAULT_DEEPSEEK_HANDOFF_COMPRESSION_MODEL,
   EventId,
-  type HandoffCompressionSummary,
-  isProviderAvailable,
   type ModelSelection,
-  MessageId,
   type OrchestrationEvent,
-  type OrchestrationThread,
   ProviderDriverKind,
-  ProviderInstanceId,
   type ProjectId,
   type OrchestrationSession,
-  type ServerProvider,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
@@ -29,7 +22,6 @@ import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
@@ -49,7 +41,6 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
-import { buildHandoffBootstrapContext } from "../threadHandoff/bootstrapContext.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -96,7 +87,6 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
-const DEEPSEEK_DRIVER_KIND = ProviderDriverKind.make("deepseek");
 
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -123,36 +113,6 @@ function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolea
   return trimmedTitleSeed !== undefined && trimmedTitleSeed.length > 0
     ? trimmedCurrentTitle === trimmedTitleSeed
     : false;
-}
-
-function isReadyProviderModel(input: {
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly modelSelection: ModelSelection;
-}): boolean {
-  const provider = input.providers.find(
-    (snapshot) => snapshot.instanceId === input.modelSelection.instanceId,
-  );
-  return (
-    provider !== undefined &&
-    isProviderAvailable(provider) &&
-    provider.enabled &&
-    provider.installed &&
-    provider.status === "ready" &&
-    provider.models.some((model) => model.slug === input.modelSelection.model)
-  );
-}
-
-function isFirstNativeUserMessageForPendingHandoff(input: {
-  readonly thread: OrchestrationThread;
-  readonly messageId: string;
-}): boolean {
-  if (input.thread.handoff === null || input.thread.handoff.bootstrapStatus !== "pending") {
-    return false;
-  }
-  const nativeUserMessages = input.thread.messages.filter(
-    (message) => message.role === "user" && message.source !== "handoff-import",
-  );
-  return nativeUserMessages.length === 1 && nativeUserMessages[0]?.id === input.messageId;
 }
 
 function findProviderAdapterRequestError(
@@ -253,7 +213,6 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
-  const handoffBootstrapInFlight = new Set<string>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -357,74 +316,6 @@ const make = Effect.gen(function* () {
       .getThreadDetailById(threadId)
       .pipe(Effect.map(Option.getOrUndefined));
   });
-
-  const resolveHandoffCompressionModelSelection = Effect.fn(
-    "resolveHandoffCompressionModelSelection",
-  )(function* () {
-    const settings = yield* serverSettingsService.getSettings;
-    const providers = yield* providerRegistry.getProviders;
-    const explicitSelection = settings.handoffCompressionModelSelection;
-    if (
-      explicitSelection !== null &&
-      isReadyProviderModel({ providers, modelSelection: explicitSelection })
-    ) {
-      return explicitSelection;
-    }
-
-    if (explicitSelection !== null) {
-      yield* Effect.logWarning(
-        "handoff compression model selection is unavailable; falling back to automatic resolution",
-        {
-          instanceId: explicitSelection.instanceId,
-          model: explicitSelection.model,
-        },
-      );
-    }
-
-    const deepSeekDefault = providers.find(
-      (provider) =>
-        provider.instanceId === ProviderInstanceId.make("deepseek") &&
-        provider.driver === DEEPSEEK_DRIVER_KIND,
-    );
-    const deepSeekFlashSelection: ModelSelection = {
-      instanceId: ProviderInstanceId.make("deepseek"),
-      model: DEFAULT_DEEPSEEK_HANDOFF_COMPRESSION_MODEL,
-    };
-    if (
-      deepSeekDefault &&
-      isReadyProviderModel({ providers, modelSelection: deepSeekFlashSelection })
-    ) {
-      return deepSeekFlashSelection;
-    }
-
-    return settings.textGenerationModelSelection;
-  });
-
-  const dispatchHandoffBootstrapComplete = Effect.fn("dispatchHandoffBootstrapComplete")(
-    function* (input: {
-      readonly threadId: ThreadId;
-      readonly bootstrapMessageId: MessageId;
-      readonly providerTurnId: string;
-      readonly completedAt: string;
-      readonly compressionSummaries: ReadonlyArray<HandoffCompressionSummary>;
-    }) {
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.handoff.bootstrap.complete",
-          commandId: CommandId.make(
-            `server:handoff-bootstrap-complete:${input.threadId}:${input.bootstrapMessageId}`,
-          ),
-          threadId: input.threadId,
-          bootstrapMessageId: input.bootstrapMessageId,
-          providerTurnId: input.providerTurnId,
-          ...(input.compressionSummaries.length > 0
-            ? { compressionSummaries: input.compressionSummaries }
-            : {}),
-          completedAt: input.completedAt,
-        })
-        .pipe(Effect.retry(Schedule.spaced(Duration.seconds(2))));
-    },
-  );
 
   const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -699,7 +590,6 @@ const make = Effect.gen(function* () {
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
     readonly createdAt: string;
-    readonly messageId: MessageId;
   }) {
     const thread = yield* resolveThread(input.threadId);
     if (!thread) {
@@ -715,6 +605,7 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
+    const normalizedInput = toNonEmptyProviderInput(input.messageText);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
@@ -744,60 +635,12 @@ const make = Effect.gen(function* () {
           : requestedModelSelection
         : input.modelSelection;
 
-    let providerMessageText = input.messageText;
-    let handoffBootstrap: {
-      readonly messageId: MessageId;
-      readonly compressionSummaries: ReadonlyArray<HandoffCompressionSummary>;
-    } | null = null;
-    const handoffInFlightKey = String(input.threadId);
-    if (
-      !handoffBootstrapInFlight.has(handoffInFlightKey) &&
-      isFirstNativeUserMessageForPendingHandoff({ thread, messageId: input.messageId })
-    ) {
-      const project = yield* resolveProject(thread.projectId);
-      const cwd =
-        resolveThreadWorkspaceCwd({
-          thread,
-          projects: project ? [project] : [],
-        }) ?? process.cwd();
-      const compressionModelSelection = yield* resolveHandoffCompressionModelSelection();
-      const bootstrapContext = yield* buildHandoffBootstrapContext({
-        thread,
-        latestUserMessage: {
-          id: input.messageId,
-          role: "user",
-          text: input.messageText,
-          ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
-          turnId: null,
-          streaming: false,
-          source: "user",
-          createdAt: input.createdAt,
-          updatedAt: input.createdAt,
-        },
-        cwd,
-        modelSelection: compressionModelSelection,
-        createdAt: input.createdAt,
-        summarizeHandoffMessage: (summaryInput) =>
-          textGeneration.generateHandoffSummary(summaryInput),
-      });
-      handoffBootstrapInFlight.add(handoffInFlightKey);
-      providerMessageText = bootstrapContext.providerInput;
-      handoffBootstrap = {
-        messageId: input.messageId,
-        compressionSummaries: bootstrapContext.compressionSummaries,
-      };
-    }
-
-    const normalizedInput = toNonEmptyProviderInput(providerMessageText);
     return {
-      request: {
-        threadId: input.threadId,
-        ...(normalizedInput ? { input: normalizedInput } : {}),
-        ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
-        ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
-        ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-      },
-      handoffBootstrap,
+      threadId: input.threadId,
+      ...(normalizedInput ? { input: normalizedInput } : {}),
+      ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+      ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
+      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
     };
   });
 
@@ -996,7 +839,6 @@ const make = Effect.gen(function* () {
 
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
-      messageId: message.id,
       messageText: message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
@@ -1013,31 +855,9 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const clearHandoffInFlightOnFailure = (cause: Cause.Cause<unknown>) => {
-      const handoffBootstrap = sendTurnRequest.value.handoffBootstrap;
-      if (handoffBootstrap !== null) {
-        handoffBootstrapInFlight.delete(String(event.payload.threadId));
-      }
-      return recoverTurnStartFailure(cause);
-    };
-
-    yield* providerService.sendTurn(sendTurnRequest.value.request).pipe(
-      Effect.flatMap((turn) => {
-        const handoffBootstrap = sendTurnRequest.value.handoffBootstrap;
-        if (handoffBootstrap === null) {
-          return Effect.succeed(turn);
-        }
-        return dispatchHandoffBootstrapComplete({
-          threadId: event.payload.threadId,
-          bootstrapMessageId: handoffBootstrap.messageId,
-          providerTurnId: String(turn.turnId),
-          completedAt: event.payload.createdAt,
-          compressionSummaries: handoffBootstrap.compressionSummaries,
-        }).pipe(Effect.as(turn));
-      }),
-      Effect.catchCause(clearHandoffInFlightOnFailure),
-      Effect.forkScoped,
-    );
+    yield* providerService
+      .sendTurn(sendTurnRequest.value)
+      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (

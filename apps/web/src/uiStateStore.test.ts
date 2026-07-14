@@ -10,10 +10,7 @@ import {
   type PersistedUiState,
   persistState,
   reorderProjects,
-  resetSidebarOrganizationUiState,
-  resolveCategoryExpanded,
   resolveProjectExpanded,
-  setCategoryExpanded,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
@@ -22,7 +19,6 @@ import {
 
 function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
-    categoryExpandedById: {},
     projectExpandedById: {},
     projectOrder: [],
     threadLastVisitedAtById: {},
@@ -83,43 +79,6 @@ describe("uiStateStore pure functions", () => {
       "environment-b:/repo": false,
     });
     expect(setProjectExpanded(next, keys, false)).toBe(next);
-  });
-
-  it("stores category expansion separately from project expansion", () => {
-    const initialState = makeUiState({
-      projectExpandedById: {
-        project: false,
-      },
-    });
-
-    const next = setCategoryExpanded(initialState, ["category-a", "category-b"], false);
-
-    expect(next.categoryExpandedById).toEqual({
-      "category-a": false,
-      "category-b": false,
-    });
-    expect(next.projectExpandedById).toEqual({
-      project: false,
-    });
-    expect(resolveCategoryExpanded(next.categoryExpandedById, "category-a")).toBe(false);
-    expect(resolveCategoryExpanded(next.categoryExpandedById, "missing")).toBe(true);
-    expect(setCategoryExpanded(next, ["category-a", "category-b"], false)).toBe(next);
-  });
-
-  it("resets sidebar organization ui state without clearing project expansion", () => {
-    const state = makeUiState({
-      categoryExpandedById: {
-        "category-a": false,
-      },
-      projectExpandedById: {
-        project: false,
-      },
-    });
-
-    expect(resetSidebarOrganizationUiState(state)).toEqual({
-      ...state,
-      categoryExpandedById: {},
-    });
   });
 
   it("reorders from the current atom-derived project order", () => {
@@ -186,10 +145,6 @@ describe("uiStateStore pure functions", () => {
 describe("parsePersistedState", () => {
   it("hydrates raw UI-owned state without server entities", () => {
     const parsed = parsePersistedState({
-      categoryExpandedById: {
-        "category-a": false,
-        invalid: "no" as unknown as boolean,
-      },
       projectExpandedById: {
         logical: false,
         invalid: "no" as unknown as boolean,
@@ -209,9 +164,6 @@ describe("parsePersistedState", () => {
     });
 
     expect(parsed).toEqual({
-      categoryExpandedById: {
-        "category-a": false,
-      },
       projectExpandedById: {
         logical: false,
       },
@@ -296,9 +248,6 @@ describe("uiStateStore persistence", () => {
 
   it("persists raw UI preferences including thread visit markers", () => {
     const state = makeUiState({
-      categoryExpandedById: {
-        "category-a": false,
-      },
       projectExpandedById: {
         logical: false,
       },
@@ -321,9 +270,6 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(persisted).toEqual({
-      categoryExpandedById: {
-        "category-a": false,
-      },
       projectExpandedById: {
         logical: false,
       },

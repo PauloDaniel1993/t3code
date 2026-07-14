@@ -4,7 +4,6 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type PreviewViewportSetting,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -72,7 +71,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const isMountedRef = useRef(true);
   const previewState = useThreadPreviewState(threadRef);
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
-  const addAttachment = useComposerDraftStore((store) => store.addAttachment);
+  const addImage = useComposerDraftStore((store) => store.addImage);
   const environment = useEnvironment(threadRef.environmentId);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
   const open = useAtomCommand(previewEnvironment.open);
@@ -480,7 +479,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         addPreviewAnnotation(threadRef, annotation);
         const screenshotFile = await previewAnnotationScreenshotFile(annotation);
         if (screenshotFile && annotation.screenshot) {
-          const attachmentResult = addAttachment(threadRef, {
+          addImage(threadRef, {
             type: "image",
             id: annotation.id,
             name: screenshotFile.name,
@@ -489,15 +488,6 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             previewUrl: annotation.screenshot.dataUrl,
             file: screenshotFile,
           });
-          if (attachmentResult.rejectedForLimit > 0) {
-            toastManager.add(
-              stackedThreadToast({
-                type: "warning",
-                title: "Element annotation kept without its screenshot",
-                description: `A message can include up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images and PDFs. Remove an attachment, then pick the element again to include its screenshot.`,
-              }),
-            );
-          }
         }
       } catch {
         // Picker failed (e.g. webview navigated). Treat as silent cancel.
@@ -522,7 +512,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         }
       }
     })();
-  }, [addAttachment, addPreviewAnnotation, tabId, threadRef]);
+  }, [addImage, addPreviewAnnotation, tabId, threadRef]);
 
   // If the active tab changes mid-pick (close, thread switch, hot restart),
   // tell main to tear down the in-flight session AND reset our local toggle

@@ -19,13 +19,11 @@ import * as TextGeneration from "./TextGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
-  buildHandoffSummaryPrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   normalizeCliError,
-  sanitizeHandoffSummary,
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
@@ -99,8 +97,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle"
-      | "generateHandoffSummary",
+      | "generateThreadTitle",
     value: unknown,
   ): Effect.Effect<string, TextGenerationError> =>
     encodeJsonString(value).pipe(
@@ -115,12 +112,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     );
 
   const materializeImageAttachments = Effect.fn("materializeImageAttachments")(function* (
-    operation:
+    _operation:
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle"
-      | "generateHandoffSummary",
+      | "generateThreadTitle",
     attachments: TextGeneration.BranchNameGenerationInput["attachments"],
   ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
     if (!attachments || attachments.length === 0) {
@@ -129,11 +125,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
     const imagePaths: string[] = [];
     for (const attachment of attachments) {
-      if (attachment.type === "document") {
-        return yield* new TextGenerationError({
-          operation,
-          detail: "PDF attachments are unsupported by Codex structured text generation.",
-        });
+      if (attachment.type !== "image") {
+        continue;
       }
 
       const resolvedPath = resolveAttachmentPath({
@@ -165,8 +158,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle"
-      | "generateHandoffSummary";
+      | "generateThreadTitle";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -403,33 +395,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
-  const generateHandoffSummary: TextGeneration.TextGeneration["Service"]["generateHandoffSummary"] =
-    Effect.fn("CodexTextGeneration.generateHandoffSummary")(function* (input) {
-      const { prompt, outputSchema } = buildHandoffSummaryPrompt({
-        sourceThreadTitle: input.sourceThreadTitle,
-        role: input.role,
-        messageText: input.messageText,
-        attachmentMetadata: input.attachmentMetadata,
-      });
-
-      const generated = yield* runCodexJson({
-        operation: "generateHandoffSummary",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        summary: sanitizeHandoffSummary(generated.summary),
-      } satisfies TextGeneration.HandoffSummaryGenerationResult;
-    });
-
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
-    generateHandoffSummary,
   } satisfies TextGeneration.TextGeneration["Service"];
 });
