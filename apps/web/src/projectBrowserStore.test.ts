@@ -41,13 +41,18 @@ describe("projectBrowserStore", () => {
     expect(
       migrateProjectBrowserLayoutState({
         layoutByProjectKey: {
+          // Width has no ceiling (parity with the right panel), only a floor.
           repo: { isOpen: true, width: 20_000, updateSequence: 3 },
+          narrow: { isOpen: false, width: 10, updateSequence: 1 },
           invalid: null,
         },
         runtimeByProjectKey: { repo: { tabs: [tab], activeTabId: "tab-1" } },
       }),
     ).toEqual({
-      layoutByProjectKey: { repo: { isOpen: true, width: 960, updateSequence: 3 } },
+      layoutByProjectKey: {
+        repo: { isOpen: true, width: 20_000, updateSequence: 3 },
+        narrow: { isOpen: false, width: 320, updateSequence: 1 },
+      },
       nextLayoutSequence: 3,
     });
   });

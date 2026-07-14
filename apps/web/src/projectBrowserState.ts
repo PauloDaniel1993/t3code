@@ -2,7 +2,6 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 
 export const PROJECT_BROWSER_DEFAULT_WIDTH = 420;
 export const PROJECT_BROWSER_MIN_WIDTH = 320;
-export const PROJECT_BROWSER_MAX_WIDTH = 960;
 
 export interface ProjectBrowserTabActivity {
   readonly requestId: string;
@@ -45,9 +44,11 @@ export const DEFAULT_PROJECT_BROWSER_LAYOUT_STATE: ProjectBrowserLayoutState = {
   updateSequence: 0,
 };
 
+// Like the thread right panel (useResizableWidth without maxWidth), width has
+// a floor but no ceiling — the user may grow the panel as wide as they like.
 export function clampProjectBrowserWidth(width: number): number {
   if (!Number.isFinite(width)) return PROJECT_BROWSER_DEFAULT_WIDTH;
-  return Math.min(PROJECT_BROWSER_MAX_WIDTH, Math.max(PROJECT_BROWSER_MIN_WIDTH, width));
+  return Math.max(PROJECT_BROWSER_MIN_WIDTH, width);
 }
 
 function runtimeStateEquals(
