@@ -1,4 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeAssert from "node:assert/strict";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -14,6 +17,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { beforeEach } from "vite-plus/test";
 
 import {
+  EnvironmentId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -21,6 +25,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
@@ -28,6 +33,7 @@ import {
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   type OpenCodeRuntimeShape,
+  toOpenCodeFileParts,
 } from "../opencodeRuntime.ts";
 import {
   appendOpenCodeAssistantTextDelta,
@@ -59,6 +65,7 @@ const runtimeMock = {
     closeCalls: [] as string[],
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
+    mcpAddCalls: [] as Array<unknown>,
     promptAsyncError: null as Error | null,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
@@ -72,6 +79,7 @@ const runtimeMock = {
     this.state.closeCalls.length = 0;
     this.state.revertCalls.length = 0;
     this.state.promptCalls.length = 0;
+    this.state.mcpAddCalls.length = 0;
     this.state.promptAsyncError = null;
     this.state.closeError = null;
     this.state.messages = [];
@@ -167,6 +175,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           })(),
         }),
       },
+      mcp: {
+        add: async (input: unknown) => {
+          runtimeMock.state.mcpAddCalls.push(input);
+          return { data: true };
+        },
+      },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
     Effect.fail(
@@ -198,6 +212,9 @@ const openCodeAdapterTestSettings = Schema.decodeSync(OpenCodeSettings)({
   serverUrl: "http://127.0.0.1:9999",
   serverPassword: "secret-password",
 });
+const openCodeAdapterLocalTestSettings = Schema.decodeSync(OpenCodeSettings)({
+  binaryPath: "fake-opencode",
+});
 
 const OpenCodeAdapterTestLayer = Layer.effect(
   OpenCodeAdapter,
@@ -227,7 +244,96 @@ beforeEach(() => {
 const advanceTestClock = (ms: number) =>
   TestClock.adjust(`${ms} millis`).pipe(Effect.andThen(Effect.yieldNow));
 
+const makeOpenCodeQuestion = (index: number) => ({
+  header: `Question ${index}`,
+  question: `Question ${index}?`,
+  options: [{ label: `Answer ${index}`, description: `Answer ${index}` }],
+  multiple: false,
+});
+
+it("maps PDFs to OpenCode file parts with an exact platform-safe local URL", () => {
+  const attachmentPath = NodePath.join(process.cwd(), "attachments", "requirements 1.pdf");
+  const parts = toOpenCodeFileParts({
+    attachments: [
+      {
+        type: "document",
+        id: "opencode-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "requirements.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 123,
+      },
+    ],
+    resolveAttachmentPath: () => attachmentPath,
+  });
+
+  NodeAssert.deepStrictEqual(parts, [
+    {
+      type: "file",
+      mime: "application/pdf",
+      filename: "requirements.pdf",
+      url: NodeURL.pathToFileURL(attachmentPath).href,
+    },
+  ]);
+});
+
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  it.effect("rejects a missing PDF instead of silently dropping its file part", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-missing-pdf");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      });
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Read this",
+          attachments: [
+            {
+              type: "document",
+              id: "opencode-missing-12345678-1234-1234-1234-123456789abc",
+              name: "missing.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 1,
+            },
+          ],
+        })
+        .pipe(Effect.flip);
+
+      NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
+      if (error._tag === "ProviderAdapterRequestError") {
+        NodeAssert.equal(error.detail, "One or more attachment files are missing or invalid.");
+      }
+      NodeAssert.deepStrictEqual(runtimeMock.state.promptCalls, []);
+
+      const sessionsAfterFailure = yield* adapter.listSessions();
+      const sessionAfterFailure = sessionsAfterFailure.find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(sessionAfterFailure?.status, "ready");
+      NodeAssert.equal(sessionAfterFailure?.activeTurnId, undefined);
+
+      const nextTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Continue without the attachment",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+        attachments: [],
+      });
+      const sessionsAfterRetry = yield* adapter.listSessions();
+      const sessionAfterRetry = sessionsAfterRetry.find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(sessionAfterRetry?.status, "running");
+      NodeAssert.equal(String(sessionAfterRetry?.activeTurnId), String(nextTurn.turnId));
+      NodeAssert.equal(runtimeMock.state.promptCalls.length, 1);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -247,6 +353,56 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       ]);
     }),
   );
+
+  it.effect("configures the T3 MCP server with the long user-input timeout", () => {
+    const localLayer = Layer.effect(
+      OpenCodeAdapter,
+      makeOpenCodeAdapter(openCodeAdapterLocalTestSettings),
+    ).pipe(
+      Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const threadId = asThreadId("thread-opencode-mcp-user-input");
+
+    return Effect.gen(function* () {
+      yield* Effect.sync(() =>
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("environment-opencode-mcp"),
+          threadId,
+          providerSessionId: "provider-session-opencode-mcp",
+          providerInstanceId: ProviderInstanceId.make("opencode"),
+          endpoint: "http://127.0.0.1:4312/mcp",
+          authorizationHeader: "Bearer opencode-token",
+        }),
+      );
+
+      const adapter = yield* OpenCodeAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      NodeAssert.deepEqual(runtimeMock.state.mcpAddCalls, [
+        {
+          name: "t3-code",
+          config: {
+            type: "remote",
+            url: "http://127.0.0.1:4312/mcp",
+            headers: { Authorization: "Bearer opencode-token" },
+            oauth: false,
+            timeout: McpProviderSession.T3_MCP_TOOL_TIMEOUT_MS,
+          },
+        },
+      ]);
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
+      Effect.provide(localLayer),
+    );
+  });
 
   it.effect("stops a configured-server session without trying to own server lifecycle", () =>
     Effect.gen(function* () {
@@ -914,6 +1070,86 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(sessions.length, 1);
       NodeAssert.equal(sessions[0]?.threadId, "thread-native-log-failure");
       NodeAssert.deepEqual(closeCallsDuringRun, []);
+    }),
+  );
+
+  it.effect("emits ten OpenCode question prompts in order", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-ten-questions");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "question.asked",
+          properties: {
+            id: "question-request-ten",
+            sessionID: "http://127.0.0.1:9999/session",
+            questions: Array.from({ length: 10 }, (_, index) => makeOpenCodeQuestion(index + 1)),
+          },
+        },
+      ];
+      const eventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.threadId === threadId && event.type === "user-input.requested",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const event = yield* Fiber.join(eventFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(event._tag, "Some");
+      if (event._tag !== "Some" || event.value.type !== "user-input.requested") {
+        return;
+      }
+      NodeAssert.equal(event.value.payload.questions.length, 10);
+      NodeAssert.equal(event.value.payload.questions[0]?.id, "question-0-question-1");
+      NodeAssert.equal(event.value.payload.questions[9]?.id, "question-9-question-10");
+      NodeAssert.deepEqual(
+        event.value.payload.questions.map((question) => question.question),
+        Array.from({ length: 10 }, (_, index) => `Question ${index + 1}?`),
+      );
+    }),
+  );
+
+  it.effect("emits a runtime error for oversized OpenCode question prompts", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-oversized-questions");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "question.asked",
+          properties: {
+            id: "question-request-oversized",
+            sessionID: "http://127.0.0.1:9999/session",
+            questions: Array.from({ length: 11 }, (_, index) => makeOpenCodeQuestion(index + 1)),
+          },
+        },
+      ];
+      const eventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "runtime.error"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const event = yield* Fiber.join(eventFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(event._tag, "Some");
+      if (event._tag !== "Some" || event.value.type !== "runtime.error") {
+        return;
+      }
+      NodeAssert.equal(event.value.payload.class, "provider_error");
+      NodeAssert.match(event.value.payload.message, /1 to 10/u);
+      NodeAssert.match(event.value.payload.message, /11/u);
     }),
   );
 });

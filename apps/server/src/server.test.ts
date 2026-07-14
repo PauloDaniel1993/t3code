@@ -106,6 +106,7 @@ import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
@@ -164,6 +165,7 @@ const makeDefaultOrchestrationReadModel = () => {
         updatedAt: now,
         archivedAt: null,
         latestTurn: null,
+        handoff: null,
         messages: [],
         session: null,
         activities: [],
@@ -179,6 +181,7 @@ const makeDefaultOrchestrationThreadShell = (
   overrides: Partial<OrchestrationThreadShell> = {},
 ): OrchestrationThreadShell => {
   const now = "2026-01-01T00:00:00.000Z";
+  const { handoff = null, ...restOverrides } = overrides;
   return {
     id: defaultThreadId,
     projectId: defaultProjectId,
@@ -197,7 +200,8 @@ const makeDefaultOrchestrationThreadShell = (
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    ...overrides,
+    ...restOverrides,
+    handoff,
   };
 };
 
@@ -1232,6 +1236,55 @@ const getWsServerUrl = (
   });
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect(
+    "serves signed PDF attachments with safe headers and rejects missing or expired assets",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* buildAppUnderTest();
+        const assetAccessLayer = Layer.mergeAll(
+          ServerConfig.layer(config),
+          WorkspacePaths.layer,
+          ProjectFaviconResolver.layer.pipe(Layer.provide(WorkspacePaths.layer)),
+          ServerSecretStore.layer.pipe(Layer.provide(ServerConfig.layer(config))),
+        );
+        const attachmentId = "thread-pdf-route-00000000-0000-4000-8000-000000000001";
+        const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.pdf`);
+        const bytes = Buffer.from("%PDF-1.7\nroute test", "utf8");
+        yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+        yield* fileSystem.writeFile(attachmentPath, bytes);
+
+        const signed = yield* issueAssetUrl({
+          resource: { _tag: "attachment", attachmentId },
+        }).pipe(Effect.provide(assetAccessLayer));
+        const response = yield* HttpClient.get(signed.relativeUrl);
+        assert.equal(response.status, 200);
+        assert.equal(response.headers["content-type"], "application/pdf");
+        assert.equal(response.headers["x-content-type-options"], "nosniff");
+        assert.equal(yield* response.text, bytes.toString("utf8"));
+
+        const originalName = "Architecture notes.pdf";
+        const downloadUrl = `${signed.relativeUrl.slice(0, signed.relativeUrl.lastIndexOf("/") + 1)}${encodeURIComponent(originalName)}?download=1`;
+        const downloadResponse = yield* HttpClient.get(downloadUrl);
+        assert.equal(downloadResponse.status, 200);
+        assert.equal(
+          downloadResponse.headers["content-disposition"],
+          `attachment; filename="${originalName}"; filename*=UTF-8''Architecture%20notes.pdf`,
+        );
+        assert.equal(yield* downloadResponse.text, bytes.toString("utf8"));
+
+        yield* fileSystem.remove(attachmentPath);
+        const missingResponse = yield* HttpClient.get(signed.relativeUrl);
+        assert.equal(missingResponse.status, 404);
+
+        yield* fileSystem.writeFile(attachmentPath, bytes);
+        yield* TestClock.adjust(Duration.hours(2));
+        const expiredResponse = yield* HttpClient.get(signed.relativeUrl);
+        assert.equal(expiredResponse.status, 404);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("serves static index content for GET / when staticDir is configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1244,7 +1297,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const response = yield* HttpClient.get("/");
       assert.equal(response.status, 200);
+      assert.equal(response.headers["cache-control"], "no-store");
+      assert.equal(response.headers["x-content-type-options"], "nosniff");
       assert.include(yield* response.text, "router-static-ok");
+
+      const fallbackResponse = yield* HttpClient.get("/@vite/client");
+      assert.equal(fallbackResponse.status, 200);
+      assert.equal(fallbackResponse.headers["cache-control"], "no-store");
+      assert.equal(fallbackResponse.headers["x-content-type-options"], "nosniff");
+      assert.include(yield* fallbackResponse.text, "router-static-ok");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -5496,6 +5557,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             updatedAt: now,
             archivedAt: null,
             latestTurn: null,
+            handoff: null,
             messages: [],
             session: null,
             activities: [],

@@ -5,7 +5,14 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { ChatAttachment } from "@t3tools/contracts";
+import {
+  ChatAttachment,
+  MessageId,
+  MessageModelReroute,
+  messageSourceFromRole,
+  OrchestrationMessageSource,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -21,8 +28,16 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+    source: Schema.NullOr(OrchestrationMessageSource),
+    sourceThreadId: Schema.NullOr(ThreadId),
+    sourceMessageId: Schema.NullOr(MessageId),
+    modelReroute: Schema.NullOr(Schema.fromJsonString(MessageModelReroute)),
   }),
 );
+
+const ActiveProjectionMessageAttachmentsDbRow = Schema.Struct({
+  attachments: Schema.fromJsonString(Schema.Array(ChatAttachment)),
+});
 
 function toProjectionThreadMessage(
   row: Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,
@@ -34,9 +49,13 @@ function toProjectionThreadMessage(
     role: row.role,
     text: row.text,
     isStreaming: row.isStreaming === 1,
+    source: row.source ?? messageSourceFromRole(row.role),
+    ...(row.sourceThreadId !== null ? { sourceThreadId: row.sourceThreadId } : {}),
+    ...(row.sourceMessageId !== null ? { sourceMessageId: row.sourceMessageId } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+    ...(row.modelReroute !== null ? { modelReroute: row.modelReroute } : {}),
   };
 }
 
@@ -48,6 +67,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
     execute: (row) => {
       const nextAttachmentsJson =
         row.attachments !== undefined ? JSON.stringify(row.attachments) : null;
+      const nextModelRerouteJson =
+        row.modelReroute !== undefined ? JSON.stringify(row.modelReroute) : null;
       return sql`
         INSERT INTO projection_thread_messages (
           message_id,
@@ -57,6 +78,10 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json,
           is_streaming,
+          source,
+          source_thread_id,
+          source_message_id,
+          model_reroute_json,
           created_at,
           updated_at
         )
@@ -75,6 +100,17 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             )
           ),
           ${row.isStreaming ? 1 : 0},
+          ${row.source},
+          ${row.sourceThreadId ?? null},
+          ${row.sourceMessageId ?? null},
+          COALESCE(
+            ${nextModelRerouteJson},
+            (
+              SELECT model_reroute_json
+              FROM projection_thread_messages
+              WHERE message_id = ${row.messageId}
+            )
+          ),
           ${row.createdAt},
           ${row.updatedAt}
         )
@@ -89,6 +125,13 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             projection_thread_messages.attachments_json
           ),
           is_streaming = excluded.is_streaming,
+          source = excluded.source,
+          source_thread_id = excluded.source_thread_id,
+          source_message_id = excluded.source_message_id,
+          model_reroute_json = COALESCE(
+            excluded.model_reroute_json,
+            projection_thread_messages.model_reroute_json
+          ),
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
       `;
@@ -108,6 +151,10 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
+          source,
+          source_thread_id AS "sourceThreadId",
+          source_message_id AS "sourceMessageId",
+          model_reroute_json AS "modelReroute",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
@@ -129,11 +176,31 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
+          source,
+          source_thread_id AS "sourceThreadId",
+          source_message_id AS "sourceMessageId",
+          model_reroute_json AS "modelReroute",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
         ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
+  const listActiveProjectionMessageAttachmentRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ActiveProjectionMessageAttachmentsDbRow,
+    execute: () =>
+      sql`
+        SELECT
+          message.attachments_json AS "attachments"
+        FROM projection_thread_messages AS message
+        LEFT JOIN projection_threads AS thread
+          ON thread.thread_id = message.thread_id
+        WHERE message.attachments_json IS NOT NULL
+          AND (thread.thread_id IS NULL OR thread.deleted_at IS NULL)
+        ORDER BY message.created_at ASC, message.message_id ASC
       `,
   });
 
@@ -167,6 +234,15 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       Effect.map((rows) => rows.map(toProjectionThreadMessage)),
     );
 
+  const listActiveAttachments: ProjectionThreadMessageRepositoryShape["listActiveAttachments"] =
+    () =>
+      listActiveProjectionMessageAttachmentRows(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionThreadMessageRepository.listActiveAttachments:query"),
+        ),
+        Effect.map((rows) => rows.flatMap((row) => row.attachments)),
+      );
+
   const deleteByThreadId: ProjectionThreadMessageRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadMessageRows(input).pipe(
       Effect.mapError(
@@ -178,6 +254,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
     upsert,
     getByMessageId,
     listByThreadId,
+    listActiveAttachments,
     deleteByThreadId,
   } satisfies ProjectionThreadMessageRepositoryShape;
 });

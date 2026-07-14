@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off - Desktop packaging needs to copy both file and directory artifacts from electron-builder output.
 
 import * as NodeModule from "node:module";
+import * as NodeFSP from "node:fs/promises";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -31,6 +33,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
+const DESKTOP_PACKAGE_NAME = "t3code";
+const LOCAL_DESKTOP_APP_ID = "com.t3tools.t3code.alpha.local";
+const LOCAL_DESKTOP_PACKAGE_NAME = "t3code-alpha-local";
+const LOCAL_DESKTOP_PRODUCT_NAME = "T3 Code (alpha.local)";
+const LOCAL_DESKTOP_EXECUTABLE_NAME = "T3 Code (alpha.local)";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -114,6 +121,7 @@ interface BuildCliInput {
   readonly buildVersion: Option.Option<string>;
   readonly outputDir: Option.Option<string>;
   readonly skipBuild: Option.Option<boolean>;
+  readonly localIdentity: Option.Option<boolean>;
   readonly keepStage: Option.Option<boolean>;
   readonly signed: Option.Option<boolean>;
   readonly verbose: Option.Option<boolean>;
@@ -548,6 +556,7 @@ interface ResolvedBuildOptions {
   readonly version: string | undefined;
   readonly outputDir: string;
   readonly skipBuild: boolean;
+  readonly localIdentity: boolean;
   readonly keepStage: boolean;
   readonly signed: boolean;
   readonly verbose: boolean;
@@ -575,6 +584,20 @@ interface StagePackageJson {
 
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
 export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
+
+type BuildEnvironment = Readonly<Record<string, string | undefined>>;
+
+function hasNonEmptyEnvValue(value: string | undefined): boolean {
+  return Boolean(value?.trim());
+}
+
+export function hasT3ConnectPublicBuildConfig(env: BuildEnvironment): boolean {
+  return (
+    hasNonEmptyEnvValue(env.VITE_CLERK_PUBLISHABLE_KEY) &&
+    hasNonEmptyEnvValue(env.VITE_CLERK_JWT_TEMPLATE) &&
+    hasNonEmptyEnvValue(env.VITE_T3CODE_RELAY_URL)
+  );
+}
 
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
@@ -959,6 +982,7 @@ const BuildEnvConfig = Config.all({
   version: Config.string("T3CODE_DESKTOP_VERSION").pipe(Config.option),
   outputDir: Config.string("T3CODE_DESKTOP_OUTPUT_DIR").pipe(Config.option),
   skipBuild: Config.boolean("T3CODE_DESKTOP_SKIP_BUILD").pipe(Config.withDefault(false)),
+  localIdentity: Config.boolean("T3CODE_DESKTOP_LOCAL_IDENTITY").pipe(Config.withDefault(false)),
   keepStage: Config.boolean("T3CODE_DESKTOP_KEEP_STAGE").pipe(Config.withDefault(false)),
   signed: Config.boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
   verbose: Config.boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
@@ -1036,6 +1060,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   );
 
   const skipBuild = resolveBooleanFlag(input.skipBuild, env.skipBuild);
+  const localIdentity = resolveBooleanFlag(input.localIdentity, env.localIdentity);
   const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
   const signed = resolveBooleanFlag(input.signed, env.signed);
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
@@ -1062,6 +1087,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     version,
     outputDir,
     skipBuild,
+    localIdentity,
     keepStage,
     signed,
     verbose,
@@ -1357,10 +1383,21 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
+export function resolveDesktopProductName(version: string, localIdentity = false): string {
+  if (localIdentity) {
+    return LOCAL_DESKTOP_PRODUCT_NAME;
+  }
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
+}
+
+export function resolveDesktopAppId(localIdentity = false): string {
+  return localIdentity ? LOCAL_DESKTOP_APP_ID : DESKTOP_APP_ID;
+}
+
+export function resolveDesktopPackageName(localIdentity = false): string {
+  return localIdentity ? LOCAL_DESKTOP_PACKAGE_NAME : DESKTOP_PACKAGE_NAME;
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -1370,6 +1407,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   signed: boolean,
   mockUpdates: boolean,
   mockUpdateServerPort: number | undefined,
+  localIdentity: boolean,
   macPasskeySigning:
     | {
         readonly entitlementsPath: string;
@@ -1377,10 +1415,15 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       }
     | undefined,
 ) {
+  const productName = resolveDesktopProductName(version, localIdentity);
+  const appId = resolveDesktopAppId(localIdentity);
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
-    productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    appId,
+    productName,
+    executableName: localIdentity ? LOCAL_DESKTOP_EXECUTABLE_NAME : undefined,
+    artifactName: localIdentity
+      ? "T3-Code-alpha-local-${version}-${arch}.${ext}"
+      : "T3-Code-${version}-${arch}.${ext}",
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -1401,7 +1444,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
-  if (publishConfig) {
+  if (!localIdentity && publishConfig) {
     buildConfig.publish = [publishConfig];
   } else if (mockUpdates) {
     buildConfig.publish = [
@@ -1435,12 +1478,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     buildConfig.linux = {
       target: [target],
-      executableName: "t3code",
+      executableName: localIdentity ? LOCAL_DESKTOP_PACKAGE_NAME : "t3code",
       icon: "icons",
       category: "Development",
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: localIdentity ? LOCAL_DESKTOP_PACKAGE_NAME : "t3code",
         },
       },
     };
@@ -1563,6 +1606,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const hostPlatform = yield* HostProcessPlatform;
+  const repoEnv = loadRepoEnv({ repoRoot });
   const workspaceConfig = yield* readWorkspaceConfig();
   const workspaceCatalog = workspaceConfig.catalog ?? {};
   const workspaceOverrides = workspaceConfig.overrides ?? {};
@@ -1632,11 +1676,19 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const bundledClientEntry = path.join(distDirs.serverDist, "client/index.html");
 
   if (!options.skipBuild) {
+    if (!hasT3ConnectPublicBuildConfig(repoEnv)) {
+      yield* Effect.logWarning(
+        "[desktop-artifact] T3 Connect public config is not set in the environment, .env, or .env.local. The packaged app will hide T3 Connect sign-in and remote environment controls.",
+      );
+    }
     yield* Effect.log("[desktop-artifact] Building desktop/server/web artifacts...");
-    const spawnCommand = yield* resolveSpawnCommand("vp", ["run", "build:desktop"]);
+    const spawnCommand = yield* resolveSpawnCommand("vp", ["run", "build:desktop"], {
+      env: repoEnv,
+    });
     yield* runCommand(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         cwd: repoRoot,
+        env: repoEnv,
         shell: spawnCommand.shell,
       }),
       { label: "vp run build:desktop", verbose: options.verbose },
@@ -1692,7 +1744,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => resolveMacPasskeySigningConfiguration(repoEnv),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;
@@ -1742,7 +1794,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     stageDependencies,
   );
   const stagePackageJson: StagePackageJson = {
-    name: "t3code",
+    name: resolveDesktopPackageName(options.localIdentity),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
@@ -1758,6 +1810,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.signed,
       options.mockUpdates,
       options.mockUpdateServerPort,
+      options.localIdentity,
       macPasskeySigning && macEntitlementsPath
         ? {
             entitlementsPath: macEntitlementsPath,
@@ -1815,7 +1868,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   // as enabled, so copy the host env and scrub empty values instead of relying
   // on `extendEnv` merging.
   const buildEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...repoEnv,
   };
   buildEnv.npm_config_user_agent = resolvePackageManagerUserAgent(rootPackageJson.packageManager);
   for (const [key, value] of Object.entries(buildEnv)) {
@@ -1893,10 +1946,15 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   for (const entry of stageEntries) {
     const from = path.join(stageDistDir, entry);
     const stat = yield* fs.stat(from).pipe(Effect.orElseSucceed(() => null));
-    if (!stat || stat.type !== "File") continue;
+    if (!stat || (stat.type !== "File" && stat.type !== "Directory")) continue;
 
     const to = path.join(options.outputDir, entry);
-    yield* fs.copyFile(from, to);
+    yield* Effect.promise(() => NodeFSP.rm(to, { recursive: true, force: true }));
+    if (stat.type === "File") {
+      yield* fs.copyFile(from, to);
+    } else {
+      yield* fs.copy(from, to);
+    }
     copiedArtifacts.push(to);
   }
 
@@ -1939,6 +1997,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   skipBuild: Flag.boolean("skip-build").pipe(
     Flag.withDescription(
       "Skip `vp run build:desktop` and use existing dist artifacts (env: T3CODE_DESKTOP_SKIP_BUILD).",
+    ),
+    Flag.optional,
+  ),
+  localIdentity: Flag.boolean("local-identity").pipe(
+    Flag.withDescription(
+      "Build with local app identity, product name, and executable name (env: T3CODE_DESKTOP_LOCAL_IDENTITY).",
     ),
     Flag.optional,
   ),

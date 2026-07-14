@@ -132,6 +132,7 @@ import { closePreviewSession } from "./preview/closePreviewSession";
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { ProjectBrowserPanel } from "./project-browser/ProjectBrowserPanel";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -151,16 +152,29 @@ import {
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { useEnvironmentSettings } from "../hooks/useSettings";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  getAppModelOptionsForInstance,
+  resolveAppModelSelectionForInstance,
+  type AppModelOption,
+} from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
+  derivePhysicalProjectKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { buildDraftThreadRouteParams } from "../threadRoutes";
 import {
-  type ComposerImageAttachment,
+  selectProjectBrowserLayout,
+  selectProjectBrowserRuntime,
+  useProjectBrowserStore,
+} from "../projectBrowserStore";
+import { promoteRightPanelBrowserToProject } from "../projectBrowserWorkflows";
+import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
+import {
+  type ComposerAttachment,
+  composerAttachmentObjectUrl,
+  type ComposerThreadDraftState,
   type DraftThreadEnvMode,
   useComposerDraftStore,
   type DraftId,
@@ -205,6 +219,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
+import { ThreadHandoffDialog } from "./chat/ThreadHandoffDialog";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -214,6 +229,8 @@ import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  applyResolvedAttachmentAssetUrls,
+  buildOptimisticComposerAttachments,
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
   buildThreadTurnInterruptInput,
@@ -222,17 +239,22 @@ import {
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
   getStartedThreadModelChangeBlockReason,
+  STEER_DISPATCH_FALLBACK_MS,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
   PullRequestDialogState,
-  cloneComposerImageForRetry,
+  cloneComposerAttachmentForRetry,
   deriveLockedProvider,
-  readFileAsDataUrl,
+  mergeComposerDraftItemsById,
+  mergeFailedComposerPrompt,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
+  revokeUserMessageDocumentAssetUrls,
   revokeUserMessagePreviewUrls,
+  revokeUserMessagePreviewUrlsExcept,
+  serializeComposerAttachments,
   waitForStartedServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -249,9 +271,31 @@ import {
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+  type ProviderInstanceEntry,
+} from "../providerInstances";
+import {
+  buildHandoffDraftCopy,
+  buildHandoffTargetOptions,
+  countImportableHandoffMessages,
+  getHandoffSourceDisabledReason,
+  resolveInitialHandoffTarget,
+} from "../threadHandoff/handoff";
 
-const IMAGE_ONLY_BOOTSTRAP_PROMPT =
-  "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
+const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
+  "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
+type FailedComposerDraftSnapshot = Pick<
+  ComposerThreadDraftState,
+  | "prompt"
+  | "attachments"
+  | "terminalContexts"
+  | "elementContexts"
+  | "previewAnnotations"
+  | "reviewComments"
+>;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
@@ -373,6 +417,16 @@ function useLocalDispatchState(input: {
     setLocalDispatch(null);
   }, []);
 
+  const userMessageCount = useMemo(() => {
+    const messages = input.activeThread?.messages;
+    if (!messages) return 0;
+    let count = 0;
+    for (const message of messages) {
+      if (message.role === "user") count += 1;
+    }
+    return count;
+  }, [input.activeThread?.messages]);
+
   const serverAcknowledgedLocalDispatch = useMemo(
     () =>
       hasServerAcknowledgedLocalDispatch({
@@ -380,6 +434,7 @@ function useLocalDispatchState(input: {
         phase: input.phase,
         latestTurn: input.activeLatestTurn,
         session: input.activeThread?.session ?? null,
+        userMessageCount,
         hasPendingApproval: input.activePendingApproval !== null,
         hasPendingUserInput: input.activePendingUserInput !== null,
         threadError: input.threadError,
@@ -392,6 +447,7 @@ function useLocalDispatchState(input: {
       input.phase,
       input.threadError,
       localDispatch,
+      userMessageCount,
     ],
   );
   const activeLocalDispatch = serverAcknowledgedLocalDispatch ? null : localDispatch;
@@ -405,11 +461,27 @@ function useLocalDispatchState(input: {
             ? active
             : { ...active, preparingWorktree };
         }
-        return createLocalDispatchSnapshot(input.activeThread, options);
+        return createLocalDispatchSnapshot(input.activeThread, { ...options, phase: input.phase });
       });
     },
-    [input.activeThread, serverAcknowledgedLocalDispatch],
+    [input.activeThread, input.phase, serverAcknowledgedLocalDispatch],
   );
+
+  // Safety net: a steer continues the running turn, so its acknowledgement
+  // signals (steered message landing / session advancing) can in rare cases be
+  // missed. Force-clear the dispatch after a bounded timeout so the composer
+  // never stays locked for the remainder of the turn.
+  useEffect(() => {
+    if (!activeLocalDispatch?.wasSteer) return;
+    const elapsed = Date.now() - new Date(activeLocalDispatch.startedAt).getTime();
+    const remaining = Math.max(0, STEER_DISPATCH_FALLBACK_MS - elapsed);
+    const timer = setTimeout(() => {
+      resetLocalDispatch();
+    }, remaining);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [activeLocalDispatch, resetLocalDispatch]);
 
   return {
     beginLocalDispatch,
@@ -1001,6 +1073,7 @@ function ChatViewContent(props: ChatViewProps) {
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
+  const handoffThread = useAtomCommand(threadEnvironment.handoff, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -1044,6 +1117,9 @@ function ChatViewContent(props: ChatViewProps) {
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
   );
+  const stickyModelSelectionByProvider = useComposerDraftStore(
+    (store) => store.stickyModelSelectionByProvider,
+  );
   const timestampFormat = settings.timestampFormat;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
   const navigate = useNavigate();
@@ -1059,7 +1135,7 @@ function ChatViewContent(props: ChatViewProps) {
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
-  const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
+  const addComposerDraftAttachments = useComposerDraftStore((store) => store.addAttachments);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
   );
@@ -1092,7 +1168,7 @@ function ChatViewContent(props: ChatViewProps) {
         : null,
   );
   const promptRef = useRef("");
-  const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
+  const composerAttachmentsRef = useRef<ComposerAttachment[]>([]);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const composerElementContextsRef = useRef<ElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
@@ -1139,6 +1215,10 @@ function ChatViewContent(props: ChatViewProps) {
   const [pendingServerThreadEnvMode, setPendingServerThreadEnvMode] =
     useState<DraftThreadEnvMode | null>(null);
   const [pendingServerThreadBranch, setPendingServerThreadBranch] = useState<string | null>();
+  const [handoffDialogOpen, setHandoffDialogOpen] = useState(false);
+  const [selectedHandoffModelSelection, setSelectedHandoffModelSelection] =
+    useState<ModelSelection | null>(null);
+  const [isHandoffSubmitting, setIsHandoffSubmitting] = useState(false);
   const [
     pendingServerThreadStartFromOriginByThreadId,
     setPendingServerThreadStartFromOriginByThreadId,
@@ -1308,6 +1388,7 @@ function ChatViewContent(props: ChatViewProps) {
   const activeFileSurface =
     activeRightPanelSurface?.kind === "file" ? activeRightPanelSurface : null;
   const activePreviewState = useThreadPreviewState(activeThreadRef);
+  const projectBrowserRouteByTabId = useProjectBrowserStore((state) => state.routeByTabId);
   const panelTerminalIds = useMemo(
     () =>
       new Set(
@@ -1322,14 +1403,20 @@ function ChatViewContent(props: ChatViewProps) {
   const canMaximizeRightPanel = rightPanelOpen && !shouldUsePlanSidebarSheet;
   const rightPanelMaximized =
     canMaximizeRightPanel && maximizedRightPanelThreadKey === routeThreadKey;
-  const inlineRightPanelOwnsTitleBar = rightPanelOpen && !shouldUsePlanSidebarSheet;
 
   useEffect(() => {
     if (!activeThreadRef) return;
-    useRightPanelStore
+    const threadTabIds = Object.keys(activePreviewState.sessions).filter(
+      (tabId) => projectBrowserRouteByTabId[tabId] === undefined,
+    );
+    useRightPanelStore.getState().reconcileBrowserSurfaces(activeThreadRef, threadTabIds);
+    useProjectBrowserStore
       .getState()
-      .reconcileBrowserSurfaces(activeThreadRef, Object.keys(activePreviewState.sessions));
-  }, [activePreviewState.sessions, activeThreadRef]);
+      .reconcileAuthoritativeTabs(
+        activeThreadRef,
+        new Set(Object.keys(activePreviewState.sessions)),
+      );
+  }, [activePreviewState.sessions, activeThreadRef, projectBrowserRouteByTabId]);
 
   const planSidebarOpen = activeRightPanelKind === "plan";
 
@@ -1460,6 +1547,48 @@ function ChatViewContent(props: ChatViewProps) {
     [retryEnvironment],
   );
   const projectGroupingSettings = selectProjectGroupingSettings(settings);
+  const activeLogicalProjectKey = activeProject
+    ? deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings)
+    : null;
+  const activePhysicalProjectKey = activeProject ? derivePhysicalProjectKey(activeProject) : null;
+  const projectBrowserRuntime = useProjectBrowserStore((state) =>
+    selectProjectBrowserRuntime(state.runtimeByProjectKey, activeLogicalProjectKey),
+  );
+  const projectBrowserLayout = useProjectBrowserStore((state) =>
+    selectProjectBrowserLayout(state.layoutByProjectKey, activeLogicalProjectKey),
+  );
+  const projectBrowserActive = useProjectBrowserStore((state) =>
+    projectBrowserRuntime.tabs.some((tab) => state.activityByTabId[tab.tabId] !== undefined),
+  );
+  const inlineRightPanelOwnsTitleBar =
+    (rightPanelOpen || projectBrowserLayout.isOpen) && !shouldUsePlanSidebarSheet;
+  const previousLogicalProjectKeyByPhysicalKeyRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const previous = previousLogicalProjectKeyByPhysicalKeyRef.current;
+    const next = new Map(
+      allProjects.map((project) => [
+        derivePhysicalProjectKey(project),
+        deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings),
+      ]),
+    );
+    const unchanged =
+      previous.size === next.size && [...next].every(([key, value]) => previous.get(key) === value);
+    if (unchanged) return;
+    const transitions = allProjects.map((project) => {
+      const physicalProjectKey = derivePhysicalProjectKey(project);
+      const nextLogicalProjectKey = next.get(physicalProjectKey)!;
+      return {
+        physicalProjectKey,
+        previousLogicalProjectKey: previous.get(physicalProjectKey) ?? nextLogicalProjectKey,
+        nextLogicalProjectKey,
+      };
+    });
+    previousLogicalProjectKeyByPhysicalKeyRef.current = next;
+    useProjectBrowserStore.getState().reconcileGrouping({
+      transitions,
+      activePhysicalProjectKey,
+    });
+  }, [activePhysicalProjectKey, allProjects, projectGroupingSettings]);
   const logicalProjectEnvironments = useMemo(() => {
     if (!activeProject) return [];
     const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
@@ -1719,6 +1848,22 @@ function ChatViewContent(props: ChatViewProps) {
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
+  const handoffProviderInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(
+    () =>
+      sortProviderInstanceEntries(
+        applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings),
+      ),
+    [providerStatuses, settings],
+  );
+  const handoffModelOptionsByInstance = useMemo<
+    ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>
+  >(() => {
+    const out = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
+    for (const entry of handoffProviderInstanceEntries) {
+      out.set(entry.instanceId, getAppModelOptionsForInstance(settings, entry));
+    }
+    return out;
+  }, [handoffProviderInstanceEntries, settings]);
   const unlockedSelectedProvider = resolveSelectableProvider(
     providerStatuses,
     selectedProviderByThreadId ?? threadProvider ?? ProviderDriverKind.make("codex"),
@@ -1798,6 +1943,70 @@ function ChatViewContent(props: ChatViewProps) {
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
   const activePendingApproval = pendingApprovals[0] ?? null;
+  const handoffImportableMessageCount = useMemo(
+    () => countImportableHandoffMessages(activeThread?.messages ?? []),
+    [activeThread?.messages],
+  );
+  const handoffSourceDisabledReason = useMemo(
+    () =>
+      getHandoffSourceDisabledReason({
+        isServerThread,
+        thread: activeThread ?? null,
+        hasPendingApproval: activePendingApproval !== null,
+        hasPendingUserInput: activePendingUserInput !== null,
+      }),
+    [activePendingApproval, activePendingUserInput, activeThread, isServerThread],
+  );
+  const handoffSourceInstanceId =
+    activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null;
+  const handoffTargetOptions = useMemo(
+    () =>
+      handoffSourceInstanceId
+        ? buildHandoffTargetOptions({
+            entries: handoffProviderInstanceEntries,
+            sourceInstanceId: handoffSourceInstanceId,
+            modelOptionsByInstance: handoffModelOptionsByInstance,
+            stickyModelSelectionByProvider,
+          })
+        : [],
+    [
+      handoffModelOptionsByInstance,
+      handoffProviderInstanceEntries,
+      handoffSourceInstanceId,
+      stickyModelSelectionByProvider,
+    ],
+  );
+  useEffect(() => {
+    if (!handoffDialogOpen) return;
+    if (
+      selectedHandoffModelSelection &&
+      handoffTargetOptions.some((option) => {
+        if (
+          option.disabledReason !== null ||
+          option.entry.instanceId !== selectedHandoffModelSelection.instanceId
+        ) {
+          return false;
+        }
+        const models = handoffModelOptionsByInstance.get(option.entry.instanceId) ?? [];
+        return (
+          models.some((model) => model.slug === selectedHandoffModelSelection.model) ||
+          option.entry.models.some((model) => model.slug === selectedHandoffModelSelection.model)
+        );
+      })
+    ) {
+      return;
+    }
+    setSelectedHandoffModelSelection(
+      resolveInitialHandoffTarget(handoffTargetOptions, composerActiveProvider)?.modelSelection ??
+        null,
+    );
+  }, [
+    composerActiveProvider,
+    handoffDialogOpen,
+    handoffModelOptionsByInstance,
+    handoffTargetOptions,
+    selectedHandoffModelSelection,
+  ]);
   const {
     beginLocalDispatch,
     resetLocalDispatch,
@@ -1909,18 +2118,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const displayServerMessages = useMemo<ReadonlyArray<ChatMessage>>(() => {
     if (!serverMessages) return [];
-    return serverMessages.map((message) => {
-      if (!message.attachments || message.attachments.length === 0) {
-        return message;
-      }
-      return {
-        ...message,
-        attachments: message.attachments.map((attachment) => {
-          const previewUrl = serverAttachmentUrlById.get(attachment.id);
-          return previewUrl ? { ...attachment, previewUrl } : attachment;
-        }),
-      };
-    });
+    return applyResolvedAttachmentAssetUrls(serverMessages, serverAttachmentUrlById);
   }, [serverAttachmentUrlById, serverMessages]);
   useEffect(() => {
     if (typeof Image === "undefined" || displayServerMessages.length === 0) {
@@ -2144,6 +2342,11 @@ function ChatViewContent(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  const handoffSourceProviderName =
+    handoffProviderInstanceEntries.find((entry) => entry.instanceId === handoffSourceInstanceId)
+      ?.displayName ??
+    activeProviderStatus?.displayName ??
+    "Current provider";
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
@@ -2265,6 +2468,104 @@ function ChatViewContent(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
+  const openHandoffDialog = useCallback(() => {
+    if (handoffSourceDisabledReason !== null) {
+      return;
+    }
+    const initialTarget = resolveInitialHandoffTarget(handoffTargetOptions, composerActiveProvider);
+    setSelectedHandoffModelSelection(initialTarget?.modelSelection ?? null);
+    setHandoffDialogOpen(true);
+  }, [composerActiveProvider, handoffSourceDisabledReason, handoffTargetOptions]);
+  const onSubmitHandoff = useCallback(async () => {
+    if (
+      !activeThread ||
+      !isServerThread ||
+      handoffSourceDisabledReason !== null ||
+      selectedHandoffModelSelection === null ||
+      isHandoffSubmitting
+    ) {
+      return;
+    }
+    const selectedTarget = handoffTargetOptions.find(
+      (option) => option.entry.instanceId === selectedHandoffModelSelection.instanceId,
+    );
+    if (!selectedTarget || selectedTarget.disabledReason !== null) {
+      return;
+    }
+
+    const sourceThreadId = activeThread.id;
+    const targetThreadId = newThreadId();
+    const targetThreadRef = scopeThreadRef(activeThread.environmentId, targetThreadId);
+    const draftCopy = buildHandoffDraftCopy({ prompt: promptRef.current });
+
+    setIsHandoffSubmitting(true);
+    const result = await handoffThread({
+      environmentId: activeThread.environmentId,
+      input: {
+        sourceThreadId,
+        targetThreadId,
+        targetModelSelection: selectedHandoffModelSelection,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    if (result._tag === "Failure") {
+      setIsHandoffSubmitting(false);
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not hand off thread",
+            description:
+              error instanceof Error
+                ? error.message
+                : "An error occurred while creating the target thread.",
+          }),
+        );
+      }
+      return;
+    }
+
+    setStickyComposerModelSelection(selectedHandoffModelSelection);
+    setComposerDraftModelSelection(targetThreadRef, selectedHandoffModelSelection);
+    if (draftCopy !== null) {
+      setComposerDraftPrompt(targetThreadRef, draftCopy.prompt);
+    }
+    setHandoffDialogOpen(false);
+
+    await settlePromise(() => waitForStartedServerThread(targetThreadRef, 2_000));
+    const navigateResult = await settlePromise(() =>
+      navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(targetThreadRef),
+      }),
+    );
+    setIsHandoffSubmitting(false);
+    if (navigateResult._tag === "Failure") {
+      const error = squashAtomCommandFailure(navigateResult);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Thread created, but navigation failed",
+          description: error instanceof Error ? error.message : "Open it from the sidebar.",
+        }),
+      );
+      return;
+    }
+  }, [
+    activeThread,
+    handoffSourceDisabledReason,
+    handoffTargetOptions,
+    handoffThread,
+    isHandoffSubmitting,
+    isServerThread,
+    navigate,
+    selectedHandoffModelSelection,
+    setComposerDraftModelSelection,
+    setComposerDraftPrompt,
+    setStickyComposerModelSelection,
+  ]);
   const addTerminalContextToDraft = useCallback(
     (selection: TerminalContextSelection) => {
       composerRef.current?.addTerminalContext(selection);
@@ -2937,6 +3238,10 @@ function ChatViewContent(props: ChatViewProps) {
     }
     useRightPanelStore.getState().toggleVisibility(activeThreadRef);
   }, [activeThreadRef, closePlanSidebar, closePreviewPanel, planSidebarOpen, rightPanelOpen]);
+  const toggleProjectBrowser = useCallback(() => {
+    if (!activeLogicalProjectKey || !isElectron) return;
+    useProjectBrowserStore.getState().toggle(activeLogicalProjectKey);
+  }, [activeLogicalProjectKey]);
   const toggleRightPanelMaximized = useCallback(() => {
     if (!canMaximizeRightPanel) return;
     setMaximizedRightPanelThreadKey((threadKey) =>
@@ -2989,6 +3294,29 @@ function ChatViewContent(props: ChatViewProps) {
       setActivePreviewTab(activeThreadRef, nextActiveSurface.resourceId);
     }
   }, [activeThreadRef]);
+  const pinRightPanelBrowser = useCallback(
+    (surface: Extract<RightPanelSurface, { kind: "preview" }>) => {
+      if (
+        !activeThreadRef ||
+        !activeLogicalProjectKey ||
+        !activePhysicalProjectKey ||
+        !surface.resourceId
+      ) {
+        return;
+      }
+      if (
+        promoteRightPanelBrowserToProject({
+          logicalProjectKey: activeLogicalProjectKey,
+          physicalProjectKey: activePhysicalProjectKey,
+          threadRef: activeThreadRef,
+          surface,
+        })
+      ) {
+        syncActivePreviewSurface();
+      }
+    },
+    [activeLogicalProjectKey, activePhysicalProjectKey, activeThreadRef, syncActivePreviewSurface],
+  );
   const closeRightPanelSurface = useCallback(
     (surface: RightPanelSurface) => {
       if (!activeThreadRef) return;
@@ -3535,6 +3863,9 @@ function ChatViewContent(props: ChatViewProps) {
       );
     }, 0);
     for (const removedMessage of removedMessages) {
+      // Document blob URLs are never handed to the image preloader. Release
+      // them as soon as the signed server attachment replaces the optimistic row.
+      revokeUserMessageDocumentAssetUrls(removedMessage);
       const previewUrls = collectUserMessageBlobPreviewUrls(removedMessage);
       if (previewUrls.length > 0) {
         handoffAttachmentPreviews(removedMessage.id, previewUrls);
@@ -3717,6 +4048,13 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "projectBrowser.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleProjectBrowser();
+        return;
+      }
+
       if (command === "terminal.split") {
         event.preventDefault();
         event.stopPropagation();
@@ -3812,6 +4150,7 @@ function ChatViewContent(props: ChatViewProps) {
     keybindings,
     onToggleDiff,
     toggleRightPanel,
+    toggleProjectBrowser,
     toggleTerminalVisibility,
     composerRef,
   ]);
@@ -3875,6 +4214,81 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  const recoverFailedComposerDraft = useCallback(
+    (failedDraft: FailedComposerDraftSnapshot): ReadonlySet<string> => {
+      const currentDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+      const retryAttachments = failedDraft.attachments.map(cloneComposerAttachmentForRetry);
+      const mergedPrompt = mergeFailedComposerPrompt(promptRef.current, failedDraft.prompt);
+      const mergedTerminalContexts = mergeComposerDraftItemsById(
+        currentDraft?.terminalContexts ?? composerTerminalContextsRef.current,
+        failedDraft.terminalContexts,
+      );
+      const mergedElementContexts = mergeComposerDraftItemsById(
+        currentDraft?.elementContexts ?? composerElementContextsRef.current,
+        failedDraft.elementContexts,
+      );
+      const mergedPreviewAnnotations = mergeComposerDraftItemsById(
+        currentDraft?.previewAnnotations ?? [],
+        failedDraft.previewAnnotations,
+      );
+      const mergedReviewComments = mergeComposerDraftItemsById(
+        currentDraft?.reviewComments ?? [],
+        failedDraft.reviewComments,
+      );
+
+      setComposerDraftPrompt(composerDraftTarget, mergedPrompt);
+      addComposerDraftAttachments(composerDraftTarget, retryAttachments);
+      setComposerDraftTerminalContexts(composerDraftTarget, mergedTerminalContexts);
+      setComposerDraftElementContexts(composerDraftTarget, mergedElementContexts);
+      setComposerDraftPreviewAnnotations(composerDraftTarget, mergedPreviewAnnotations);
+      setComposerDraftReviewComments(composerDraftTarget, mergedReviewComments);
+
+      const recoveredDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+      promptRef.current = mergedPrompt;
+      composerAttachmentsRef.current = recoveredDraft?.attachments ?? [];
+      composerTerminalContextsRef.current = mergedTerminalContexts;
+      composerElementContextsRef.current = mergedElementContexts;
+      composerRef.current?.resetCursorState({
+        cursor: collapseExpandedComposerCursor(mergedPrompt, mergedPrompt.length),
+        prompt: mergedPrompt,
+        detectTrigger: true,
+      });
+      return new Set(
+        (recoveredDraft?.attachments ?? []).map((attachment) =>
+          composerAttachmentObjectUrl(attachment),
+        ),
+      );
+    },
+    [
+      addComposerDraftAttachments,
+      composerAttachmentsRef,
+      composerDraftTarget,
+      composerElementContextsRef,
+      composerRef,
+      composerTerminalContextsRef,
+      promptRef,
+      setComposerDraftElementContexts,
+      setComposerDraftPreviewAnnotations,
+      setComposerDraftPrompt,
+      setComposerDraftReviewComments,
+      setComposerDraftTerminalContexts,
+    ],
+  );
+
+  const discardFailedOptimisticMessage = useCallback(
+    (messageId: MessageId, retainedUrls: ReadonlySet<string>) => {
+      setOptimisticUserMessages((existing) => {
+        const removed = existing.filter((message) => message.id === messageId);
+        for (const message of removed) {
+          revokeUserMessagePreviewUrlsExcept(message, retainedUrls);
+        }
+        const next = existing.filter((message) => message.id !== messageId);
+        return next.length === existing.length ? existing : next;
+      });
+    },
+    [],
+  );
+
   const onSend = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     if (
@@ -3892,7 +4306,7 @@ function ChatViewContent(props: ChatViewProps) {
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx) return;
     const {
-      images: composerImages,
+      attachments: composerAttachments,
       terminalContexts: composerTerminalContexts,
       elementContexts: composerElementContexts,
       previewAnnotations: composerPreviewAnnotations,
@@ -3911,7 +4325,7 @@ function ChatViewContent(props: ChatViewProps) {
       hasSendableContent,
     } = deriveComposerSendState({
       prompt: promptForSend,
-      imageCount: composerImages.length,
+      attachmentCount: composerAttachments.length,
       terminalContexts: composerTerminalContexts,
       elementContextCount:
         composerElementContexts.length +
@@ -3919,21 +4333,53 @@ function ChatViewContent(props: ChatViewProps) {
         composerReviewComments.length,
     });
     if (showPlanFollowUpPrompt && activeProposedPlan) {
+      const planTerminalContexts = [...sendableComposerTerminalContexts];
+      const planElementContexts = [...composerElementContexts];
+      const planPreviewAnnotations = [...composerPreviewAnnotations];
+      const planReviewComments: ReviewCommentContext[] = [...composerReviewComments];
+      const planDraftText = appendReviewCommentsToPrompt(
+        planPreviewAnnotations.reduce(
+          (text, annotation) => appendPreviewAnnotationPrompt(text, annotation),
+          appendElementContextsToPrompt(
+            appendTerminalContextsToPrompt(promptForSend, planTerminalContexts),
+            planElementContexts,
+          ),
+        ),
+        planReviewComments,
+      );
       const followUp = resolvePlanFollowUpSubmission({
-        draftText: trimmed,
+        draftText: planDraftText.trim(),
         planMarkdown: activeProposedPlan.planMarkdown,
       });
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
+      if (expiredTerminalContextCount > 0) {
+        const toastCopy = buildExpiredTerminalContextToastCopy(
+          expiredTerminalContextCount,
+          "omitted",
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: toastCopy.title,
+            description: toastCopy.description,
+          }),
+        );
+      }
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
+        failedDraft: {
+          prompt: promptForSend,
+          attachments: [...composerAttachments],
+          terminalContexts: planTerminalContexts,
+          elementContexts: planElementContexts,
+          previewAnnotations: planPreviewAnnotations,
+          reviewComments: planReviewComments,
+        },
       });
       return;
     }
     const standaloneSlashCommand =
-      composerImages.length === 0 &&
+      composerAttachments.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerElementContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
@@ -3983,7 +4429,7 @@ function ChatViewContent(props: ChatViewProps) {
     sendInFlightRef.current = true;
     beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
 
-    const composerImagesSnapshot = [...composerImages];
+    const composerAttachmentsSnapshot = [...composerAttachments];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
     const composerElementContextsSnapshot = [...composerElementContexts];
     const composerPreviewAnnotationsSnapshot = [...composerPreviewAnnotations];
@@ -4007,25 +4453,10 @@ function ChatViewContent(props: ChatViewProps) {
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     });
-    const turnAttachmentsPromise = Promise.all(
-      composerImagesSnapshot.map(async (image) => ({
-        type: "image" as const,
-        name: image.name,
-        mimeType: image.mimeType,
-        sizeBytes: image.sizeBytes,
-        dataUrl: await readFileAsDataUrl(image.file),
-      })),
-    );
-    const optimisticAttachments = composerImagesSnapshot.map((image) => ({
-      type: "image" as const,
-      id: image.id,
-      name: image.name,
-      mimeType: image.mimeType,
-      sizeBytes: image.sizeBytes,
-      previewUrl: image.previewUrl,
-    }));
+    const turnAttachmentsPromise = serializeComposerAttachments(composerAttachmentsSnapshot);
+    const optimisticAttachments = buildOptimisticComposerAttachments(composerAttachmentsSnapshot);
     // Sending always returns to the live edge. The new row becomes the
     // anchored end-space target so it lands near the top while the response
     // streams into the reserved space below it.
@@ -4071,17 +4502,11 @@ function ChatViewContent(props: ChatViewProps) {
     clearComposerDraftContent(composerDraftTarget);
     composerRef.current?.resetCursorState();
 
-    let firstComposerImageName: string | null = null;
-    if (composerImagesSnapshot.length > 0) {
-      const firstComposerImage = composerImagesSnapshot[0];
-      if (firstComposerImage) {
-        firstComposerImageName = firstComposerImage.name;
-      }
-    }
+    const firstComposerAttachment = composerAttachmentsSnapshot[0] ?? null;
     let titleSeed = trimmed;
     if (!titleSeed) {
-      if (firstComposerImageName) {
-        titleSeed = `Image: ${firstComposerImageName}`;
+      if (firstComposerAttachment) {
+        titleSeed = `${firstComposerAttachment.type === "document" ? "PDF" : "Image"}: ${firstComposerAttachment.name}`;
       } else if (composerTerminalContextsSnapshot.length > 0) {
         titleSeed = formatTerminalContextLabel(composerTerminalContextsSnapshot[0]!);
       } else if (composerElementContextsSnapshot.length > 0) {
@@ -4189,41 +4614,15 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     if (failure !== null) {
-      if (
-        promptRef.current.length === 0 &&
-        composerImagesRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0 &&
-        composerElementContextsRef.current.length === 0 &&
-        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.previewAnnotations
-          .length ?? 0) === 0 &&
-        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
-          .length ?? 0) === 0
-      ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
-        promptRef.current = promptForSend;
-        const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
-        composerImagesRef.current = retryComposerImages;
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        composerElementContextsRef.current = composerElementContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, promptForSend);
-        addComposerDraftImages(composerDraftTarget, retryComposerImages);
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
-        setComposerDraftElementContexts(composerDraftTarget, composerElementContextsSnapshot);
-        setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
-        setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
-        composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
-          prompt: promptForSend,
-          detectTrigger: true,
-        });
-      }
+      const retainedUrls = recoverFailedComposerDraft({
+        prompt: promptForSend,
+        attachments: composerAttachmentsSnapshot,
+        terminalContexts: composerTerminalContextsSnapshot,
+        elementContexts: composerElementContextsSnapshot,
+        previewAnnotations: composerPreviewAnnotationsSnapshot,
+        reviewComments: composerReviewCommentsSnapshot,
+      });
+      discardFailedOptimisticMessage(messageIdForSend, retainedUrls);
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(
@@ -4419,9 +4818,11 @@ function ChatViewContent(props: ChatViewProps) {
     async ({
       text,
       interactionMode: nextInteractionMode,
+      failedDraft,
     }: {
       text: string;
       interactionMode: "default" | "plan";
+      failedDraft: FailedComposerDraftSnapshot;
     }) => {
       if (
         !activeThread ||
@@ -4460,6 +4861,9 @@ function ChatViewContent(props: ChatViewProps) {
         effort: ctxSelectedPromptEffort,
         text: trimmed,
       });
+      const composerAttachmentsSnapshot = [...failedDraft.attachments];
+      const turnAttachmentsPromise = serializeComposerAttachments(composerAttachmentsSnapshot);
+      const optimisticAttachments = buildOptimisticComposerAttachments(composerAttachmentsSnapshot);
 
       sendInFlightRef.current = true;
       beginLocalDispatch({ preparingWorktree: false });
@@ -4484,12 +4888,16 @@ function ChatViewContent(props: ChatViewProps) {
           id: messageIdForSend,
           role: "user",
           text: outgoingMessageText,
+          ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
           turnId: null,
           createdAt: messageCreatedAt,
           updatedAt: messageCreatedAt,
           streaming: false,
         },
       ]);
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
 
       const settingsResult = await persistThreadSettingsForNextTurn({
         threadId: threadIdForSend,
@@ -4500,8 +4908,12 @@ function ChatViewContent(props: ChatViewProps) {
       });
       let failure: AtomCommandResult<unknown, unknown> | null =
         settingsResult._tag === "Failure" ? settingsResult : null;
+      const turnAttachmentsResult = await settlePromise(() => turnAttachmentsPromise);
+      if (failure === null && turnAttachmentsResult._tag === "Failure") {
+        failure = turnAttachmentsResult;
+      }
 
-      if (failure === null) {
+      if (failure === null && turnAttachmentsResult._tag === "Success") {
         // Keep the mode toggle and plan-follow-up banner in sync immediately
         // while the same-thread implementation turn is starting.
         setComposerDraftInteractionMode(
@@ -4517,7 +4929,7 @@ function ChatViewContent(props: ChatViewProps) {
               messageId: messageIdForSend,
               role: "user",
               text: outgoingMessageText,
-              attachments: [],
+              attachments: turnAttachmentsResult.value,
             },
             modelSelection: ctxSelectedModelSelection,
             titleSeed: activeThread.title,
@@ -4551,9 +4963,8 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
-      setOptimisticUserMessages((existing) =>
-        existing.filter((message) => message.id !== messageIdForSend),
-      );
+      const retainedUrls = recoverFailedComposerDraft(failedDraft);
+      discardFailedOptimisticMessage(messageIdForSend, retainedUrls);
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(
@@ -4568,10 +4979,14 @@ function ChatViewContent(props: ChatViewProps) {
       activeThread,
       activeProposedPlan,
       beginLocalDispatch,
+      clearComposerDraftContent,
+      composerDraftTarget,
+      discardFailedOptimisticMessage,
       isConnecting,
       isSendBusy,
       isServerThread,
       persistThreadSettingsForNextTurn,
+      recoverFailedComposerDraft,
       resetLocalDispatch,
       runtimeMode,
       setComposerDraftInteractionMode,
@@ -4580,6 +4995,7 @@ function ChatViewContent(props: ChatViewProps) {
       autoOpenPlanSidebar,
       environmentId,
       composerRef,
+      promptRef,
     ],
   );
 
@@ -4922,8 +5338,14 @@ function ChatViewContent(props: ChatViewProps) {
       rightPanelAvailable={activeProject !== null}
       rightPanelOpen={rightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
+      projectBrowserAvailable={isElectron && activeProject !== null}
+      projectBrowserOpen={projectBrowserLayout.isOpen}
+      projectBrowserTabCount={projectBrowserRuntime.tabs.length}
+      projectBrowserActive={projectBrowserActive}
+      projectBrowserShortcutLabel={shortcutLabelForCommand(keybindings, "projectBrowser.toggle")}
       onToggleTerminal={toggleTerminalVisibility}
       onToggleRightPanel={toggleRightPanel}
+      onToggleProjectBrowser={toggleProjectBrowser}
     />
   );
   const panelLayoutControls = (
@@ -5009,10 +5431,25 @@ function ChatViewContent(props: ChatViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
-      {rightPanelOpen && !shouldUsePlanSidebarSheet ? panelLayoutControls : null}
+      <ThreadHandoffDialog
+        open={handoffDialogOpen}
+        sourceProviderName={handoffSourceProviderName}
+        importableMessageCount={handoffImportableMessageCount}
+        targetOptions={handoffTargetOptions}
+        selectedModelSelection={selectedHandoffModelSelection}
+        isSubmitting={isHandoffSubmitting}
+        onOpenChange={(open) => {
+          if (!open && isHandoffSubmitting) {
+            return;
+          }
+          setHandoffDialogOpen(open);
+        }}
+        onTargetChange={setSelectedHandoffModelSelection}
+        onSubmit={onSubmitHandoff}
+      />
       <div
         className={cn(
-          "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
+          "flex min-h-0 min-w-0 flex-col overflow-hidden",
           rightPanelMaximized ? "w-0 flex-none" : "flex-1",
         )}
         data-chat-column-maximized-away={rightPanelMaximized ? "true" : "false"}
@@ -5033,7 +5470,7 @@ function ChatViewContent(props: ChatViewProps) {
             COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
           )}
         >
-          {!rightPanelOpen ? panelLayoutControls : null}
+          {!rightPanelOpen && !projectBrowserLayout.isOpen ? panelLayoutControls : null}
           <ChatHeader
             activeThreadEnvironmentId={activeThread.environmentId}
             activeThreadId={activeThread.id}
@@ -5048,6 +5485,8 @@ function ChatViewContent(props: ChatViewProps) {
             keybindings={keybindings}
             availableEditors={availableEditors}
             rightPanelOpen={rightPanelOpen}
+            projectBrowserOpen={projectBrowserLayout.isOpen}
+            projectBrowserAvailable={isElectron && activeProject !== null}
             gitCwd={gitCwd}
             onRunProjectScript={runProjectScript}
             onAddProjectScript={saveProjectScript}
@@ -5173,6 +5612,7 @@ function ChatViewContent(props: ChatViewProps) {
                       sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
                       planSidebarLabel={planSidebarLabel}
                       planSidebarOpen={planSidebarOpen}
+                      handoffDisabledReason={handoffSourceDisabledReason}
                       runtimeMode={runtimeMode}
                       interactionMode={interactionMode}
                       lockedProvider={lockedProvider}
@@ -5186,7 +5626,7 @@ function ChatViewContent(props: ChatViewProps) {
                       terminalOpen={Boolean(terminalUiState.terminalOpen)}
                       gitCwd={gitCwd}
                       promptRef={promptRef}
-                      composerImagesRef={composerImagesRef}
+                      composerAttachmentsRef={composerAttachmentsRef}
                       composerTerminalContextsRef={composerTerminalContextsRef}
                       composerElementContextsRef={composerElementContextsRef}
                       onSend={onSend}
@@ -5207,6 +5647,7 @@ function ChatViewContent(props: ChatViewProps) {
                       handleRuntimeModeChange={handleRuntimeModeChange}
                       handleInteractionModeChange={handleInteractionModeChange}
                       togglePlanSidebar={togglePlanSidebar}
+                      onOpenHandoff={openHandoffDialog}
                       focusComposer={focusComposer}
                       scheduleComposerFocus={scheduleComposerFocus}
                       setThreadError={setThreadError}
@@ -5309,6 +5750,7 @@ function ChatViewContent(props: ChatViewProps) {
           onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
           onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
           onCloseAllSurfaces={closeAllRightPanelSurfaces}
+          onPinBrowser={pinRightPanelBrowser}
           onCopyFilePath={copyRightPanelFilePath}
           onAddBrowser={createBrowserSurface}
           onAddTerminal={addTerminalSurface}
@@ -5336,6 +5778,7 @@ function ChatViewContent(props: ChatViewProps) {
             onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
             onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
             onCloseAllSurfaces={closeAllRightPanelSurfaces}
+            onPinBrowser={pinRightPanelBrowser}
             onCopyFilePath={copyRightPanelFilePath}
             onAddBrowser={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
@@ -5349,6 +5792,31 @@ function ChatViewContent(props: ChatViewProps) {
           </RightPanelTabs>
         </RightPanelSheet>
       ) : null}
+
+      {isElectron &&
+      projectBrowserLayout.isOpen &&
+      activeLogicalProjectKey &&
+      activePhysicalProjectKey &&
+      activeThreadRef ? (
+        <Suspense fallback={null}>
+          <ProjectBrowserPanel
+            key={activeLogicalProjectKey}
+            logicalProjectKey={activeLogicalProjectKey}
+            activeThreadRef={activeThreadRef}
+            activePhysicalProjectKey={activePhysicalProjectKey}
+            configuredUrls={configuredPreviewUrls}
+            overlay={shouldUsePlanSidebarSheet}
+          />
+        </Suspense>
+      ) : null}
+
+      {/* Must come after the right panel and Project Browser in DOM order:
+          Chromium resolves -webkit-app-region overlaps by document order (not
+          z-index), so this no-drag cluster only carves the panels' drag-region
+          tab bars out of the window-drag area if it is rendered after them. */}
+      {(rightPanelOpen || projectBrowserLayout.isOpen) && !shouldUsePlanSidebarSheet
+        ? panelLayoutControls
+        : null}
 
       {expandedImage && (
         <ExpandedImageDialog

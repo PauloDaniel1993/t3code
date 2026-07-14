@@ -1,12 +1,13 @@
 "use client";
 
-import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { FILL_PREVIEW_VIEWPORT } from "@t3tools/contracts";
 import { useEffect, useMemo } from "react";
 
 import { isElectron } from "~/env";
 import { useTheme } from "~/hooks/useTheme";
 import { useActivePreviewSessions } from "~/previewStateStore";
+import { useProjectBrowserStore } from "~/projectBrowserStore";
 
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserPointerStore } from "./browserPointerStore";
@@ -15,6 +16,7 @@ import { HostedBrowserWebview } from "./HostedBrowserWebview";
 export function ElectronBrowserHost() {
   const { resolvedTheme } = useTheme();
   const previewByThreadKey = useActivePreviewSessions();
+  const projectTabRoutes = useProjectBrowserStore((state) => state.routeByTabId);
   const sessions = useMemo(
     () =>
       Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
@@ -70,6 +72,21 @@ export function ElectronBrowserHost() {
       useBrowserPointerStore.getState().apply(event);
     });
   }, []);
+
+  useEffect(() => {
+    const backingRefs = new Map(
+      Object.values(projectTabRoutes).map((route) => [
+        scopedThreadKey(route.backingThreadRef),
+        route.backingThreadRef,
+      ]),
+    );
+    for (const [threadKey, threadRef] of backingRefs) {
+      const authoritativeTabIds = new Set(
+        Object.keys(previewByThreadKey[threadKey]?.sessions ?? {}),
+      );
+      useProjectBrowserStore.getState().reconcileAuthoritativeTabs(threadRef, authoritativeTabIds);
+    }
+  }, [previewByThreadKey, projectTabRoutes]);
 
   if (!isElectron) return null;
   return (

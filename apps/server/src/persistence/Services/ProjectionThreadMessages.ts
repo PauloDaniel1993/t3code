@@ -9,10 +9,12 @@
 import {
   ChatAttachment,
   MessageId,
+  MessageModelReroute,
   OrchestrationMessageRole,
   ThreadId,
   TurnId,
   IsoDateTime,
+  OrchestrationMessageSource,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
@@ -29,6 +31,10 @@ export const ProjectionThreadMessage = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   isStreaming: Schema.Boolean,
+  source: OrchestrationMessageSource,
+  sourceThreadId: Schema.optionalKey(ThreadId),
+  sourceMessageId: Schema.optionalKey(MessageId),
+  modelReroute: Schema.optional(MessageModelReroute),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -77,6 +83,15 @@ export interface ProjectionThreadMessageRepositoryShape {
   readonly listByThreadId: (
     input: ListProjectionThreadMessagesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessage>, ProjectionRepositoryError>;
+
+  /**
+   * List attachment metadata referenced by messages in non-deleted or not-yet-
+   * projected threads. The latter keeps projector bootstrap cleanup conservative.
+   */
+  readonly listActiveAttachments: () => Effect.Effect<
+    ReadonlyArray<ChatAttachment>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Delete projected thread messages by thread.

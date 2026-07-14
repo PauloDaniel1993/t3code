@@ -3,9 +3,47 @@ import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  formatRerouteModelName,
+  getMessageModelReroute,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
 } from "./MessagesTimeline.logic";
+
+describe("formatRerouteModelName", () => {
+  it("maps known model families to display names by prefix", () => {
+    expect(formatRerouteModelName("claude-opus-4-8")).toBe("Opus 4.8");
+    expect(formatRerouteModelName("claude-opus-4-8-20260115")).toBe("Opus 4.8");
+    expect(formatRerouteModelName("claude-fable-5")).toBe("Fable 5");
+    expect(formatRerouteModelName("claude-fable-5-20260601")).toBe("Fable 5");
+    expect(formatRerouteModelName("claude-opus-4-7")).toBe("Opus 4.7");
+  });
+
+  it("falls back to the raw model id for unknown models", () => {
+    expect(formatRerouteModelName("some-future-model-9")).toBe("some-future-model-9");
+  });
+});
+
+describe("getMessageModelReroute", () => {
+  it("returns the reroute metadata when present", () => {
+    expect(
+      getMessageModelReroute({
+        modelReroute: {
+          fromModel: "claude-fable-5",
+          toModel: "claude-opus-4-8",
+          reason: "refusal",
+        },
+      }),
+    ).toEqual({
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "refusal",
+    });
+  });
+
+  it("returns undefined for messages without reroute metadata", () => {
+    expect(getMessageModelReroute({})).toBeUndefined();
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -438,6 +476,161 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(userRow?.revertTurnCount).toBe(1);
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
+  });
+
+  it("does not attach target-thread actions to imported handoff messages", () => {
+    const assistantTurnDiffSummary = {
+      turnId: "turn-imported" as never,
+      completedAt: "2026-01-01T00:00:30Z",
+      assistantMessageId: "assistant-imported" as never,
+      checkpointTurnCount: 2,
+      checkpointRef: "checkpoint-imported" as never,
+      status: "ready" as const,
+      files: [{ path: "src/imported.ts", kind: "modified", additions: 1, deletions: 0 }],
+    };
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-imported-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-imported" as never,
+            role: "user",
+            text: "Imported source prompt",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+            source: "handoff-import",
+          },
+        },
+        {
+          id: "assistant-imported-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: "assistant-imported" as never,
+            role: "assistant",
+            text: "Imported source response",
+            turnId: "turn-imported" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            updatedAt: "2026-01-01T00:00:30Z",
+            streaming: false,
+            source: "handoff-import",
+          },
+        },
+      ],
+      // Expand the imported block so the per-message rows render and the
+      // action-suppression assertions below are actually exercised.
+      expandedImportFoldIds: new Set(["import-fold:user-imported-entry"]),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map([
+        ["assistant-imported" as never, assistantTurnDiffSummary],
+      ]),
+      revertTurnCountByUserMessageId: new Map([["user-imported" as never, 1]]),
+    });
+
+    const userRow = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.role === "user",
+    );
+    const assistantRow = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.role === "assistant",
+    );
+
+    expect(userRow?.revertTurnCount).toBeUndefined();
+    expect(assistantRow?.assistantTurnDiffSummary).toBeUndefined();
+  });
+
+  it("folds a run of imported handoff messages behind a collapsed import row", () => {
+    const importedEntries = [
+      {
+        id: "imported-user-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        message: {
+          id: "imported-user" as never,
+          role: "user" as const,
+          text: "Imported prompt",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          streaming: false,
+          source: "handoff-import" as const,
+        },
+      },
+      {
+        id: "imported-assistant-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:10Z",
+        message: {
+          id: "imported-assistant" as never,
+          role: "assistant" as const,
+          text: "Imported response",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:10Z",
+          updatedAt: "2026-01-01T00:00:11Z",
+          streaming: false,
+          source: "handoff-import" as const,
+        },
+      },
+      {
+        id: "native-user-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:01:00Z",
+        message: {
+          id: "native-user" as never,
+          role: "user" as const,
+          text: "First native message",
+          turnId: null,
+          createdAt: "2026-01-01T00:01:00Z",
+          updatedAt: "2026-01-01T00:01:00Z",
+          streaming: false,
+          source: "user" as const,
+        },
+      },
+    ];
+
+    const collapsedRows = deriveMessagesTimelineRows({
+      timelineEntries: importedEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const importFold = collapsedRows.find(
+      (row): row is Extract<(typeof collapsedRows)[number], { kind: "import-fold" }> =>
+        row.kind === "import-fold",
+    );
+    expect(importFold?.id).toBe("import-fold:imported-user-entry");
+    expect(importFold?.count).toBe(2);
+    expect(importFold?.expanded).toBe(false);
+    // Imported messages are hidden by default; the native message stays visible.
+    const collapsedMessageIds = collapsedRows
+      .filter((row) => row.kind === "message")
+      .map((row) => (row.kind === "message" ? row.message.id : null));
+    expect(collapsedMessageIds).toEqual(["native-user"]);
+
+    const expandedRows = deriveMessagesTimelineRows({
+      timelineEntries: importedEntries,
+      expandedImportFoldIds: new Set(["import-fold:imported-user-entry"]),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    expect(
+      expandedRows.find((row) => row.kind === "import-fold" && row.expanded === true),
+    ).toBeDefined();
+    const expandedMessageIds = expandedRows
+      .filter((row) => row.kind === "message")
+      .map((row) => (row.kind === "message" ? row.message.id : null));
+    expect(expandedMessageIds).toEqual(["imported-user", "imported-assistant", "native-user"]);
   });
 
   it("folds settled-turn commentary and work behind a Worked-for row", () => {

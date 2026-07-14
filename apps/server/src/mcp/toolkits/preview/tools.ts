@@ -13,6 +13,7 @@ import {
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
   PreviewAutomationTabTargetInput,
+  PreviewAutomationTabList,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
@@ -48,6 +49,17 @@ export const PreviewStatusTool = Tool.make("preview_status", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
+
+export const PreviewTabsTool = readonlyBrowserTool(
+  Tool.make("preview_tabs", {
+    description:
+      "List live project-shared browser tabs available to the current thread, including tab ids, titles, URLs, active state, and backing environments.",
+    parameters: PreviewAutomationTabTargetInput,
+    success: PreviewAutomationTabList,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "List project browser tabs"),
+);
 
 export const PreviewOpenTool = browserTool(
   Tool.make("preview_open", {
@@ -185,6 +197,7 @@ export const PreviewRecordingStopTool = safeBrowserTool(
 );
 
 export const PreviewToolkit = Toolkit.make(
+  PreviewTabsTool,
   PreviewStatusTool,
   PreviewOpenTool,
   PreviewNavigateTool,
@@ -201,6 +214,7 @@ export const PreviewToolkit = Toolkit.make(
 );
 
 export const PreviewStandardToolkit = Toolkit.make(
+  PreviewTabsTool,
   PreviewStatusTool,
   PreviewOpenTool,
   PreviewNavigateTool,

@@ -30,6 +30,10 @@ import {
   FALLBACK_PROJECT_FAVICON_SVG,
   resolveAsset,
 } from "./assets/AssetAccess.ts";
+import {
+  attachmentContentDisposition,
+  decodeAttachmentDownloadName,
+} from "./assets/AttachmentDownload.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
@@ -78,6 +82,11 @@ export function resolveDevRedirectUrl(devUrl: URL, requestUrl: URL): string {
   redirectUrl.hash = requestUrl.hash;
   return redirectUrl.toString();
 }
+
+const htmlResponseHeaders = {
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+} as const;
 
 const authenticateRawRouteWithScope = (
   scope: typeof AuthOrchestrationReadScope | typeof AuthOrchestrationOperateScope,
@@ -189,10 +198,8 @@ export const assetRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
 
-    const asset = yield* resolveAsset(
-      suffix.slice(0, separatorIndex),
-      suffix.slice(separatorIndex + 1),
-    );
+    const requestedFileName = suffix.slice(separatorIndex + 1);
+    const asset = yield* resolveAsset(suffix.slice(0, separatorIndex), requestedFileName);
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
@@ -212,6 +219,13 @@ export const assetRouteLayer = HttpRouter.add(
       headers: {
         "Cache-Control": "private, max-age=3600",
         "X-Content-Type-Options": "nosniff",
+        ...(asset.kind === "attachment" && url.value.searchParams.get("download") === "1"
+          ? {
+              "Content-Disposition": attachmentContentDisposition(
+                decodeAttachmentDownloadName(requestedFileName) ?? "attachment.pdf",
+              ),
+            }
+          : {}),
       },
     }).pipe(
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
@@ -291,6 +305,7 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       return HttpServerResponse.uint8Array(indexData, {
         status: 200,
         contentType: "text/html; charset=utf-8",
+        headers: htmlResponseHeaders,
       });
     }
 
@@ -303,6 +318,7 @@ export const staticAndDevRouteLayer = HttpRouter.add(
     return HttpServerResponse.uint8Array(data, {
       status: 200,
       contentType,
+      ...(contentType === "text/html" ? { headers: htmlResponseHeaders } : {}),
     });
   }),
 );

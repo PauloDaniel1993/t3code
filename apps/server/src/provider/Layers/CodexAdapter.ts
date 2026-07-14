@@ -23,6 +23,7 @@ import {
   ProviderApprovalDecision,
   ThreadId,
   ProviderSendTurnInput,
+  type UserInputQuestion,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
@@ -38,6 +39,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
@@ -331,8 +333,10 @@ function toCanonicalUserInputAnswers(
   );
 }
 
-function toUserInputQuestions(questions: ReadonlyArray<CodexToolUserInputQuestion>) {
-  const parsedQuestions = questions
+function toUserInputQuestions(
+  questions: ReadonlyArray<CodexToolUserInputQuestion>,
+): ReadonlyArray<UserInputQuestion> {
+  return questions
     .map((question) => {
       const options =
         question.options
@@ -361,8 +365,6 @@ function toUserInputQuestions(questions: ReadonlyArray<CodexToolUserInputQuestio
       };
     })
     .filter((question) => question !== undefined);
-
-  return parsedQuestions.length > 0 ? parsedQuestions : undefined;
 }
 
 function toThreadState(
@@ -512,16 +514,26 @@ function mapToRuntimeEvents(
       const payload =
         readPayload(EffectCodexSchema.ServerRequest__ToolRequestUserInputParams, event.payload) ??
         readPayload(EffectCodexSchema.ToolRequestUserInputParams, event.payload);
-      const questions = payload ? toUserInputQuestions(payload.questions) : undefined;
-      if (!questions) {
-        return [];
+      const questions = payload ? toUserInputQuestions(payload.questions) : [];
+      const validation = validateUserInputQuestionBatch(questions);
+      if (validation._tag === "Invalid") {
+        return [
+          {
+            ...runtimeEventBase(event, canonicalThreadId),
+            type: "runtime.error",
+            payload: {
+              message: validation.message,
+              class: "provider_error",
+            },
+          },
+        ];
       }
       return [
         {
           ...runtimeEventBase(event, canonicalThreadId),
           type: "user-input.requested",
           payload: {
-            questions,
+            questions: validation.questions,
           },
         },
       ];
@@ -1404,6 +1416,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(serviceTier ? { serviceTier } : {}),
           ...(mcpSession
             ? {
+                forceT3McpUserInput: true,
                 environment: {
                   ...(options?.environment ?? process.env),
                   T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
@@ -1413,6 +1426,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
                   "-c",
                   'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+                  "-c",
+                  `mcp_servers.t3-code.tool_timeout_sec=${McpProviderSession.T3_MCP_TOOL_TIMEOUT_SECONDS}`,
                 ],
               }
             : {}),
@@ -1488,9 +1503,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
-    input: ProviderSendTurnInput,
     attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
   ) {
+    const attachmentType: string = attachment.type;
+    if (attachmentType !== "image" && attachmentType !== "document") {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "turn/start",
+        detail: `Unsupported attachment type '${attachmentType}'.`,
+      });
+    }
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: serverConfig.attachmentsDir,
       attachment,
@@ -1502,29 +1524,56 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         detail: `Invalid attachment id '${attachment.id}'.`,
       });
     }
-    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ProviderAdapterRequestError({
+    switch (attachment.type) {
+      case "image": {
+        const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/start",
+                detail: `Failed to read attachment file: ${cause.message}.`,
+                cause,
+              }),
+          ),
+        );
+        return {
+          type: "image" as const,
+          url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+        };
+      }
+      case "document": {
+        const fileInfo = yield* fileSystem.stat(attachmentPath).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/start",
+                detail: `Failed to read attachment file: ${cause.message}.`,
+                cause,
+              }),
+          ),
+        );
+        if (fileInfo.type !== "File") {
+          return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "turn/start",
-            detail: `Failed to read attachment file: ${cause.message}.`,
-            cause,
-          }),
-      ),
-    );
-    return {
-      type: "image" as const,
-      url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-    };
+            detail: `Attachment '${attachment.name}' is not a file.`,
+          });
+        }
+        return {
+          type: "mention" as const,
+          name: attachment.name,
+          path: attachmentPath,
+        };
+      }
+    }
   });
 
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
-    const codexAttachments = yield* Effect.forEach(
-      input.attachments ?? [],
-      (attachment) => resolveAttachment(input, attachment),
-      { concurrency: 1 },
-    );
+    const codexAttachments = yield* Effect.forEach(input.attachments ?? [], resolveAttachment, {
+      concurrency: 1,
+    });
 
     const session = yield* requireSession(input.threadId);
     const reasoningEffort =

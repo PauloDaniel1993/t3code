@@ -1,15 +1,20 @@
 import type {
-  ChatImageAttachment as ContractChatImageAttachment,
   OrchestrationCheckpointFile,
   OrchestrationCheckpointSummary,
   OrchestrationLatestTurn,
   OrchestrationMessage,
+  OrchestrationMessageSource,
   OrchestrationProposedPlan,
   OrchestrationSession,
   ProjectScript as ContractProjectScript,
   ProviderInteractionMode,
   RuntimeMode,
 } from "@t3tools/contracts";
+import type {
+  ClientChatAttachment,
+  ClientChatDocumentAttachment,
+  ClientChatImageAttachment,
+} from "@t3tools/client-runtime/state/attachments";
 import type {
   EnvironmentProject,
   EnvironmentThread,
@@ -31,14 +36,13 @@ export interface ThreadTerminalGroup {
   splitDirection?: "horizontal" | "vertical";
 }
 
-export interface ChatImageAttachment extends ContractChatImageAttachment {
-  readonly previewUrl?: string;
-}
+export type ChatImageAttachment = ClientChatImageAttachment;
+export type ChatDocumentAttachment = ClientChatDocumentAttachment;
+export type ChatAttachment = ClientChatAttachment;
 
-export type ChatAttachment = ChatImageAttachment;
-
-export interface ChatMessage extends Omit<OrchestrationMessage, "attachments"> {
+export interface ChatMessage extends Omit<OrchestrationMessage, "attachments" | "source"> {
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  readonly source?: OrchestrationMessageSource | undefined;
 }
 
 export type ProposedPlan = OrchestrationProposedPlan;
@@ -46,7 +50,9 @@ export type TurnDiffFileChange = OrchestrationCheckpointFile;
 export type TurnDiffSummary = OrchestrationCheckpointSummary;
 
 export type Project = EnvironmentProject;
-export type Thread = EnvironmentThread;
+export interface Thread extends Omit<EnvironmentThread, "messages"> {
+  readonly messages: ReadonlyArray<ChatMessage>;
+}
 export type ThreadShell = EnvironmentThreadShell;
 
 export interface ThreadTurnState {

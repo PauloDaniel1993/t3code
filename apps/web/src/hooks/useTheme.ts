@@ -2,9 +2,29 @@ import type { DesktopBridge } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import {
+  THEME_STORAGE_KEY,
+  ThemeStorageError,
+  ThemePreference,
+  isThemeStorageError,
+  readThemePreference,
+  writeThemePreference as writeStoredThemePreference,
+  type Theme,
+} from "~/appearance/legacyTheme";
+import {
+  getClientSettings,
+  updateClientSettingsSnapshot,
+  useClientSettings,
+  useUpdateClientSettings,
+} from "../clientSettingsStore";
 
-const ThemePreference = Schema.Literals(["light", "dark", "system"]);
-type Theme = typeof ThemePreference.Type;
+export {
+  THEME_STORAGE_KEY,
+  ThemeStorageError,
+  isThemeStorageError,
+  readThemePreference,
+} from "~/appearance/legacyTheme";
+
 type ThemeSnapshot = {
   theme: Theme;
   systemDark: boolean;
@@ -12,7 +32,6 @@ type ThemeSnapshot = {
 
 type DesktopThemeBridge = Pick<DesktopBridge, "setTheme">;
 
-const STORAGE_KEY = "t3code:theme";
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
 const DEFAULT_THEME_SNAPSHOT: ThemeSnapshot = {
   theme: "system",
@@ -20,22 +39,6 @@ const DEFAULT_THEME_SNAPSHOT: ThemeSnapshot = {
 };
 const THEME_COLOR_META_NAME = "theme-color";
 const DYNAMIC_THEME_COLOR_SELECTOR = `meta[name="${THEME_COLOR_META_NAME}"][data-dynamic-theme-color="true"]`;
-
-export class ThemeStorageError extends Schema.TaggedErrorClass<ThemeStorageError>()(
-  "ThemeStorageError",
-  {
-    operation: Schema.Literals(["read", "write"]),
-    storageKey: Schema.String,
-    theme: Schema.optional(ThemePreference),
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return `Failed to ${this.operation} theme preference for ${this.storageKey}.`;
-  }
-}
-
-export const isThemeStorageError = Schema.is(ThemeStorageError);
 
 export class DesktopThemeSyncError extends Schema.TaggedErrorClass<DesktopThemeSyncError>()(
   "DesktopThemeSyncError",
@@ -57,6 +60,11 @@ let lastDesktopTheme: Theme | null = null;
 let lastAppliedTheme: ThemeSnapshot | null = null;
 let themeStorageReadFailure: ThemeStorageError | null = null;
 
+export function writeThemePreference(theme: Theme): void {
+  writeStoredThemePreference(theme);
+  themeStorageReadFailure = null;
+}
+
 function emitChange() {
   for (const listener of listeners) listener();
 }
@@ -69,49 +77,18 @@ function getSystemDark() {
   );
 }
 
-export function readThemePreference(): Theme {
-  if (typeof window === "undefined") return DEFAULT_THEME_SNAPSHOT.theme;
-  let raw: string | null;
-  try {
-    raw = window.localStorage.getItem(STORAGE_KEY);
-  } catch (cause) {
-    throw new ThemeStorageError({
-      operation: "read",
-      storageKey: STORAGE_KEY,
-      cause,
-    });
-  }
-  if (raw === "light" || raw === "dark" || raw === "system") return raw;
-  return DEFAULT_THEME_SNAPSHOT.theme;
-}
-
-export function writeThemePreference(theme: Theme): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, theme);
-    themeStorageReadFailure = null;
-  } catch (cause) {
-    throw new ThemeStorageError({
-      operation: "write",
-      storageKey: STORAGE_KEY,
-      theme,
-      cause,
-    });
-  }
-}
-
 function getStored(): Theme {
   if (themeStorageReadFailure !== null) {
     return DEFAULT_THEME_SNAPSHOT.theme;
   }
   try {
-    return readThemePreference();
+    return readThemePreference() ?? DEFAULT_THEME_SNAPSHOT.theme;
   } catch (cause) {
     const error = isThemeStorageError(cause)
       ? cause
       : new ThemeStorageError({
           operation: "read",
-          storageKey: STORAGE_KEY,
+          storageKey: THEME_STORAGE_KEY,
           cause,
         });
     themeStorageReadFailure = error;
@@ -122,6 +99,10 @@ function getStored(): Theme {
     });
     return DEFAULT_THEME_SNAPSHOT.theme;
   }
+}
+
+function getCurrentThemePreference(): Theme {
+  return getClientSettings().appearance.colorScheme;
 }
 
 function ensureThemeColorMetaTag(): HTMLMetaElement {
@@ -239,7 +220,7 @@ if (typeof document !== "undefined" && typeof window !== "undefined") {
 
 function getSnapshot(): ThemeSnapshot {
   if (typeof window === "undefined") return DEFAULT_THEME_SNAPSHOT;
-  const theme = getStored();
+  const theme = getCurrentThemePreference();
   const systemDark = theme === "system" ? getSystemDark() : false;
 
   if (lastSnapshot && lastSnapshot.theme === theme && lastSnapshot.systemDark === systemDark) {
@@ -261,16 +242,23 @@ function subscribe(listener: () => void): () => void {
   // Listen for system preference changes
   const mq = typeof window.matchMedia === "function" ? window.matchMedia(MEDIA_QUERY) : null;
   const handleChange = () => {
-    if (getStored() === "system") applyTheme("system", true);
+    if (getCurrentThemePreference() === "system") applyTheme("system", true);
     emitChange();
   };
   mq?.addEventListener("change", handleChange);
 
   // Listen for storage changes from other tabs
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY) {
+    if (e.key === THEME_STORAGE_KEY) {
       themeStorageReadFailure = null;
-      applyTheme(getStored(), true);
+      const storedTheme = getStored();
+      updateClientSettingsSnapshot({
+        appearance: {
+          ...getClientSettings().appearance,
+          colorScheme: storedTheme,
+        },
+      });
+      applyTheme(storedTheme, true);
       emitChange();
     }
   };
@@ -285,35 +273,45 @@ function subscribe(listener: () => void): () => void {
 
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-  const theme = snapshot.theme;
+  const theme = useClientSettings((settings) => settings.appearance.colorScheme);
+  const updateClientSettings = useUpdateClientSettings();
 
   const resolvedTheme: "light" | "dark" =
     theme === "system" ? (snapshot.systemDark ? "dark" : "light") : theme;
 
-  const setTheme = useCallback((next: Theme) => {
-    if (typeof window === "undefined") return;
-    try {
-      writeThemePreference(next);
-    } catch (cause) {
-      const error = isThemeStorageError(cause)
-        ? cause
-        : new ThemeStorageError({
-            operation: "write",
-            storageKey: STORAGE_KEY,
-            theme: next,
-            cause,
-          });
-      console.error(error.message, {
-        operation: error.operation,
-        storageKey: error.storageKey,
-        theme: next,
-        ...safeErrorLogAttributes(error),
+  const setTheme = useCallback(
+    (next: Theme) => {
+      if (typeof window === "undefined") return;
+      try {
+        writeThemePreference(next);
+        themeStorageReadFailure = null;
+      } catch (cause) {
+        const error = isThemeStorageError(cause)
+          ? cause
+          : new ThemeStorageError({
+              operation: "write",
+              storageKey: THEME_STORAGE_KEY,
+              theme: next,
+              cause,
+            });
+        console.error(error.message, {
+          operation: error.operation,
+          storageKey: error.storageKey,
+          theme: next,
+          ...safeErrorLogAttributes(error),
+        });
+      }
+      updateClientSettings({
+        appearance: {
+          ...getClientSettings().appearance,
+          colorScheme: next,
+        },
       });
-      return;
-    }
-    applyTheme(next, true);
-    emitChange();
-  }, []);
+      applyTheme(next, true);
+      emitChange();
+    },
+    [updateClientSettings],
+  );
 
   // Keep DOM in sync on mount/change
   useEffect(() => {

@@ -3,6 +3,7 @@ import {
   type AssistantDeliveryMode,
   CommandId,
   MessageId,
+  type MessageModelReroute,
   type OrchestrationEvent,
   type OrchestrationMessage,
   type OrchestrationProposedPlanId,
@@ -53,6 +54,8 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const MODEL_REROUTE_BY_TURN_CACHE_CAPACITY = 10_000;
+const MODEL_REROUTE_BY_TURN_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -666,6 +669,12 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
 
+  const modelRerouteByThreadTurn = yield* Cache.make<string, MessageModelReroute | null>({
+    capacity: MODEL_REROUTE_BY_TURN_CACHE_CAPACITY,
+    timeToLive: MODEL_REROUTE_BY_TURN_TTL,
+    lookup: () => Effect.succeed(null),
+  });
+
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
       .getThreadDetailById(threadId)
@@ -855,6 +864,25 @@ const make = Effect.gen(function* () {
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
 
+  const stashModelReroute = (threadId: ThreadId, turnId: TurnId, reroute: MessageModelReroute) =>
+    Cache.set(modelRerouteByThreadTurn, providerTurnKey(threadId, turnId), reroute);
+
+  const takeModelReroute = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.getOption(modelRerouteByThreadTurn, providerTurnKey(threadId, turnId)).pipe(
+      Effect.flatMap((existingEntry) => {
+        const existing = Option.getOrUndefined(existingEntry) ?? undefined;
+        if (existing === undefined) {
+          return Effect.succeed(undefined);
+        }
+        return Cache.invalidate(modelRerouteByThreadTurn, providerTurnKey(threadId, turnId)).pipe(
+          Effect.as(existing),
+        );
+      }),
+    );
+
+  const clearModelRerouteForTurn = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.invalidate(modelRerouteByThreadTurn, providerTurnKey(threadId, turnId));
+
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
 
@@ -872,6 +900,9 @@ const make = Effect.gen(function* () {
         return false;
       }
 
+      const modelReroute = input.turnId
+        ? yield* takeModelReroute(input.threadId, input.turnId)
+        : undefined;
       yield* orchestrationEngine.dispatch({
         type: "thread.message.assistant.delta",
         commandId: yield* providerCommandId(input.event, input.commandTag),
@@ -879,6 +910,7 @@ const make = Effect.gen(function* () {
         messageId: input.messageId,
         delta: bufferedText,
         ...(input.turnId ? { turnId: input.turnId } : {}),
+        ...(modelReroute !== undefined ? { modelReroute } : {}),
         createdAt: input.createdAt,
       });
       return true;
@@ -951,12 +983,16 @@ const make = Effect.gen(function* () {
       }
 
       if (input.hasProjectedMessage || hasRenderableText) {
+        const modelReroute = input.turnId
+          ? yield* takeModelReroute(input.threadId, input.turnId)
+          : undefined;
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.complete",
           commandId: yield* providerCommandId(input.event, input.commandTag),
           threadId: input.threadId,
           messageId: input.messageId,
           ...(input.turnId ? { turnId: input.turnId } : {}),
+          ...(modelReroute !== undefined ? { modelReroute } : {}),
           createdAt: input.createdAt,
         });
       }
@@ -1123,6 +1159,13 @@ const make = Effect.gen(function* () {
           key.startsWith(proposedPlanPrefix)
             ? Cache.invalidate(bufferedProposedPlanById, key)
             : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      const modelRerouteKeys = Array.from(yield* Cache.keys(modelRerouteByThreadTurn));
+      yield* Effect.forEach(
+        modelRerouteKeys,
+        (key) =>
+          key.startsWith(prefix) ? Cache.invalidate(modelRerouteByThreadTurn, key) : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
     });
@@ -1383,6 +1426,7 @@ const make = Effect.gen(function* () {
         if (assistantDeliveryMode === "buffered") {
           const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
           if (spillChunk.length > 0) {
+            const modelReroute = turnId ? yield* takeModelReroute(thread.id, turnId) : undefined;
             yield* orchestrationEngine.dispatch({
               type: "thread.message.assistant.delta",
               commandId: yield* providerCommandId(event, "assistant-delta-buffer-spill"),
@@ -1390,10 +1434,12 @@ const make = Effect.gen(function* () {
               messageId: assistantMessageId,
               delta: spillChunk,
               ...(turnId ? { turnId } : {}),
+              ...(modelReroute !== undefined ? { modelReroute } : {}),
               createdAt: now,
             });
           }
         } else {
+          const modelReroute = turnId ? yield* takeModelReroute(thread.id, turnId) : undefined;
           yield* orchestrationEngine.dispatch({
             type: "thread.message.assistant.delta",
             commandId: yield* providerCommandId(event, "assistant-delta"),
@@ -1401,6 +1447,7 @@ const make = Effect.gen(function* () {
             messageId: assistantMessageId,
             delta: assistantDelta,
             ...(turnId ? { turnId } : {}),
+            ...(modelReroute !== undefined ? { modelReroute } : {}),
             createdAt: now,
           });
         }
@@ -1454,6 +1501,21 @@ const make = Effect.gen(function* () {
       if (proposedPlanDelta && proposedPlanDelta.length > 0) {
         const planId = proposedPlanIdFromEvent(event, thread.id);
         yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
+      }
+
+      if (event.type === "model.rerouted") {
+        const turnId = toTurnId(event.turnId);
+        if (turnId) {
+          yield* stashModelReroute(thread.id, turnId, {
+            fromModel: event.payload.fromModel,
+            toModel: event.payload.toModel,
+            reason: event.payload.reason,
+            ...(event.payload.category !== undefined ? { category: event.payload.category } : {}),
+            ...(event.payload.explanation !== undefined
+              ? { explanation: event.payload.explanation }
+              : {}),
+          });
+        }
       }
 
       const assistantCompletion =
@@ -1563,6 +1625,7 @@ const make = Effect.gen(function* () {
           ).pipe(Effect.asVoid);
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
+          yield* clearModelRerouteForTurn(thread.id, turnId);
 
           yield* finalizeBufferedProposedPlan({
             event,

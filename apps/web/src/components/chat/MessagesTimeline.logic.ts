@@ -119,6 +119,13 @@ export type MessagesTimelineRow =
       expanded: boolean;
     }
   | {
+      kind: "import-fold";
+      id: string;
+      createdAt: string;
+      count: number;
+      expanded: boolean;
+    }
+  | {
       kind: "message";
       id: string;
       createdAt: string;
@@ -180,6 +187,34 @@ export function resolveAssistantMessageCopyState({
     text: hasText ? text : null,
     visible: showCopyButton && hasText && !streaming,
   };
+}
+
+export function isImportedHandoffTimelineMessage(message: Pick<ChatMessage, "source">): boolean {
+  return message.source === "handoff-import";
+}
+
+export function getMessageModelReroute(
+  message: Pick<ChatMessage, "modelReroute">,
+): ChatMessage["modelReroute"] {
+  return message.modelReroute;
+}
+
+const REROUTE_MODEL_DISPLAY_NAMES: ReadonlyArray<readonly [string, string]> = [
+  ["claude-opus-4-8", "Opus 4.8"],
+  ["claude-opus-4-7", "Opus 4.7"],
+  ["claude-opus-4-6", "Opus 4.6"],
+  ["claude-fable-5", "Fable 5"],
+  ["claude-sonnet-5", "Sonnet 5"],
+  ["claude-haiku-4-5", "Haiku 4.5"],
+];
+
+export function formatRerouteModelName(modelId: string): string {
+  for (const [prefix, displayName] of REROUTE_MODEL_DISPLAY_NAMES) {
+    if (modelId.startsWith(prefix)) {
+      return displayName;
+    }
+  }
+  return modelId;
 }
 
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
@@ -265,6 +300,11 @@ function deriveTurnFolds(input: {
 
   let pendingUserBoundary: string | null = null;
   for (const entry of input.timelineEntries) {
+    // Imported handoff messages live in their own collapsible block and never
+    // belong to a provider turn, so they must not start or join a turn fold.
+    if (entry.kind === "message" && isImportedHandoffTimelineMessage(entry.message)) {
+      continue;
+    }
     if (entry.kind === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
       continue;
@@ -363,12 +403,68 @@ function deriveTurnFolds(input: {
   return foldsByAnchorEntryId;
 }
 
+interface ImportFold {
+  id: string;
+  anchorEntryId: string;
+  createdAt: string;
+  count: number;
+  hiddenEntryIds: ReadonlySet<string>;
+}
+
+/**
+ * Imported handoff transcripts can be hundreds of messages long. Each maximal
+ * run of consecutive imported messages folds behind a single "N imported
+ * messages" row (collapsed by default) so the target thread renders cheaply and
+ * the imported history reads as context rather than active conversation.
+ */
+function deriveImportFolds(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+): ReadonlyMap<string, ImportFold> {
+  const foldsByAnchorEntryId = new Map<string, ImportFold>();
+  let index = 0;
+  while (index < timelineEntries.length) {
+    const anchorEntry = timelineEntries[index];
+    if (
+      !anchorEntry ||
+      anchorEntry.kind !== "message" ||
+      !isImportedHandoffTimelineMessage(anchorEntry.message)
+    ) {
+      index += 1;
+      continue;
+    }
+    const hiddenEntryIds: string[] = [];
+    let cursor = index;
+    while (cursor < timelineEntries.length) {
+      const runEntry = timelineEntries[cursor];
+      if (
+        !runEntry ||
+        runEntry.kind !== "message" ||
+        !isImportedHandoffTimelineMessage(runEntry.message)
+      ) {
+        break;
+      }
+      hiddenEntryIds.push(runEntry.id);
+      cursor += 1;
+    }
+    foldsByAnchorEntryId.set(anchorEntry.id, {
+      id: `import-fold:${anchorEntry.id}`,
+      anchorEntryId: anchorEntry.id,
+      createdAt: anchorEntry.createdAt,
+      count: hiddenEntryIds.length,
+      hiddenEntryIds: new Set(hiddenEntryIds),
+    });
+    index = cursor;
+  }
+  return foldsByAnchorEntryId;
+}
+
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestTurn?: TimelineLatestTurn | null;
   runningTurnId?: TurnId | null;
   expandedTurnIds?: ReadonlySet<TurnId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
+  expandedImportFoldIds?: ReadonlySet<string>;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
@@ -389,10 +485,18 @@ export function deriveMessagesTimelineRows(input: {
     latestTurn: input.latestTurn ?? null,
     unsettledTurnId,
   });
+  const importFoldsByAnchorEntryId = deriveImportFolds(input.timelineEntries);
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {
     if (!input.expandedTurnIds?.has(fold.turnId)) {
       for (const entryId of fold.hiddenEntryIds) {
+        collapsedEntryIds.add(entryId);
+      }
+    }
+  }
+  for (const importFold of importFoldsByAnchorEntryId.values()) {
+    if (!input.expandedImportFoldIds?.has(importFold.id)) {
+      for (const entryId of importFold.hiddenEntryIds) {
         collapsedEntryIds.add(entryId);
       }
     }
@@ -413,6 +517,17 @@ export function deriveMessagesTimelineRows(input: {
         turnId: turnFold.turnId,
         label: turnFold.label,
         expanded: input.expandedTurnIds?.has(turnFold.turnId) ?? false,
+      });
+    }
+
+    const importFold = importFoldsByAnchorEntryId.get(timelineEntry.id);
+    if (importFold) {
+      nextRows.push({
+        kind: "import-fold",
+        id: importFold.id,
+        createdAt: importFold.createdAt,
+        count: importFold.count,
+        expanded: input.expandedImportFoldIds?.has(importFold.id) ?? false,
       });
     }
 
@@ -492,6 +607,7 @@ export function deriveMessagesTimelineRows(input: {
       timelineEntry.message.role === "assistant" &&
       unsettledTurnId !== null &&
       timelineEntry.message.turnId === unsettledTurnId;
+    const importedHandoffMessage = isImportedHandoffTimelineMessage(timelineEntry.message);
 
     const durationStart =
       durationStartByMessageId.get(timelineEntry.message.id) ?? timelineEntry.message.createdAt;
@@ -514,11 +630,11 @@ export function deriveMessagesTimelineRows(input: {
       showAssistantCopyButton: showAssistantMeta,
       assistantCopyStreaming: timelineEntry.message.streaming || assistantTurnStillInProgress,
       assistantTurnDiffSummary:
-        timelineEntry.message.role === "assistant"
+        timelineEntry.message.role === "assistant" && !importedHandoffMessage
           ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
           : undefined,
       revertTurnCount:
-        timelineEntry.message.role === "user"
+        timelineEntry.message.role === "user" && !importedHandoffMessage
           ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
           : undefined,
     });
@@ -566,6 +682,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "turn-fold": {
       const bf = b as typeof a;
       return a.createdAt === bf.createdAt && a.label === bf.label && a.expanded === bf.expanded;
+    }
+
+    case "import-fold": {
+      const bf = b as typeof a;
+      return a.createdAt === bf.createdAt && a.count === bf.count && a.expanded === bf.expanded;
     }
 
     case "proposed-plan":

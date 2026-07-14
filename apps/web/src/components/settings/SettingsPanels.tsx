@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  DEFAULT_DEEPSEEK_HANDOFF_COMPRESSION_MODEL,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
   PROVIDER_DISPLAY_NAMES,
@@ -18,7 +19,7 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { DEFAULT_APPEARANCE_SETTINGS, DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
@@ -88,21 +89,6 @@ import {
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useAtomCommand } from "../../state/use-atom-command";
-
-const THEME_OPTIONS = [
-  {
-    value: "system",
-    label: "System",
-  },
-  {
-    value: "light",
-    label: "Light",
-  },
-  {
-    value: "dark",
-    label: "Dark",
-  },
-] as const;
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -372,8 +358,13 @@ function AboutVersionSection() {
   );
 }
 
-export function useSettingsRestore(onRestored?: () => void) {
-  const { theme, setTheme } = useTheme();
+type SettingsRestoreScope = "general" | "appearance";
+
+export function useSettingsRestore(
+  scope: SettingsRestoreScope = "general",
+  onRestored?: () => void,
+) {
+  const { setTheme } = useTheme();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
 
@@ -381,10 +372,13 @@ export function useSettingsRestore(onRestored?: () => void) {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
+  const isHandoffCompressionModelDirty = !Equal.equals(
+    settings.handoffCompressionModelSelection ?? null,
+    DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection ?? null,
+  );
 
-  const changedSettingLabels = useMemo(
+  const generalChangedSettingLabels = useMemo(
     () => [
-      ...(theme !== "system" ? ["Theme"] : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -422,8 +416,10 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Delete confirmation"]
         : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
+      ...(isHandoffCompressionModelDirty ? ["Handoff compression model"] : []),
     ],
     [
+      isHandoffCompressionModelDirty,
       isGitWritingModelDirty,
       settings.autoOpenPlanSidebar,
       settings.confirmThreadArchive,
@@ -437,9 +433,23 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
       settings.wordWrap,
-      theme,
     ],
   );
+
+  const appearanceChangedSettingLabels = useMemo(
+    () => [
+      ...(settings.appearance.colorScheme !== DEFAULT_APPEARANCE_SETTINGS.colorScheme
+        ? ["Theme mode"]
+        : []),
+      ...(settings.appearance.activeThemeId !== DEFAULT_APPEARANCE_SETTINGS.activeThemeId
+        ? ["Active theme"]
+        : []),
+    ],
+    [settings.appearance.activeThemeId, settings.appearance.colorScheme],
+  );
+
+  const changedSettingLabels =
+    scope === "appearance" ? appearanceChangedSettingLabels : generalChangedSettingLabels;
 
   const restoreDefaults = useCallback(async () => {
     if (changedSettingLabels.length === 0) return;
@@ -451,24 +461,44 @@ export function useSettingsRestore(onRestored?: () => void) {
     );
     if (!confirmed) return;
 
-    setTheme("system");
-    updateSettings({
-      timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
-      wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
-      diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
-      sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
-      autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
-      enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
-      automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
-      defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-      newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
-      addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
-      confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
-      confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
-      textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-    });
+    if (scope === "appearance") {
+      updateSettings({
+        appearance: {
+          ...DEFAULT_APPEARANCE_SETTINGS,
+          customThemeOrder: settings.appearance.customThemeOrder,
+          customThemes: settings.appearance.customThemes,
+        },
+        terminalFontFamily: DEFAULT_UNIFIED_SETTINGS.terminalFontFamily,
+      });
+      setTheme("system");
+    } else {
+      updateSettings({
+        timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+        wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
+        diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
+        sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
+        autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
+        enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+        automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
+        defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+        newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+        addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+        confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
+        confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+        textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+        handoffCompressionModelSelection: DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection,
+      });
+    }
     onRestored?.();
-  }, [changedSettingLabels, onRestored, setTheme, updateSettings]);
+  }, [
+    changedSettingLabels,
+    onRestored,
+    scope,
+    setTheme,
+    settings.appearance.customThemeOrder,
+    settings.appearance.customThemes,
+    updateSettings,
+  ]);
 
   return {
     changedSettingLabels,
@@ -477,7 +507,6 @@ export function useSettingsRestore(onRestored?: () => void) {
 }
 
 export function GeneralSettingsPanel() {
-  const { theme, setTheme } = useTheme();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const observability = useAtomValue(primaryServerObservabilityAtom);
@@ -512,43 +541,40 @@ export function GeneralSettingsPanel() {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
+  const automaticHandoffCompressionSelection = createModelSelection(
+    defaultInstanceIdForDriver(ProviderDriverKind.make("deepseek")),
+    DEFAULT_DEEPSEEK_HANDOFF_COMPRESSION_MODEL,
+  );
+  const handoffCompressionModelSelection = resolveAppModelSelectionState(
+    {
+      ...settings,
+      textGenerationModelSelection:
+        settings.handoffCompressionModelSelection ?? automaticHandoffCompressionSelection,
+    },
+    serverProviders,
+  );
+  const handoffCompressionInstanceId = handoffCompressionModelSelection.instanceId;
+  const handoffCompressionModel = handoffCompressionModelSelection.model;
+  const handoffCompressionModelOptions = handoffCompressionModelSelection.options;
+  const handoffCompressionInstanceEntry = gitModelInstanceEntries.find(
+    (entry) => entry.instanceId === handoffCompressionInstanceId,
+  );
+  const handoffCompressionProvider: ProviderDriverKind =
+    handoffCompressionInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
+  const handoffCompressionOptionsByInstance = getCustomModelOptionsByInstance(
+    settings,
+    serverProviders,
+    handoffCompressionInstanceId,
+    handoffCompressionModel,
+  );
+  const isHandoffCompressionModelDirty = !Equal.equals(
+    settings.handoffCompressionModelSelection ?? null,
+    DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection ?? null,
+  );
 
   return (
     <SettingsPageContainer>
       <SettingsSection title="General">
-        <SettingsRow
-          title="Theme"
-          description="Choose how T3 Code looks across the app."
-          resetAction={
-            theme !== "system" ? (
-              <SettingResetButton label="theme" onClick={() => setTheme("system")} />
-            ) : null
-          }
-          control={
-            <Select
-              value={theme}
-              onValueChange={(value) => {
-                if (value === "system" || value === "light" || value === "dark") {
-                  setTheme(value);
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
-                <SelectValue>
-                  {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {THEME_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
         <SettingsRow
           title="Time format"
           description="System default follows your browser or OS clock preference."
@@ -950,6 +976,79 @@ export function GeneralSettingsPanel() {
             </div>
           }
         />
+
+        <SettingsRow
+          title="Handoff compression model"
+          description="Automatic prefers DeepSeek flash when available and falls back to the text generation model."
+          resetAction={
+            isHandoffCompressionModelDirty ? (
+              <SettingResetButton
+                label="handoff compression model"
+                onClick={() =>
+                  updateSettings({
+                    handoffCompressionModelSelection:
+                      DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              {!isHandoffCompressionModelDirty ? (
+                <span className="rounded-md border border-border/70 bg-muted/50 px-2 py-1 font-medium text-muted-foreground text-xs">
+                  Automatic
+                </span>
+              ) : null}
+              <ProviderModelPicker
+                activeInstanceId={handoffCompressionInstanceId}
+                model={handoffCompressionModel}
+                lockedProvider={null}
+                instanceEntries={gitModelInstanceEntries}
+                modelOptionsByInstance={handoffCompressionOptionsByInstance}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onInstanceModelChange={(instanceId, model) => {
+                  updateSettings({
+                    handoffCompressionModelSelection: resolveAppModelSelectionState(
+                      {
+                        ...settings,
+                        textGenerationModelSelection: createModelSelection(instanceId, model),
+                      },
+                      serverProviders,
+                    ),
+                  });
+                }}
+              />
+              <TraitsPicker
+                provider={handoffCompressionProvider}
+                models={handoffCompressionInstanceEntry?.models ?? []}
+                model={handoffCompressionModel}
+                prompt=""
+                onPromptChange={() => {}}
+                modelOptions={handoffCompressionModelOptions}
+                allowPromptInjectedEffort={false}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onModelOptionsChange={(nextOptions) => {
+                  updateSettings({
+                    handoffCompressionModelSelection: resolveAppModelSelectionState(
+                      {
+                        ...settings,
+                        textGenerationModelSelection: createModelSelection(
+                          handoffCompressionInstanceId,
+                          handoffCompressionModel,
+                          nextOptions,
+                        ),
+                      },
+                      serverProviders,
+                    ),
+                  });
+                }}
+              />
+            </div>
+          }
+        />
       </SettingsSection>
 
       <SettingsSection title="About">
@@ -1177,6 +1276,9 @@ export function ProviderSettingsPanel() {
       readonly textGenerationModelSelection?: Parameters<
         typeof buildProviderInstanceUpdatePatch
       >[0]["textGenerationModelSelection"];
+      readonly handoffCompressionModelSelection?: Parameters<
+        typeof buildProviderInstanceUpdatePatch
+      >[0]["handoffCompressionModelSelection"];
     },
   ) => {
     updateSettings(
@@ -1187,15 +1289,28 @@ export function ProviderSettingsPanel() {
         driver: row.driver,
         isDefault: row.isDefault,
         textGenerationModelSelection: options?.textGenerationModelSelection,
+        handoffCompressionModelSelection: options?.handoffCompressionModelSelection,
       }),
     );
   };
 
   const deleteProviderInstance = (id: ProviderInstanceId) => {
+    const shouldClearTextGen = settings.textGenerationModelSelection?.instanceId === id;
+    const shouldClearHandoffCompression =
+      settings.handoffCompressionModelSelection?.instanceId === id;
     updateSettings({
       providerInstances: withoutProviderInstanceKey(settings.providerInstances, id),
       providerModelPreferences: withoutProviderInstanceKey(settings.providerModelPreferences, id),
       favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], id),
+      ...(shouldClearTextGen
+        ? { textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection }
+        : {}),
+      ...(shouldClearHandoffCompression
+        ? {
+            handoffCompressionModelSelection:
+              DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection,
+          }
+        : {}),
     });
   };
 
@@ -1263,6 +1378,15 @@ export function ProviderSettingsPanel() {
         defaultInstanceId,
       ),
       favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], defaultInstanceId),
+      ...(settings.textGenerationModelSelection?.instanceId === defaultInstanceId
+        ? { textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection }
+        : {}),
+      ...(settings.handoffCompressionModelSelection?.instanceId === defaultInstanceId
+        ? {
+            handoffCompressionModelSelection:
+              DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection,
+          }
+        : {}),
     });
   };
 
@@ -1368,10 +1492,23 @@ export function ProviderSettingsPanel() {
                 const wasEnabled = row.instance.enabled ?? true;
                 const isDisabling = next.enabled === false && wasEnabled;
                 const shouldClearTextGen = isDisabling && textGenInstanceId === row.instanceId;
-                if (shouldClearTextGen) {
+                const shouldClearHandoffCompression =
+                  isDisabling &&
+                  settings.handoffCompressionModelSelection?.instanceId === row.instanceId;
+                if (shouldClearTextGen || shouldClearHandoffCompression) {
                   updateProviderInstance(row, next, {
-                    textGenerationModelSelection:
-                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                    ...(shouldClearTextGen
+                      ? {
+                          textGenerationModelSelection:
+                            DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                        }
+                      : {}),
+                    ...(shouldClearHandoffCompression
+                      ? {
+                          handoffCompressionModelSelection:
+                            DEFAULT_UNIFIED_SETTINGS.handoffCompressionModelSelection,
+                        }
+                      : {}),
                   });
                 } else {
                   updateProviderInstance(row, next);

@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
   CodexSettings,
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -35,6 +36,8 @@ import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import { ServerConfig } from "../../config.ts";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
@@ -57,6 +60,17 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
+const makeCodexUserInputQuestion = (index: number) => ({
+  id: `question_${index}`,
+  header: `Question ${index}`,
+  question: `Question ${index}?`,
+  options: [
+    {
+      label: `Answer ${index}`,
+      description: `Answer ${index}`,
+    },
+  ],
+});
 
 class FakeCodexRuntime implements CodexSessionRuntimeShape {
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
@@ -287,6 +301,48 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
     }),
   );
+
+  it.effect("forces T3 MCP user input when the Codex session has a T3 MCP server", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const threadId = asThreadId("thread-codex-mcp-user-input");
+      yield* Effect.sync(() =>
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("environment-codex-mcp"),
+          threadId,
+          providerSessionId: "provider-session-codex-mcp",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          endpoint: "http://127.0.0.1:4311/mcp",
+          authorizationHeader: "Bearer codex-token",
+        }),
+      );
+
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const options = validationRuntimeFactory.factory.mock.calls[0]?.[0];
+      NodeAssert.equal(options?.forceT3McpUserInput, true);
+      NodeAssert.deepStrictEqual(options?.appServerArgs, [
+        "-c",
+        "mcp_servers.t3-code.url=http://127.0.0.1:4311/mcp",
+        "-c",
+        'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+        "-c",
+        `mcp_servers.t3-code.tool_timeout_sec=${McpProviderSession.T3_MCP_TOOL_TIMEOUT_SECONDS}`,
+      ]);
+      NodeAssert.equal(options?.environment?.T3_MCP_BEARER_TOKEN, "codex-token");
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() =>
+          McpProviderSession.clearMcpProviderSession(asThreadId("thread-codex-mcp-user-input")),
+        ),
+      ),
+    ),
+  );
 });
 
 const sessionRuntimeFactory = makeRuntimeFactory();
@@ -356,6 +412,61 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         effort: "high",
         serviceTier: "priority",
       });
+    }),
+  );
+
+  it.effect("keeps Codex ready after a missing PDF and dispatches the next text turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-missing-pdf-state");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      const result = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Read this",
+          attachments: [
+            {
+              type: "document",
+              id: "codex-missing-12345678-1234-1234-1234-123456789abc",
+              name: "missing.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 1,
+            },
+          ],
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+        if (result.failure._tag === "ProviderAdapterRequestError") {
+          NodeAssert.match(result.failure.detail, /Failed to read attachment file:/u);
+        }
+      }
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+      const sessionsAfterFailure = yield* adapter.listSessions();
+      const sessionAfterFailure = sessionsAfterFailure.find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(sessionAfterFailure?.status, "ready");
+      NodeAssert.equal(sessionAfterFailure?.activeTurnId, undefined);
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Continue without the attachment",
+        attachments: [],
+      });
+      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls, [
+        [{ input: "Continue without the attachment" }],
+      ]);
     }),
   );
 
@@ -973,19 +1084,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             itemId: "item-user-input-1",
             threadId: "thread-1",
             turnId: "turn-1",
-            questions: [
-              {
-                id: "sandbox_mode",
-                header: "Sandbox",
-                question: "Which mode should be used?",
-                options: [
-                  {
-                    label: "workspace-write",
-                    description: "Allow workspace writes only",
-                  },
-                ],
-              },
-            ],
+            questions: Array.from({ length: 10 }, (_, index) =>
+              makeCodexUserInputQuestion(index + 1),
+            ),
           },
         } satisfies ProviderEvent);
         yield* runtime.emit({
@@ -998,8 +1099,8 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           requestId: ApprovalRequestId.make("req-user-input-1"),
           payload: {
             answers: {
-              sandbox_mode: {
-                answers: ["workspace-write"],
+              question_1: {
+                answers: ["Answer 1"],
               },
             },
           },
@@ -1009,7 +1110,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         NodeAssert.equal(events[0]?.type, "user-input.requested");
         if (events[0]?.type === "user-input.requested") {
           NodeAssert.equal(events[0].requestId, "req-user-input-1");
-          NodeAssert.equal(events[0].payload.questions[0]?.id, "sandbox_mode");
+          NodeAssert.equal(events[0].payload.questions.length, 10);
+          NodeAssert.equal(events[0].payload.questions[0]?.id, "question_1");
+          NodeAssert.equal(events[0].payload.questions[9]?.id, "question_10");
           NodeAssert.equal(events[0].payload.questions[0]?.multiSelect, false);
         }
 
@@ -1017,10 +1120,44 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         if (events[1]?.type === "user-input.resolved") {
           NodeAssert.equal(events[1].requestId, "req-user-input-1");
           NodeAssert.deepEqual(events[1].payload.answers, {
-            sandbox_mode: "workspace-write",
+            question_1: "Answer 1",
           });
         }
       }),
+  );
+
+  it.effect("maps oversized requestUserInput requests to runtime errors", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-user-input-oversized"),
+        kind: "request",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/tool/requestUserInput",
+        requestId: ApprovalRequestId.make("req-user-input-oversized"),
+        payload: {
+          itemId: "item-user-input-oversized",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          questions: Array.from({ length: 11 }, (_, index) =>
+            makeCodexUserInputQuestion(index + 1),
+          ),
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "runtime.error") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.payload.class, "provider_error");
+      NodeAssert.match(firstEvent.value.payload.message, /1 to 10/u);
+      NodeAssert.match(firstEvent.value.payload.message, /11/u);
+    }),
   );
 
   it.effect("unwraps Codex token usage payloads for context window events", () =>
@@ -1173,6 +1310,82 @@ scopedFailureLayer("CodexAdapterLive scoped startup failure", (it) => {
     }),
   );
 });
+
+it.effect("maps ordered image and PDF attachments to exact Codex turn inputs", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-pdf-"));
+    const runtimeFactory = makeRuntimeFactory();
+    const scope = yield* Scope.make("sequential");
+    let scopeClosed = false;
+
+    try {
+      const layer = Layer.effect(
+        CodexAdapter,
+        Effect.gen(function* () {
+          const codexConfig = decodeCodexSettings({});
+          return yield* makeCodexAdapter(codexConfig, { makeRuntime: runtimeFactory.factory });
+        }),
+      ).pipe(
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), tempDir)),
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      const context = yield* Layer.buildWithScope(layer, scope);
+      const adapter = yield* Effect.service(CodexAdapter).pipe(Effect.provide(context));
+      const { attachmentsDir } = yield* Effect.service(ServerConfig).pipe(Effect.provide(context));
+      const image = {
+        type: "image" as const,
+        id: "codex-image-12345678-1234-1234-1234-123456789abc",
+        name: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+      };
+      const pdf = {
+        type: "document" as const,
+        id: "codex-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "requirements.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 8,
+      };
+      const imagePath = NodePath.join(attachmentsDir, attachmentRelativePath(image));
+      const pdfPath = NodePath.join(attachmentsDir, attachmentRelativePath(pdf));
+      NodeFS.mkdirSync(NodePath.dirname(imagePath), { recursive: true });
+      NodeFS.writeFileSync(imagePath, Uint8Array.from([1, 2, 3]));
+      NodeFS.writeFileSync(pdfPath, "%PDF-1.7");
+
+      const threadId = asThreadId("thread-codex-pdf");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = runtimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Review these",
+        attachments: [image, pdf],
+      });
+
+      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls.at(-1)?.[0], {
+        input: "Review these",
+        attachments: [
+          { type: "image", url: "data:image/png;base64,AQID" },
+          { type: "mention", name: "requirements.pdf", path: pdfPath },
+        ],
+      });
+
+      yield* Scope.close(scope, Exit.void);
+      scopeClosed = true;
+    } finally {
+      if (!scopeClosed) {
+        yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
+      }
+      NodeFS.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }),
+);
 
 it.effect("flushes managed native logs when the adapter layer shuts down", () =>
   Effect.gen(function* () {

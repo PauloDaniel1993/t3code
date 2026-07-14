@@ -114,6 +114,7 @@ describe("theme failure handling", () => {
     vi.doMock("react", () => ({
       useCallback: <A>(callback: A) => callback,
       useEffect: () => undefined,
+      useMemo: <A>(factory: () => A) => factory(),
       useSyncExternalStore: (
         subscribe: (listener: () => void) => () => void,
         getSnapshot: () => unknown,
@@ -135,6 +136,16 @@ describe("theme failure handling", () => {
       }),
       removeEventListener: () => undefined,
     });
+    vi.stubGlobal("document", {
+      documentElement: {
+        classList: {
+          add: () => undefined,
+          remove: () => undefined,
+          toggle: () => undefined,
+        },
+        offsetHeight: 0,
+      },
+    });
 
     const { useTheme } = await import("./useTheme");
     useTheme();
@@ -151,6 +162,127 @@ describe("theme failure handling", () => {
     expect(getItem).toHaveBeenCalledTimes(2);
     expect(errorLog).toHaveBeenCalledTimes(2);
     unsubscribe?.();
+  });
+
+  it("updates appearance settings while writing the bootstrap mirror", async () => {
+    const localStorage = createStorage();
+    vi.doMock("react", () => ({
+      useCallback: <A>(callback: A) => callback,
+      useEffect: () => undefined,
+      useMemo: <A>(factory: () => A) => factory(),
+      useSyncExternalStore: (
+        subscribe: (listener: () => void) => () => void,
+        getSnapshot: () => unknown,
+      ) => {
+        const unsubscribe = subscribe(() => undefined);
+        unsubscribe();
+        return getSnapshot();
+      },
+    }));
+    vi.stubGlobal("window", {
+      addEventListener: () => undefined,
+      dispatchEvent: () => true,
+      localStorage,
+      matchMedia: () => ({
+        matches: false,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+      removeEventListener: () => undefined,
+    });
+    vi.stubGlobal("document", {
+      body: {},
+      documentElement: {
+        classList: {
+          add: () => undefined,
+          remove: () => undefined,
+          toggle: () => undefined,
+        },
+        offsetHeight: 0,
+        style: {},
+      },
+      querySelector: () => null,
+    });
+    vi.stubGlobal("requestAnimationFrame", (callback: () => void) => {
+      callback();
+      return 1;
+    });
+
+    const { DEFAULT_CLIENT_SETTINGS } = await import("@t3tools/contracts/settings");
+    const { __setClientSettingsForTests, getClientSettings } =
+      await import("../clientSettingsStore");
+    __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
+    const { useTheme } = await import("./useTheme");
+
+    const { setTheme } = useTheme();
+    setTheme("dark");
+
+    expect(localStorage.getItem("t3code:theme")).toBe("dark");
+    expect(getClientSettings().appearance.colorScheme).toBe("dark");
+  });
+
+  it("reconciles storage events into the applied DOM class and settings snapshot", async () => {
+    const localStorage = createStorage();
+    let storageHandler: ((event: StorageEvent) => void) | undefined;
+    const toggle = vi.fn();
+    vi.doMock("react", () => ({
+      useCallback: <A>(callback: A) => callback,
+      useEffect: () => undefined,
+      useMemo: <A>(factory: () => A) => factory(),
+      useSyncExternalStore: (
+        subscribe: (listener: () => void) => () => void,
+        getSnapshot: () => unknown,
+      ) => {
+        const unsubscribe = subscribe(() => undefined);
+        unsubscribe();
+        return getSnapshot();
+      },
+    }));
+    vi.stubGlobal("window", {
+      addEventListener: (type: string, listener: (event: StorageEvent) => void) => {
+        if (type === "storage") storageHandler = listener;
+      },
+      dispatchEvent: () => true,
+      localStorage,
+      matchMedia: () => ({
+        matches: false,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+      removeEventListener: () => undefined,
+    });
+    vi.stubGlobal("document", {
+      body: {},
+      documentElement: {
+        classList: {
+          add: () => undefined,
+          remove: () => undefined,
+          toggle,
+        },
+        offsetHeight: 0,
+        style: {},
+      },
+      querySelector: () => null,
+    });
+    vi.stubGlobal("requestAnimationFrame", (callback: () => void) => {
+      callback();
+      return 1;
+    });
+
+    const { DEFAULT_CLIENT_SETTINGS } = await import("@t3tools/contracts/settings");
+    const { __setClientSettingsForTests, getClientSettings } =
+      await import("../clientSettingsStore");
+    __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
+    const { THEME_STORAGE_KEY, useTheme } = await import("./useTheme");
+
+    expect(useTheme().theme).toBe("system");
+
+    localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    storageHandler?.({ key: THEME_STORAGE_KEY } as StorageEvent);
+
+    expect(toggle).toHaveBeenCalledWith("dark", true);
+    expect(getClientSettings().appearance.colorScheme).toBe("dark");
+    expect(useTheme().theme).toBe("dark");
   });
 
   it("preserves desktop sync causes and retries after a failed cosmetic sync", async () => {

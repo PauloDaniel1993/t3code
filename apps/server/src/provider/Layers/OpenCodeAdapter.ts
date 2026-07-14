@@ -23,10 +23,12 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { resolveExistingAttachmentFilePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -38,6 +40,7 @@ import {
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   buildOpenCodePermissionRules,
+  findUnsupportedOpenCodeAttachmentType,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   openCodeQuestionId,
@@ -73,6 +76,8 @@ interface OpenCodeSessionContext {
   readonly openCodeSessionId: string;
   readonly pendingPermissions: Map<string, PermissionRequest>;
   readonly pendingQuestions: Map<string, QuestionRequest>;
+  readonly forceRejectedQuestions: Set<string>;
+  readonly hasT3McpUserInputTool: boolean;
   readonly messageRoleById: Map<string, "user" | "assistant">;
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
@@ -820,6 +825,46 @@ export function makeOpenCodeAdapter(
         }
 
         case "question.asked": {
+          if (context.hasT3McpUserInputTool) {
+            context.forceRejectedQuestions.add(event.properties.id);
+            yield* runOpenCodeSdk("question.reject", () =>
+              context.client.question.reject({
+                requestID: event.properties.id,
+              }),
+            ).pipe(Effect.mapError(toRequestError));
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId,
+                requestId: event.properties.id,
+                raw: event,
+              })),
+              type: "runtime.warning",
+              payload: {
+                message: T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE,
+              },
+            });
+            break;
+          }
+
+          const questions = normalizeQuestionRequest(event.properties);
+          const validation = validateUserInputQuestionBatch(questions);
+          if (validation._tag === "Invalid") {
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId,
+                requestId: event.properties.id,
+                raw: event,
+              })),
+              type: "runtime.error",
+              payload: {
+                message: validation.message,
+                class: "provider_error",
+              },
+            });
+            break;
+          }
           context.pendingQuestions.set(event.properties.id, event.properties);
           yield* emit({
             ...(yield* buildEventBase({
@@ -830,7 +875,7 @@ export function makeOpenCodeAdapter(
             })),
             type: "user-input.requested",
             payload: {
-              questions: normalizeQuestionRequest(event.properties),
+              questions: validation.questions,
             },
           });
           break;
@@ -859,6 +904,9 @@ export function makeOpenCodeAdapter(
         }
 
         case "question.rejected": {
+          if (context.forceRejectedQuestions.delete(event.properties.requestID)) {
+            break;
+          }
           context.pendingQuestions.delete(event.properties.requestID);
           yield* emit({
             ...(yield* buildEventBase({
@@ -1055,7 +1103,8 @@ export function makeOpenCodeAdapter(
                 ...(server.external && serverPassword ? { serverPassword } : {}),
               });
               const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-              if (mcpSession && !server.external) {
+              const hasT3McpUserInputTool = mcpSession !== undefined && !server.external;
+              if (hasT3McpUserInputTool) {
                 yield* runOpenCodeSdk("mcp.add", () =>
                   client.mcp.add({
                     name: "t3-code",
@@ -1066,6 +1115,7 @@ export function makeOpenCodeAdapter(
                         Authorization: mcpSession.authorizationHeader,
                       },
                       oauth: false,
+                      timeout: McpProviderSession.T3_MCP_TOOL_TIMEOUT_MS,
                     },
                   }),
                 );
@@ -1087,6 +1137,7 @@ export function makeOpenCodeAdapter(
                 server,
                 client,
                 openCodeSession: openCodeSession.data,
+                hasT3McpUserInputTool,
               };
             }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
           );
@@ -1133,6 +1184,8 @@ export function makeOpenCodeAdapter(
           openCodeSessionId: started.openCodeSession.id,
           pendingPermissions: new Map(),
           pendingQuestions: new Map(),
+          forceRejectedQuestions: new Set(),
+          hasT3McpUserInputTool: started.hasT3McpUserInputTool,
           partById: new Map(),
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
@@ -1195,14 +1248,29 @@ export function makeOpenCodeAdapter(
       }
 
       const text = input.input?.trim();
+      const unsupportedAttachmentType = findUnsupportedOpenCodeAttachmentType(input.attachments);
+      if (unsupportedAttachmentType !== undefined) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session.prompt_async",
+          detail: `Unsupported attachment type '${unsupportedAttachmentType}'.`,
+        });
+      }
       const fileParts = toOpenCodeFileParts({
         attachments: input.attachments,
         resolveAttachmentPath: (attachment) =>
-          resolveAttachmentPath({
+          resolveExistingAttachmentFilePath({
             attachmentsDir: serverConfig.attachmentsDir,
             attachment,
           }),
       });
+      if (fileParts.length !== (input.attachments?.length ?? 0)) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session.prompt_async",
+          detail: "One or more attachment files are missing or invalid.",
+        });
+      }
       if ((!text || text.length === 0) && fileParts.length === 0) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,

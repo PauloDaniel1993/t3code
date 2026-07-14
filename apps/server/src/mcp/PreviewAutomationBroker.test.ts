@@ -85,6 +85,80 @@ it.effect("atomically registers a connected host and correlates its response", (
   ),
 );
 
+it.effect("routes an explicit project tab to its registered backing host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const tabId = PreviewTabId.make("project-tab");
+      let connectionId: PreviewAutomationStreamEvent["connectionId"] | null = null;
+      const routedRequests: RoutedRequest[] = [];
+      const requests = requestsFrom(yield* broker.connect(makeHost()), (nextConnectionId) => {
+        connectionId = nextConnectionId;
+      });
+      yield* Stream.runForEach(requests, (request) => {
+        routedRequests.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: { available: true, tabId },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      expect(connectionId).not.toBeNull();
+
+      yield* broker.syncProjectTabs({
+        clientId: "client-1",
+        environmentId: scope.environmentId,
+        connectionId: connectionId!,
+        routes: [
+          {
+            tabId,
+            backingEnvironmentId: scope.environmentId,
+            backingThreadId: scope.threadId,
+          },
+        ],
+      });
+
+      const requestingEnvironmentId = EnvironmentId.make("environment-2");
+      const requestingThreadId = ThreadId.make("thread-2");
+      const requestingScope = {
+        ...scope,
+        environmentId: requestingEnvironmentId,
+        threadId: requestingThreadId,
+        providerSessionId: "provider-session-2",
+      };
+      yield* broker.invoke({
+        scope: requestingScope,
+        operation: "status",
+        input: {},
+        tabId,
+      });
+      yield* broker.invoke({
+        scope: requestingScope,
+        operation: "snapshot",
+        input: {},
+      });
+
+      expect(routedRequests).toHaveLength(2);
+      expect(routedRequests[0]).toMatchObject({
+        tabId,
+        projectTab: true,
+        requestingEnvironmentId,
+        threadId: requestingThreadId,
+        backingEnvironmentId: scope.environmentId,
+        backingThreadId: scope.threadId,
+      });
+      expect(routedRequests[1]).toMatchObject({
+        tabId,
+        requestingEnvironmentId,
+        threadId: requestingThreadId,
+      });
+    }),
+  ),
+);
+
 it.effect("targets multiple tabs explicitly while retaining a default tab", () =>
   Effect.scoped(
     Effect.gen(function* () {

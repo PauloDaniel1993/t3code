@@ -12,8 +12,12 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  buildPendingUserInputAnswers,
   buildThreadFeed,
+  derivePendingUserInputs,
   deriveThreadFeedPresentation,
+  setPendingUserInputCustomAnswer,
+  togglePendingUserInputOptionSelection,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
 } from "./threadActivity";
@@ -40,6 +44,7 @@ function makeThread(
     branch: null,
     worktreePath: null,
     latestTurn: null,
+    handoff: null,
     createdAt: "2026-04-01T00:00:00.000Z",
     updatedAt: "2026-04-01T00:00:00.000Z",
     archivedAt: null,
@@ -52,6 +57,14 @@ function makeThread(
     ...input,
   };
 }
+
+const makeUserInputQuestion = (index: number) => ({
+  id: `question-${index}`,
+  header: `Question ${index}`,
+  question: `Question ${index}?`,
+  options: [{ label: `Answer ${index}`, description: `Answer ${index}` }],
+  multiSelect: false,
+});
 
 describe("buildThreadFeed", () => {
   it("keeps historic work entries attributed to their turns", () => {
@@ -246,6 +259,7 @@ describe("buildThreadFeed", () => {
           text: "I am checking.",
           turnId,
           streaming: false,
+          source: "provider",
           createdAt: "2026-04-01T00:00:02.000Z",
           updatedAt: "2026-04-01T00:00:03.000Z",
         },
@@ -255,6 +269,7 @@ describe("buildThreadFeed", () => {
           text: "Done.",
           turnId,
           streaming: false,
+          source: "provider",
           createdAt: "2026-04-01T00:00:17.000Z",
           updatedAt: "2026-04-01T00:00:18.000Z",
         },
@@ -316,6 +331,7 @@ describe("buildThreadFeed", () => {
           text: "Do it once more.",
           turnId: null,
           streaming: false,
+          source: "user",
           createdAt: "2026-04-01T00:00:00.000Z",
           updatedAt: "2026-04-01T00:00:00.000Z",
         },
@@ -325,6 +341,7 @@ describe("buildThreadFeed", () => {
           text: "Kicking off call 1.",
           turnId: firstTurnId,
           streaming: false,
+          source: "provider",
           createdAt: "2026-04-01T00:00:09.000Z",
           updatedAt: "2026-04-01T00:00:09.000Z",
         },
@@ -334,6 +351,7 @@ describe("buildThreadFeed", () => {
           text: "Actually do 15.",
           turnId: null,
           streaming: false,
+          source: "user",
           createdAt: "2026-04-01T00:00:14.000Z",
           updatedAt: "2026-04-01T00:00:14.000Z",
         },
@@ -343,6 +361,7 @@ describe("buildThreadFeed", () => {
           text: "One down - adjusting.",
           turnId: secondTurnId,
           streaming: true,
+          source: "provider",
           createdAt: "2026-04-01T00:00:17.000Z",
           updatedAt: "2026-04-01T00:00:17.000Z",
         },
@@ -464,5 +483,92 @@ describe("buildThreadFeed", () => {
       type: "work-toggle",
       expanded: true,
     });
+  });
+});
+
+describe("mobile pending user input helpers", () => {
+  it("preserves ten pending user-input questions in order", () => {
+    const questions = Array.from({ length: 10 }, (_, index) => makeUserInputQuestion(index + 1));
+
+    expect(
+      derivePendingUserInputs([
+        makeActivity({
+          id: EventId.make("activity-user-input-ten"),
+          kind: "user-input.requested",
+          summary: "User input requested",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: {
+            requestId: "req-user-input-ten",
+            questions,
+          },
+        }),
+      ]),
+    ).toEqual([
+      {
+        requestId: "req-user-input-ten",
+        createdAt: "2026-04-01T00:00:01.000Z",
+        questions,
+      },
+    ]);
+  });
+
+  it("builds complete answers for ten pending user-input questions", () => {
+    const questions = Array.from({ length: 10 }, (_, index) => makeUserInputQuestion(index + 1));
+
+    expect(
+      buildPendingUserInputAnswers(
+        questions,
+        Object.fromEntries(
+          questions.map((question, index) => [
+            question.id,
+            { selectedOptionLabels: [`Answer ${index + 1}`] },
+          ]),
+        ),
+      ),
+    ).toEqual({
+      "question-1": "Answer 1",
+      "question-2": "Answer 2",
+      "question-3": "Answer 3",
+      "question-4": "Answer 4",
+      "question-5": "Answer 5",
+      "question-6": "Answer 6",
+      "question-7": "Answer 7",
+      "question-8": "Answer 8",
+      "question-9": "Answer 9",
+      "question-10": "Answer 10",
+    });
+  });
+
+  it("toggles multiple options and builds array replies", () => {
+    const question = {
+      id: "areas",
+      header: "Areas",
+      question: "Which areas should this change cover?",
+      options: [
+        { label: "Server", description: "Server" },
+        { label: "Web", description: "Web" },
+      ],
+      multiSelect: true,
+    } as const;
+    const firstDraft = togglePendingUserInputOptionSelection(question, undefined, "Server");
+    const secondDraft = togglePendingUserInputOptionSelection(question, firstDraft, "Web");
+
+    expect(secondDraft).toEqual({
+      customAnswer: "",
+      selectedOptionLabels: ["Server", "Web"],
+    });
+    expect(buildPendingUserInputAnswers([question], { areas: secondDraft })).toEqual({
+      areas: ["Server", "Web"],
+    });
+    expect(togglePendingUserInputOptionSelection(question, secondDraft, "Server")).toEqual({
+      customAnswer: "",
+      selectedOptionLabels: ["Web"],
+    });
+  });
+
+  it("clears multi-select options while a custom answer is active", () => {
+    expect(
+      setPendingUserInputCustomAnswer({ selectedOptionLabels: ["Server", "Web"] }, "All clients"),
+    ).toEqual({ customAnswer: "All clients" });
   });
 });

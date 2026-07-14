@@ -33,9 +33,11 @@ function makeEnvironmentLayer(baseDir: string, appVersion = "0.0.17") {
     processArch: "x64",
     appVersion,
     appPath: "/repo",
+    executablePath: "/repo/T3 Code",
     isPackaged: true,
     resourcesPath: "/missing/resources",
     runningUnderArm64Translation: false,
+    localInstallMetadata: Option.none(),
   }).pipe(
     Layer.provide(
       Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ T3CODE_HOME: baseDir })),

@@ -78,8 +78,18 @@ const applyAnnotationTheme = (
   }
 };
 
+function isAnnotationNode(element: Element): boolean {
+  return element instanceof Element && element.closest(`[${OVERLAY_ATTRIBUTE}]`) !== null;
+}
+
+function shouldReportHumanInput(event: Event): boolean {
+  if (!event.isTrusted) return false;
+  const target = event.target;
+  return !(target instanceof Element && isAnnotationNode(target));
+}
+
 const reportHumanPointerInput = (event: PointerEvent): void => {
-  if (!event.isTrusted) return;
+  if (!shouldReportHumanInput(event)) return;
   ipcRenderer.send(HUMAN_INPUT_CHANNEL, {
     kind: "pointer",
     x: event.clientX,
@@ -89,7 +99,7 @@ const reportHumanPointerInput = (event: PointerEvent): void => {
 };
 
 const reportHumanKeyInput = (event: KeyboardEvent): void => {
-  if (!event.isTrusted) return;
+  if (!shouldReportHumanInput(event)) return;
   ipcRenderer.send(HUMAN_INPUT_CHANNEL, {
     kind: "key",
     key: event.key,
@@ -145,10 +155,6 @@ function unionRects(
     width: Math.min(maxWidth, right - left + padding * 2),
     height: Math.min(maxHeight, bottom - top + padding * 2),
   };
-}
-
-function isAnnotationNode(element: Element): boolean {
-  return element instanceof Element && element.closest(`[${OVERLAY_ATTRIBUTE}]`) !== null;
 }
 
 function pickFromPoint(clientX: number, clientY: number): Element | null {

@@ -41,6 +41,7 @@ import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
+import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -107,14 +108,17 @@ export interface CodexSessionRuntimeOptions {
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
+  readonly forceT3McpUserInput?: boolean;
 }
+
+export type CodexSessionRuntimeAttachment = Extract<
+  EffectCodexSchema.V2TurnStartParams__UserInput,
+  { readonly type: "image" | "mention" }
+>;
 
 export interface CodexSessionRuntimeSendTurnInput {
   readonly input?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexSessionRuntimeAttachment>;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
@@ -348,10 +352,7 @@ export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
   readonly prompt?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexSessionRuntimeAttachment>;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
@@ -1065,6 +1066,16 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
       Effect.gen(function* () {
+        if (options.forceT3McpUserInput === true) {
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE,
+            {
+              tool: "request_user_input",
+              preferredTool: "t3-code.request_user_input",
+            },
+          );
+        }
+
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("user-input-request"));
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
