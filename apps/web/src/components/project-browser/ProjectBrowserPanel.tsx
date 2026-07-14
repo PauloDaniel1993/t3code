@@ -18,7 +18,6 @@ import { useThreadShells } from "~/state/entities";
 import { faviconUrlForOrigin } from "~/lib/favicon";
 import { cn } from "~/lib/utils";
 import {
-  PROJECT_BROWSER_MAX_WIDTH,
   PROJECT_BROWSER_MIN_WIDTH,
   clampProjectBrowserWidth,
   type ProjectBrowserTabActivity,
@@ -182,18 +181,15 @@ export function ProjectBrowserPanel(props: Props) {
         const resize = resizeRef.current;
         if (!resize || resize.pointerId !== event.pointerId) return;
         setLiveWidth(
-          Math.min(
-            PROJECT_BROWSER_MAX_WIDTH,
-            Math.max(PROJECT_BROWSER_MIN_WIDTH, resize.startWidth + resize.startX - event.clientX),
-          ),
+          Math.max(PROJECT_BROWSER_MIN_WIDTH, resize.startWidth + resize.startX - event.clientX),
         );
       },
       onPointerUp: (event: ReactPointerEvent<HTMLElement>) => {
         const resize = resizeRef.current;
         if (!resize || resize.pointerId !== event.pointerId) return;
-        const finalWidth = Math.min(
-          PROJECT_BROWSER_MAX_WIDTH,
-          Math.max(PROJECT_BROWSER_MIN_WIDTH, resize.startWidth + resize.startX - event.clientX),
+        const finalWidth = Math.max(
+          PROJECT_BROWSER_MIN_WIDTH,
+          resize.startWidth + resize.startX - event.clientX,
         );
         resizeRef.current = null;
         resize.target.releasePointerCapture(event.pointerId);
@@ -276,7 +272,9 @@ export function ProjectBrowserPanel(props: Props) {
       )}
       style={{
         width: `${width}px`,
-        maxWidth: props.overlay ? "88vw" : `${PROJECT_BROWSER_MAX_WIDTH}px`,
+        // Docked width is uncapped (parity with the thread right panel); the
+        // overlay cap only keeps the sheet from fully covering the chat.
+        ...(props.overlay ? { maxWidth: "88vw" } : {}),
       }}
       aria-label="Project Browser"
       data-project-browser-panel
