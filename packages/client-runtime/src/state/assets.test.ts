@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
 import { Atom } from "effect/unstable/reactivity";
@@ -8,19 +8,7 @@ import {
   createAssetEnvironmentAtoms,
   InvalidAssetCollectionKeyError,
   parseAssetCollectionKey,
-  resolveUnexpiredAssetUrl,
 } from "./assets.ts";
-
-describe("resolveUnexpiredAssetUrl", () => {
-  it("returns URLs only before their signed expiry", () => {
-    const result = { relativeUrl: "/api/assets/token/file.pdf", expiresAt: 2_000 };
-
-    expect(resolveUnexpiredAssetUrl("https://example.test", result, 1_999)).toBe(
-      "https://example.test/api/assets/token/file.pdf",
-    );
-    expect(resolveUnexpiredAssetUrl("https://example.test", result, 2_000)).toBeNull();
-  });
-});
 
 describe("asset collection keys", () => {
   it("preserves malformed JSON and its native cause", () => {

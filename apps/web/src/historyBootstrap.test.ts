@@ -136,39 +136,4 @@ describe("buildBootstrapInput", () => {
     expect(result.text).toContain("Attached image");
     expect(result.text).toContain("screenshot.png");
   });
-
-  it("captures document-only and mixed attachment history without image-only wording", () => {
-    const makeMessage = (
-      attachments: NonNullable<Parameters<typeof buildBootstrapInput>[0][number]["attachments"]>,
-    ) => ({
-      id: messageId(`u-${attachments.length}`),
-      role: "user" as const,
-      text: "",
-      attachments,
-      createdAt: "2026-02-09T00:00:00.000Z",
-      turnId: null,
-      updatedAt: "2026-02-09T00:00:00.000Z",
-      streaming: false,
-    });
-    const pdf = {
-      type: "document" as const,
-      id: "doc-1",
-      name: "requirements.pdf",
-      mimeType: "application/pdf" as const,
-      sizeBytes: 4_096,
-    };
-    const image = {
-      type: "image" as const,
-      id: "img-1",
-      name: "screen.png",
-      mimeType: "image/png",
-      sizeBytes: 128,
-    };
-
-    const pdfOnly = buildBootstrapInput([makeMessage([pdf])], "Continue", 1_500);
-    const mixed = buildBootstrapInput([makeMessage([image, pdf])], "Continue", 1_500);
-
-    expect(pdfOnly.text).toContain("[Attached PDF: requirements.pdf]");
-    expect(mixed.text).toContain("[Attached files: screen.png, requirements.pdf]");
-  });
 });

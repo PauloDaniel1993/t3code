@@ -12,7 +12,6 @@
  * @module ProviderService
  */
 import type {
-  ProviderUserInputAnswers,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
@@ -24,7 +23,6 @@ import type {
   ProviderStopSessionInput,
   ThreadId,
   ProviderTurnStartResult,
-  UserInputQuestion,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -73,15 +71,6 @@ export interface ProviderServiceShape {
   readonly respondToUserInput: (
     input: ProviderRespondToUserInputInput,
   ) => Effect.Effect<void, ProviderServiceError>;
-
-  /**
-   * Ask structured questions through T3-owned user-input UI and await answers.
-   */
-  readonly requestUserInput: (input: {
-    readonly threadId: ThreadId;
-    readonly providerInstanceId: ProviderInstanceId;
-    readonly questions: ReadonlyArray<UserInputQuestion>;
-  }) => Effect.Effect<ProviderUserInputAnswers, ProviderServiceError>;
 
   /**
    * Stop a provider session.

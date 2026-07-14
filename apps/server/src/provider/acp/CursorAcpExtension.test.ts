@@ -68,31 +68,6 @@ describe("CursorAcpExtension", () => {
     ]);
   });
 
-  it("preserves ten ask-question prompts in Cursor order", () => {
-    const questions = extractAskQuestions({
-      toolCallId: "ask-ten",
-      questions: Array.from({ length: 10 }, (_, index) => ({
-        id: `question-${index + 1}`,
-        prompt: `Question ${index + 1}?`,
-        options: [{ id: "continue", label: "Continue" }],
-      })),
-    });
-
-    expect(questions).toHaveLength(10);
-    expect(questions.map((question) => question.id)).toEqual([
-      "question-1",
-      "question-2",
-      "question-3",
-      "question-4",
-      "question-5",
-      "question-6",
-      "question-7",
-      "question-8",
-      "question-9",
-      "question-10",
-    ]);
-  });
-
   it("extracts plan markdown from the real Cursor create-plan payload shape", () => {
     const planMarkdown = extractPlanMarkdown({
       toolCallId: "plan-1",

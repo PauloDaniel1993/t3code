@@ -65,11 +65,9 @@ function makeEnvironmentLayer(
     processArch: "x64",
     appVersion: "1.2.3",
     appPath: options?.appPath ?? "/repo",
-    executablePath: "/repo/T3 Code",
     isPackaged: options?.isPackaged ?? true,
     resourcesPath: options?.resourcesPath ?? "/missing/resources",
     runningUnderArm64Translation: false,
-    localInstallMetadata: Option.none(),
   }).pipe(
     Layer.provide(
       Layer.mergeAll(

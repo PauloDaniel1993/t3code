@@ -16,16 +16,8 @@ import { isElectron } from "../env";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
-type RestoreDefaultsScope = "general" | "appearance";
-
-function RestoreDefaultsButton({
-  scope,
-  onRestored,
-}: {
-  scope: RestoreDefaultsScope;
-  onRestored: () => void;
-}) {
-  const { changedSettingLabels, restoreDefaults } = useSettingsRestore(scope, onRestored);
+function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
+  const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
 
   return (
     <Button
@@ -45,12 +37,7 @@ function SettingsContentLayout() {
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const [restoreSignal, setRestoreSignal] = useState(0);
-  const restoreDefaultsScope =
-    location.pathname === "/settings/general"
-      ? "general"
-      : location.pathname === "/settings/appearance"
-        ? "appearance"
-        : null;
+  const showRestoreDefaults = location.pathname === "/settings/general";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
   const navigateBackWithinApp = useCallback(() => {
     if (canGoBack) {
@@ -87,6 +74,11 @@ function SettingsContentLayout() {
           >
             <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
               <span className="text-sm font-medium text-foreground">Settings</span>
+              {showRestoreDefaults ? (
+                <div className="ms-auto flex items-center gap-2">
+                  <RestoreDefaultsButton onRestored={handleRestored} />
+                </div>
+              ) : null}
             </div>
           </header>
         )}
@@ -101,23 +93,17 @@ function SettingsContentLayout() {
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
               Settings
             </span>
+            {showRestoreDefaults ? (
+              <div className="ms-auto flex items-center gap-2">
+                <RestoreDefaultsButton onRestored={handleRestored} />
+              </div>
+            ) : null}
           </div>
         )}
 
         <div key={restoreSignal} className="min-h-0 flex flex-1 flex-col">
           <Outlet />
         </div>
-
-        {restoreDefaultsScope ? (
-          <footer
-            className={cn(
-              "flex shrink-0 justify-end border-t border-border bg-background px-3 py-2 sm:px-5",
-              COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
-            )}
-          >
-            <RestoreDefaultsButton scope={restoreDefaultsScope} onRestored={handleRestored} />
-          </footer>
-        ) : null}
       </div>
     </SidebarInset>
   );

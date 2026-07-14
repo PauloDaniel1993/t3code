@@ -1,10 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
@@ -16,11 +14,9 @@ const defaultInput = {
   processArch: "arm64",
   appVersion: "0.0.22",
   appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
-  executablePath: "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
   isPackaged: false,
   resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
   runningUnderArm64Translation: false,
-  localInstallMetadata: Option.none(),
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
 const makeEnvironmentLayer = (
@@ -53,30 +49,21 @@ describe("DesktopEnvironment", () => {
           T3CODE_OTLP_EXPORT_INTERVAL_MS: "2500",
         },
       );
-      const path = environment.path;
-      const stateDir = path.join("/tmp/t3", "dev");
-      const rootDir = path.resolve(defaultInput.dirname, "../../..");
 
       assert.equal(environment.isDevelopment, true);
-      assert.equal(
-        environment.appDataDirectory,
-        path.join(defaultInput.homeDirectory, "Library", "Application Support"),
-      );
+      assert.equal(environment.appDataDirectory, "/Users/alice/Library/Application Support");
       assert.equal(environment.baseDir, "/tmp/t3");
-      assert.equal(environment.stateDir, stateDir);
-      assert.equal(environment.desktopSettingsPath, path.join(stateDir, "desktop-settings.json"));
-      assert.equal(environment.clientSettingsPath, path.join(stateDir, "client-settings.json"));
-      assert.equal(
-        environment.savedEnvironmentRegistryPath,
-        path.join(stateDir, "saved-environments.json"),
-      );
-      assert.equal(environment.serverSettingsPath, path.join(stateDir, "settings.json"));
-      assert.equal(environment.logDir, path.join(stateDir, "logs"));
-      assert.equal(environment.browserArtifactsDir, path.join(stateDir, "browser-artifacts"));
-      assert.equal(environment.rootDir, rootDir);
-      assert.equal(environment.appRoot, rootDir);
-      assert.equal(environment.backendEntryPath, path.join(rootDir, "apps/server/dist/bin.mjs"));
-      assert.equal(environment.backendCwd, rootDir);
+      assert.equal(environment.stateDir, "/tmp/t3/dev");
+      assert.equal(environment.desktopSettingsPath, "/tmp/t3/dev/desktop-settings.json");
+      assert.equal(environment.clientSettingsPath, "/tmp/t3/dev/client-settings.json");
+      assert.equal(environment.savedEnvironmentRegistryPath, "/tmp/t3/dev/saved-environments.json");
+      assert.equal(environment.serverSettingsPath, "/tmp/t3/dev/settings.json");
+      assert.equal(environment.logDir, "/tmp/t3/dev/logs");
+      assert.equal(environment.browserArtifactsDir, "/tmp/t3/dev/browser-artifacts");
+      assert.equal(environment.rootDir, "/repo");
+      assert.equal(environment.appRoot, "/repo");
+      assert.equal(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
+      assert.equal(environment.backendCwd, "/repo");
       assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
       assert.equal(environment.linuxWmClass, "t3code-dev");
       assert.deepEqual(
@@ -99,88 +86,27 @@ describe("DesktopEnvironment", () => {
           T3CODE_HOME: "/tmp/t3",
         },
       );
-      const path = environment.path;
-      const stateDir = path.join("/tmp/t3", "userdata");
 
       assert.equal(environment.isDevelopment, false);
-      assert.equal(environment.stateDir, stateDir);
-      assert.equal(environment.logDir, path.join(stateDir, "logs"));
-      assert.equal(environment.browserArtifactsDir, path.join(stateDir, "browser-artifacts"));
-      assert.equal(environment.serverSettingsPath, path.join(stateDir, "settings.json"));
+      assert.equal(environment.stateDir, "/tmp/t3/userdata");
+      assert.equal(environment.logDir, "/tmp/t3/userdata/logs");
+      assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
+      assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
     }),
   );
 
-  it.effect("uses configured app identity overrides", () =>
+  it.effect("uses a configured app user model id override", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
         {},
         {
-          T3CODE_DESKTOP_APP_USER_MODEL_ID: " com.t3tools.t3code.alpha.local ",
-          T3CODE_DESKTOP_DISPLAY_NAME: " T3 Code (alpha.local) ",
+          T3CODE_DESKTOP_APP_USER_MODEL_ID: " com.t3tools.t3code.dev.local ",
+          VITE_DEV_SERVER_URL: "http://localhost:5173",
         },
       );
 
-      assert.equal(environment.appUserModelId, "com.t3tools.t3code.alpha.local");
-      assert.equal(environment.displayName, "T3 Code (alpha.local)");
-      assert.equal(environment.branding.displayName, "T3 Code (alpha.local)");
-      assert.equal(environment.branding.stageLabel, "Alpha");
+      assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev.local");
     }),
-  );
-
-  it.effect("uses local install metadata when launched without launcher environment", () =>
-    Effect.gen(function* () {
-      const localT3Home = "C:\\Users\\alice\\.t3.local";
-      const environment = yield* makeEnvironment({
-        platform: "win32",
-        homeDirectory: "C:\\Users\\alice",
-        localInstallMetadata: Option.some({
-          t3Home: Option.some(localT3Home),
-          appDataDirectory: Option.none(),
-          displayName: Option.some("T3 Code (alpha.local)"),
-          windowsAppUserModelId: Option.some("com.t3tools.t3code.alpha.local"),
-        }),
-      });
-
-      assert.equal(environment.baseDir, localT3Home);
-      assert.equal(environment.stateDir, environment.path.join(localT3Home, "userdata"));
-      assert.equal(environment.appDataDirectory, environment.path.join(localT3Home, "appdata"));
-      assert.equal(environment.displayName, "T3 Code (alpha.local)");
-      assert.equal(environment.appUserModelId, "com.t3tools.t3code.alpha.local");
-    }),
-  );
-
-  it.effect("reads local install metadata next to the executable", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const installDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-desktop-local-install-metadata-test-",
-      });
-      yield* fileSystem.writeFileString(
-        path.join(installDir, DesktopEnvironment.LOCAL_INSTALL_METADATA_FILE_NAME),
-        `{
-          "stateDir": " C:\\\\Users\\\\alice\\\\.t3.local ",
-          "displayName": " T3 Code (alpha.local) ",
-          "windowsAppUserModelId": " com.t3tools.t3code.alpha.local "
-        }\n`,
-      );
-      const metadata = yield* DesktopEnvironment.readLocalInstallMetadata(
-        path.join(installDir, "T3 Code.exe"),
-      );
-
-      assert.deepEqual(
-        Option.map(metadata, (value) => ({
-          t3Home: value.t3Home,
-          displayName: value.displayName,
-          windowsAppUserModelId: value.windowsAppUserModelId,
-        })),
-        Option.some({
-          t3Home: Option.some("C:\\Users\\alice\\.t3.local"),
-          displayName: Option.some("T3 Code (alpha.local)"),
-          windowsAppUserModelId: Option.some("com.t3tools.t3code.alpha.local"),
-        }),
-      );
-    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
   it.effect("resolves picker defaults without nullish sentinels", () =>
@@ -198,7 +124,7 @@ describe("DesktopEnvironment", () => {
       );
       assert.deepEqual(
         environment.resolvePickFolderDefaultPath({ initialPath: "~/project" }),
-        Option.some(environment.path.join(defaultInput.homeDirectory, "project")),
+        Option.some("/Users/alice/project"),
       );
     }),
   );

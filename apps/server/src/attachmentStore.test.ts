@@ -6,13 +6,9 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  attachmentRelativePath,
   createAttachmentId,
-  parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
-  resolveAttachmentPath,
   resolveAttachmentPathById,
-  resolveExistingAttachmentFilePath,
 } from "./attachmentStore.ts";
 
 describe("attachmentStore", () => {
@@ -65,97 +61,6 @@ describe("attachmentStore", () => {
     } finally {
       NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
     }
-  });
-
-  it("maps document attachments to a safe PDF path regardless of the display name", () => {
-    const attachmentsDir = NodeFS.mkdtempSync(
-      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-store-"),
-    );
-    try {
-      const attachment = {
-        type: "document" as const,
-        id: "thread-1-00000000-0000-4000-8000-000000000001",
-        name: "unsafe.exe",
-        mimeType: "application/pdf" as const,
-        sizeBytes: 5,
-      };
-
-      expect(attachmentRelativePath(attachment)).toBe(`${attachment.id}.pdf`);
-      expect(resolveAttachmentPath({ attachmentsDir, attachment })).toBe(
-        NodePath.join(attachmentsDir, `${attachment.id}.pdf`),
-      );
-    } finally {
-      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
-    }
-  });
-
-  it("finds contained PDF attachments by id", () => {
-    const attachmentsDir = NodeFS.mkdtempSync(
-      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-store-"),
-    );
-    try {
-      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000001";
-      const pdfPath = NodePath.join(attachmentsDir, `${attachmentId}.pdf`);
-      NodeFS.writeFileSync(pdfPath, Buffer.from("%PDF-1.7"));
-
-      expect(resolveAttachmentPathById({ attachmentsDir, attachmentId })).toBe(pdfPath);
-    } finally {
-      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
-    }
-  });
-
-  it("resolves only existing attachment files, not same-name directories", () => {
-    const attachmentsDir = NodeFS.mkdtempSync(
-      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-store-"),
-    );
-    const attachment = {
-      type: "document" as const,
-      id: "thread-1-00000000-0000-4000-8000-000000000001",
-      name: "document.pdf",
-      mimeType: "application/pdf" as const,
-      sizeBytes: 8,
-    };
-    try {
-      const pdfPath = NodePath.join(attachmentsDir, `${attachment.id}.pdf`);
-      NodeFS.mkdirSync(pdfPath);
-      expect(resolveExistingAttachmentFilePath({ attachmentsDir, attachment })).toBeNull();
-      NodeFS.rmSync(pdfPath, { recursive: true });
-      NodeFS.writeFileSync(pdfPath, Buffer.from("%PDF-1.7"));
-      expect(resolveExistingAttachmentFilePath({ attachmentsDir, attachment })).toBe(pdfPath);
-    } finally {
-      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects traversal, supplied extensions, and nested ids during lookup", () => {
-    const attachmentsDir = NodeFS.mkdtempSync(
-      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-store-"),
-    );
-    try {
-      expect(
-        resolveAttachmentPathById({ attachmentsDir, attachmentId: "../thread-1-attachment" }),
-      ).toBeNull();
-      expect(
-        resolveAttachmentPathById({ attachmentsDir, attachmentId: "thread-1-attachment.pdf" }),
-      ).toBeNull();
-      expect(
-        resolveAttachmentPathById({ attachmentsDir, attachmentId: "thread/1/attachment" }),
-      ).toBeNull();
-      expect(parseAttachmentIdFromRelativePath("../../thread-1-attachment.pdf")).toBeNull();
-      expect(parseAttachmentIdFromRelativePath("thread-1-attachment.pdf.exe")).toBeNull();
-    } finally {
-      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps thread ownership segments exact for PDF cleanup safety", () => {
-    const ownerId = "thread-owner-00000000-0000-4000-8000-000000000001";
-    const otherId = "thread-owner-extra-00000000-0000-4000-8000-000000000002";
-
-    expect(parseThreadSegmentFromAttachmentId(ownerId)).toBe("thread-owner");
-    expect(parseThreadSegmentFromAttachmentId(otherId)).toBe("thread-owner-extra");
-    expect(parseAttachmentIdFromRelativePath(`${ownerId}.pdf`)).toBe(ownerId);
-    expect(parseAttachmentIdFromRelativePath(`${otherId}.pdf`)).toBe(otherId);
   });
 
   it("returns null when no attachment file exists for the id", () => {

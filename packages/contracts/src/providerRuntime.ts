@@ -28,7 +28,6 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("opencode.sdk.event"),
   Schema.Literal("acp.jsonrpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
-  Schema.Literal("t3.mcp.tool"),
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
 
@@ -556,8 +555,6 @@ const ModelReroutedPayload = Schema.Struct({
   fromModel: TrimmedNonEmptyStringSchema,
   toModel: TrimmedNonEmptyStringSchema,
   reason: TrimmedNonEmptyStringSchema,
-  category: Schema.optional(TrimmedNonEmptyStringSchema),
-  explanation: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ModelReroutedPayload = typeof ModelReroutedPayload.Type;
 

@@ -53,7 +53,6 @@ import {
   getProviderOptionDescriptors,
   resolvePromptInjectedEffort,
 } from "@t3tools/shared/model";
-import { validateUserInputQuestionBatch } from "@t3tools/shared/userInput";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -71,7 +70,6 @@ import * as Stream from "effect/Stream";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE } from "../T3McpUserInputTool.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   getClaudeModelCapabilities,
@@ -137,15 +135,6 @@ interface ClaudeTurnState {
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
-  modelReroute?: ClaudeModelReroute;
-}
-
-interface ClaudeModelReroute {
-  readonly fromModel: string;
-  readonly toModel: string;
-  readonly reason: string;
-  readonly category?: string;
-  readonly explanation?: string;
 }
 
 interface AssistantTextBlockState {
@@ -198,7 +187,6 @@ interface ClaudeSessionContext {
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
-  readonly hasT3McpUserInputTool: boolean;
   readonly turns: Array<{
     id: TurnId;
     items: Array<unknown>;
@@ -947,17 +935,6 @@ function buildClaudeImageContentBlock(input: {
   };
 }
 
-function buildClaudeDocumentContentBlock(input: { readonly bytes: Uint8Array }) {
-  return {
-    type: "document",
-    source: {
-      type: "base64",
-      media_type: "application/pdf",
-      data: Buffer.from(input.bytes).toString("base64"),
-    },
-  };
-}
-
 const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   input: ProviderSendTurnInput,
   dependencies: {
@@ -974,18 +951,11 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   }
 
   for (const attachment of input.attachments ?? []) {
-    const attachmentType: string = attachment.type;
-    if (attachmentType !== "image" && attachmentType !== "document") {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/start",
-        detail: `Unsupported attachment type '${attachmentType}'.`,
-      });
+    if (attachment.type !== "image") {
+      continue;
     }
-    if (
-      attachment.type === "image" &&
-      !SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)
-    ) {
+
+    if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: "turn/start",
@@ -1017,19 +987,12 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
       ),
     );
 
-    switch (attachment.type) {
-      case "image":
-        sdkContent.push(
-          buildClaudeImageContentBlock({
-            mimeType: attachment.mimeType,
-            bytes,
-          }),
-        );
-        break;
-      case "document":
-        sdkContent.push(buildClaudeDocumentContentBlock({ bytes }));
-        break;
-    }
+    sdkContent.push(
+      buildClaudeImageContentBlock({
+        mimeType: attachment.mimeType,
+        bytes,
+      }),
+    );
   }
 
   return buildUserMessage({ sdkContent });
@@ -2542,49 +2505,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    // The SDK's refusal fallback swap is persistent for the session and only
-    // announced once; later turns reveal it solely through the serving model
-    // reported on top-level assistant messages (subagents may legitimately run
-    // on other models, so nested messages are excluded).
-    const turnState = context.turnState;
-    if (
-      turnState !== undefined &&
-      turnState.modelReroute === undefined &&
-      message.parent_tool_use_id === null &&
-      context.currentApiModelId !== undefined
-    ) {
-      const requestedBaseModel = context.currentApiModelId.replace(/\[1m\]$/, "");
-      const servedModel = message.message?.model;
-      if (
-        typeof servedModel === "string" &&
-        servedModel.length > 0 &&
-        !servedModel.startsWith(requestedBaseModel)
-      ) {
-        const reroute: ClaudeModelReroute = {
-          fromModel: requestedBaseModel,
-          toModel: servedModel,
-          reason: "session-model-swap",
-        };
-        turnState.modelReroute = reroute;
-        const rerouteStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent({
-          eventId: rerouteStamp.eventId,
-          provider: PROVIDER,
-          createdAt: rerouteStamp.createdAt,
-          threadId: context.session.threadId,
-          turnId: asCanonicalTurnId(turnState.turnId),
-          providerRefs: nativeProviderRefs(context),
-          type: "model.rerouted",
-          payload: reroute,
-          raw: {
-            source: "claude.sdk.message",
-            method: "claude/assistant",
-            payload: message,
-          },
-        });
-      }
-    }
-
     const content = message.message?.content;
     if (Array.isArray(content)) {
       for (const block of content) {
@@ -2797,23 +2717,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      case "task_updated": {
-        // Terminal states arrive via task_notification; the rest of the patch
-        // (pause/background bookkeeping) has no runtime event, so only a
-        // changed description is worth surfacing.
-        const updatedDescription = message.patch?.description?.trim();
-        if (updatedDescription) {
-          yield* offerRuntimeEvent({
-            ...base,
-            type: "task.progress",
-            payload: {
-              taskId: RuntimeTaskId.make(message.task_id),
-              description: updatedDescription,
-            },
-          });
-        }
-        return;
-      }
       case "files_persisted":
         yield* offerRuntimeEvent({
           ...base,
@@ -2857,26 +2760,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           message,
         );
         return;
-      case "model_refusal_fallback": {
-        const reroute: ClaudeModelReroute = {
-          fromModel: message.original_model,
-          toModel: message.fallback_model,
-          reason: "refusal",
-          ...(message.api_refusal_category ? { category: message.api_refusal_category } : {}),
-          ...(message.api_refusal_explanation
-            ? { explanation: message.api_refusal_explanation }
-            : {}),
-        };
-        if (context.turnState) {
-          context.turnState.modelReroute = reroute;
-        }
-        yield* offerRuntimeEvent({
-          ...base,
-          type: "model.rerouted",
-          payload: reroute,
-        });
-        return;
-      }
       default:
         yield* emitRuntimeWarning(
           context,
@@ -3244,13 +3127,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           readonly toolUseID?: string;
         },
       ) {
-        if (context.hasT3McpUserInputTool) {
-          return {
-            behavior: "deny",
-            message: T3_MCP_USER_INPUT_NATIVE_DENIAL_MESSAGE,
-          } satisfies PermissionResult;
-        }
-
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
 
         // Parse questions from the SDK's AskUserQuestion input.
@@ -3273,18 +3149,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : false,
           }),
         );
-        const validation = validateUserInputQuestionBatch(questions);
-        if (validation._tag === "Invalid") {
-          return {
-            behavior: "deny",
-            message: validation.message,
-          } satisfies PermissionResult;
-        }
 
         const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
         let aborted = false;
         const pendingInput: PendingUserInput = {
-          questions: validation.questions,
+          questions,
           answers: answersDeferred,
         };
 
@@ -3302,7 +3171,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               }
             : {}),
           requestId: asRuntimeRequestId(requestId),
-          payload: { questions: validation.questions },
+          payload: { questions },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
           }),
@@ -3605,7 +3474,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                   headers: {
                     Authorization: mcpSession.authorizationHeader,
                   },
-                  timeout: McpProviderSession.T3_MCP_TOOL_TIMEOUT_MS,
                 },
               },
             }
@@ -3682,7 +3550,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         resumeSessionId: sessionId,
         pendingApprovals,
         pendingUserInputs,
-        hasT3McpUserInputTool: mcpSession !== undefined,
         turns: [],
         inFlightTools,
         claudeTasks,
@@ -3778,15 +3645,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ? input.modelSelection
         : undefined;
 
-    // Materialize attachments before opening or steering a turn. A missing
-    // attachment is a request-validation failure and must not leave a
-    // synthetic running turn behind or close an existing synthetic turn.
-    const message = yield* buildUserMessageEffect(input, {
-      fileSystem,
-      attachmentsDir: serverConfig.attachmentsDir,
-      boundInstanceId,
-    });
-
     // A sendTurn while a real turn is running is a steer: the message is
     // queued into the live SDK agent loop and the work continues as the same
     // turn — no synthetic turn boundary. Stale synthetic turns (from
@@ -3862,6 +3720,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         providerRefs: {},
       });
     }
+
+    const message = yield* buildUserMessageEffect(input, {
+      fileSystem,
+      attachmentsDir: serverConfig.attachmentsDir,
+      boundInstanceId,
+    });
 
     yield* Queue.offer(context.promptQueue, {
       type: "message",

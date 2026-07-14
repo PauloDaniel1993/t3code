@@ -8,10 +8,9 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   type TurnId,
-  type UploadChatAttachment,
 } from "@t3tools/contracts";
-import { type ChatAttachment, type ChatMessage, type SessionPhase, type Thread } from "../types";
-import { type ComposerAttachment, type DraftThreadState } from "../composerDraftStore";
+import { type ChatMessage, type SessionPhase, type Thread } from "../types";
+import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadDetails } from "../state/threads";
@@ -48,7 +47,6 @@ export function buildLocalDraftThread(
     archivedAt: null,
     deletedAt: null,
     latestTurn: null,
-    handoff: null,
     branch: draftThread.branch,
     worktreePath: draftThread.worktreePath,
     checkpoints: [],
@@ -142,22 +140,14 @@ export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
 }
 
 export function revokeUserMessagePreviewUrls(message: ChatMessage): void {
-  revokeUserMessagePreviewUrlsExcept(message, new Set());
-}
-
-export function revokeUserMessagePreviewUrlsExcept(
-  message: ChatMessage,
-  retainedUrls: ReadonlySet<string>,
-): void {
   if (message.role !== "user" || !message.attachments) {
     return;
   }
   for (const attachment of message.attachments) {
-    const url = attachment.type === "image" ? attachment.previewUrl : attachment.assetUrl;
-    if (!url || retainedUrls.has(url)) {
+    if (attachment.type !== "image") {
       continue;
     }
-    revokeBlobPreviewUrl(url);
+    revokeBlobPreviewUrl(attachment.previewUrl);
   }
 }
 
@@ -174,38 +164,6 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
   return previewUrls;
 }
 
-export function revokeUserMessageDocumentAssetUrls(message: ChatMessage): void {
-  if (message.role !== "user" || !message.attachments) {
-    return;
-  }
-  for (const attachment of message.attachments) {
-    if (attachment.type === "document") {
-      revokeBlobPreviewUrl(attachment.assetUrl);
-    }
-  }
-}
-
-export function applyResolvedAttachmentAssetUrls(
-  messages: ReadonlyArray<ChatMessage>,
-  assetUrlById: ReadonlyMap<string, string>,
-): ReadonlyArray<ChatMessage> {
-  return messages.map((message) => {
-    if (!message.attachments || message.attachments.length === 0) {
-      return message;
-    }
-    let changed = false;
-    const attachments = message.attachments.map((attachment) => {
-      const assetUrl = assetUrlById.get(attachment.id);
-      if (!assetUrl) return attachment;
-      changed = true;
-      return attachment.type === "image"
-        ? { ...attachment, previewUrl: assetUrl }
-        : { ...attachment, assetUrl };
-    });
-    return changed ? { ...message, attachments } : message;
-  });
-}
-
 export interface PullRequestDialogState {
   initialReference: string | null;
   key: number;
@@ -219,89 +177,13 @@ export function readFileAsDataUrl(file: File): Promise<string> {
         resolve(reader.result);
         return;
       }
-      reject(new Error("Could not read attachment data."));
+      reject(new Error("Could not read image data."));
     });
     reader.addEventListener("error", () => {
-      reject(reader.error ?? new Error("Failed to read attachment."));
+      reject(reader.error ?? new Error("Failed to read image."));
     });
     reader.readAsDataURL(file);
   });
-}
-
-export async function serializeComposerAttachments(
-  attachments: ReadonlyArray<ComposerAttachment>,
-  readFile: (file: File) => Promise<string> = readFileAsDataUrl,
-): Promise<UploadChatAttachment[]> {
-  return await Promise.all(
-    attachments.map(async (attachment): Promise<UploadChatAttachment> => {
-      const dataUrl = await readFile(attachment.file);
-      return attachment.type === "image"
-        ? {
-            type: "image",
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-            dataUrl,
-          }
-        : {
-            type: "document",
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-            dataUrl,
-          };
-    }),
-  );
-}
-
-export function buildOptimisticComposerAttachments(
-  attachments: ReadonlyArray<ComposerAttachment>,
-): ChatAttachment[] {
-  return attachments.map((attachment) =>
-    attachment.type === "image"
-      ? {
-          type: "image",
-          id: attachment.id,
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          sizeBytes: attachment.sizeBytes,
-          previewUrl: attachment.previewUrl,
-        }
-      : {
-          type: "document",
-          id: attachment.id,
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          sizeBytes: attachment.sizeBytes,
-          assetUrl: attachment.assetUrl,
-        },
-  );
-}
-
-/** Keep a newer in-flight draft intact while restoring text from a failed send. */
-export function mergeFailedComposerPrompt(currentPrompt: string, failedPrompt: string): string {
-  if (failedPrompt.length === 0 || currentPrompt === failedPrompt) {
-    return currentPrompt;
-  }
-  if (currentPrompt.length === 0) {
-    return failedPrompt;
-  }
-  return `${failedPrompt}\n\n${currentPrompt}`;
-}
-
-/** Merge failed-send context snapshots after newer draft items without duplicating ids. */
-export function mergeComposerDraftItemsById<T extends { readonly id: string }>(
-  currentItems: ReadonlyArray<T>,
-  failedItems: ReadonlyArray<T>,
-): T[] {
-  const ids = new Set(currentItems.map((item) => item.id));
-  const merged = [...currentItems];
-  for (const item of failedItems) {
-    if (ids.has(item.id)) continue;
-    ids.add(item.id);
-    merged.push(item);
-  }
-  return merged;
 }
 
 export function resolveSendEnvMode(input: {
@@ -311,30 +193,29 @@ export function resolveSendEnvMode(input: {
   return input.isGitRepo ? input.requestedEnvMode : "local";
 }
 
-export function cloneComposerAttachmentForRetry(
-  attachment: ComposerAttachment,
-): ComposerAttachment {
-  const objectUrl = attachment.type === "image" ? attachment.previewUrl : attachment.assetUrl;
-  if (typeof URL === "undefined" || !objectUrl.startsWith("blob:")) {
-    return attachment;
+export function cloneComposerImageForRetry(
+  image: ComposerImageAttachment,
+): ComposerImageAttachment {
+  if (typeof URL === "undefined" || !image.previewUrl.startsWith("blob:")) {
+    return image;
   }
   try {
-    const nextObjectUrl = URL.createObjectURL(attachment.file);
-    return attachment.type === "image"
-      ? { ...attachment, previewUrl: nextObjectUrl }
-      : { ...attachment, assetUrl: nextObjectUrl };
+    return {
+      ...image,
+      previewUrl: URL.createObjectURL(image.file),
+    };
   } catch {
-    return attachment;
+    return image;
   }
 }
 
 export function deriveComposerSendState(options: {
   prompt: string;
-  attachmentCount: number;
+  imageCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   /**
    * Optional element-pick attachment count. Element contexts contribute to
-   * "sendable content" exactly like attachments and (text-bearing) terminal
+   * "sendable content" exactly like images and (text-bearing) terminal
    * contexts do: a prompt of just element chips is still a valid send.
    */
   elementContextCount?: number;
@@ -355,7 +236,7 @@ export function deriveComposerSendState(options: {
     expiredTerminalContextCount,
     hasSendableContent:
       trimmedPrompt.length > 0 ||
-      options.attachmentCount > 0 ||
+      options.imageCount > 0 ||
       sendableTerminalContexts.length > 0 ||
       elementContextCount > 0,
   };
@@ -503,26 +384,9 @@ export async function waitForStartedServerThread(
   });
 }
 
-/**
- * How long a steer dispatch may stay "busy" before we force-clear it, even if
- * no acknowledgement signal is observed. This is a safety net so the composer
- * can never wedge: the message-landed/session-advanced signals normally win
- * this race well before the timeout elapses.
- */
-export const STEER_DISPATCH_FALLBACK_MS = 2_000;
-
 export interface LocalDispatchSnapshot {
   startedAt: string;
   preparingWorktree: boolean;
-  /**
-   * True when this dispatch is a steer: it was submitted while a turn was
-   * already running and continues that same turn. A steer never changes the
-   * turn's identity/timestamps, so it cannot be acknowledged via
-   * `latestTurnChanged` like a turn-starting dispatch can.
-   */
-  wasSteer: boolean;
-  /** Server-recorded user message count captured at dispatch time. */
-  userMessageCount: number;
   latestTurnTurnId: TurnId | null;
   latestTurnRequestedAt: string | null;
   latestTurnStartedAt: string | null;
@@ -531,35 +395,15 @@ export interface LocalDispatchSnapshot {
   sessionUpdatedAt: string | null;
 }
 
-function countUserMessages(thread: Thread | undefined): number {
-  if (!thread) return 0;
-  let count = 0;
-  for (const message of thread.messages) {
-    if (message.role === "user") count += 1;
-  }
-  return count;
-}
-
 export function createLocalDispatchSnapshot(
   activeThread: Thread | undefined,
-  options?: { preparingWorktree?: boolean; phase?: SessionPhase },
+  options?: { preparingWorktree?: boolean },
 ): LocalDispatchSnapshot {
   const latestTurn = activeThread?.latestTurn ?? null;
   const session = activeThread?.session ?? null;
-  // A steer continues an already-running turn: the session's active turn is
-  // the latest turn. Prefer the explicit phase when provided, otherwise fall
-  // back to the session status.
-  const running = options?.phase ? options.phase === "running" : session?.status === "running";
-  const wasSteer =
-    running &&
-    latestTurn?.turnId != null &&
-    session?.activeTurnId != null &&
-    session.activeTurnId === latestTurn.turnId;
   return {
     startedAt: new Date().toISOString(),
     preparingWorktree: Boolean(options?.preparingWorktree),
-    wasSteer,
-    userMessageCount: countUserMessages(activeThread),
     latestTurnTurnId: latestTurn?.turnId ?? null,
     latestTurnRequestedAt: latestTurn?.requestedAt ?? null,
     latestTurnStartedAt: latestTurn?.startedAt ?? null,
@@ -574,7 +418,6 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   phase: SessionPhase;
   latestTurn: Thread["latestTurn"] | null;
   session: Thread["session"] | null;
-  userMessageCount: number;
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
   threadError: string | null | undefined;
@@ -588,19 +431,6 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 
   const latestTurn = input.latestTurn ?? null;
   const session = input.session ?? null;
-
-  // A steer continues the same running turn, so the turn's identity and
-  // timestamps never change — `latestTurnChanged` would stay false for the rest
-  // of the turn and wedge the composer. Acknowledge a steer as soon as the
-  // server records the steered message (user count advances) or the session
-  // advances. A bounded fallback timer (see STEER_DISPATCH_FALLBACK_MS) clears
-  // the dispatch in the rare case neither signal is observed.
-  if (input.localDispatch.wasSteer) {
-    const messageLanded = input.userMessageCount > input.localDispatch.userMessageCount;
-    const sessionAdvanced = input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null);
-    return messageLanded || sessionAdvanced;
-  }
-
   const latestTurnChanged =
     input.localDispatch.latestTurnTurnId !== (latestTurn?.turnId ?? null) ||
     input.localDispatch.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||

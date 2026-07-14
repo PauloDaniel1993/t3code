@@ -17,13 +17,7 @@ import type {
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  Platform,
-  ScrollView,
-  useWindowDimensions,
-  View,
-  type GestureResponderEvent,
-} from "react-native";
+import { Platform, View, type GestureResponderEvent } from "react-native";
 import { KeyboardController, KeyboardStickyView } from "react-native-keyboard-controller";
 import Animated, { FadeInDown, FadeOut, LinearTransition } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -62,7 +56,7 @@ export interface ThreadDetailScreenProps {
   readonly respondingApprovalId: ApprovalRequestId | null;
   readonly activePendingUserInput: PendingUserInput | null;
   readonly activePendingUserInputDrafts: Record<string, PendingUserInputDraftAnswer>;
-  readonly activePendingUserInputAnswers: Record<string, string | string[]> | null;
+  readonly activePendingUserInputAnswers: Record<string, string> | null;
   readonly respondingUserInputId: ApprovalRequestId | null;
   readonly draftMessage: string;
   readonly draftAttachments: ReadonlyArray<DraftComposerImageAttachment>;
@@ -220,7 +214,6 @@ const WorkingDurationPill = memo(function WorkingDurationPill(props: {
 });
 
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
-  const windowDimensions = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const agentLabel = `${props.selectedThread.modelSelection.instanceId} agent`;
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
@@ -264,12 +257,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // its end-scroll math matches the real resting position.
   const nativeInsetOvercount =
     props.usesAutomaticContentInsets === true && Platform.OS === "ios" ? insets.bottom : 0;
-  const pendingOverlayAvailableHeight =
-    windowDimensions.height - insets.top - composerOverlapHeight - activeWorkIndicatorHeight - 32;
-  const pendingOverlayMaxHeight = Math.max(
-    180,
-    Math.min(windowDimensions.height * 0.58, pendingOverlayAvailableHeight),
-  );
   const { contentInsetEndAdjustment, onComposerLayout } = useKeyboardChatComposerInset(
     listRef,
     composerOverlayRef,
@@ -455,35 +442,28 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
 
               {props.activePendingApproval || props.activePendingUserInput ? (
                 <Animated.View
-                  className="px-4 pb-3"
+                  className="shrink-0 gap-3 px-4 pb-3"
                   entering={FadeInDown.duration(220)}
                   exiting={FadeOut.duration(140)}
-                  style={{ flexShrink: 1, maxHeight: pendingOverlayMaxHeight }}
                 >
-                  <ScrollView
-                    contentContainerStyle={{ gap: 12 }}
-                    keyboardShouldPersistTaps="handled"
-                    showsVerticalScrollIndicator={false}
-                  >
-                    {props.activePendingApproval ? (
-                      <PendingApprovalCard
-                        approval={props.activePendingApproval}
-                        respondingApprovalId={props.respondingApprovalId}
-                        onRespond={props.onRespondToApproval}
-                      />
-                    ) : null}
-                    {props.activePendingUserInput ? (
-                      <PendingUserInputCard
-                        pendingUserInput={props.activePendingUserInput}
-                        drafts={props.activePendingUserInputDrafts}
-                        answers={props.activePendingUserInputAnswers}
-                        respondingUserInputId={props.respondingUserInputId}
-                        onSelectOption={props.onSelectUserInputOption}
-                        onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
-                        onSubmit={props.onSubmitUserInput}
-                      />
-                    ) : null}
-                  </ScrollView>
+                  {props.activePendingApproval ? (
+                    <PendingApprovalCard
+                      approval={props.activePendingApproval}
+                      respondingApprovalId={props.respondingApprovalId}
+                      onRespond={props.onRespondToApproval}
+                    />
+                  ) : null}
+                  {props.activePendingUserInput ? (
+                    <PendingUserInputCard
+                      pendingUserInput={props.activePendingUserInput}
+                      drafts={props.activePendingUserInputDrafts}
+                      answers={props.activePendingUserInputAnswers}
+                      respondingUserInputId={props.respondingUserInputId}
+                      onSelectOption={props.onSelectUserInputOption}
+                      onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
+                      onSubmit={props.onSubmitUserInput}
+                    />
+                  ) : null}
                 </Animated.View>
               ) : null}
             </Animated.View>

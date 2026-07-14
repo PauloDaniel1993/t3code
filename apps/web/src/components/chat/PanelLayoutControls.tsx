@@ -1,10 +1,4 @@
-import {
-  Globe2Icon,
-  Maximize2Icon,
-  Minimize2Icon,
-  PanelBottomIcon,
-  PanelRightIcon,
-} from "lucide-react";
+import { Maximize2Icon, Minimize2Icon, PanelBottomIcon, PanelRightIcon } from "lucide-react";
 import { memo } from "react";
 
 import { Toggle } from "../ui/toggle";
@@ -17,14 +11,8 @@ interface PanelLayoutControlsProps {
   rightPanelAvailable: boolean;
   rightPanelOpen: boolean;
   rightPanelShortcutLabel: string | null;
-  projectBrowserAvailable: boolean;
-  projectBrowserOpen: boolean;
-  projectBrowserTabCount: number;
-  projectBrowserActive: boolean;
-  projectBrowserShortcutLabel: string | null;
   onToggleTerminal: () => void;
   onToggleRightPanel: () => void;
-  onToggleProjectBrowser: () => void;
 }
 
 export const PanelLayoutControls = memo(function PanelLayoutControls({
@@ -34,14 +22,8 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   rightPanelAvailable,
   rightPanelOpen,
   rightPanelShortcutLabel,
-  projectBrowserAvailable,
-  projectBrowserOpen,
-  projectBrowserTabCount,
-  projectBrowserActive,
-  projectBrowserShortcutLabel,
   onToggleTerminal,
   onToggleRightPanel,
-  onToggleProjectBrowser,
 }: PanelLayoutControlsProps) {
   return (
     <div
@@ -90,36 +72,6 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
           {rightPanelAvailable
             ? `Toggle right panel${rightPanelShortcutLabel ? ` (${rightPanelShortcutLabel})` : ""}`
             : "Right panel is unavailable"}
-        </TooltipPopup>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Toggle
-              className="relative shrink-0 [-webkit-app-region:no-drag]"
-              pressed={projectBrowserOpen}
-              onPressedChange={onToggleProjectBrowser}
-              aria-label="Toggle Project Browser"
-              variant="ghost"
-              size="sm"
-              disabled={!projectBrowserAvailable}
-            >
-              <Globe2Icon className="size-3.5" />
-              {projectBrowserTabCount > 0 ? (
-                <span className="absolute -right-0.5 -top-0.5 min-w-3 rounded-full bg-primary px-0.5 text-[8px] leading-3 text-primary-foreground">
-                  {projectBrowserTabCount > 9 ? "9+" : projectBrowserTabCount}
-                </span>
-              ) : null}
-              {projectBrowserActive ? (
-                <span className="absolute bottom-0.5 right-0.5 size-1.5 animate-pulse rounded-full bg-emerald-500" />
-              ) : null}
-            </Toggle>
-          }
-        />
-        <TooltipPopup side="bottom">
-          {projectBrowserAvailable
-            ? `Toggle Project Browser${projectBrowserShortcutLabel ? ` (${projectBrowserShortcutLabel})` : ""}`
-            : "Project Browser is unavailable"}
         </TooltipPopup>
       </Tooltip>
     </div>

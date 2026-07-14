@@ -1,86 +1,27 @@
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
-  type ChatAttachment,
   type ClientOrchestrationCommand,
   type OrchestrationCommand,
   OrchestrationDispatchCommandError,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
-import { writeFileAtomically } from "../atomicWrite.ts";
 import { ServerConfig } from "../config.ts";
+import { parseBase64DataUrl } from "../imageMime.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { validateAttachmentPayload } from "./AttachmentPayload.ts";
 
-export interface NormalizedDispatchCommand {
-  readonly command: OrchestrationCommand;
-  /** Files created while normalizing this command whose ownership transfers on dispatch success. */
-  readonly freshAttachmentPaths: ReadonlyArray<string>;
-}
+export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const serverConfig = yield* ServerConfig;
+    const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
 
-const removeFreshAttachmentPaths = Effect.fn("removeFreshAttachmentPaths")(function* (
-  paths: ReadonlyArray<string>,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  yield* Effect.forEach(
-    paths,
-    (filePath) => fileSystem.remove(filePath, { force: true }).pipe(Effect.ignore),
-    { concurrency: 1, discard: true },
-  );
-});
-
-/**
- * Dispatch a normalized command and transfer ownership of any freshly-created
- * attachment files only when dispatch succeeds. Failures and interruption keep
- * cleanup scoped to the files created by this normalization attempt.
- */
-export const dispatchNormalizedCommandWithCleanup = Effect.fn(
-  "dispatchNormalizedCommandWithCleanup",
-)(function* <A, E, R>(
-  normalized: NormalizedDispatchCommand,
-  dispatch: (command: OrchestrationCommand) => Effect.Effect<A, E, R>,
-): Effect.fn.Return<A, E, R | FileSystem.FileSystem> {
-  return yield* dispatch(normalized.command).pipe(
-    Effect.onExit((exit) =>
-      Exit.isFailure(exit)
-        ? removeFreshAttachmentPaths(normalized.freshAttachmentPaths)
-        : Effect.void,
-    ),
-  );
-});
-
-export const normalizeDispatchCommand = Effect.fn("normalizeDispatchCommand")(function* (
-  command: ClientOrchestrationCommand,
-): Effect.fn.Return<
-  NormalizedDispatchCommand,
-  OrchestrationDispatchCommandError,
-  FileSystem.FileSystem | Path.Path | ServerConfig | WorkspacePaths.WorkspacePaths
-> {
-  const serverConfig = yield* ServerConfig;
-  const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
-
-  const normalizeProjectWorkspaceRoot = (workspaceRoot: string) =>
-    workspacePaths.normalizeWorkspaceRoot(workspaceRoot).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OrchestrationDispatchCommandError({
-            message: cause.message,
-          }),
-      ),
-    );
-
-  const normalizeProjectWorkspaceRootForCreate = (
-    workspaceRoot: string,
-    createIfMissing: boolean | undefined,
-  ) =>
-    workspacePaths
-      .normalizeWorkspaceRoot(workspaceRoot, {
-        createIfMissing: createIfMissing === true,
-      })
-      .pipe(
+    const normalizeProjectWorkspaceRoot = (workspaceRoot: string) =>
+      workspacePaths.normalizeWorkspaceRoot(workspaceRoot).pipe(
         Effect.mapError(
           (cause) =>
             new OrchestrationDispatchCommandError({
@@ -89,101 +30,115 @@ export const normalizeDispatchCommand = Effect.fn("normalizeDispatchCommand")(fu
         ),
       );
 
-  if (command.type === "project.create") {
-    return {
-      command: {
+    const normalizeProjectWorkspaceRootForCreate = (
+      workspaceRoot: string,
+      createIfMissing: boolean | undefined,
+    ) =>
+      workspacePaths
+        .normalizeWorkspaceRoot(workspaceRoot, {
+          createIfMissing: createIfMissing === true,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestrationDispatchCommandError({
+                message: cause.message,
+              }),
+          ),
+        );
+
+    if (command.type === "project.create") {
+      return {
         ...command,
         workspaceRoot: yield* normalizeProjectWorkspaceRootForCreate(
           command.workspaceRoot,
           command.createWorkspaceRootIfMissing,
         ),
         createWorkspaceRootIfMissing: command.createWorkspaceRootIfMissing === true,
-      },
-      freshAttachmentPaths: [],
-    } satisfies NormalizedDispatchCommand;
-  }
+      } satisfies OrchestrationCommand;
+    }
 
-  if (command.type === "project.meta.update" && command.workspaceRoot !== undefined) {
-    return {
-      command: {
+    if (command.type === "project.meta.update" && command.workspaceRoot !== undefined) {
+      return {
         ...command,
         workspaceRoot: yield* normalizeProjectWorkspaceRoot(command.workspaceRoot),
-      },
-      freshAttachmentPaths: [],
-    } satisfies NormalizedDispatchCommand;
-  }
+      } satisfies OrchestrationCommand;
+    }
 
-  if (command.type !== "thread.turn.start") {
+    if (command.type !== "thread.turn.start") {
+      return command as OrchestrationCommand;
+    }
+
+    const normalizedAttachments = yield* Effect.forEach(
+      command.message.attachments,
+      (attachment) =>
+        Effect.gen(function* () {
+          const parsed = parseBase64DataUrl(attachment.dataUrl);
+          if (!parsed || !parsed.mimeType.startsWith("image/")) {
+            return yield* new OrchestrationDispatchCommandError({
+              message: `Invalid image attachment payload for '${attachment.name}'.`,
+            });
+          }
+
+          const bytes = Buffer.from(parsed.base64, "base64");
+          if (bytes.byteLength === 0 || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+            return yield* new OrchestrationDispatchCommandError({
+              message: `Image attachment '${attachment.name}' is empty or too large.`,
+            });
+          }
+
+          const attachmentId = createAttachmentId(command.threadId);
+          if (!attachmentId) {
+            return yield* new OrchestrationDispatchCommandError({
+              message: "Failed to create a safe attachment id.",
+            });
+          }
+
+          const persistedAttachment = {
+            type: "image" as const,
+            id: attachmentId,
+            name: attachment.name,
+            mimeType: parsed.mimeType.toLowerCase(),
+            sizeBytes: bytes.byteLength,
+          };
+
+          const attachmentPath = resolveAttachmentPath({
+            attachmentsDir: serverConfig.attachmentsDir,
+            attachment: persistedAttachment,
+          });
+          if (!attachmentPath) {
+            return yield* new OrchestrationDispatchCommandError({
+              message: `Failed to resolve persisted path for '${attachment.name}'.`,
+            });
+          }
+
+          yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true }).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestrationDispatchCommandError({
+                  message: `Failed to create attachment directory for '${attachment.name}'.`,
+                }),
+            ),
+          );
+          yield* fileSystem.writeFile(attachmentPath, bytes).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestrationDispatchCommandError({
+                  message: `Failed to persist attachment '${attachment.name}'.`,
+                }),
+            ),
+          );
+
+          return persistedAttachment;
+        }),
+      { concurrency: 1 },
+    );
+
     return {
-      command: command as OrchestrationCommand,
-      freshAttachmentPaths: [],
-    } satisfies NormalizedDispatchCommand;
-  }
-
-  const validatedAttachments = yield* Effect.forEach(
-    command.message.attachments,
-    validateAttachmentPayload,
-    { concurrency: 1 },
-  );
-
-  const preparedAttachments = yield* Effect.forEach(
-    validatedAttachments,
-    (validated) =>
-      Effect.gen(function* () {
-        const attachmentId = createAttachmentId(command.threadId);
-        if (!attachmentId) {
-          return yield* new OrchestrationDispatchCommandError({
-            message: "Failed to create a safe attachment id.",
-          });
-        }
-
-        const attachment = {
-          ...validated.attachment,
-          id: attachmentId,
-        } as ChatAttachment;
-        const filePath = resolveAttachmentPath({
-          attachmentsDir: serverConfig.attachmentsDir,
-          attachment,
-        });
-        if (!filePath) {
-          return yield* new OrchestrationDispatchCommandError({
-            message: `Failed to resolve persisted path for '${attachment.name}'.`,
-          });
-        }
-
-        return { attachment, bytes: validated.bytes, filePath };
-      }),
-    { concurrency: 1 },
-  );
-
-  const freshAttachmentPaths = preparedAttachments.map(({ filePath }) => filePath);
-
-  yield* Effect.forEach(
-    preparedAttachments,
-    ({ attachment, bytes, filePath }) =>
-      writeFileAtomically({ filePath, contents: bytes }).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestrationDispatchCommandError({
-              message: `Failed to persist attachment '${attachment.name}'.`,
-            }),
-        ),
-      ),
-    { concurrency: 1 },
-  ).pipe(
-    Effect.onExit((exit) =>
-      Exit.isFailure(exit) ? removeFreshAttachmentPaths(freshAttachmentPaths) : Effect.void,
-    ),
-  );
-
-  return {
-    command: {
       ...command,
       message: {
         ...command.message,
-        attachments: preparedAttachments.map(({ attachment }) => attachment),
+        attachments: normalizedAttachments,
       },
-    },
-    freshAttachmentPaths,
-  } satisfies NormalizedDispatchCommand;
-});
+    } satisfies OrchestrationCommand;
+  });

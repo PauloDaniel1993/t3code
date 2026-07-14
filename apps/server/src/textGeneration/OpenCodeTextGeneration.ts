@@ -17,17 +17,15 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import * as ServerConfig from "../config.ts";
-import { resolveExistingAttachmentFilePath } from "../attachmentStore.ts";
+import { resolveAttachmentPath } from "../attachmentStore.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
-  buildHandoffSummaryPrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import {
-  sanitizeHandoffSummary,
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
@@ -41,7 +39,6 @@ const OpenCodeTextGenerationOperation = Schema.Literals([
   "generatePrContent",
   "generateBranchName",
   "generateThreadTitle",
-  "generateHandoffSummary",
 ]);
 
 type OpenCodeTextGenerationOperation = typeof OpenCodeTextGenerationOperation.Type;
@@ -256,8 +253,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle"
-      | "generateHandoffSummary";
+      | "generateThreadTitle";
   }) =>
     sharedServerMutex.withPermit(
       Effect.gen(function* () {
@@ -378,29 +374,11 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       });
     }
 
-    const unsupportedAttachmentType = OpenCodeRuntime.findUnsupportedOpenCodeAttachmentType(
-      input.attachments,
-    );
-    if (unsupportedAttachmentType !== undefined) {
-      return yield* new TextGenerationError({
-        operation: input.operation,
-        detail: `Unsupported attachment type '${unsupportedAttachmentType}'.`,
-      });
-    }
     const fileParts = OpenCodeRuntime.toOpenCodeFileParts({
       attachments: input.attachments,
       resolveAttachmentPath: (attachment) =>
-        resolveExistingAttachmentFilePath({
-          attachmentsDir: serverConfig.attachmentsDir,
-          attachment,
-        }),
+        resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
     });
-    if (fileParts.length !== (input.attachments?.length ?? 0)) {
-      return yield* new TextGenerationError({
-        operation: input.operation,
-        detail: "One or more attachment files are missing or invalid.",
-      });
-    }
 
     const runAgainstServer = Effect.fn("runOpenCodeJson.runAgainstServer")(
       function* (server: Pick<OpenCodeRuntime.OpenCodeServerConnection, "url">) {
@@ -633,32 +611,10 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       };
     });
 
-  const generateHandoffSummary: TextGeneration.TextGeneration["Service"]["generateHandoffSummary"] =
-    Effect.fn("OpenCodeTextGeneration.generateHandoffSummary")(function* (input) {
-      const { prompt, outputSchema } = buildHandoffSummaryPrompt({
-        sourceThreadTitle: input.sourceThreadTitle,
-        role: input.role,
-        messageText: input.messageText,
-        attachmentMetadata: input.attachmentMetadata,
-      });
-      const generated = yield* runOpenCodeJson({
-        operation: "generateHandoffSummary",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        summary: sanitizeHandoffSummary(generated.summary),
-      };
-    });
-
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
-    generateHandoffSummary,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

@@ -55,7 +55,6 @@ function threadDetailToShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     latestTurn: thread.latestTurn,
-    handoff: thread.handoff ?? null,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
     archivedAt: thread.archivedAt,

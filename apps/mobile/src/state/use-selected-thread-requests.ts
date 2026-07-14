@@ -1,11 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useMemo, useState } from "react";
 
-import {
-  ApprovalRequestId,
-  type ProviderApprovalDecision,
-  type UserInputQuestion,
-} from "@t3tools/contracts";
+import { ApprovalRequestId, type ProviderApprovalDecision } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../state/threads";
@@ -15,7 +11,6 @@ import {
   derivePendingApprovals,
   derivePendingUserInputs,
   setPendingUserInputCustomAnswer,
-  togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../lib/threadActivity";
 import { appAtomRegistry } from "./atom-registry";
@@ -27,21 +22,15 @@ const userInputDraftsByRequestKeyAtom = Atom.make<
   Record<string, Record<string, PendingUserInputDraftAnswer>>
 >({}).pipe(Atom.keepAlive, Atom.withLabel("mobile:user-input-drafts"));
 
-function setUserInputDraftOption(
-  requestKey: string,
-  question: UserInputQuestion,
-  label: string,
-): void {
+function setUserInputDraftOption(requestKey: string, questionId: string, label: string): void {
   const current = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
   appAtomRegistry.set(userInputDraftsByRequestKeyAtom, {
     ...current,
     [requestKey]: {
       ...current[requestKey],
-      [question.id]: togglePendingUserInputOptionSelection(
-        question,
-        current[requestKey]?.[question.id],
-        label,
-      ),
+      [questionId]: {
+        selectedOptionLabel: label,
+      },
     },
   });
 }
@@ -103,19 +92,14 @@ export function useSelectedThreadRequests() {
 
   const onSelectUserInputOption = useCallback(
     (requestId: ApprovalRequestId, questionId: string, label: string) => {
-      if (!selectedThreadShell || activePendingUserInput?.requestId !== requestId) {
-        return;
-      }
-
-      const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
-      if (!question) {
+      if (!selectedThreadShell) {
         return;
       }
 
       const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      setUserInputDraftOption(requestKey, question, label);
+      setUserInputDraftOption(requestKey, questionId, label);
     },
-    [activePendingUserInput, selectedThreadShell],
+    [selectedThreadShell],
   );
 
   const onChangeUserInputCustomAnswer = useCallback(

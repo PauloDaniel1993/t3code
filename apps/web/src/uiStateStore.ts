@@ -17,7 +17,6 @@ const LEGACY_PERSISTED_STATE_KEYS = [
 ] as const;
 
 export interface PersistedUiState {
-  categoryExpandedById?: Record<string, boolean>;
   projectExpandedById?: Record<string, boolean>;
   projectOrder?: string[];
   threadLastVisitedAtById?: Record<string, string>;
@@ -29,7 +28,6 @@ export interface PersistedUiState {
 }
 
 export interface UiProjectState {
-  categoryExpandedById: Record<string, boolean>;
   projectExpandedById: Record<string, boolean>;
   projectOrder: string[];
 }
@@ -46,7 +44,6 @@ export interface UiEndpointState {
 export interface UiState extends UiProjectState, UiThreadState, UiEndpointState {}
 
 const initialState: UiState = {
-  categoryExpandedById: {},
   projectExpandedById: {},
   projectOrder: [],
   threadLastVisitedAtById: {},
@@ -124,7 +121,6 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
       : sanitizeStringArray(parsed.projectOrder);
 
   return {
-    categoryExpandedById: sanitizeBooleanRecord(parsed.categoryExpandedById),
     projectExpandedById,
     projectOrder,
     threadLastVisitedAtById: sanitizeTimestampRecord(parsed.threadLastVisitedAtById),
@@ -210,7 +206,6 @@ export function persistState(state: UiState): void {
     window.localStorage.setItem(
       PERSISTED_STATE_KEY,
       JSON.stringify({
-        categoryExpandedById: state.categoryExpandedById,
         projectExpandedById,
         projectOrder: state.projectOrder,
         threadLastVisitedAtById: state.threadLastVisitedAtById,
@@ -352,36 +347,6 @@ export function resolveProjectExpanded(
   return projectExpandedById[LEGACY_PROJECT_EXPANSION_DEFAULT_KEY] ?? true;
 }
 
-export function resolveCategoryExpanded(
-  categoryExpandedById: Readonly<Record<string, boolean>>,
-  categoryId: string,
-): boolean {
-  return categoryExpandedById[categoryId] ?? true;
-}
-
-export function setCategoryExpanded(
-  state: UiState,
-  categoryIds: string | readonly string[],
-  expanded: boolean,
-): UiState {
-  const ids = typeof categoryIds === "string" ? [categoryIds] : categoryIds;
-  const nextEntries = ids.filter(
-    (categoryId) => state.categoryExpandedById[categoryId] !== expanded,
-  );
-  if (nextEntries.length === 0) {
-    return state;
-  }
-
-  const categoryExpandedById = { ...state.categoryExpandedById };
-  for (const categoryId of nextEntries) {
-    categoryExpandedById[categoryId] = expanded;
-  }
-  return {
-    ...state,
-    categoryExpandedById,
-  };
-}
-
 export function setProjectExpanded(
   state: UiState,
   projectIds: string | readonly string[],
@@ -399,16 +364,6 @@ export function setProjectExpanded(
   return {
     ...state,
     projectExpandedById,
-  };
-}
-
-export function resetSidebarOrganizationUiState(state: UiState): UiState {
-  if (Object.keys(state.categoryExpandedById).length === 0) {
-    return state;
-  }
-  return {
-    ...state,
-    categoryExpandedById: {},
   };
 }
 
@@ -461,9 +416,7 @@ interface UiStateStore extends UiState {
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
-  setCategoryExpanded: (categoryIds: string | readonly string[], expanded: boolean) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
-  resetSidebarOrganizationUiState: () => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
     draggedProjectIds: readonly string[],
@@ -481,11 +434,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
-  setCategoryExpanded: (categoryIds, expanded) =>
-    set((state) => setCategoryExpanded(state, categoryIds, expanded)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
-  resetSidebarOrganizationUiState: () => set((state) => resetSidebarOrganizationUiState(state)),
   reorderProjects: (currentProjectOrder, draggedProjectIds, targetProjectIds) =>
     set((state) =>
       reorderProjects(state, currentProjectOrder, draggedProjectIds, targetProjectIds),

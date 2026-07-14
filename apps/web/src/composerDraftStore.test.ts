@@ -11,7 +11,6 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ThreadId,
   type ModelSelection,
   type ProviderOptionSelection,
@@ -66,7 +65,6 @@ import {
   markPromotedDraftThreadByRef,
   markPromotedDraftThreads,
   markPromotedDraftThreadsByRef,
-  type ComposerDocumentAttachment,
   type ComposerImageAttachment,
   useComposerDraftStore,
   DraftId,
@@ -102,30 +100,6 @@ function makeImage(input: {
     mimeType,
     sizeBytes: file.size,
     previewUrl: input.previewUrl,
-    file,
-  };
-}
-
-function makeDocument(input: {
-  id: string;
-  assetUrl: string;
-  name?: string;
-  sizeBytes?: number;
-  lastModified?: number;
-}): ComposerDocumentAttachment {
-  const name = input.name ?? "document.pdf";
-  const sizeBytes = input.sizeBytes ?? 8;
-  const file = new File([new Uint8Array(sizeBytes).fill(1)], name, {
-    type: "application/pdf",
-    lastModified: input.lastModified ?? 1_700_000_000_000,
-  });
-  return {
-    type: "document",
-    id: input.id,
-    name,
-    mimeType: "application/pdf",
-    sizeBytes: file.size,
-    assetUrl: input.assetUrl,
     file,
   };
 }
@@ -197,7 +171,7 @@ function draftByKey(key: string) {
   return useComposerDraftStore.getState().draftsByThreadKey[key] ?? undefined;
 }
 
-describe("composerDraftStore addAttachments", () => {
+describe("composerDraftStore addImages", () => {
   const threadId = ThreadId.make("thread-dedupe");
   const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
   let originalRevokeObjectUrl: typeof URL.revokeObjectURL;
@@ -232,10 +206,10 @@ describe("composerDraftStore addAttachments", () => {
       lastModified: 12345,
     });
 
-    useComposerDraftStore.getState().addAttachments(threadRef, [first, duplicate]);
+    useComposerDraftStore.getState().addImages(threadRef, [first, duplicate]);
 
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
-    expect(draft?.attachments.map((attachment) => attachment.id)).toEqual(["img-1"]);
+    expect(draft?.images.map((image) => image.id)).toEqual(["img-1"]);
     expect(revokeSpy).toHaveBeenCalledWith("blob:duplicate");
   });
 
@@ -257,11 +231,11 @@ describe("composerDraftStore addAttachments", () => {
       lastModified: 999,
     });
 
-    useComposerDraftStore.getState().addAttachment(threadRef, first);
-    useComposerDraftStore.getState().addAttachment(threadRef, duplicateLater);
+    useComposerDraftStore.getState().addImage(threadRef, first);
+    useComposerDraftStore.getState().addImage(threadRef, duplicateLater);
 
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
-    expect(draft?.attachments.map((attachment) => attachment.id)).toEqual(["img-a"]);
+    expect(draft?.images.map((image) => image.id)).toEqual(["img-a"]);
     expect(revokeSpy).toHaveBeenCalledWith("blob:b");
   });
 
@@ -275,10 +249,10 @@ describe("composerDraftStore addAttachments", () => {
       previewUrl: "blob:shared",
     });
 
-    useComposerDraftStore.getState().addAttachments(threadRef, [first, duplicateSameUrl]);
+    useComposerDraftStore.getState().addImages(threadRef, [first, duplicateSameUrl]);
 
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
-    expect(draft?.attachments.map((attachment) => attachment.id)).toEqual(["img-shared"]);
+    expect(draft?.images.map((image) => image.id)).toEqual(["img-shared"]);
     expect(revokeSpy).not.toHaveBeenCalledWith("blob:shared");
   });
 });
@@ -305,7 +279,7 @@ describe("composerDraftStore clearComposerContent", () => {
       id: "img-optimistic",
       previewUrl: "blob:optimistic",
     });
-    useComposerDraftStore.getState().addAttachment(threadRef, first);
+    useComposerDraftStore.getState().addImage(threadRef, first);
 
     useComposerDraftStore.getState().clearComposerContent(threadRef);
 
@@ -339,11 +313,7 @@ describe("composerDraftStore syncPersistedAttachments", () => {
       id: "img-persisted",
       previewUrl: "blob:persisted",
     });
-    const document = makeDocument({
-      id: "doc-persisted",
-      assetUrl: "blob:document-persisted",
-    });
-    useComposerDraftStore.getState().addAttachments(threadRef, [image, document]);
+    useComposerDraftStore.getState().addImage(threadRef, image);
     setLocalStorageItem(
       COMPOSER_DRAFT_STORAGE_KEY,
       {
@@ -361,197 +331,17 @@ describe("composerDraftStore syncPersistedAttachments", () => {
 
     useComposerDraftStore.getState().syncPersistedAttachments(threadRef, [
       {
-        type: "image",
         id: image.id,
         name: image.name,
         mimeType: image.mimeType,
         sizeBytes: image.sizeBytes,
         dataUrl: image.previewUrl,
       },
-      {
-        type: "document",
-        id: document.id,
-        name: document.name,
-        mimeType: document.mimeType,
-        sizeBytes: document.sizeBytes,
-        dataUrl: document.assetUrl,
-      },
     ]);
     await Promise.resolve();
 
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.persistedAttachments).toEqual([]);
-    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.nonPersistedAttachmentIds).toEqual([
-      image.id,
-      document.id,
-    ]);
-    expect(
-      draftFor(threadId, TEST_ENVIRONMENT_ID)?.attachments.map((attachment) => attachment.type),
-    ).toEqual(["image", "document"]);
-  });
-});
-
-describe("composerDraftStore PDF lifecycle", () => {
-  const threadId = ThreadId.make("thread-pdf-lifecycle");
-  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
-
-  beforeEach(resetComposerDraftStore);
-
-  it("deduplicates PDFs and revokes rejected and removed object URLs", () => {
-    const originalRevokeObjectUrl = URL.revokeObjectURL;
-    const revokeSpy = vi.fn<(url: string) => void>();
-    URL.revokeObjectURL = revokeSpy;
-    try {
-      const first = makeDocument({
-        id: "doc-1",
-        assetUrl: "blob:first-pdf",
-        name: "same.pdf",
-      });
-      const duplicate = makeDocument({
-        id: "doc-2",
-        assetUrl: "blob:duplicate-pdf",
-        name: "same.pdf",
-      });
-
-      useComposerDraftStore.getState().addAttachments(threadRef, [first, duplicate]);
-      expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.attachments).toHaveLength(1);
-      expect(revokeSpy).toHaveBeenCalledWith("blob:duplicate-pdf");
-
-      useComposerDraftStore.getState().removeAttachment(threadRef, first.id);
-      expect(revokeSpy).toHaveBeenCalledWith("blob:first-pdf");
-      expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
-    } finally {
-      URL.revokeObjectURL = originalRevokeObjectUrl;
-    }
-  });
-
-  it("enforces the shared quota for direct screenshot adds without removing annotations", () => {
-    const originalRevokeObjectUrl = URL.revokeObjectURL;
-    const revokeSpy = vi.fn<(url: string) => void>();
-    URL.revokeObjectURL = revokeSpy;
-    try {
-      useComposerDraftStore.getState().addPreviewAnnotation(threadRef, {
-        id: "annotation-quota",
-        pageUrl: "http://localhost:3000",
-        pageTitle: "Example",
-        comment: "Keep this annotation",
-        elements: [],
-        regions: [],
-        strokes: [],
-        styleChanges: [],
-        screenshot: null,
-        createdAt: "2026-07-11T00:00:00.000Z",
-      });
-      useComposerDraftStore.getState().addAttachments(
-        threadRef,
-        Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, (_, index) =>
-          makeImage({
-            id: `image-${index}`,
-            name: `image-${index}.png`,
-            previewUrl: `blob:image-${index}`,
-          }),
-        ),
-      );
-
-      const result = useComposerDraftStore.getState().addAttachment(
-        threadRef,
-        makeImage({
-          id: "annotation-quota",
-          name: "annotation-quota.png",
-          previewUrl: "blob:annotation-quota",
-        }),
-      );
-
-      expect(result).toEqual({ addedCount: 0, duplicateCount: 0, rejectedForLimit: 1 });
-      expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.attachments).toHaveLength(
-        PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-      );
-      expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.previewAnnotations).toHaveLength(1);
-      expect(revokeSpy).toHaveBeenCalledWith("blob:annotation-quota");
-    } finally {
-      URL.revokeObjectURL = originalRevokeObjectUrl;
-    }
-  });
-
-  it("hydrates mixed v8 image/PDF drafts and infers legacy image discriminants", () => {
-    const persistApi = useComposerDraftStore.persist as unknown as {
-      getOptions: () => {
-        merge: (
-          persistedState: unknown,
-          currentState: ReturnType<typeof useComposerDraftStore.getState>,
-        ) => ReturnType<typeof useComposerDraftStore.getState>;
-      };
-    };
-    const mergedState = persistApi.getOptions().merge(
-      {
-        draftsByThreadId: {
-          [threadId]: {
-            prompt: "review these",
-            attachments: [
-              {
-                // v8 image entries did not persist a discriminant.
-                id: "legacy-image",
-                name: "legacy.png",
-                mimeType: "image/png",
-                sizeBytes: 1,
-                dataUrl: "data:image/png;base64,AQ==",
-              },
-              {
-                type: "document",
-                id: "pdf",
-                name: "requirements.pdf",
-                mimeType: "application/pdf",
-                sizeBytes: 8,
-                dataUrl: "data:application/pdf;base64,JVBERi0=",
-              },
-            ],
-          },
-        },
-        draftThreadsByThreadId: {},
-        projectDraftThreadIdByProjectKey: {},
-      },
-      useComposerDraftStore.getInitialState(),
-    );
-
-    const attachments = mergedState.draftsByThreadKey[threadKeyFor(threadId)]?.attachments;
-    expect(attachments?.map((attachment) => attachment.type)).toEqual(["image", "document"]);
-    expect(attachments?.[0]).toMatchObject({ previewUrl: "data:image/png;base64,AQ==" });
-    expect(attachments?.[1]).toMatchObject({
-      mimeType: "application/pdf",
-      assetUrl: "data:application/pdf;base64,JVBERi0=",
-    });
-  });
-
-  it("preserves per-thread PDF drafts while switching and cleans only the cleared thread", () => {
-    const otherThreadRef = scopeThreadRef(
-      TEST_ENVIRONMENT_ID,
-      ThreadId.make("thread-pdf-lifecycle-other"),
-    );
-    const originalRevokeObjectUrl = URL.revokeObjectURL;
-    const revokeSpy = vi.fn<(url: string) => void>();
-    URL.revokeObjectURL = revokeSpy;
-    try {
-      useComposerDraftStore
-        .getState()
-        .addAttachment(threadRef, makeDocument({ id: "pdf-a", assetUrl: "blob:pdf-a" }));
-      useComposerDraftStore
-        .getState()
-        .addAttachment(otherThreadRef, makeDocument({ id: "pdf-b", assetUrl: "blob:pdf-b" }));
-
-      // Reading another thread is the store-level route switch; both drafts remain live.
-      expect(
-        useComposerDraftStore.getState().getComposerDraft(otherThreadRef)?.attachments,
-      ).toHaveLength(1);
-      expect(revokeSpy).not.toHaveBeenCalled();
-
-      useComposerDraftStore.getState().clearDraftThread(threadRef);
-      expect(revokeSpy).toHaveBeenCalledWith("blob:pdf-a");
-      expect(revokeSpy).not.toHaveBeenCalledWith("blob:pdf-b");
-      expect(
-        useComposerDraftStore.getState().getComposerDraft(otherThreadRef)?.attachments,
-      ).toHaveLength(1);
-    } finally {
-      URL.revokeObjectURL = originalRevokeObjectUrl;
-    }
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.nonPersistedImageIds).toEqual([image.id]);
   });
 });
 
@@ -922,14 +712,7 @@ describe("composerDraftStore project draft thread mapping", () => {
       });
       store.setPrompt(localDraftId, "local draft");
       store.setPrompt(remoteDraftId, "remote draft");
-      store.addAttachment(
-        localDraftId,
-        makeImage({ id: "img-local", previewUrl: "blob:local-draft" }),
-      );
-      store.addAttachment(
-        localDraftId,
-        makeDocument({ id: "doc-local", assetUrl: "blob:local-pdf-draft" }),
-      );
+      store.addImage(localDraftId, makeImage({ id: "img-local", previewUrl: "blob:local-draft" }));
       store.setPrompt(localThreadRef, "local thread draft");
       store.setPrompt(remoteThreadRef, "remote thread draft");
 
@@ -943,7 +726,6 @@ describe("composerDraftStore project draft thread mapping", () => {
       expect(next.getComposerDraft(localThreadRef)).toBeNull();
       expect(next.getComposerDraft(remoteThreadRef)?.prompt).toBe("remote thread draft");
       expect(revokeSpy).toHaveBeenCalledWith("blob:local-draft");
-      expect(revokeSpy).toHaveBeenCalledWith("blob:local-pdf-draft");
     } finally {
       URL.revokeObjectURL = originalRevokeObjectUrl;
     }
@@ -1019,10 +801,7 @@ describe("composerDraftStore project draft thread mapping", () => {
 
     try {
       store.setProjectDraftThreadId(projectRef, draftId, { threadId });
-      store.addAttachment(
-        draftId,
-        makeImage({ id: "img-project-clear", previewUrl: "blob:clear" }),
-      );
+      store.addImage(draftId, makeImage({ id: "img-project-clear", previewUrl: "blob:clear" }));
 
       store.clearProjectDraftThreadId(projectRef);
 
@@ -1042,7 +821,7 @@ describe("composerDraftStore project draft thread mapping", () => {
 
     try {
       store.setProjectDraftThreadId(projectRef, draftId, { threadId });
-      store.addAttachment(
+      store.addImage(
         draftId,
         makeImage({ id: "img-project-clear-by-id", previewUrl: "blob:clear-by-id" }),
       );

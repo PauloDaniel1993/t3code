@@ -18,7 +18,6 @@ import {
   type PreviewAutomationOperation,
   type PreviewAutomationHost,
   type PreviewAutomationHostFocus,
-  type PreviewAutomationProjectTabRoutes,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
 } from "@t3tools/contracts";
@@ -51,7 +50,6 @@ export class PreviewAutomationBroker extends Context.Service<
       host: PreviewAutomationHost,
     ) => Effect.Effect<Stream.Stream<PreviewAutomationStreamEvent>>;
     readonly focusHost: (host: PreviewAutomationHostFocus) => Effect.Effect<void>;
-    readonly syncProjectTabs: (input: PreviewAutomationProjectTabRoutes) => Effect.Effect<void>;
     readonly respond: (
       response: PreviewAutomationResponse,
     ) => Effect.Effect<void, PreviewAutomationError>;
@@ -86,14 +84,6 @@ interface HostAssignment {
   readonly tabSequence?: number;
 }
 
-interface ProjectTabRoute {
-  readonly clientId: ClientConnection["clientId"];
-  readonly connectionId: ClientConnection["connectionId"];
-  readonly queue: ClientConnection["queue"];
-  readonly backingEnvironmentId: PreviewAutomationProjectTabRoutes["routes"][number]["backingEnvironmentId"];
-  readonly backingThreadId: PreviewAutomationProjectTabRoutes["routes"][number]["backingThreadId"];
-}
-
 interface PreviewAutomationRequestErrorContext {
   readonly operation: PreviewAutomationOperation;
   readonly environmentId: McpInvocationContext.McpInvocationScope["environmentId"];
@@ -113,7 +103,6 @@ interface BrokerState {
   readonly clients: ReadonlyMap<string, ClientConnection>;
   readonly assignments: ReadonlyMap<string, HostAssignment>;
   readonly pending: ReadonlyMap<string, PendingRequest>;
-  readonly projectTabRoutes: ReadonlyMap<string, ProjectTabRoute>;
   readonly requestSequence: number;
   readonly focusSequence: number;
 }
@@ -126,7 +115,6 @@ const removeConnectionFromState = (
   const clients = new Map(current.clients);
   const assignments = new Map(current.assignments);
   const pending = new Map(current.pending);
-  const projectTabRoutes = new Map(current.projectTabRoutes);
   const disconnected: PendingRequest[] = [];
   if (current.clients.get(clientId)?.queue === queue) clients.delete(clientId);
   for (const [assignmentKey, assignment] of assignments) {
@@ -137,11 +125,8 @@ const removeConnectionFromState = (
     pending.delete(requestId);
     disconnected.push(entry);
   }
-  for (const [tabId, route] of projectTabRoutes) {
-    if (route.queue === queue) projectTabRoutes.delete(tabId);
-  }
   return {
-    state: { ...current, clients, assignments, pending, projectTabRoutes },
+    state: { ...current, clients, assignments, pending },
     disconnected,
   };
 };
@@ -300,7 +285,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     clients: new Map(),
     assignments: new Map(),
     pending: new Map(),
-    projectTabRoutes: new Map(),
     requestSequence: 0,
     focusSequence: 0,
   });
@@ -433,52 +417,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     }
   });
 
-  const syncProjectTabs: PreviewAutomationBroker["Service"]["syncProjectTabs"] = Effect.fn(
-    "PreviewAutomationBroker.syncProjectTabs",
-  )(function* (input) {
-    yield* SynchronizedRef.update(state, (current) => {
-      const connection = current.clients.get(input.clientId);
-      if (
-        !connection ||
-        connection.connectionId !== input.connectionId ||
-        connection.environmentId !== input.environmentId
-      ) {
-        return current;
-      }
-      const projectTabRoutes = new Map(current.projectTabRoutes);
-      const previouslyOwnedTabIds = new Set<string>();
-      for (const [tabId, route] of projectTabRoutes) {
-        if (route.queue === connection.queue) {
-          previouslyOwnedTabIds.add(tabId);
-          projectTabRoutes.delete(tabId);
-        }
-      }
-      for (const route of input.routes) {
-        if (route.backingEnvironmentId !== connection.environmentId) continue;
-        const existing = projectTabRoutes.get(route.tabId);
-        if (existing && existing.queue !== connection.queue) continue;
-        projectTabRoutes.set(route.tabId, {
-          clientId: connection.clientId,
-          connectionId: connection.connectionId,
-          queue: connection.queue,
-          backingEnvironmentId: route.backingEnvironmentId,
-          backingThreadId: route.backingThreadId,
-        });
-      }
-      const assignments = new Map(current.assignments);
-      for (const [assignmentKey, assignment] of assignments) {
-        if (
-          assignment.tabId &&
-          previouslyOwnedTabIds.has(assignment.tabId) &&
-          !projectTabRoutes.has(assignment.tabId)
-        ) {
-          assignments.delete(assignmentKey);
-        }
-      }
-      return { ...current, projectTabRoutes, assignments };
-    });
-  });
-
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* <A = unknown>(
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
@@ -499,24 +437,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const assignmentKey = hostAssignmentKey(input.scope);
       const assigned = assignments.get(assignmentKey);
       const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
-      const assignedProjectRoute = assigned?.tabId
-        ? current.projectTabRoutes.get(assigned.tabId)
-        : undefined;
-      const hasLiveAssignment =
-        assignedConnection !== undefined &&
-        (assignedConnection.environmentId === input.scope.environmentId ||
-          (assignedProjectRoute?.connectionId === assignedConnection.connectionId &&
-            assignedProjectRoute.queue === assignedConnection.queue));
-      const registeredProjectRoute = input.tabId
-        ? current.projectTabRoutes.get(input.tabId)
-        : undefined;
-      const registeredProjectConnection = registeredProjectRoute
-        ? current.clients.get(registeredProjectRoute.clientId)
-        : undefined;
-      const hasLiveProjectRoute =
-        registeredProjectRoute !== undefined &&
-        registeredProjectConnection?.connectionId === registeredProjectRoute.connectionId &&
-        registeredProjectConnection.queue === registeredProjectRoute.queue;
+      const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
       // Keep one provider session on one physical desktop runtime so a
       // multi-step browser interaction cannot jump between independent
       // Electron cookie/DOM state. A live assignment that predates an
@@ -524,26 +445,22 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       // capability failure and can deliberately start a fresh provider
       // session. A dead lease is pruned above and may fail over.
       const connection =
-        hasLiveProjectRoute && supportsOperation(registeredProjectConnection, input.operation)
-          ? registeredProjectConnection
-          : registeredProjectRoute
+        hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
+          ? assignedConnection
+          : hasLiveAssignment
             ? undefined
-            : hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
-              ? assignedConnection
-              : hasLiveAssignment
-                ? undefined
-                : Array.from(current.clients.values())
-                    .filter(
-                      (host) =>
-                        host.environmentId === input.scope.environmentId &&
-                        supportsOperation(host, input.operation),
-                    )
-                    .sort(
-                      (left, right) =>
-                        right.supportedOperations.size - left.supportedOperations.size ||
-                        Number(right.focused) - Number(left.focused) ||
-                        right.focusOrder - left.focusOrder,
-                    )[0];
+            : Array.from(current.clients.values())
+                .filter(
+                  (host) =>
+                    host.environmentId === input.scope.environmentId &&
+                    supportsOperation(host, input.operation),
+                )
+                .sort(
+                  (left, right) =>
+                    right.supportedOperations.size - left.supportedOperations.size ||
+                    Number(right.focused) - Number(left.focused) ||
+                    right.focusOrder - left.focusOrder,
+                )[0];
       if (!connection) {
         if (!hasLiveAssignment) assignments.delete(assignmentKey);
         return [undefined, { ...current, assignments }] as const;
@@ -583,13 +500,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const pending = new Map(current.pending);
       pending.set(requestId, { queue: connection.queue, deferred, context });
       return [
-        {
-          connection,
-          requestId,
-          requestContext: context,
-          requestSequence,
-          registeredProjectRoute,
-        },
+        { connection, requestId, requestContext: context, requestSequence },
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
       ] as const;
     });
@@ -602,8 +513,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         providerInstanceId: input.scope.providerInstanceId,
       });
     }
-    const { connection, requestId, requestContext, requestSequence, registeredProjectRoute } =
-      route;
+    const { connection, requestId, requestContext, requestSequence } = route;
     const removePending = SynchronizedRef.update(state, (next) => {
       if (!next.pending.has(requestId)) return next;
       const pending = new Map(next.pending);
@@ -617,16 +527,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         request: {
           requestId,
           threadId: input.scope.threadId,
-          requestingEnvironmentId: input.scope.environmentId,
           tabId: requestContext.tabId,
           tabIdExplicit: input.tabId !== undefined,
-          ...(registeredProjectRoute
-            ? {
-                projectTab: true,
-                backingEnvironmentId: registeredProjectRoute.backingEnvironmentId,
-                backingThreadId: registeredProjectRoute.backingThreadId,
-              }
-            : {}),
           operation: input.operation,
           input: input.input,
           timeoutMs,
@@ -645,17 +547,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         onSome: (value) => Effect.succeed(value as A),
       });
     });
-    const clearFailedProjectAssignment = SynchronizedRef.update(state, (current) => {
-      const assignment = current.assignments.get(hostAssignmentKey(input.scope));
-      if (!assignment?.tabId || !current.projectTabRoutes.has(assignment.tabId)) return current;
-      const assignments = new Map(current.assignments);
-      assignments.delete(hostAssignmentKey(input.scope));
-      return { ...current, assignments };
-    });
-    const result = yield* awaitResponse().pipe(
-      Effect.tapError(() => clearFailedProjectAssignment),
-      Effect.ensuring(removePending),
-    );
+    const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));
     // A stop artifact identifies the globally recorded tab, not the caller's browsing target.
     const responseTabId = input.operation === "recordingStop" ? undefined : readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
@@ -687,7 +579,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return result;
   });
 
-  return PreviewAutomationBroker.of({ connect, focusHost, syncProjectTabs, respond, invoke });
+  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 
 export const layer = Layer.effect(PreviewAutomationBroker, make);

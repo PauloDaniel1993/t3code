@@ -213,21 +213,6 @@ export function toOpenCodeFileParts(input: {
   return parts;
 }
 
-export function findUnsupportedOpenCodeAttachmentType(
-  attachments: ReadonlyArray<unknown> | undefined,
-): string | undefined {
-  for (const attachment of attachments ?? []) {
-    if (typeof attachment !== "object" || attachment === null || !("type" in attachment)) {
-      return "unknown";
-    }
-    const attachmentType = String(attachment.type);
-    if (attachmentType !== "image" && attachmentType !== "document") {
-      return attachmentType;
-    }
-  }
-  return undefined;
-}
-
 export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): PermissionRuleset {
   if (runtimeMode === "full-access") {
     return [{ permission: "*", pattern: "*", action: "allow" }];

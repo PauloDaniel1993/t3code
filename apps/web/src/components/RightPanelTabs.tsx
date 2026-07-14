@@ -1,6 +1,6 @@
 import type { ContextMenuItem, PreviewSessionSnapshot } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
-import { ClipboardList, FileDiff, Files, Globe2, Pin, Plus, TerminalSquare, X } from "lucide-react";
+import { ClipboardList, FileDiff, Files, Globe2, Plus, TerminalSquare, X } from "lucide-react";
 import {
   type MouseEvent as ReactMouseEvent,
   type ReactElement,
@@ -39,7 +39,6 @@ interface RightPanelTabsProps {
   onCloseOtherSurfaces: (surface: RightPanelSurface) => void;
   onCloseSurfacesToRight: (surface: RightPanelSurface) => void;
   onCloseAllSurfaces: () => void;
-  onPinBrowser: (surface: Extract<RightPanelSurface, { kind: "preview" }>) => void;
   onCopyFilePath: (relativePath: string) => void;
   onAddBrowser: () => void;
   onAddTerminal: () => void;
@@ -57,13 +56,7 @@ const SURFACE_DISABLED_REASONS = {
   diff: "Diff is only available for server threads in Git repositories.",
 } as const;
 
-type TabContextMenuAction =
-  | "copy-path"
-  | "pin-project"
-  | "close"
-  | "close-others"
-  | "close-to-right"
-  | "close-all";
+type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
 
 function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement }) {
   return (
@@ -296,9 +289,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       if (surface.kind === "file") {
         items.push({ id: "copy-path", label: "Copy path" });
       }
-      if (surface.kind === "preview" && surface.resourceId) {
-        items.push({ id: "pin-project", label: "Pin to Project Browser" });
-      }
       items.push(
         { id: "close", label: "Close" },
         {
@@ -322,9 +312,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       switch (action) {
         case "copy-path":
           if (surface.kind === "file") props.onCopyFilePath(surface.relativePath);
-          break;
-        case "pin-project":
-          if (surface.kind === "preview" && surface.resourceId) props.onPinBrowser(surface);
           break;
         case "close":
           props.onCloseSurface(surface);
@@ -371,10 +358,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       <div
         className={cn(
           "workspace-topbar gap-1 pl-2",
-          // Reserve room for the floating titlebar controls, which grew to
-          // four icons (maximize + terminal + right panel + Project Browser).
-          props.mode === "inline" ? "pr-36" : "pr-3",
-          ownsDesktopTitleBar && "wco:pr-[calc(var(--workspace-native-controls-inset)+9rem)]",
+          props.mode === "inline" ? "pr-28" : "pr-3",
+          ownsDesktopTitleBar && "wco:pr-[calc(var(--workspace-native-controls-inset)+6rem)]",
           props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
         data-right-panel-tabbar
@@ -424,16 +409,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     />
                     <TooltipPopup>{title}</TooltipPopup>
                   </Tooltip>
-                  {surface.kind === "preview" && surface.resourceId ? (
-                    <button
-                      type="button"
-                      className="flex size-4 shrink-0 items-center justify-center rounded opacity-0 hover:bg-muted focus:opacity-100 group-hover:opacity-100"
-                      aria-label={`Pin ${title} to Project Browser`}
-                      onClick={() => props.onPinBrowser(surface)}
-                    >
-                      <Pin className="size-3" />
-                    </button>
-                  ) : null}
                   <button
                     type="button"
                     className={cn(

@@ -24,19 +24,6 @@ If a tradeoff is required, choose correctness and robustness over short-term con
 
 Long term maintainability is a core priority. If you add new functionality, first check if there is shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell and should be avoided. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
 
-## Active Implementation Plans
-
-- Appearance settings profiles are specified in `.plans/21-appearance-settings-profiles.md`.
-- When working on appearance, theme, typography, density, accent color, client settings, or settings navigation, read that plan before editing code.
-- Treat the plan specs as the implementation harness:
-  - Keep changes aligned to the listed specs and implementation order unless there is a concrete reason to adjust.
-  - Preserve existing settings, schema, hook, UI component, and CSS-token patterns instead of adding parallel systems.
-  - Keep `packages/contracts` schema-only and put runtime helpers in web/shared modules according to existing package boundaries.
-  - Add focused tests with each behavior slice rather than saving tests for the end.
-  - Update `.plans/21-appearance-settings-profiles.md` in the same change when scope, data shape, migration behavior, validation rules, or verification expectations change.
-  - Update `.plans/README.md` when adding, renaming, splitting, or retiring plan files.
-- Appearance work is not complete unless the relevant plan specs have matching implementation, tests, and verification notes.
-
 ## Package Roles
 
 - `apps/server`: Node.js WebSocket server. Wraps Codex app-server (JSON-RPC over stdio), serves the React web app, and manages provider sessions.

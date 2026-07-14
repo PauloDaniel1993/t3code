@@ -110,7 +110,6 @@ import {
   PreviewAutomationError,
   PreviewAutomationHost,
   PreviewAutomationHostFocus,
-  PreviewAutomationProjectTabRoutes,
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
 } from "./previewAutomation.ts";
@@ -200,7 +199,6 @@ export const WS_METHODS = {
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
-  previewAutomationSyncProjectTabs: "previewAutomation.syncProjectTabs",
 
   // Server meta
   serverGetConfig: "server.getConfig",
@@ -575,14 +573,6 @@ export const WsPreviewAutomationFocusHostRpc = Rpc.make(WS_METHODS.previewAutoma
   error: EnvironmentAuthorizationError,
 });
 
-export const WsPreviewAutomationSyncProjectTabsRpc = Rpc.make(
-  WS_METHODS.previewAutomationSyncProjectTabs,
-  {
-    payload: PreviewAutomationProjectTabRoutes,
-    error: EnvironmentAuthorizationError,
-  },
-);
-
 export const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
   payload: Schema.Struct({}),
   success: PreviewEvent,
@@ -748,7 +738,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
   WsPreviewAutomationFocusHostRpc,
-  WsPreviewAutomationSyncProjectTabsRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsSubscribeServerConfigRpc,

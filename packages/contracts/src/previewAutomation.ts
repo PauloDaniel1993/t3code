@@ -45,7 +45,6 @@ export const PREVIEW_AUTOMATION_V1_OPERATIONS = [
 export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
-  "listTabs",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -566,44 +565,11 @@ export const PreviewAutomationHostFocus = Schema.Struct({
 });
 export type PreviewAutomationHostFocus = typeof PreviewAutomationHostFocus.Type;
 
-export const PreviewAutomationProjectTabRoute = Schema.Struct({
-  tabId: PreviewTabId,
-  backingEnvironmentId: EnvironmentId,
-  backingThreadId: ThreadId,
-});
-export type PreviewAutomationProjectTabRoute = typeof PreviewAutomationProjectTabRoute.Type;
-
-export const PreviewAutomationProjectTabRoutes = Schema.Struct({
-  ...PreviewAutomationHostIdentity.fields,
-  connectionId: PreviewAutomationConnectionId,
-  routes: Schema.Array(PreviewAutomationProjectTabRoute).check(Schema.isMaxLength(256)),
-});
-export type PreviewAutomationProjectTabRoutes = typeof PreviewAutomationProjectTabRoutes.Type;
-
-export const PreviewAutomationProjectTabSummary = Schema.Struct({
-  tabId: PreviewTabId,
-  title: Schema.String,
-  url: Schema.NullOr(Schema.String),
-  active: Schema.Boolean,
-  backingEnvironmentId: EnvironmentId,
-});
-export type PreviewAutomationProjectTabSummary = typeof PreviewAutomationProjectTabSummary.Type;
-
-export const PreviewAutomationTabList = Schema.Struct({
-  tabs: Schema.Array(PreviewAutomationProjectTabSummary),
-  activeTabId: Schema.NullOr(PreviewTabId),
-});
-export type PreviewAutomationTabList = typeof PreviewAutomationTabList.Type;
-
 export const PreviewAutomationRequest = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   threadId: ThreadId,
-  requestingEnvironmentId: Schema.optional(EnvironmentId),
   tabId: Schema.optional(PreviewTabId),
   tabIdExplicit: Schema.optional(Schema.Boolean),
-  projectTab: Schema.optional(Schema.Boolean),
-  backingEnvironmentId: Schema.optional(EnvironmentId),
-  backingThreadId: Schema.optional(ThreadId),
   operation: PreviewAutomationOperation,
   input: Schema.Unknown,
   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
