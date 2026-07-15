@@ -521,6 +521,55 @@ describe("composerDraftStore PDF lifecycle", () => {
     });
   });
 
+  it("hydrates persisted generic file drafts and drops non-registry MIME entries", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadId: {
+          [threadId]: {
+            prompt: "review these",
+            attachments: [
+              {
+                type: "file",
+                id: "csv",
+                name: "sales.csv",
+                mimeType: "text/csv",
+                sizeBytes: 10,
+                dataUrl: "data:text/csv;base64,YSxiCjEsMg==",
+              },
+              {
+                type: "file",
+                id: "exe",
+                name: "installer.exe",
+                mimeType: "application/x-msdownload",
+                sizeBytes: 10,
+                dataUrl: "data:application/x-msdownload;base64,TVo=",
+              },
+            ],
+          },
+        },
+        draftThreadsByThreadId: {},
+        projectDraftThreadIdByProjectKey: {},
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    const attachments = mergedState.draftsByThreadKey[threadKeyFor(threadId)]?.attachments;
+    expect(attachments?.map((attachment) => attachment.id)).toEqual(["csv"]);
+    expect(attachments?.[0]).toMatchObject({
+      type: "file",
+      mimeType: "text/csv",
+      assetUrl: "data:text/csv;base64,YSxiCjEsMg==",
+    });
+  });
+
   it("preserves per-thread PDF drafts while switching and cleans only the cleared thread", () => {
     const otherThreadRef = scopeThreadRef(
       TEST_ENVIRONMENT_ID,

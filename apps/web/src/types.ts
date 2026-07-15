@@ -13,6 +13,7 @@ import type {
 import type {
   ClientChatAttachment,
   ClientChatDocumentAttachment,
+  ClientChatFileAttachment,
   ClientChatImageAttachment,
 } from "@t3tools/client-runtime/state/attachments";
 import type {
@@ -38,6 +39,7 @@ export interface ThreadTerminalGroup {
 
 export type ChatImageAttachment = ClientChatImageAttachment;
 export type ChatDocumentAttachment = ClientChatDocumentAttachment;
+export type ChatFileAttachment = ClientChatFileAttachment;
 export type ChatAttachment = ClientChatAttachment;
 
 export interface ChatMessage extends Omit<OrchestrationMessage, "attachments" | "source"> {

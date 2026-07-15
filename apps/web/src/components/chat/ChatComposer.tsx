@@ -56,7 +56,7 @@ import { type ElementContextDraft } from "../../lib/elementContext";
 import { ComposerPendingElementContexts } from "./ComposerPendingElementContexts";
 import { ComposerPendingReviewComments } from "./ComposerPendingReviewComments";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
-import { PdfAttachmentCard } from "./PdfAttachmentCard";
+import { FileAttachmentCard } from "./PdfAttachmentCard";
 import {
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
@@ -2294,21 +2294,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               pendingUserInputs.length === 0 &&
               composerAttachments.some(
                 (attachment) =>
-                  attachment.type === "document" ||
+                  attachment.type !== "image" ||
                   !composerPreviewAnnotations.some((annotation) => annotation.id === attachment.id),
               ) && (
                 <div className="mb-3 flex flex-wrap gap-2">
                   {composerAttachments
                     .filter(
                       (attachment) =>
-                        attachment.type === "document" ||
+                        attachment.type !== "image" ||
                         !composerPreviewAnnotations.some(
                           (annotation) => annotation.id === attachment.id,
                         ),
                     )
                     .map((attachment) =>
-                      attachment.type === "document" ? (
-                        <PdfAttachmentCard
+                      attachment.type !== "image" ? (
+                        <FileAttachmentCard
                           key={attachment.id}
                           attachment={attachment}
                           mode="draft"

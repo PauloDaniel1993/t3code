@@ -179,7 +179,7 @@ export function revokeUserMessageDocumentAssetUrls(message: ChatMessage): void {
     return;
   }
   for (const attachment of message.attachments) {
-    if (attachment.type === "document") {
+    if (attachment.type === "document" || attachment.type === "file") {
       revokeBlobPreviewUrl(attachment.assetUrl);
     }
   }
@@ -235,21 +235,32 @@ export async function serializeComposerAttachments(
   return await Promise.all(
     attachments.map(async (attachment): Promise<UploadChatAttachment> => {
       const dataUrl = await readFile(attachment.file);
-      return attachment.type === "image"
-        ? {
+      switch (attachment.type) {
+        case "image":
+          return {
             type: "image",
             name: attachment.name,
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
             dataUrl,
-          }
-        : {
+          };
+        case "document":
+          return {
             type: "document",
             name: attachment.name,
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
             dataUrl,
           };
+        case "file":
+          return {
+            type: "file",
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            dataUrl,
+          };
+      }
     }),
   );
 }
@@ -257,25 +268,37 @@ export async function serializeComposerAttachments(
 export function buildOptimisticComposerAttachments(
   attachments: ReadonlyArray<ComposerAttachment>,
 ): ChatAttachment[] {
-  return attachments.map((attachment) =>
-    attachment.type === "image"
-      ? {
+  return attachments.map((attachment): ChatAttachment => {
+    switch (attachment.type) {
+      case "image":
+        return {
           type: "image",
           id: attachment.id,
           name: attachment.name,
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
           previewUrl: attachment.previewUrl,
-        }
-      : {
+        };
+      case "document":
+        return {
           type: "document",
           id: attachment.id,
           name: attachment.name,
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
           assetUrl: attachment.assetUrl,
-        },
-  );
+        };
+      case "file":
+        return {
+          type: "file",
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          assetUrl: attachment.assetUrl,
+        };
+    }
+  });
 }
 
 /** Keep a newer in-flight draft intact while restoring text from a failed send. */

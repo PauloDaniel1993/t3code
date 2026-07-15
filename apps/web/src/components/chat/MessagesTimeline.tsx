@@ -72,7 +72,7 @@ import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
-import { PdfAttachmentCard } from "./PdfAttachmentCard";
+import { FileAttachmentCard } from "./PdfAttachmentCard";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
@@ -879,9 +879,11 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const { images: userImages, documents: userDocuments } = partitionClientChatAttachments(
-    row.message.attachments ?? [],
-  );
+  const {
+    images: userImages,
+    documents: userDocuments,
+    files: userFiles,
+  } = partitionClientChatAttachments(row.message.attachments ?? []);
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const previewAnnotations: ParsedPreviewAnnotation[] = [];
@@ -906,10 +908,13 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     <div className="group flex flex-col items-end gap-1">
       {importedHandoffMessage ? <ImportedMessageMarker className="max-w-[80%] pe-1" /> : null}
       <div className="relative max-w-[80%] rounded-2xl border border-border bg-secondary p-3">
-        {userDocuments.length > 0 ? (
+        {userDocuments.length > 0 || userFiles.length > 0 ? (
           <div className="mb-2 flex max-w-[420px] flex-col gap-2">
             {userDocuments.map((document) => (
-              <PdfAttachmentCard key={document.id} attachment={document} mode="history" />
+              <FileAttachmentCard key={document.id} attachment={document} mode="history" />
+            ))}
+            {userFiles.map((file) => (
+              <FileAttachmentCard key={file.id} attachment={file} mode="history" />
             ))}
           </div>
         ) : null}

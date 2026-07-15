@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
+  isChatFileMimeType,
   type EnvironmentId,
   ModelSelection,
   ProjectId,
@@ -38,6 +39,7 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type ChatDocumentAttachment,
+  type ChatFileAttachment,
   type ChatImageAttachment,
 } from "./types";
 import {
@@ -104,9 +106,20 @@ export const PersistedComposerDocumentAttachment = Schema.Struct({
 });
 export type PersistedComposerDocumentAttachment = typeof PersistedComposerDocumentAttachment.Type;
 
+export const PersistedComposerFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: Schema.String,
+  name: Schema.String,
+  mimeType: Schema.String,
+  sizeBytes: Schema.Number,
+  dataUrl: Schema.String,
+});
+export type PersistedComposerFileAttachment = typeof PersistedComposerFileAttachment.Type;
+
 export const PersistedComposerAttachment = Schema.Union([
   PersistedComposerImageAttachment,
   PersistedComposerDocumentAttachment,
+  PersistedComposerFileAttachment,
 ]);
 export type PersistedComposerAttachment = typeof PersistedComposerAttachment.Type;
 
@@ -120,7 +133,15 @@ export interface ComposerDocumentAttachment extends Omit<ChatDocumentAttachment,
   file: File;
 }
 
-export type ComposerAttachment = ComposerImageAttachment | ComposerDocumentAttachment;
+export interface ComposerFileAttachment extends Omit<ChatFileAttachment, "assetUrl"> {
+  assetUrl: string;
+  file: File;
+}
+
+export type ComposerAttachment =
+  | ComposerImageAttachment
+  | ComposerDocumentAttachment
+  | ComposerFileAttachment;
 
 export interface AddComposerAttachmentsResult {
   readonly addedCount: number;
@@ -1108,7 +1129,9 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerAttachme
             typeof mimeType === "string" &&
             mimeType.toLowerCase().startsWith("image/"))
         ? "image"
-        : null;
+        : candidate.type === "file"
+          ? "file"
+          : null;
   if (
     type === null ||
     typeof id !== "string" ||
@@ -1134,6 +1157,12 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerAttachme
       sizeBytes,
       dataUrl,
     };
+  }
+  if (type === "file") {
+    if (!isChatFileMimeType(mimeType)) {
+      return null;
+    }
+    return { type: "file", id, name, mimeType, sizeBytes, dataUrl };
   }
   if (!mimeType.toLowerCase().startsWith("image/")) {
     return null;
@@ -2171,9 +2200,19 @@ function hydrateAttachmentsFromPersisted(
         previewUrl: attachment.dataUrl,
         file,
       });
-    } else {
+    } else if (attachment.type === "document") {
       hydrated.push({
         type: "document",
+        id: attachment.id,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.sizeBytes,
+        assetUrl: attachment.dataUrl,
+        file,
+      });
+    } else {
+      hydrated.push({
+        type: "file",
         id: attachment.id,
         name: attachment.name,
         mimeType: attachment.mimeType,
