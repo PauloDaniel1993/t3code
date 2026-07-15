@@ -13,7 +13,11 @@ const DEFAULT_OUTPUT_DIR = NodePath.join(REPO_ROOT, ".t3-dev", "desktop-install-
 const METADATA_FILE_NAME = ".t3code-install.json";
 const WINDOWS_LOCAL_LAUNCHER_NAME = "T3 alpha.local.cmd";
 const WINDOWS_LOCAL_SHORTCUT_NAME = "T3 alpha.local.lnk";
-const WINDOWS_LEGACY_LOCAL_SHORTCUT_NAMES = ["T3 alpha.lnk", "T3 Code (alpha.local).lnk"] as const;
+const WINDOWS_LEGACY_LOCAL_SHORTCUT_NAMES = [
+  "T3 alpha.lnk",
+  "T3 Code (alpha.local).lnk",
+  "T3 Code (Alpha).lnk",
+] as const;
 const POSIX_LOCAL_LAUNCHER_NAME = "t3code-local";
 const LOCAL_DISPLAY_NAME = "T3 alpha.local";
 const LOCAL_WINDOWS_APP_USER_MODEL_ID = "com.t3tools.t3code.alpha.local";
@@ -569,11 +573,69 @@ export function renderStopWindowsInstallProcessesScript(executablePath: string):
   ].join("\n");
 }
 
+// Windows matches pinned shortcuts to running windows via the shortcut's embedded
+// System.AppUserModel.ID property. WScript.Shell cannot write it, so shortcuts are
+// stamped through the ShellLink COM object's IPropertyStore (PKEY_AppUserModel_ID =
+// fmtid 9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3, pid 5) after the basic fields save.
+const WINDOWS_SHORTCUT_PROPERTY_INTEROP_TYPE = [
+  "using System;",
+  "using System.Runtime.InteropServices;",
+  "using System.Runtime.InteropServices.ComTypes;",
+  "namespace T3CodeShortcutInterop {",
+  "  [StructLayout(LayoutKind.Sequential, Pack = 4)]",
+  "  public struct PropertyKey {",
+  "    public Guid fmtid;",
+  "    public uint pid;",
+  "    public PropertyKey(Guid fmtid, uint pid) { this.fmtid = fmtid; this.pid = pid; }",
+  "  }",
+  "  [StructLayout(LayoutKind.Explicit)]",
+  "  public struct PropVariant {",
+  "    [FieldOffset(0)] public ushort vt;",
+  "    [FieldOffset(8)] public IntPtr pointerValue;",
+  '    [DllImport("ole32.dll")]',
+  "    private static extern int PropVariantClear(ref PropVariant pvar);",
+  "    public static PropVariant FromString(string value) {",
+  "      var variant = new PropVariant();",
+  "      variant.vt = 31;",
+  "      variant.pointerValue = Marshal.StringToCoTaskMemUni(value);",
+  "      return variant;",
+  "    }",
+  "    public void Clear() { PropVariantClear(ref this); }",
+  "  }",
+  '  [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
+  "  public interface IPropertyStore {",
+  "    void GetCount(out uint cProps);",
+  "    void GetAt(uint iProp, out PropertyKey pkey);",
+  "    void GetValue(ref PropertyKey key, out PropVariant pv);",
+  "    void SetValue(ref PropertyKey key, ref PropVariant pv);",
+  "    void Commit();",
+  "  }",
+  "  public static class ShortcutProperties {",
+  "    public static void SetAppUserModelId(string shortcutPath, string appUserModelId) {",
+  '      var shellLinkType = Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046"));',
+  "      object shellLink = Activator.CreateInstance(shellLinkType);",
+  "      try {",
+  "        ((IPersistFile)shellLink).Load(shortcutPath, 2 /* STGM_READWRITE */);",
+  "        var store = (IPropertyStore)shellLink;",
+  '        var key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);',
+  "        var value = PropVariant.FromString(appUserModelId);",
+  "        try {",
+  "          store.SetValue(ref key, ref value);",
+  "          store.Commit();",
+  "        } finally { value.Clear(); }",
+  "        ((IPersistFile)shellLink).Save(shortcutPath, true);",
+  "      } finally { Marshal.ReleaseComObject(shellLink); }",
+  "    }",
+  "  }",
+  "}",
+].join("\n");
+
 export function renderWindowsShortcutScript(input: {
   readonly shortcutPath: string;
   readonly targetPath: string;
   readonly iconPath: string;
   readonly workingDirectory: string;
+  readonly appUserModelId: string;
 }): string {
   return [
     "$ErrorActionPreference = 'Stop'",
@@ -585,6 +647,12 @@ export function renderWindowsShortcutScript(input: {
     `$shortcut.IconLocation = ${powershellSingleQuote(`${input.iconPath},0`)}`,
     `$shortcut.Description = ${powershellSingleQuote(`${LOCAL_DISPLAY_NAME} local build`)}`,
     "$shortcut.Save()",
+    "Add-Type -TypeDefinition @'",
+    WINDOWS_SHORTCUT_PROPERTY_INTEROP_TYPE,
+    "'@",
+    `[T3CodeShortcutInterop.ShortcutProperties]::SetAppUserModelId(${powershellSingleQuote(
+      input.shortcutPath,
+    )}, ${powershellSingleQuote(input.appUserModelId)})`,
   ].join("\n");
 }
 
@@ -620,6 +688,7 @@ async function writeWindowsShortcut(input: {
   readonly targetPath: string;
   readonly iconPath: string;
   readonly workingDirectory: string;
+  readonly appUserModelId: string;
 }): Promise<void> {
   if (readCliHostPlatform() !== "win32") {
     return;
@@ -651,6 +720,7 @@ async function writeWindowsShortcutFiles(installDir: string): Promise<void> {
     targetPath: (await pathExists(launcherPath)) ? launcherPath : executablePath,
     iconPath: executablePath,
     workingDirectory: installDir,
+    appUserModelId: LOCAL_WINDOWS_APP_USER_MODEL_ID,
   };
   await writeWindowsShortcut({
     ...shortcut,
