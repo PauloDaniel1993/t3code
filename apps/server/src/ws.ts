@@ -343,6 +343,7 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.previewAutomationConnect, AuthOrchestrationOperateScope],
   [WS_METHODS.previewAutomationRespond, AuthOrchestrationOperateScope],
   [WS_METHODS.previewAutomationFocusHost, AuthOrchestrationOperateScope],
+  [WS_METHODS.previewAutomationSyncProjectTabs, AuthOrchestrationOperateScope],
   [WS_METHODS.subscribePreviewEvents, AuthOrchestrationReadScope],
   [WS_METHODS.subscribeDiscoveredLocalServers, AuthOrchestrationReadScope],
   [WS_METHODS.subscribeServerConfig, AuthOrchestrationReadScope],
@@ -1741,6 +1742,13 @@ const makeWsRpcLayer = (
             previewAutomationBroker.focusHost(input),
             { "rpc.aggregate": "preview-automation" },
           ),
+        // Project-tab routes are accepted for wire compatibility with newer
+        // desktop clients but intentionally ignored: project-tab automation
+        // routing is reverted and requests use normal host selection.
+        [WS_METHODS.previewAutomationSyncProjectTabs]: (_input) =>
+          observeRpcEffect(WS_METHODS.previewAutomationSyncProjectTabs, Effect.void, {
+            "rpc.aggregate": "preview-automation",
+          }),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
             "rpc.aggregate": "preview",
