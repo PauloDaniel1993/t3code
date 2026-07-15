@@ -94,6 +94,31 @@ interface ProjectTabRoute {
   readonly backingThreadId: PreviewAutomationProjectTabRoutes["routes"][number]["backingThreadId"];
 }
 
+type ProjectTabRouteResolution =
+  | { readonly kind: "none" }
+  | { readonly kind: "live"; readonly route: ProjectTabRoute; readonly owner: ClientConnection }
+  | { readonly kind: "stale"; readonly route: ProjectTabRoute };
+
+/**
+ * A route only routes while its owning connection is live; a route left
+ * behind by a dead or replaced connection has no cookie/DOM state to protect
+ * and must never block the normal assignment/environment selection.
+ */
+const resolveProjectTabRoute = (
+  clients: ReadonlyMap<string, ClientConnection>,
+  projectTabRoutes: ReadonlyMap<string, ProjectTabRoute>,
+  tabId: string | undefined,
+): ProjectTabRouteResolution => {
+  const route = tabId !== undefined ? projectTabRoutes.get(tabId) : undefined;
+  if (!route) return { kind: "none" };
+  const owner = clients.get(route.clientId);
+  return owner !== undefined &&
+    owner.connectionId === route.connectionId &&
+    owner.queue === route.queue
+    ? { kind: "live", route, owner }
+    : { kind: "stale", route };
+};
+
 interface PreviewAutomationRequestErrorContext {
   readonly operation: PreviewAutomationOperation;
   readonly environmentId: McpInvocationContext.McpInvocationScope["environmentId"];
@@ -455,8 +480,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       }
       for (const route of input.routes) {
         if (route.backingEnvironmentId !== connection.environmentId) continue;
-        const existing = projectTabRoutes.get(route.tabId);
-        if (existing && existing.queue !== connection.queue) continue;
+        // Only a live owner blocks a takeover. A route left behind by a dead
+        // or replaced connection must be reclaimable here: the client syncs
+        // once per route/connection change and never retries, so a silent
+        // skip would leave the tab unroutable permanently.
+        const existing = resolveProjectTabRoute(current.clients, projectTabRoutes, route.tabId);
+        if (existing.kind === "live" && existing.owner !== connection) continue;
         projectTabRoutes.set(route.tabId, {
           clientId: connection.clientId,
           connectionId: connection.connectionId,
@@ -467,7 +496,11 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       }
       const assignments = new Map(current.assignments);
       for (const [assignmentKey, assignment] of assignments) {
+        // Assignments are provider-session state owned by the normal flow;
+        // a route sync may only clear leases held by the syncing connection.
         if (
+          assignment.clientId === connection.clientId &&
+          assignment.connectionId === connection.connectionId &&
           assignment.tabId &&
           previouslyOwnedTabIds.has(assignment.tabId) &&
           !projectTabRoutes.has(assignment.tabId)
@@ -499,54 +532,59 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const assignmentKey = hostAssignmentKey(input.scope);
       const assigned = assignments.get(assignmentKey);
       const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
-      const assignedProjectRoute = assigned?.tabId
-        ? current.projectTabRoutes.get(assigned.tabId)
-        : undefined;
+      const assignedProjectRoute = resolveProjectTabRoute(
+        current.clients,
+        current.projectTabRoutes,
+        assigned?.tabId,
+      );
       const hasLiveAssignment =
         assignedConnection !== undefined &&
         (assignedConnection.environmentId === input.scope.environmentId ||
-          (assignedProjectRoute?.connectionId === assignedConnection.connectionId &&
-            assignedProjectRoute.queue === assignedConnection.queue));
-      const registeredProjectRoute = input.tabId
-        ? current.projectTabRoutes.get(input.tabId)
-        : undefined;
-      const registeredProjectConnection = registeredProjectRoute
-        ? current.clients.get(registeredProjectRoute.clientId)
-        : undefined;
-      const hasLiveProjectRoute =
-        registeredProjectRoute !== undefined &&
-        registeredProjectConnection?.connectionId === registeredProjectRoute.connectionId &&
-        registeredProjectConnection.queue === registeredProjectRoute.queue;
+          (assignedProjectRoute.kind === "live" &&
+            assignedProjectRoute.owner === assignedConnection));
+      const projectRoute = resolveProjectTabRoute(
+        current.clients,
+        current.projectTabRoutes,
+        input.tabId,
+      );
+      // Prune a stale route so registry staleness can never block the normal
+      // assignment/environment selection below (same failover doctrine as
+      // dead assignment leases).
+      const projectTabRoutes =
+        projectRoute.kind === "stale" && input.tabId !== undefined
+          ? new Map(Array.from(current.projectTabRoutes).filter(([tabId]) => tabId !== input.tabId))
+          : current.projectTabRoutes;
       // Keep one provider session on one physical desktop runtime so a
       // multi-step browser interaction cannot jump between independent
       // Electron cookie/DOM state. A live assignment that predates an
       // operation is not silently moved to a newer client: the caller gets a
       // capability failure and can deliberately start a fresh provider
-      // session. A dead lease is pruned above and may fail over.
+      // session. A dead lease is pruned above and may fail over, and a dead
+      // project-tab route falls through to normal selection the same way.
       const connection =
-        hasLiveProjectRoute && supportsOperation(registeredProjectConnection, input.operation)
-          ? registeredProjectConnection
-          : registeredProjectRoute
-            ? undefined
-            : hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
+        projectRoute.kind === "live"
+          ? supportsOperation(projectRoute.owner, input.operation)
+            ? projectRoute.owner
+            : undefined
+          : hasLiveAssignment
+            ? supportsOperation(assignedConnection, input.operation)
               ? assignedConnection
-              : hasLiveAssignment
-                ? undefined
-                : Array.from(current.clients.values())
-                    .filter(
-                      (host) =>
-                        host.environmentId === input.scope.environmentId &&
-                        supportsOperation(host, input.operation),
-                    )
-                    .sort(
-                      (left, right) =>
-                        right.supportedOperations.size - left.supportedOperations.size ||
-                        Number(right.focused) - Number(left.focused) ||
-                        right.focusOrder - left.focusOrder,
-                    )[0];
+              : undefined
+            : Array.from(current.clients.values())
+                .filter(
+                  (host) =>
+                    host.environmentId === input.scope.environmentId &&
+                    supportsOperation(host, input.operation),
+                )
+                .sort(
+                  (left, right) =>
+                    right.supportedOperations.size - left.supportedOperations.size ||
+                    Number(right.focused) - Number(left.focused) ||
+                    right.focusOrder - left.focusOrder,
+                )[0];
       if (!connection) {
         if (!hasLiveAssignment) assignments.delete(assignmentKey);
-        return [undefined, { ...current, assignments }] as const;
+        return [undefined, { ...current, assignments, projectTabRoutes }] as const;
       }
       const canReuseAssignedTab =
         assigned !== undefined &&
@@ -588,9 +626,17 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           requestId,
           requestContext: context,
           requestSequence,
-          registeredProjectRoute,
+          // Only a live route marks the request as a project-tab dispatch; a
+          // pruned stale route means the request went through normal selection.
+          registeredProjectRoute: projectRoute.kind === "live" ? projectRoute.route : undefined,
         },
-        { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
+        {
+          ...current,
+          assignments,
+          pending,
+          projectTabRoutes,
+          requestSequence: current.requestSequence + 1,
+        },
       ] as const;
     });
     if (!route) {
@@ -691,3 +737,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 
 export const layer = Layer.effect(PreviewAutomationBroker, make);
+
+/** Exposed for tests. */
+export const __testing = {
+  resolveProjectTabRoute,
+};

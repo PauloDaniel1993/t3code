@@ -11,16 +11,20 @@ import {
   ProviderInstanceId,
   ThreadId,
   type PreviewAutomationHost,
+  type PreviewAutomationOperation,
   type PreviewAutomationRequest,
   type PreviewAutomationStreamEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+
+const { resolveProjectTabRoute } = PreviewAutomationBroker.__testing;
 
 const makeBroker = PreviewAutomationBroker.make.pipe(Effect.provide(NodeServices.layer));
 
@@ -1076,6 +1080,281 @@ it.effect("fails requests assigned to the stream that is replaced", () =>
         requestId: "preview-0",
         timeoutMs: 15_000,
       });
+    }),
+  ),
+);
+
+it.effect("classifies project-tab route liveness for routing and sync takeover", () =>
+  Effect.gen(function* () {
+    const queueLive = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
+    const queueStale = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
+    const owner = {
+      clientId: "client-owner",
+      connectionId: "connection-live",
+      environmentId: scope.environmentId,
+      supportedOperations: new Set<PreviewAutomationOperation>(["status"]),
+      focused: false,
+      focusOrder: 0,
+      queue: queueLive,
+    };
+    const clients = new Map([["client-owner", owner]]);
+    const liveRoute = {
+      clientId: "client-owner",
+      connectionId: "connection-live",
+      queue: queueLive,
+      backingEnvironmentId: scope.environmentId,
+      backingThreadId: scope.threadId,
+    };
+    const replacedRoute = { ...liveRoute, connectionId: "connection-replaced", queue: queueStale };
+    const orphanedRoute = { ...liveRoute, clientId: "client-gone" };
+    const routes = new Map([
+      ["tab-live", liveRoute],
+      ["tab-replaced", replacedRoute],
+      ["tab-orphaned", orphanedRoute],
+    ]);
+
+    // A live owner routes exclusively; a replaced or disconnected owner has no
+    // state left to protect and must never block normal selection (D1) nor a
+    // sync takeover by the tab's next owner (D2).
+    expect(resolveProjectTabRoute(clients, routes, "tab-live")).toEqual({
+      kind: "live",
+      route: liveRoute,
+      owner,
+    });
+    expect(resolveProjectTabRoute(clients, routes, "tab-replaced")).toEqual({
+      kind: "stale",
+      route: replacedRoute,
+    });
+    expect(resolveProjectTabRoute(clients, routes, "tab-orphaned")).toEqual({
+      kind: "stale",
+      route: orphanedRoute,
+    });
+    expect(resolveProjectTabRoute(clients, routes, "tab-unregistered")).toEqual({ kind: "none" });
+    expect(resolveProjectTabRoute(clients, routes, undefined)).toEqual({ kind: "none" });
+  }),
+);
+
+it.effect("routes an explicit tab without a registered route through normal selection", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "environment-host",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      // Equivalence pin: an unregistered explicit tab target must behave
+      // exactly as before the project-tab registry existed.
+      const result = yield* broker.invoke<string>({
+        scope,
+        operation: "status",
+        input: {},
+        tabId: PreviewTabId.make("tab-without-route"),
+      });
+      expect(result).toBe("environment-host");
+    }),
+  ),
+);
+
+it.effect("keeps a live project-tab owner exclusive against competing syncs", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const tabId = PreviewTabId.make("project-tab-contested");
+      let ownerConnectionId = "";
+      let rivalConnectionId = "";
+      const ownerRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-owner" })),
+        (connectionId) => {
+          ownerConnectionId = connectionId;
+        },
+      );
+      const rivalRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-rival" })),
+        (connectionId) => {
+          rivalConnectionId = connectionId;
+        },
+      );
+      yield* Stream.runForEach(ownerRequests, (request) =>
+        broker.respond({
+          clientId: "client-owner",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "owner",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(rivalRequests, (request) =>
+        broker.respond({
+          clientId: "client-rival",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "rival",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const route = {
+        tabId,
+        backingEnvironmentId: scope.environmentId,
+        backingThreadId: scope.threadId,
+      };
+      yield* broker.syncProjectTabs({
+        clientId: "client-owner",
+        environmentId: scope.environmentId,
+        connectionId: ownerConnectionId,
+        routes: [route],
+      });
+      yield* broker.syncProjectTabs({
+        clientId: "client-rival",
+        environmentId: scope.environmentId,
+        connectionId: rivalConnectionId,
+        routes: [route],
+      });
+
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {}, tabId })).toBe(
+        "owner",
+      );
+    }),
+  ),
+);
+
+it.effect("lets the next owner reclaim a project tab after the previous owner disconnects", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const tabId = PreviewTabId.make("project-tab-reclaimed");
+      let firstConnectionId = "";
+      let secondConnectionId = "";
+      const firstRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-first-owner" })),
+        (connectionId) => {
+          firstConnectionId = connectionId;
+        },
+      );
+      const firstConsumer = yield* Stream.runDrain(firstRequests).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* broker.syncProjectTabs({
+        clientId: "client-first-owner",
+        environmentId: scope.environmentId,
+        connectionId: firstConnectionId,
+        routes: [
+          { tabId, backingEnvironmentId: scope.environmentId, backingThreadId: scope.threadId },
+        ],
+      });
+      yield* Fiber.interrupt(firstConsumer);
+      yield* Effect.yieldNow;
+
+      const secondRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-second-owner" })),
+        (connectionId) => {
+          secondConnectionId = connectionId;
+        },
+      );
+      yield* Stream.runForEach(secondRequests, (request) =>
+        broker.respond({
+          clientId: "client-second-owner",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "second-owner",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* broker.syncProjectTabs({
+        clientId: "client-second-owner",
+        environmentId: scope.environmentId,
+        connectionId: secondConnectionId,
+        routes: [
+          { tabId, backingEnvironmentId: scope.environmentId, backingThreadId: scope.threadId },
+        ],
+      });
+
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {}, tabId })).toBe(
+        "second-owner",
+      );
+    }),
+  ),
+);
+
+it.effect("does not let a project-tab sync clear another connection's assignment", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const assignedTabId = PreviewTabId.make("tab-assigned-to-first");
+      let rivalConnectionId = "";
+      // The assigned host advertises fewer operations than the rival so that
+      // losing the assignment would observably fail the session over.
+      const assignedRequests = requestsFrom(
+        yield* broker.connect(
+          makeHost({ clientId: "client-assigned", supportedOperations: ["open", "status"] }),
+        ),
+      );
+      yield* Stream.runForEach(assignedRequests, (request) =>
+        broker.respond({
+          clientId: "client-assigned",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result:
+            request.operation === "open"
+              ? { available: true, tabId: assignedTabId }
+              : "assigned-host",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke({ scope, operation: "open", input: {} });
+
+      const rivalRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-rival" })),
+        (connectionId) => {
+          rivalConnectionId = connectionId;
+        },
+      );
+      yield* Stream.runForEach(rivalRequests, (request) =>
+        broker.respond({
+          clientId: "client-rival",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "rival-host",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      // The rival briefly claims the assigned tab as a project route, then
+      // drops it — the deletion pass must only touch its own assignments.
+      yield* broker.syncProjectTabs({
+        clientId: "client-rival",
+        environmentId: scope.environmentId,
+        connectionId: rivalConnectionId,
+        routes: [
+          {
+            tabId: assignedTabId,
+            backingEnvironmentId: scope.environmentId,
+            backingThreadId: scope.threadId,
+          },
+        ],
+      });
+      yield* broker.syncProjectTabs({
+        clientId: "client-rival",
+        environmentId: scope.environmentId,
+        connectionId: rivalConnectionId,
+        routes: [],
+      });
+
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
+        "assigned-host",
+      );
     }),
   ),
 );
