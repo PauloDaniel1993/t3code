@@ -155,6 +155,7 @@ it("renders a Windows shortcut script targeting the local launcher with the inst
     targetPath: "C:\\Users\\alice\\AppData\\Local\\T3 alpha.local\\T3 alpha.local.cmd",
     iconPath: "C:\\Users\\alice\\AppData\\Local\\T3 alpha.local\\T3 alpha.local.exe",
     workingDirectory: "C:\\Users\\alice\\AppData\\Local\\T3 alpha.local",
+    appUserModelId: "com.t3tools.t3code.alpha.local",
   });
 
   assert.include(
@@ -171,6 +172,11 @@ it("renders a Windows shortcut script targeting the local launcher with the inst
     "$shortcut.IconLocation = 'C:\\Users\\alice\\AppData\\Local\\T3 alpha.local\\T3 alpha.local.exe,0'",
   );
   assert.include(script, "$shortcut.Description = 'T3 alpha.local local build'");
+  assert.include(script, "9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+  assert.include(
+    script,
+    "[T3CodeShortcutInterop.ShortcutProperties]::SetAppUserModelId('C:\\Users\\alice\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\T3 alpha.local.lnk', 'com.t3tools.t3code.alpha.local')",
+  );
   assert.notInclude(script, "dist-electron");
   assert.notInclude(script, "main.cjs");
 });
