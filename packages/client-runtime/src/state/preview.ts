@@ -17,14 +17,6 @@ export const previewAutomationHostFocusConcurrencyKey = (value: {
   };
 }): string => JSON.stringify([value.environmentId, value.input.clientId, value.input.connectionId]);
 
-export const previewAutomationProjectTabRoutesConcurrencyKey = (value: {
-  readonly environmentId: string;
-  readonly input: {
-    readonly clientId: string;
-    readonly connectionId: string;
-  };
-}): string => JSON.stringify([value.environmentId, value.input.clientId, value.input.connectionId]);
-
 export function createPreviewEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
@@ -115,15 +107,6 @@ export function createPreviewEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "latest",
         key: previewAutomationHostFocusConcurrencyKey,
-      },
-    }),
-    syncAutomationProjectTabs: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:preview:automation-sync-project-tabs",
-      tag: WS_METHODS.previewAutomationSyncProjectTabs,
-      scheduler: automationScheduler,
-      concurrency: {
-        mode: "latest",
-        key: previewAutomationProjectTabRoutesConcurrencyKey,
       },
     }),
   };
