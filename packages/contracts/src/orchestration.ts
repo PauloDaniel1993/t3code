@@ -21,6 +21,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { isChatFileMimeType } from "./attachmentFileTypes.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -142,8 +143,11 @@ export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const PROVIDER_SEND_TURN_MAX_PDF_BYTES = 10 * 1024 * 1024;
+export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const PROVIDER_INLINE_FILE_MAX_CHARS = 256 * 1024;
 const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
 const PROVIDER_SEND_TURN_MAX_PDF_DATA_URL_CHARS = 14_000_000;
+const PROVIDER_SEND_TURN_MAX_FILE_DATA_URL_CHARS = 14_000_000;
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 // Correlation id is command id by design in this model.
 export const CorrelationId = CommandId;
@@ -195,11 +199,48 @@ export const UploadChatDocumentAttachment = Schema.Struct({
 });
 export type UploadChatDocumentAttachment = typeof UploadChatDocumentAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatDocumentAttachment]);
+const ChatFileMimeType = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(100),
+  Schema.makeFilter(
+    (mimeType) =>
+      isChatFileMimeType(mimeType) ||
+      new SchemaIssue.InvalidValue(Option.some(mimeType), {
+        message: `Unsupported file attachment MIME type '${mimeType}'.`,
+      }),
+    { identifier: "ChatFileMimeType" },
+  ),
+);
+
+export const ChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: ChatFileMimeType,
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
+});
+export type ChatFileAttachment = typeof ChatFileAttachment.Type;
+
+export const UploadChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: ChatFileMimeType,
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
+  dataUrl: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_FILE_DATA_URL_CHARS),
+  ),
+});
+export type UploadChatFileAttachment = typeof UploadChatFileAttachment.Type;
+
+export const ChatAttachment = Schema.Union([
+  ChatImageAttachment,
+  ChatDocumentAttachment,
+  ChatFileAttachment,
+]);
 export type ChatAttachment = typeof ChatAttachment.Type;
 export const UploadChatAttachment = Schema.Union([
   UploadChatImageAttachment,
   UploadChatDocumentAttachment,
+  UploadChatFileAttachment,
 ]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
