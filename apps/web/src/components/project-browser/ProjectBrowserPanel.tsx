@@ -288,10 +288,7 @@ export function ProjectBrowserPanel(props: Props) {
         className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize"
         {...resizeHandlers}
       />
-      <div
-        className="workspace-topbar flex gap-1 pl-2 pr-36 wco:pr-[calc(var(--workspace-native-controls-inset)+9rem)]"
-        data-project-browser-tabbar
-      >
+      <div className="workspace-topbar flex gap-1 pl-2 pr-28" data-project-browser-tabbar>
         <ScrollArea hideScrollbars scrollFade className="min-w-0 flex-1 rounded-none">
           <div className="flex h-full w-max min-w-full items-center gap-1">
             {runtime.tabs.map((tab, index) => (
