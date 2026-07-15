@@ -23,7 +23,6 @@ const makeRegistry = (now: () => number, httpServer = fakeHttpServer) =>
   McpSessionRegistry.__testing
     .make({
       now,
-      idleTimeoutMs: 100,
       maximumLifetimeMs: 1_000,
     })
     .pipe(
@@ -77,8 +76,12 @@ it.effect("builds MCP endpoints from the bound server host", () =>
   }),
 );
 
-it.effect("expires credentials after inactivity", () =>
+it.effect("keeps credentials alive across long gaps without MCP calls", () =>
   Effect.gen(function* () {
+    // The bearer header is baked into the provider process at session start
+    // and cannot be refreshed, so a credential must survive arbitrary idle
+    // gaps (a session that never calls a preview tool for an hour still
+    // needs working MCP auth on its next call).
     let timestamp = 1_000;
     const registry = yield* makeRegistry(() => timestamp);
     const issued = yield* registry.issue({
@@ -86,7 +89,22 @@ it.effect("expires credentials after inactivity", () =>
       providerInstanceId: ProviderInstanceId.make("claude"),
     });
     const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
-    timestamp += 101;
+    timestamp += 999;
+    expect((yield* registry.resolve(token))?.threadId).toBe(ThreadId.make("thread-2"));
+  }),
+);
+
+it.effect("expires credentials only past the maximum lifetime backstop", () =>
+  Effect.gen(function* () {
+    let timestamp = 1_000;
+    const registry = yield* makeRegistry(() => timestamp);
+    const issued = yield* registry.issue({
+      threadId: ThreadId.make("thread-3"),
+      providerInstanceId: ProviderInstanceId.make("claude"),
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    expect(issued.expiresAt).toBe(2_000);
+    timestamp += 1_001;
     expect(yield* registry.resolve(token)).toBeUndefined();
   }),
 );
