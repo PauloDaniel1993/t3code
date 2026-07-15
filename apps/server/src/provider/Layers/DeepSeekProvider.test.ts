@@ -40,6 +40,14 @@ const READY_ENV: NodeJS.ProcessEnv = {
 
 const readySettings = () => decodeDeepSeekSettings({ enabled: true });
 
+const decodeChatCompletionRequestBody = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      messages: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.String })),
+    }),
+  ),
+);
+
 // Build a fake HttpClient that responds with a fixed Web Response. The DeepSeek
 // streaming path filters on status OK then reads `response.stream`, so an
 // `text/event-stream` body of SSE frames exercises the real SSE parser.
@@ -290,10 +298,8 @@ describe("DeepSeekAdapter", () => {
       });
 
       assert.isNotEmpty(capturedBodies);
-      const request = JSON.parse(capturedBodies.at(-1) ?? "{}") as {
-        messages?: Array<{ role: string; content: string }>;
-      };
-      const userMessage = request.messages?.find((message) => message.role === "user");
+      const request = yield* decodeChatCompletionRequestBody(capturedBodies.at(-1) ?? "{}");
+      const userMessage = request.messages.find((message) => message.role === "user");
       assert.isDefined(userMessage);
       assert.include(userMessage?.content, "Summarize this data");
       assert.include(userMessage?.content, "Attached file: sales.csv");
