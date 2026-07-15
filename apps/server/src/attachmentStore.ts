@@ -2,7 +2,12 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 
-import type { ChatAttachment } from "@t3tools/contracts";
+import {
+  CHAT_FILE_ATTACHMENT_EXTENSIONS,
+  type ChatAttachment,
+  chatFileTypeForFileName,
+  chatFileTypeForMimeType,
+} from "@t3tools/contracts";
 
 import {
   normalizeAttachmentRelativePath,
@@ -10,7 +15,12 @@ import {
 } from "./attachmentPaths.ts";
 import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 
-const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".pdf", ".bin"];
+const ATTACHMENT_FILENAME_EXTENSIONS = [
+  ...SAFE_IMAGE_FILE_EXTENSIONS,
+  ".pdf",
+  ...CHAT_FILE_ATTACHMENT_EXTENSIONS,
+  ".bin",
+];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -65,6 +75,13 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
     }
     case "document":
       return `${attachment.id}.pdf`;
+    case "file": {
+      // Only registry-owned extension strings are ever appended to the
+      // server-generated id; the raw name never reaches the filesystem.
+      const fileType =
+        chatFileTypeForFileName(attachment.name) ?? chatFileTypeForMimeType(attachment.mimeType);
+      return `${attachment.id}${fileType?.extension ?? ".bin"}`;
+    }
   }
 }
 

@@ -22,8 +22,14 @@ import { validateAttachmentPayload } from "./AttachmentPayload.ts";
 import { dispatchNormalizedCommandWithCleanup, normalizeDispatchCommand } from "./Normalizer.ts";
 
 type UploadDocumentAttachment = Extract<UploadChatAttachment, { readonly type: "document" }>;
+type UploadFileAttachment = Extract<UploadChatAttachment, { readonly type: "file" }>;
 
 const PDF_BYTES = Buffer.from("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n", "utf8");
+const JSON_BYTES = Buffer.from('{"hello":"world"}\n', "utf8");
+const XLSX_BYTES = Buffer.concat([
+  Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+  Buffer.from("stub-xlsx-content", "utf8"),
+]);
 
 function dataUrl(mimeType: string, bytes: Uint8Array): string {
   return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
@@ -36,6 +42,17 @@ function pdfUpload(overrides: Partial<UploadDocumentAttachment> = {}): UploadDoc
     mimeType: "application/pdf",
     sizeBytes: PDF_BYTES.byteLength,
     dataUrl: dataUrl("application/pdf", PDF_BYTES),
+    ...overrides,
+  };
+}
+
+function fileUpload(overrides: Partial<UploadFileAttachment> = {}): UploadFileAttachment {
+  return {
+    type: "file",
+    name: "data.json",
+    mimeType: "application/json",
+    sizeBytes: JSON_BYTES.byteLength,
+    dataUrl: dataUrl("application/json", JSON_BYTES),
     ...overrides,
   };
 }
@@ -143,6 +160,131 @@ describe("PDF attachment payload validation", () => {
       ).pipe(Effect.flip);
 
       assert.include(error.message, "10 MiB limit");
+    }),
+  );
+});
+
+describe("generic file attachment payload validation", () => {
+  effectIt("accepts a text file and stamps the canonical registry MIME type", () =>
+    Effect.gen(function* () {
+      const validated = yield* validateAttachmentPayload(
+        fileUpload({
+          name: "video.ts",
+          mimeType: "text/x-typescript",
+          dataUrl: dataUrl("video/mp2t", JSON_BYTES),
+        }),
+      );
+
+      assert.deepEqual(validated.attachment, {
+        type: "file",
+        name: "video.ts",
+        mimeType: "text/x-typescript",
+        sizeBytes: JSON_BYTES.byteLength,
+      });
+      assert.deepEqual(validated.bytes, JSON_BYTES);
+    }),
+  );
+
+  effectIt("rejects a binary renamed to .txt", () =>
+    Effect.gen(function* () {
+      const binary = Buffer.concat([Buffer.from("MZ"), Buffer.alloc(64, 0)]);
+      const error = yield* validateAttachmentPayload(
+        fileUpload({
+          name: "data.txt",
+          mimeType: "text/plain",
+          sizeBytes: binary.byteLength,
+          dataUrl: dataUrl("text/plain", binary),
+        }),
+      ).pipe(Effect.flip);
+
+      assert.include(error.message, "not a readable text file");
+      assert.include(error.message, "data.txt");
+    }),
+  );
+
+  effectIt("transcodes BOM-prefixed UTF-16 text to UTF-8 instead of rejecting it", () =>
+    Effect.gen(function* () {
+      const utf16 = Buffer.concat([
+        Buffer.from([0xff, 0xfe]),
+        Buffer.from("name,total\nwidgets,42\n", "utf16le"),
+      ]);
+      const validated = yield* validateAttachmentPayload(
+        fileUpload({
+          name: "sales.csv",
+          mimeType: "text/csv",
+          sizeBytes: utf16.byteLength,
+          dataUrl: dataUrl("text/csv", utf16),
+        }),
+      );
+
+      assert.equal(
+        validated.bytes.every((byte) => byte !== 0),
+        true,
+      );
+      assert.equal(Buffer.from(validated.bytes).toString("utf8"), "name,total\nwidgets,42\n");
+      assert.equal(validated.attachment.sizeBytes, validated.bytes.byteLength);
+    }),
+  );
+
+  effectIt("accepts a valid xlsx by ZIP signature", () =>
+    Effect.gen(function* () {
+      const validated = yield* validateAttachmentPayload(
+        fileUpload({
+          name: "report.xlsx",
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          sizeBytes: XLSX_BYTES.byteLength,
+          dataUrl: dataUrl(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            XLSX_BYTES,
+          ),
+        }),
+      );
+
+      assert.equal(validated.attachment.type, "file");
+      assert.equal(
+        validated.attachment.mimeType,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+    }),
+  );
+
+  effectIt("rejects an xlsx without the ZIP signature", () =>
+    Effect.gen(function* () {
+      const fake = Buffer.from("this is not a zip archive", "utf8");
+      const error = yield* validateAttachmentPayload(
+        fileUpload({
+          name: "report.xlsx",
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          sizeBytes: fake.byteLength,
+          dataUrl: dataUrl(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            fake,
+          ),
+        }),
+      ).pipe(Effect.flip);
+
+      assert.include(error.message, "report.xlsx");
+      assert.include(error.message, "not a valid spreadsheet");
+    }),
+  );
+
+  effectIt("rejects file names without a registered extension", () =>
+    Effect.gen(function* () {
+      const error = yield* validateAttachmentPayload(
+        fileUpload({ name: "installer.exe", mimeType: "application/json" }),
+      ).pipe(Effect.flip);
+
+      assert.include(error.message, "unsupported file extension");
+    }),
+  );
+
+  effectIt("rejects a declared file size that differs from decoded bytes", () =>
+    Effect.gen(function* () {
+      const error = yield* validateAttachmentPayload(
+        fileUpload({ sizeBytes: JSON_BYTES.byteLength + 1 }),
+      ).pipe(Effect.flip);
+
+      assert.include(error.message, "declared size does not match");
     }),
   );
 });
