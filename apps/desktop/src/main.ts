@@ -33,6 +33,7 @@ import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
 import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
 import * as DesktopAppIdentity from "./app/DesktopAppIdentity.ts";
+import { applyWindowsInstalledDesktopBootstrap } from "./app/DesktopInstallBootstrap.ts";
 import * as DesktopConnectionCatalogStore from "./app/DesktopConnectionCatalogStore.ts";
 import * as DesktopClerk from "./app/DesktopClerk.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
@@ -206,5 +207,12 @@ const desktopRuntimeLayer = desktopClerkLayer.pipe(
     ),
   ),
 );
+
+applyWindowsInstalledDesktopBootstrap({
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- This bootstrap must run before the Effect runtime and host services exist.
+  platform: process.platform,
+  executablePath: process.execPath,
+  env: process.env,
+});
 
 DesktopApp.program.pipe(Effect.provide(desktopRuntimeLayer), NodeRuntime.runMain);
