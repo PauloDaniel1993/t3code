@@ -89,6 +89,55 @@ describe("attachmentStore", () => {
     }
   });
 
+  it("maps file attachments to registry-owned extensions regardless of the display name", () => {
+    const id = "thread-1-00000000-0000-4000-8000-000000000001";
+    expect(
+      attachmentRelativePath({
+        type: "file",
+        id,
+        name: "notes.md",
+        mimeType: "text/markdown",
+        sizeBytes: 5,
+      }),
+    ).toBe(`${id}.md`);
+    // A traversal-laden display name never influences the stored path beyond
+    // its registry extension.
+    expect(
+      attachmentRelativePath({
+        type: "file",
+        id,
+        name: "../../evil/../payload.json",
+        mimeType: "application/json",
+        sizeBytes: 5,
+      }),
+    ).toBe(`${id}.json`);
+    // Unknown display extension falls back to the canonical MIME lookup.
+    expect(
+      attachmentRelativePath({
+        type: "file",
+        id,
+        name: "weird.name.unknown",
+        mimeType: "text/csv",
+        sizeBytes: 5,
+      }),
+    ).toBe(`${id}.csv`);
+  });
+
+  it("finds contained file attachments by id across registry extensions", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-store-"),
+    );
+    try {
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000002";
+      const xlsxPath = NodePath.join(attachmentsDir, `${attachmentId}.xlsx`);
+      NodeFS.writeFileSync(xlsxPath, Buffer.from("PK"));
+
+      expect(resolveAttachmentPathById({ attachmentsDir, attachmentId })).toBe(xlsxPath);
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
   it("finds contained PDF attachments by id", () => {
     const attachmentsDir = NodeFS.mkdtempSync(
       NodePath.join(NodeOS.tmpdir(), "t3code-attachment-store-"),

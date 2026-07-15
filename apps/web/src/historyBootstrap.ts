@@ -30,7 +30,7 @@ function attachmentSummary(message: ChatMessage): string | null {
   const extraCount = count - names.length;
   const extraSummary = extraCount > 0 ? ` (+${extraCount} more)` : "";
   const imageCount = attachments.filter((attachment) => attachment.type === "image").length;
-  const documentCount = count - imageCount;
+  const documentCount = attachments.filter((attachment) => attachment.type === "document").length;
   const label =
     imageCount === count
       ? `image${count === 1 ? "" : "s"}`

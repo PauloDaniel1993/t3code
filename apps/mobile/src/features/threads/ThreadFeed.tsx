@@ -3,6 +3,7 @@ import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
 import type {
   ChatDocumentAttachment,
+  ChatFileAttachment,
   EnvironmentId,
   MessageId,
   ThreadId,
@@ -176,9 +177,20 @@ function MessageAttachmentImage(props: {
   );
 }
 
+function documentAttachmentBadge(attachment: ChatDocumentAttachment | ChatFileAttachment): string {
+  if (attachment.type === "document") {
+    return "PDF";
+  }
+  const extensionIndex = attachment.name.lastIndexOf(".");
+  if (extensionIndex <= 0 || extensionIndex === attachment.name.length - 1) {
+    return "FILE";
+  }
+  return attachment.name.slice(extensionIndex + 1).toUpperCase();
+}
+
 function MessageAttachmentDocument(props: {
   readonly environmentId: EnvironmentId;
-  readonly attachment: ChatDocumentAttachment;
+  readonly attachment: ChatDocumentAttachment | ChatFileAttachment;
   readonly tone?: "default" | "user";
   readonly className?: string;
 }) {
@@ -186,6 +198,8 @@ function MessageAttachmentDocument(props: {
     _tag: "attachment",
     attachmentId: props.attachment.id,
   });
+  const isPdf = props.attachment.type === "document";
+  const attachmentKindLabel = isPdf ? "PDF" : "file";
   const themeForegroundColor = String(useThemeColor("--color-foreground"));
   const themeMutedColor = String(useThemeColor("--color-muted-foreground"));
   const foregroundColor = props.tone === "user" ? "#ffffff" : themeForegroundColor;
@@ -193,7 +207,9 @@ function MessageAttachmentDocument(props: {
   const openUrl = (target: string, action: "open" | "download") => {
     void Linking.openURL(target).catch(() => {
       Alert.alert(
-        action === "open" ? "Couldn't open PDF" : "Couldn't download PDF",
+        action === "open"
+          ? `Couldn't open ${attachmentKindLabel}`
+          : `Couldn't download ${attachmentKindLabel}`,
         "The attachment link is unavailable. Try again after reconnecting.",
       );
     });
@@ -209,11 +225,21 @@ function MessageAttachmentDocument(props: {
         props.className,
       )}
     >
-      <View className="size-9 shrink-0 items-center justify-center rounded-lg bg-red-500/15">
+      <View
+        className={cn(
+          "size-9 shrink-0 items-center justify-center rounded-lg",
+          isPdf ? "bg-red-500/15" : "bg-black/[0.06] dark:bg-white/[0.08]",
+        )}
+      >
         {uri === null ? (
           <ActivityIndicator size="small" />
         ) : (
-          <SymbolView name="doc.fill" size={18} tintColor="#dc2626" type="monochrome" />
+          <SymbolView
+            name="doc.fill"
+            size={18}
+            tintColor={isPdf ? "#dc2626" : mutedColor}
+            type="monochrome"
+          />
         )}
       </View>
       <View className="min-w-0 flex-1">
@@ -225,14 +251,15 @@ function MessageAttachmentDocument(props: {
           {props.attachment.name}
         </Text>
         <Text className="text-xs" style={{ color: mutedColor }}>
-          PDF {"\u00b7"} {formatAttachmentSize(props.attachment.sizeBytes)}
+          {documentAttachmentBadge(props.attachment)} {"\u00b7"}{" "}
+          {formatAttachmentSize(props.attachment.sizeBytes)}
         </Text>
       </View>
       <View className="-my-2 -mr-2 flex-row items-center">
         <Pressable
           accessibilityRole="link"
-          accessibilityLabel={`Open PDF ${props.attachment.name}`}
-          accessibilityHint="Opens the attached PDF in another app"
+          accessibilityLabel={`Open ${attachmentKindLabel} ${props.attachment.name}`}
+          accessibilityHint={`Opens the attached ${attachmentKindLabel} in another app`}
           accessibilityState={{ disabled: uri === null }}
           disabled={uri === null}
           className="min-h-11 min-w-11 items-center justify-center"
@@ -249,8 +276,8 @@ function MessageAttachmentDocument(props: {
         </Pressable>
         <Pressable
           accessibilityRole="link"
-          accessibilityLabel={`Download PDF ${props.attachment.name}`}
-          accessibilityHint="Downloads the attached PDF using its original filename"
+          accessibilityLabel={`Download ${attachmentKindLabel} ${props.attachment.name}`}
+          accessibilityHint={`Downloads the attached ${attachmentKindLabel} using its original filename`}
           accessibilityState={{ disabled: uri === null }}
           disabled={uri === null}
           className="min-h-11 min-w-11 items-center justify-center"

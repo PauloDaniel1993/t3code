@@ -1,5 +1,7 @@
 import {
+  CHAT_FILE_ATTACHMENT_ACCEPT,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_PDF_BYTES,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -24,8 +26,13 @@ function prepare(files: File[], existingCount = 0) {
 }
 
 describe("composer attachment input", () => {
-  it("advertises images, PDF MIME, and extension fallback to the picker", () => {
-    expect(COMPOSER_ATTACHMENT_ACCEPT).toBe("image/*,application/pdf,.pdf");
+  it("advertises images, PDFs, and every registry file extension to the picker", () => {
+    expect(COMPOSER_ATTACHMENT_ACCEPT).toBe(
+      `image/*,application/pdf,.pdf,${CHAT_FILE_ATTACHMENT_ACCEPT}`,
+    );
+    expect(COMPOSER_ATTACHMENT_ACCEPT).toContain(".json");
+    expect(COMPOSER_ATTACHMENT_ACCEPT).toContain(".cs");
+    expect(COMPOSER_ATTACHMENT_ACCEPT).toContain(".xlsx");
   });
 
   it("recognizes PDF MIME and case-insensitive .pdf filenames", () => {
@@ -92,15 +99,54 @@ describe("composer attachment input", () => {
     );
 
     expect(result.attachments.map((attachment) => attachment.name)).toEqual(["eighth.pdf"]);
-    expect(result.error).toContain("images and PDFs");
+    expect(result.error).toContain(`up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files`);
     expect(createObjectUrl).toHaveBeenCalledOnce();
   });
 
   it("rejects unrelated files with an actionable supported-types message", () => {
-    const result = prepare([new File(["hello"], "notes.txt", { type: "text/plain" })]);
+    const result = prepare([
+      new File(["MZ..."], "installer.exe", { type: "application/x-msdownload" }),
+    ]);
 
     expect(result.attachments).toEqual([]);
-    expect(result.error).toContain("images or PDF files");
+    expect(result.error).toContain("installer.exe");
+    expect(result.error).toContain("text, code, or data files");
+  });
+
+  it("accepts registry files by extension and stamps the canonical MIME type", () => {
+    const result = prepare([
+      new File(["export {};"], "video.ts", { type: "video/mp2t" }),
+      new File(["class C {}"], "Program.cs", { type: "" }),
+      new File(["PK"], "report.xlsx", {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }),
+    ]);
+
+    expect(result.error).toBeNull();
+    expect(result.attachments.map((attachment) => [attachment.type, attachment.mimeType])).toEqual([
+      ["file", "text/x-typescript"],
+      ["file", "text/x-csharp"],
+      ["file", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ]);
+    expect(result.attachments.map((attachment) => attachment.file.type)).toEqual([
+      "text/x-typescript",
+      "text/x-csharp",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ]);
+  });
+
+  it("rejects oversized generic files while preserving valid candidates", () => {
+    const oversized = new File(
+      [new Uint8Array(PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1)],
+      "big.json",
+      { type: "application/json" },
+    );
+    const valid = new File(["{}"], "small.json", { type: "application/json" });
+
+    const result = prepare([oversized, valid]);
+
+    expect(result.attachments.map((attachment) => attachment.name)).toEqual(["small.json"]);
+    expect(result.error).toContain("10 MiB file attachment limit");
   });
 });
 
@@ -159,7 +205,7 @@ describe("ChatComposer attachment interactions", () => {
     expect(harness.errors).toEqual([null]);
   });
 
-  it("forwards dropped PDFs, restores focus, and surfaces unrelated-file errors", () => {
+  it("forwards dropped PDFs and text files, restores focus, and surfaces unsupported-file errors", () => {
     const harness = createHarness();
     const preventDefault = vi.fn();
 
@@ -169,6 +215,7 @@ describe("ChatComposer attachment interactions", () => {
         files: [
           new File(["%PDF-"], "dropped.pdf", { type: "application/pdf" }),
           new File(["text"], "notes.txt", { type: "text/plain" }),
+          new File(["MZ"], "installer.exe", { type: "application/x-msdownload" }),
         ],
       },
       preventDefault,
@@ -176,8 +223,11 @@ describe("ChatComposer attachment interactions", () => {
 
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(harness.focusComposer).toHaveBeenCalledOnce();
-    expect(harness.added.flat().map((attachment) => attachment.name)).toEqual(["dropped.pdf"]);
-    expect(harness.errors.at(-1)).toContain("images or PDF files");
+    expect(harness.added.flat().map((attachment) => attachment.name)).toEqual([
+      "dropped.pdf",
+      "notes.txt",
+    ]);
+    expect(harness.errors.at(-1)).toContain("installer.exe");
   });
 });
 

@@ -34,7 +34,7 @@ describe("attachmentDownloadUrl", () => {
 });
 
 describe("partitionClientChatAttachments", () => {
-  it("preserves the relative order and discriminated metadata of images and PDFs", () => {
+  it("preserves the relative order and discriminated metadata of images, PDFs, and files", () => {
     const attachments: ClientChatAttachment[] = [
       {
         type: "document",
@@ -53,6 +53,14 @@ describe("partitionClientChatAttachments", () => {
         previewUrl: "blob:screen",
       },
       {
+        type: "file",
+        id: "file-1",
+        name: "data.json",
+        mimeType: "application/json",
+        sizeBytes: 64,
+        assetUrl: "blob:data",
+      },
+      {
         type: "document",
         id: "doc-2",
         name: "notes.pdf",
@@ -63,7 +71,8 @@ describe("partitionClientChatAttachments", () => {
 
     expect(partitionClientChatAttachments(attachments)).toEqual({
       images: [attachments[1]],
-      documents: [attachments[0], attachments[2]],
+      documents: [attachments[0], attachments[3]],
+      files: [attachments[2]],
     });
   });
 });

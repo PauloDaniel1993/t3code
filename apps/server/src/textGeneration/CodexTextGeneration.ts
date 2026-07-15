@@ -129,10 +129,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
     const imagePaths: string[] = [];
     for (const attachment of attachments) {
-      if (attachment.type === "document") {
+      if (attachment.type !== "image") {
         return yield* new TextGenerationError({
           operation,
-          detail: "PDF attachments are unsupported by Codex structured text generation.",
+          detail: "Only image attachments are supported by Codex structured text generation.",
         });
       }
 

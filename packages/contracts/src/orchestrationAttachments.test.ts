@@ -3,8 +3,10 @@ import * as Schema from "effect/Schema";
 
 import {
   ChatDocumentAttachment,
+  ChatFileAttachment,
   ClientOrchestrationCommand,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_PDF_BYTES,
   ThreadTurnStartCommand,
   UploadChatAttachment,
@@ -12,6 +14,7 @@ import {
 import { ProviderSendTurnInput } from "./provider.ts";
 
 const decodeChatDocumentAttachment = Schema.decodeUnknownSync(ChatDocumentAttachment);
+const decodeChatFileAttachment = Schema.decodeUnknownSync(ChatFileAttachment);
 const decodeUploadChatAttachment = Schema.decodeUnknownSync(UploadChatAttachment);
 const decodeClientOrchestrationCommand = Schema.decodeUnknownSync(ClientOrchestrationCommand);
 const decodeThreadTurnStartCommand = Schema.decodeUnknownSync(ThreadTurnStartCommand);
@@ -47,6 +50,22 @@ const uploadDocument = (index: number) => ({
   mimeType: "application/pdf",
   sizeBytes: 256,
   dataUrl: "data:application/pdf;base64,JVBERi0xLjQK",
+});
+
+const persistedFile = (index: number) => ({
+  type: "file",
+  id: `file-${index}`,
+  name: `data-${index}.json`,
+  mimeType: "application/json",
+  sizeBytes: 64,
+});
+
+const uploadFile = (index: number) => ({
+  type: "file",
+  name: `data-${index}.json`,
+  mimeType: "application/json",
+  sizeBytes: 64,
+  dataUrl: "data:application/json;base64,eyJhIjoxfQ==",
 });
 
 const clientTurnStart = (attachments: ReadonlyArray<Record<string, unknown>>) => ({
@@ -154,6 +173,62 @@ describe("PDF attachment schemas", () => {
   });
 });
 
+describe("generic file attachment schemas", () => {
+  it("accepts persisted file metadata and file upload envelopes", () => {
+    const persisted = decodeChatFileAttachment({
+      ...persistedFile(1),
+      sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+    });
+    const upload = decodeUploadChatAttachment({
+      ...uploadFile(1),
+      sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+    });
+
+    expect(persisted.type).toBe("file");
+    expect(upload.type).toBe("file");
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["a non-registry MIME", "application/x-msdownload"],
+    ["a browser-guessed MIME for .ts", "video/mp2t"],
+  ])("rejects file attachments with %s MIME metadata", (_label, mimeType) => {
+    expect(() =>
+      decodeChatFileAttachment({
+        ...persistedFile(1),
+        mimeType,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeUploadChatAttachment({
+        ...uploadFile(1),
+        mimeType,
+      }),
+    ).toThrow();
+  });
+
+  it("accepts the file size boundary and rejects values outside it", () => {
+    expect(() =>
+      decodeChatFileAttachment({
+        ...persistedFile(1),
+        sizeBytes: 0,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      decodeChatFileAttachment({
+        ...persistedFile(1),
+        sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeUploadChatAttachment({
+        ...uploadFile(1),
+        sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1,
+      }),
+    ).toThrow();
+  });
+});
+
 describe("mixed attachment arrays", () => {
   it("preserves image and document variants in persisted and upload turns", () => {
     const persisted = decodeThreadTurnStartCommand(
@@ -178,12 +253,13 @@ describe("mixed attachment arrays", () => {
     ]);
   });
 
-  it("shares the eight-attachment limit across persisted images and PDFs", () => {
+  it("shares the eight-attachment limit across persisted images, PDFs, and files", () => {
     const eightAttachments = [
-      ...Array.from({ length: 4 }, (_, index) => persistedImage(index)),
-      ...Array.from({ length: 4 }, (_, index) => persistedDocument(index)),
+      ...Array.from({ length: 3 }, (_, index) => persistedImage(index)),
+      ...Array.from({ length: 3 }, (_, index) => persistedDocument(index)),
+      ...Array.from({ length: 2 }, (_, index) => persistedFile(index)),
     ];
-    const nineAttachments = [...eightAttachments, persistedDocument(5)];
+    const nineAttachments = [...eightAttachments, persistedFile(5)];
 
     expect(() =>
       decodeProviderSendTurnInput({
@@ -200,12 +276,13 @@ describe("mixed attachment arrays", () => {
     expect(eightAttachments).toHaveLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
   });
 
-  it("shares the eight-attachment limit across image and PDF uploads", () => {
+  it("shares the eight-attachment limit across image, PDF, and file uploads", () => {
     const eightAttachments = [
-      ...Array.from({ length: 4 }, (_, index) => uploadImage(index)),
-      ...Array.from({ length: 4 }, (_, index) => uploadDocument(index)),
+      ...Array.from({ length: 3 }, (_, index) => uploadImage(index)),
+      ...Array.from({ length: 3 }, (_, index) => uploadDocument(index)),
+      ...Array.from({ length: 2 }, (_, index) => uploadFile(index)),
     ];
-    const nineAttachments = [...eightAttachments, uploadDocument(5)];
+    const nineAttachments = [...eightAttachments, uploadFile(5)];
 
     expect(() => decodeClientOrchestrationCommand(clientTurnStart(eightAttachments))).not.toThrow();
     expect(() => decodeClientOrchestrationCommand(clientTurnStart(nineAttachments))).toThrow();

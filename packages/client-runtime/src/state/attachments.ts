@@ -1,5 +1,6 @@
 import type {
   ChatDocumentAttachment as ContractChatDocumentAttachment,
+  ChatFileAttachment as ContractChatFileAttachment,
   ChatImageAttachment as ContractChatImageAttachment,
 } from "@t3tools/contracts";
 
@@ -13,11 +14,20 @@ export interface ClientChatDocumentAttachment extends ContractChatDocumentAttach
   readonly assetUrl?: string;
 }
 
-export type ClientChatAttachment = ClientChatImageAttachment | ClientChatDocumentAttachment;
+/** Client-only generic file metadata used while the asset can be downloaded. */
+export interface ClientChatFileAttachment extends ContractChatFileAttachment {
+  readonly assetUrl?: string;
+}
+
+export type ClientChatAttachment =
+  | ClientChatImageAttachment
+  | ClientChatDocumentAttachment
+  | ClientChatFileAttachment;
 
 export interface PartitionedClientChatAttachments {
   readonly images: ReadonlyArray<ClientChatImageAttachment>;
   readonly documents: ReadonlyArray<ClientChatDocumentAttachment>;
+  readonly files: ReadonlyArray<ClientChatFileAttachment>;
 }
 
 export function formatAttachmentSize(sizeBytes: number): string {
@@ -65,6 +75,7 @@ export function partitionClientChatAttachments(
 ): PartitionedClientChatAttachments {
   const images: ClientChatImageAttachment[] = [];
   const documents: ClientChatDocumentAttachment[] = [];
+  const files: ClientChatFileAttachment[] = [];
 
   for (const attachment of attachments) {
     switch (attachment.type) {
@@ -74,8 +85,11 @@ export function partitionClientChatAttachments(
       case "document":
         documents.push(attachment);
         break;
+      case "file":
+        files.push(attachment);
+        break;
     }
   }
 
-  return { images, documents };
+  return { images, documents, files };
 }

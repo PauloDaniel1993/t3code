@@ -1,12 +1,16 @@
 import {
+  CHAT_FILE_ATTACHMENT_ACCEPT,
+  type ChatFileTypeInfo,
+  chatFileTypeForFileName,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_PDF_BYTES,
 } from "@t3tools/contracts";
 
 import type { ComposerAttachment, PersistedComposerAttachment } from "./composerDraftStore";
 
-export const COMPOSER_ATTACHMENT_ACCEPT = "image/*,application/pdf,.pdf";
+export const COMPOSER_ATTACHMENT_ACCEPT = `image/*,application/pdf,.pdf,${CHAT_FILE_ATTACHMENT_ACCEPT}`;
 
 export interface PrepareComposerAttachmentsOptions {
   readonly existingCount: number;
@@ -93,6 +97,26 @@ export function canonicalizePdfFile(file: File): File {
   });
 }
 
+/**
+ * Extension-first classification for generic file attachments. The browser
+ * MIME is never consulted: it is unreliable for code files (`.ts` reports
+ * `video/mp2t`, `.cs` an empty string).
+ */
+export function genericFileTypeCandidate(file: Pick<File, "name">): ChatFileTypeInfo | null {
+  return chatFileTypeForFileName(file.name);
+}
+
+/** Stamp the registry's canonical MIME type before draft persistence/upload. */
+export function canonicalizeGenericFile(file: File, fileType: ChatFileTypeInfo): File {
+  if (file.type === fileType.mimeType) {
+    return file;
+  }
+  return new File([file], file.name, {
+    type: fileType.mimeType,
+    lastModified: file.lastModified,
+  });
+}
+
 export function prepareComposerAttachments(
   files: ReadonlyArray<File>,
   options: PrepareComposerAttachmentsOptions,
@@ -103,24 +127,33 @@ export function prepareComposerAttachments(
 
   for (const sourceFile of files) {
     const isPdf = isPdfFileCandidate(sourceFile);
-    const isImage = sourceFile.type.toLowerCase().startsWith("image/");
-    if (!isPdf && !isImage) {
-      error = `Unsupported file type for '${sourceFile.name}'. Please attach images or PDF files.`;
+    const isImage = !isPdf && sourceFile.type.toLowerCase().startsWith("image/");
+    const genericFileType = isPdf || isImage ? null : genericFileTypeCandidate(sourceFile);
+    if (!isPdf && !isImage && !genericFileType) {
+      error = `Unsupported file type for '${sourceFile.name}'. Please attach images, PDFs, text, code, or data files, or spreadsheets.`;
       continue;
     }
 
     if (nextCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-      error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images and PDFs per message.`;
+      error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`;
       break;
     }
 
-    const file = isPdf ? canonicalizePdfFile(sourceFile) : sourceFile;
+    const file = isPdf
+      ? canonicalizePdfFile(sourceFile)
+      : genericFileType
+        ? canonicalizeGenericFile(sourceFile, genericFileType)
+        : sourceFile;
     if (isPdf && file.size > PROVIDER_SEND_TURN_MAX_PDF_BYTES) {
       error = `'${file.name}' exceeds the 10 MiB PDF attachment limit.`;
       continue;
     }
     if (isImage && file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
       error = `'${file.name}' exceeds the 10 MiB image attachment limit.`;
+      continue;
+    }
+    if (genericFileType && file.size > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
+      error = `'${file.name}' exceeds the 10 MiB file attachment limit.`;
       continue;
     }
 
@@ -137,15 +170,25 @@ export function prepareComposerAttachments(
             assetUrl: objectUrl,
             file,
           }
-        : {
-            type: "image",
-            id,
-            name: file.name || "image",
-            mimeType: file.type,
-            sizeBytes: file.size,
-            previewUrl: objectUrl,
-            file,
-          },
+        : genericFileType
+          ? {
+              type: "file",
+              id,
+              name: file.name,
+              mimeType: genericFileType.mimeType,
+              sizeBytes: file.size,
+              assetUrl: objectUrl,
+              file,
+            }
+          : {
+              type: "image",
+              id,
+              name: file.name || "image",
+              mimeType: file.type,
+              sizeBytes: file.size,
+              previewUrl: objectUrl,
+              file,
+            },
     );
     nextCount += 1;
   }
@@ -180,16 +223,18 @@ export async function serializeComposerAttachmentsForPersistence(
     attachments.map(async (attachment): Promise<PersistedComposerAttachment | null> => {
       try {
         const dataUrl = await readFile(attachment.file);
-        return attachment.type === "image"
-          ? {
+        switch (attachment.type) {
+          case "image":
+            return {
               type: "image",
               id: attachment.id,
               name: attachment.name,
               mimeType: attachment.mimeType,
               sizeBytes: attachment.sizeBytes,
               dataUrl,
-            }
-          : {
+            };
+          case "document":
+            return {
               type: "document",
               id: attachment.id,
               name: attachment.name,
@@ -197,6 +242,16 @@ export async function serializeComposerAttachmentsForPersistence(
               sizeBytes: attachment.sizeBytes,
               dataUrl,
             };
+          case "file":
+            return {
+              type: "file",
+              id: attachment.id,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              dataUrl,
+            };
+        }
       } catch {
         return existingPersistedById.get(attachment.id) ?? null;
       }

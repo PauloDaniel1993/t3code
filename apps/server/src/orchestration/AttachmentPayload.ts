@@ -1,6 +1,8 @@
 import {
   type ChatAttachment,
+  chatFileTypeForFileName,
   OrchestrationDispatchCommandError,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_PDF_BYTES,
   type UploadChatAttachment,
@@ -21,6 +23,9 @@ const GENERIC_BINARY_MIME_TYPE = "application/octet-stream";
 const PDF_SIGNATURE = Buffer.from("%PDF-", "ascii");
 const PDF_SIGNATURE_SCAN_BYTES = 1_024;
 const MAX_PDF_BASE64_CHARS = Math.ceil(PROVIDER_SEND_TURN_MAX_PDF_BYTES / 3) * 4;
+const MAX_FILE_BASE64_CHARS = Math.ceil(PROVIDER_SEND_TURN_MAX_FILE_BYTES / 3) * 4;
+const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const TEXT_SNIFF_BYTES = 8 * 1_024;
 
 function hasPdfFileName(name: string): boolean {
   return name.trim().toLowerCase().endsWith(".pdf");
@@ -64,15 +69,31 @@ function hasStrictBase64Syntax(base64: string): boolean {
   return true;
 }
 
-function decodePdfBase64(base64: string): Buffer | null {
-  if (
-    base64.length === 0 ||
-    base64.length > MAX_PDF_BASE64_CHARS ||
-    !hasStrictBase64Syntax(base64)
-  ) {
+function decodeStrictBase64(base64: string, maxChars: number): Buffer | null {
+  if (base64.length === 0 || base64.length > maxChars || !hasStrictBase64Syntax(base64)) {
     return null;
   }
   return Buffer.from(base64, "base64");
+}
+
+function decodePdfBase64(base64: string): Buffer | null {
+  return decodeStrictBase64(base64, MAX_PDF_BASE64_CHARS);
+}
+
+/** Convert BOM-prefixed UTF-16 text to UTF-8 so the NUL sniff does not reject it. */
+function transcodeTextFileBytes(bytes: Buffer): Buffer {
+  if (bytes.byteLength >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return Buffer.from(bytes.subarray(2).toString("utf16le"), "utf8");
+  }
+  if (bytes.byteLength >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const swapped = Buffer.from(bytes.subarray(2));
+    return Buffer.from(swapped.swap16().toString("utf16le"), "utf8");
+  }
+  return bytes;
+}
+
+function looksLikeText(bytes: Buffer): boolean {
+  return !bytes.subarray(0, TEXT_SNIFF_BYTES).includes(0);
 }
 
 const validateImageAttachmentPayload = Effect.fn("validateImageAttachmentPayload")(function* (
@@ -153,6 +174,67 @@ const validateDocumentAttachmentPayload = Effect.fn("validateDocumentAttachmentP
   };
 });
 
+const validateFileAttachmentPayload = Effect.fn("validateFileAttachmentPayload")(function* (
+  attachment: Extract<UploadChatAttachment, { readonly type: "file" }>,
+): Effect.fn.Return<ValidatedAttachmentPayload, OrchestrationDispatchCommandError> {
+  const fileType = chatFileTypeForFileName(attachment.name);
+  if (!fileType) {
+    return yield* new OrchestrationDispatchCommandError({
+      message: `File attachment '${attachment.name}' has an unsupported file extension.`,
+    });
+  }
+
+  const parsed = parseBase64DataUrlWithOptionalMimeType(attachment.dataUrl);
+  if (!parsed) {
+    return yield* new OrchestrationDispatchCommandError({
+      message: `Invalid file attachment payload for '${attachment.name}'.`,
+    });
+  }
+
+  const decoded = decodeStrictBase64(parsed.base64, MAX_FILE_BASE64_CHARS);
+  if (!decoded) {
+    return yield* new OrchestrationDispatchCommandError({
+      message: `Invalid base64 payload for file attachment '${attachment.name}'.`,
+    });
+  }
+  if (decoded.byteLength === 0 || decoded.byteLength > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
+    return yield* new OrchestrationDispatchCommandError({
+      message: `File attachment '${attachment.name}' is empty or exceeds the 10 MiB limit.`,
+    });
+  }
+  if (decoded.byteLength !== attachment.sizeBytes) {
+    return yield* new OrchestrationDispatchCommandError({
+      message: `File attachment '${attachment.name}' declared size does not match decoded size.`,
+    });
+  }
+
+  let bytes = decoded;
+  if (fileType.kind === "binary") {
+    if (!decoded.subarray(0, ZIP_SIGNATURE.byteLength).equals(ZIP_SIGNATURE)) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: `File attachment '${attachment.name}' is not a valid spreadsheet file.`,
+      });
+    }
+  } else {
+    bytes = transcodeTextFileBytes(decoded);
+    if (!looksLikeText(bytes)) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: `File attachment '${attachment.name}' is not a readable text file.`,
+      });
+    }
+  }
+
+  return {
+    attachment: {
+      type: "file",
+      name: attachment.name,
+      mimeType: fileType.mimeType,
+      sizeBytes: bytes.byteLength,
+    },
+    bytes,
+  };
+});
+
 export const validateAttachmentPayload = Effect.fn("validateAttachmentPayload")(function* (
   attachment: UploadChatAttachment,
 ): Effect.fn.Return<ValidatedAttachmentPayload, OrchestrationDispatchCommandError> {
@@ -161,5 +243,7 @@ export const validateAttachmentPayload = Effect.fn("validateAttachmentPayload")(
       return yield* validateImageAttachmentPayload(attachment);
     case "document":
       return yield* validateDocumentAttachmentPayload(attachment);
+    case "file":
+      return yield* validateFileAttachmentPayload(attachment);
   }
 });
