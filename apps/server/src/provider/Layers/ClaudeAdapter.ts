@@ -28,6 +28,8 @@ import {
   type ClaudeSettings,
   EventId,
   type ProviderApprovalDecision,
+  chatFileKindForMimeType,
+  PROVIDER_INLINE_FILE_MAX_CHARS,
   ProviderDriverKind,
   ProviderInstanceId,
   type ModelSelection,
@@ -973,9 +975,10 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     sdkContent.push({ type: "text", text });
   }
 
+  let inlineFileChars = 0;
   for (const attachment of input.attachments ?? []) {
     const attachmentType: string = attachment.type;
-    if (attachmentType !== "image" && attachmentType !== "document") {
+    if (attachmentType !== "image" && attachmentType !== "document" && attachmentType !== "file") {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: "turn/start",
@@ -1005,6 +1008,17 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
       });
     }
 
+    // Binary file attachments (spreadsheets) are referenced by stored path so
+    // the locally running agent can parse them with its own tools instead of
+    // inlining megabytes of base64 into the prompt.
+    if (attachment.type === "file" && chatFileKindForMimeType(attachment.mimeType) === "binary") {
+      sdkContent.push({
+        type: "text",
+        text: `Attached spreadsheet '${attachment.name}' is stored at ${attachmentPath}. Read that file with your tools to inspect its contents.`,
+      });
+      continue;
+    }
+
     const bytes = yield* dependencies.fileSystem.readFile(attachmentPath).pipe(
       Effect.mapError(
         (cause) =>
@@ -1029,6 +1043,22 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
       case "document":
         sdkContent.push(buildClaudeDocumentContentBlock({ bytes }));
         break;
+      case "file": {
+        const content = Buffer.from(bytes).toString("utf8");
+        inlineFileChars += content.length;
+        if (inlineFileChars > PROVIDER_INLINE_FILE_MAX_CHARS) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: `File attachment '${attachment.name}' exceeds the ${PROVIDER_INLINE_FILE_MAX_CHARS.toLocaleString("en-US")}-character inline limit for this turn. Remove it or attach a smaller file.`,
+          });
+        }
+        sdkContent.push({
+          type: "text",
+          text: `Attached file: ${attachment.name}\n\`\`\`\n${content}\n\`\`\``,
+        });
+        break;
+      }
     }
   }
 

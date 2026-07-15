@@ -1,6 +1,8 @@
 import {
+  chatFileKindForMimeType,
   DEFAULT_DEEPSEEK_MODEL,
   EventId,
+  PROVIDER_INLINE_FILE_MAX_CHARS,
   ProviderDriverKind,
   ProviderInstanceId,
   RuntimeItemId,
@@ -17,11 +19,13 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { type DeepSeekChatMessage, streamDeepSeekChatCompletion } from "../deepseek/DeepSeekApi.ts";
 import {
   ProviderAdapterRequestError,
@@ -55,6 +59,8 @@ type DeepSeekResumeCursor = typeof DeepSeekResumeCursor.Type;
 export interface DeepSeekAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly instanceId?: ProviderInstanceId;
+  /** Directory holding persisted chat attachments; enables text-file inlining. */
+  readonly attachmentsDir?: string;
 }
 
 interface DeepSeekSessionContext {
@@ -112,6 +118,8 @@ export function makeDeepSeekAdapter(
   return Effect.gen(function* () {
     const httpClient = yield* HttpClient.HttpClient;
     const crypto = yield* Crypto.Crypto;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const attachmentsDir = options?.attachmentsDir ?? null;
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("deepseek");
     const environment = options?.environment ?? process.env;
     const sessions = new Map<ThreadId, DeepSeekSessionContext>();
@@ -311,6 +319,8 @@ export function makeDeepSeekAdapter(
             detail: "DeepSeek already has a turn in progress for this thread.",
           });
         }
+        const inlineFileSections: string[] = [];
+        let inlineFileChars = 0;
         for (const attachment of input.attachments ?? []) {
           const attachmentType: string = attachment.type;
           switch (attachment.type) {
@@ -326,21 +336,69 @@ export function makeDeepSeekAdapter(
                 method: "chat.completions",
                 detail: "Image attachments are unsupported by the DeepSeek provider.",
               });
+            case "file": {
+              if (chatFileKindForMimeType(attachment.mimeType) === "binary") {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "chat.completions",
+                  detail: `DeepSeek cannot read spreadsheet attachments ('${attachment.name}').`,
+                });
+              }
+              const attachmentPath = attachmentsDir
+                ? resolveAttachmentPath({ attachmentsDir, attachment })
+                : null;
+              if (!attachmentPath) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "chat.completions",
+                  detail: `Failed to resolve file attachment '${attachment.name}'.`,
+                });
+              }
+              const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "chat.completions",
+                      detail: `Failed to read attachment '${attachment.name}': ${cause.message}`,
+                      cause,
+                    }),
+                ),
+              );
+              const content = Buffer.from(bytes).toString("utf8");
+              inlineFileChars += content.length;
+              if (inlineFileChars > PROVIDER_INLINE_FILE_MAX_CHARS) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "chat.completions",
+                  detail: `File attachment '${attachment.name}' exceeds the ${PROVIDER_INLINE_FILE_MAX_CHARS.toLocaleString("en-US")}-character inline limit for this turn. Remove it or attach a smaller file.`,
+                });
+              }
+              inlineFileSections.push(
+                `Attached file: ${attachment.name}\n\`\`\`\n${content}\n\`\`\``,
+              );
+              break;
+            }
+            default:
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "chat.completions",
+                detail: `Attachment type '${attachmentType}' is unsupported by the DeepSeek provider.`,
+              });
           }
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "chat.completions",
-            detail: `Attachment type '${attachmentType}' is unsupported by the DeepSeek provider.`,
-          });
         }
-        const text = input.input?.trim();
-        if (!text) {
+        const promptText = input.input?.trim();
+        if (!promptText) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "sendTurn",
             issue: "Turn requires non-empty text.",
           });
         }
+        const text =
+          inlineFileSections.length > 0
+            ? `${promptText}\n\n${inlineFileSections.join("\n\n")}`
+            : promptText;
         const requestedModel = input.modelSelection?.model?.trim();
         if (requestedModel && requestedModel !== ctx.currentModel && ctx.messages.length > 0) {
           return yield* new ProviderAdapterRequestError({

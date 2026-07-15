@@ -22,7 +22,7 @@ export const mapAcpAttachment = Effect.fn("mapAcpAttachment")(function* (
 ) {
   const { attachment } = input;
   const attachmentType: string = attachment.type;
-  if (attachmentType !== "image" && attachmentType !== "document") {
+  if (attachmentType !== "image" && attachmentType !== "document" && attachmentType !== "file") {
     return yield* new ProviderAdapterRequestError({
       provider: input.provider,
       method: input.method,
@@ -60,7 +60,8 @@ export const mapAcpAttachment = Effect.fn("mapAcpAttachment")(function* (
         mimeType: attachment.mimeType,
       } satisfies EffectAcpSchema.ContentBlock;
     }
-    case "document": {
+    case "document":
+    case "file": {
       const fileInfo = yield* input.fileSystem.stat(attachmentPath).pipe(
         Effect.mapError(
           (cause) =>

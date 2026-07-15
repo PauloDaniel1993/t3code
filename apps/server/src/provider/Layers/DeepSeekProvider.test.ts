@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -15,6 +20,7 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
 import { makeDeepSeekAdapter } from "./DeepSeekAdapter.ts";
 import { buildDeepSeekProviderSnapshot } from "./DeepSeekProvider.ts";
@@ -197,6 +203,103 @@ describe("DeepSeekAdapter", () => {
       );
     }).pipe(Effect.provide(adapterLayer(sseHttpClientLayer("")))),
   );
+
+  it.effect("rejects spreadsheet file attachments with an actionable error", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeDeepSeekAdapter(readySettings(), { environment: READY_ENV });
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: PROVIDER,
+        runtimeMode: "full-access",
+      });
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "Review this spreadsheet",
+          attachments: [
+            {
+              type: "file",
+              id: "deepseek-xlsx-12345678-1234-1234-1234-123456789abc",
+              name: "report.xlsx",
+              mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              sizeBytes: 4,
+            },
+          ],
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderAdapterRequestError);
+      assert.include(error.detail, "cannot read spreadsheet attachments");
+      assert.include(error.detail, "report.xlsx");
+    }).pipe(Effect.provide(adapterLayer(sseHttpClientLayer("")))),
+  );
+
+  it.live("inlines text file attachments into the outgoing user message", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-deepseek-attachments-"),
+    );
+    const capturedBodies: string[] = [];
+    const capturingLayer = Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) => {
+        const body = request.body as { readonly _tag?: string; readonly body?: unknown };
+        if (body?._tag === "Uint8Array" && body.body instanceof Uint8Array) {
+          capturedBodies.push(new TextDecoder().decode(body.body));
+        }
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(`${sseFrame("ok")}data: [DONE]\n\n`, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        );
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(attachmentsDir, { recursive: true, force: true })),
+      );
+      const attachment = {
+        type: "file" as const,
+        id: "deepseek-csv-12345678-1234-1234-1234-123456789abc",
+        name: "sales.csv",
+        mimeType: "text/csv",
+        sizeBytes: 8,
+      };
+      NodeFS.writeFileSync(
+        NodePath.join(attachmentsDir, attachmentRelativePath(attachment)),
+        "a,b\n1,2\n",
+      );
+
+      const adapter = yield* makeDeepSeekAdapter(readySettings(), {
+        environment: READY_ENV,
+        attachmentsDir,
+      });
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: PROVIDER,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "Summarize this data",
+        attachments: [attachment],
+      });
+
+      assert.isNotEmpty(capturedBodies);
+      const request = JSON.parse(capturedBodies.at(-1) ?? "{}") as {
+        messages?: Array<{ role: string; content: string }>;
+      };
+      const userMessage = request.messages?.find((message) => message.role === "user");
+      assert.isDefined(userMessage);
+      assert.include(userMessage?.content, "Summarize this data");
+      assert.include(userMessage?.content, "Attached file: sales.csv");
+      assert.include(userMessage?.content, "a,b\n1,2\n");
+    }).pipe(Effect.provide(capturingLayer.pipe(Layer.provideMerge(NodeServices.layer))));
+  });
 
   // it.live: the streaming path reads a real Web ReadableStream and races it
   // against a wall-clock timeout, so it must run on the live runtime/clock

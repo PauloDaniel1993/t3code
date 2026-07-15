@@ -15,6 +15,7 @@ import {
   ApprovalRequestId,
   ClaudeSettings,
   EnvironmentId,
+  PROVIDER_INLINE_FILE_MAX_CHARS,
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
@@ -810,6 +811,150 @@ describe("ClaudeAdapterLive", () => {
           },
         },
       ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("inlines text file attachments as labeled Claude text blocks", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-file-"));
+    const harness = makeHarness({ cwd: "/tmp/project-claude-file", baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachment = {
+        type: "file" as const,
+        id: "thread-claude-file-12345678-1234-1234-1234-123456789abc",
+        name: "sales.csv",
+        mimeType: "text/csv",
+        sizeBytes: 12,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, "a,b\n1,2\n");
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Summarize this data",
+        attachments: [attachment],
+      });
+
+      const promptMessage = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(promptMessage?.message.content, [
+        {
+          type: "text",
+          text: "Summarize this data",
+        },
+        {
+          type: "text",
+          text: "Attached file: sales.csv\n```\na,b\n1,2\n\n```",
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("references spreadsheets by stored path instead of inlining them", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-xlsx-"));
+    const harness = makeHarness({ cwd: "/tmp/project-claude-xlsx", baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachment = {
+        type: "file" as const,
+        id: "thread-claude-xlsx-12345678-1234-1234-1234-123456789abc",
+        name: "report.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        sizeBytes: 4,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, Uint8Array.from([0x50, 0x4b, 0x03, 0x04]));
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Inspect this spreadsheet",
+        attachments: [attachment],
+      });
+
+      const promptMessage = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      const content = promptMessage?.message.content as Array<{ type: string; text?: string }>;
+      assert.equal(content.length, 2);
+      assert.equal(content[1]?.type, "text");
+      assert.include(content[1]?.text, "report.xlsx");
+      assert.include(content[1]?.text, attachmentPath);
+      assert.notInclude(content[1]?.text, "PK");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects text file attachments beyond the inline character budget", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-file-budget-"));
+    const harness = makeHarness({ cwd: "/tmp/project-claude-file-budget", baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const oversizedContent = "x".repeat(PROVIDER_INLINE_FILE_MAX_CHARS + 1);
+      const attachment = {
+        type: "file" as const,
+        id: "thread-claude-file-budget-12345678-1234-1234-1234-123456789abc",
+        name: "huge.log",
+        mimeType: "text/plain",
+        sizeBytes: oversizedContent.length,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, oversizedContent);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const result = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "Read this log",
+          attachments: [attachment],
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.include(String(result.failure), "huge.log");
+        assert.include(String(result.failure), "inline limit");
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

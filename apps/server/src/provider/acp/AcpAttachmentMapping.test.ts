@@ -110,6 +110,65 @@ for (const provider of ["cursor", "grok"] as const) {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect(`maps generic ${provider} file attachments to ACP resource links`, () =>
+    Effect.gen(function* () {
+      const attachmentsDir = makeTempAttachmentsDir();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(attachmentsDir, { recursive: true, force: true })),
+      );
+      const fileSystem = yield* FileSystem.FileSystem;
+      const jsonFile = {
+        type: "file" as const,
+        id: `${provider}-json-12345678-1234-1234-1234-123456789abc`,
+        name: "config.json",
+        mimeType: "application/json",
+        sizeBytes: 7,
+      };
+      const xlsxFile = {
+        type: "file" as const,
+        id: `${provider}-xlsx-12345678-1234-1234-1234-123456789abc`,
+        name: "report.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        sizeBytes: 4,
+      };
+      const jsonPath = writeAttachment(
+        attachmentsDir,
+        jsonFile,
+        new TextEncoder().encode('{"a":1}'),
+      );
+      const xlsxPath = writeAttachment(
+        attachmentsDir,
+        xlsxFile,
+        Uint8Array.from([0x50, 0x4b, 0x03, 0x04]),
+      );
+
+      const blocks = yield* mapAcpAttachments({
+        provider,
+        method: "session/prompt",
+        attachmentsDir,
+        attachments: [jsonFile, xlsxFile],
+        fileSystem,
+      });
+
+      NodeAssert.deepStrictEqual(blocks, [
+        {
+          type: "resource_link",
+          name: "config.json",
+          mimeType: "application/json",
+          size: 7,
+          uri: NodeURL.pathToFileURL(jsonPath).href,
+        },
+        {
+          type: "resource_link",
+          name: "report.xlsx",
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          size: 4,
+          uri: NodeURL.pathToFileURL(xlsxPath).href,
+        },
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect(`rejects invalid ${provider} PDF attachment paths`, () =>
     Effect.gen(function* () {
       const attachmentsDir = makeTempAttachmentsDir();

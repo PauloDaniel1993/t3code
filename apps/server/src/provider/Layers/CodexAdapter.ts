@@ -1506,7 +1506,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
   ) {
     const attachmentType: string = attachment.type;
-    if (attachmentType !== "image" && attachmentType !== "document") {
+    if (attachmentType !== "image" && attachmentType !== "document" && attachmentType !== "file") {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: "turn/start",
@@ -1542,7 +1542,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
         };
       }
-      case "document": {
+      case "document":
+      case "file": {
         const fileInfo = yield* fileSystem.stat(attachmentPath).pipe(
           Effect.mapError(
             (cause) =>

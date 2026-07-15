@@ -1348,11 +1348,20 @@ it.effect("maps ordered image and PDF attachments to exact Codex turn inputs", (
         mimeType: "application/pdf" as const,
         sizeBytes: 8,
       };
+      const jsonFile = {
+        type: "file" as const,
+        id: "codex-json-12345678-1234-1234-1234-123456789abc",
+        name: "config.json",
+        mimeType: "application/json",
+        sizeBytes: 7,
+      };
       const imagePath = NodePath.join(attachmentsDir, attachmentRelativePath(image));
       const pdfPath = NodePath.join(attachmentsDir, attachmentRelativePath(pdf));
+      const jsonPath = NodePath.join(attachmentsDir, attachmentRelativePath(jsonFile));
       NodeFS.mkdirSync(NodePath.dirname(imagePath), { recursive: true });
       NodeFS.writeFileSync(imagePath, Uint8Array.from([1, 2, 3]));
       NodeFS.writeFileSync(pdfPath, "%PDF-1.7");
+      NodeFS.writeFileSync(jsonPath, '{"a":1}');
 
       const threadId = asThreadId("thread-codex-pdf");
       yield* adapter.startSession({
@@ -1365,7 +1374,7 @@ it.effect("maps ordered image and PDF attachments to exact Codex turn inputs", (
       yield* adapter.sendTurn({
         threadId,
         input: "Review these",
-        attachments: [image, pdf],
+        attachments: [image, pdf, jsonFile],
       });
 
       NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls.at(-1)?.[0], {
@@ -1373,6 +1382,7 @@ it.effect("maps ordered image and PDF attachments to exact Codex turn inputs", (
         attachments: [
           { type: "image", url: "data:image/png;base64,AQID" },
           { type: "mention", name: "requirements.pdf", path: pdfPath },
+          { type: "mention", name: "config.json", path: jsonPath },
         ],
       });
 

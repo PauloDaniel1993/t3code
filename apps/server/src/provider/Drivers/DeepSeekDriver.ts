@@ -2,9 +2,11 @@ import { DeepSeekSettings, ProviderDriverKind, type ServerProvider } from "@t3to
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 
+import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { makeDeepSeekTextGeneration } from "../../textGeneration/DeepSeekTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -42,7 +44,12 @@ const UPDATE = makeStaticProviderMaintenanceResolver(
   }),
 );
 
-export type DeepSeekDriverEnv = Crypto.Crypto | HttpClient.HttpClient | ServerSettingsService;
+export type DeepSeekDriverEnv =
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | ServerConfig
+  | ServerSettingsService;
 
 const withInstanceIdentity =
   (input: {
@@ -88,9 +95,11 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekSettings, DeepSeekDriverEnv>
         env: processEnv,
       });
 
+      const serverConfig = yield* ServerConfig;
       const adapter = yield* makeDeepSeekAdapter(effectiveConfig, {
         environment: processEnv,
         instanceId,
+        attachmentsDir: serverConfig.attachmentsDir,
       });
       const textGeneration = yield* makeDeepSeekTextGeneration(effectiveConfig, processEnv);
 

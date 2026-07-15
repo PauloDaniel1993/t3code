@@ -221,7 +221,7 @@ export function findUnsupportedOpenCodeAttachmentType(
       return "unknown";
     }
     const attachmentType = String(attachment.type);
-    if (attachmentType !== "image" && attachmentType !== "document") {
+    if (attachmentType !== "image" && attachmentType !== "document" && attachmentType !== "file") {
       return attachmentType;
     }
   }

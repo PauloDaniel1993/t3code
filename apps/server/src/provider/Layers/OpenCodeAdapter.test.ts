@@ -30,6 +30,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
+  findUnsupportedOpenCodeAttachmentType,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   type OpenCodeRuntimeShape,
@@ -274,6 +275,43 @@ it("maps PDFs to OpenCode file parts with an exact platform-safe local URL", () 
       url: NodeURL.pathToFileURL(attachmentPath).href,
     },
   ]);
+});
+
+it("maps generic file attachments to OpenCode file parts", () => {
+  const attachmentPath = NodePath.join(process.cwd(), "attachments", "report.xlsx");
+  const parts = toOpenCodeFileParts({
+    attachments: [
+      {
+        type: "file",
+        id: "opencode-xlsx-12345678-1234-1234-1234-123456789abc",
+        name: "report.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        sizeBytes: 42,
+      },
+    ],
+    resolveAttachmentPath: () => attachmentPath,
+  });
+
+  NodeAssert.deepStrictEqual(parts, [
+    {
+      type: "file",
+      mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      filename: "report.xlsx",
+      url: NodeURL.pathToFileURL(attachmentPath).href,
+    },
+  ]);
+});
+
+it("accepts file attachments in the OpenCode unsupported-type guard", () => {
+  NodeAssert.equal(
+    findUnsupportedOpenCodeAttachmentType([
+      { type: "image" },
+      { type: "document" },
+      { type: "file" },
+    ]),
+    undefined,
+  );
+  NodeAssert.equal(findUnsupportedOpenCodeAttachmentType([{ type: "archive" }]), "archive");
 });
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
