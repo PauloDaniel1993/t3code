@@ -39,7 +39,6 @@ export class McpSessionRegistry extends Context.Service<
 interface CredentialRecord {
   readonly tokenHash: string;
   readonly scope: McpInvocationContext.McpInvocationScope;
-  readonly lastUsedAt: number;
 }
 
 interface RegistryState {
@@ -47,13 +46,17 @@ interface RegistryState {
 }
 
 export interface McpSessionRegistryOptions {
-  readonly idleTimeoutMs?: number;
   readonly maximumLifetimeMs?: number;
   readonly now?: () => number;
 }
 
-const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
-const DEFAULT_MAXIMUM_LIFETIME_MS = 8 * 60 * 60 * 1_000;
+// Credential lifetime is session-bound: a credential is minted on provider
+// session start/resume and revoked on stop, while the bearer header baked
+// into the provider process cannot change mid-session. The maximum lifetime
+// is only a leak backstop for sessions that die without cleanup — it must
+// exceed any realistic session length, or live sessions lose their MCP
+// tools with no way to re-authorize.
+const DEFAULT_MAXIMUM_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000;
 
 const bytesToHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -80,7 +83,6 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const httpServer = yield* HttpServer.HttpServer;
   const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
-  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   const maximumLifetimeMs = options.maximumLifetimeMs ?? DEFAULT_MAXIMUM_LIFETIME_MS;
   const endpoint =
     httpServer.address._tag === "TcpAddress"
@@ -94,10 +96,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
 
   const pruneExpired = (records: ReadonlyMap<string, CredentialRecord>, timestamp: number) => {
     const next = new Map(
-      Array.from(records).filter(
-        ([, record]) =>
-          timestamp <= record.scope.expiresAt && timestamp - record.lastUsedAt <= idleTimeoutMs,
-      ),
+      Array.from(records).filter(([, record]) => timestamp <= record.scope.expiresAt),
     );
     return next.size === records.size ? records : next;
   };
@@ -120,7 +119,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
         const next = new Map(pruneExpired(records, issuedAt));
-        next.set(tokenHash, { tokenHash, scope, lastUsedAt: issuedAt });
+        next.set(tokenHash, { tokenHash, scope });
         return { records: next };
       });
       return {
@@ -145,10 +144,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       return yield* SynchronizedRef.modify(state, ({ records }) => {
         const current = pruneExpired(records, timestamp);
         const record = current.get(tokenHash);
-        if (!record) return [undefined, { records: current }] as const;
-        const next = new Map(current);
-        next.set(tokenHash, { ...record, lastUsedAt: timestamp });
-        return [record.scope, { records: next }] as const;
+        return [record?.scope, { records: current }] as const;
       });
     },
   );

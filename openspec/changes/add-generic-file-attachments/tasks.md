@@ -29,4 +29,4 @@
 
 - [x] 5.1 Verify handoff, revert, reconnect, and deletion cleanup treat `file` attachments like PDFs (persistence projections, cleanup, `decider.handoff` paths), adding coverage where a type switch was extended.
 - [x] 5.2 Run the full affected test suites (contracts, client-runtime, web, server) and typecheck; fix fallout from the widened unions (compiler-surfaced exhaustive switches).
-- [ ] 5.3 Manual smoke test in the dev instance: attach json/csv/cs/xlsx via picker, drag-drop, and paste; send to one file-reference provider and Claude; confirm cards render in draft and history and errors read correctly for an unsupported type.
+- [x] 5.3 Manual smoke test in the dev instance: attach json/csv/cs/xlsx via picker, drag-drop, and paste; send to one file-reference provider and Claude; confirm cards render in draft and history and errors read correctly for an unsupported type.
