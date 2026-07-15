@@ -95,17 +95,20 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
-  it.effect("uses a configured app user model id override", () =>
+  it.effect("uses configured Windows app identity overrides", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
         {},
         {
           T3CODE_DESKTOP_APP_USER_MODEL_ID: " com.t3tools.t3code.dev.local ",
+          T3CODE_DESKTOP_DISPLAY_NAME: " T3 alpha.local ",
           VITE_DEV_SERVER_URL: "http://localhost:5173",
         },
       );
 
       assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev.local");
+      assert.equal(environment.displayName, "T3 alpha.local");
+      assert.equal(environment.branding.displayName, "T3 alpha.local");
     }),
   );
 
