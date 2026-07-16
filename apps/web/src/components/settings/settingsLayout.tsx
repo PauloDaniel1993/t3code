@@ -48,6 +48,7 @@ export function SettingsSection({
 export function SettingsRow({
   title,
   description,
+  descriptionId,
   status,
   resetAction,
   control,
@@ -57,6 +58,7 @@ export function SettingsRow({
 }: Omit<ComponentPropsWithoutRef<"div">, "title"> & {
   title: ReactNode;
   description: ReactNode;
+  descriptionId?: string;
   status?: ReactNode;
   resetAction?: ReactNode;
   control?: ReactNode;
@@ -65,11 +67,7 @@ export function SettingsRow({
   return (
     <div
       {...rowProps}
-      className={cn(
-        "border-t border-border/60 px-4 first:border-t-0 sm:px-5",
-        children ? "pt-3.5 pb-0" : "py-3.5",
-        className,
-      )}
+      className={cn("border-t border-border/60 px-4 py-3.5 first:border-t-0 sm:px-5", className)}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1 space-y-1">
@@ -81,7 +79,9 @@ export function SettingsRow({
               {resetAction}
             </span>
           </div>
-          <p className="text-xs text-muted-foreground/80">{description}</p>
+          <p id={descriptionId} className="text-xs text-muted-foreground/80">
+            {description}
+          </p>
           {status ? <div className="pt-0.5 text-[11px] text-muted-foreground">{status}</div> : null}
         </div>
         {control ? (
