@@ -13,6 +13,7 @@ import {
   XIcon,
 } from "lucide-react";
 import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
@@ -34,7 +35,9 @@ import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
+import { resolveActiveAppearanceTheme } from "../appearance/appearanceThemes";
 import { useOpenInPreferredEditor } from "../editorPreferences";
+import { useClientSettings } from "../hooks/useSettings";
 import {
   collectWrappedTerminalLinkLine,
   extractTerminalLinks,
@@ -311,6 +314,11 @@ export function TerminalViewport({
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const appearance = useClientSettings((settings) => settings.appearance);
+  const activeAppearanceTheme = resolveActiveAppearanceTheme(appearance);
+  const terminalFontFamily =
+    activeAppearanceTheme.terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY;
+  const terminalFontSize = activeAppearanceTheme.terminalFontSizePx || 12;
   const environmentId = threadRef.environmentId;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
@@ -389,10 +397,9 @@ export function TerminalViewport({
     const terminal = new Terminal({
       cursorBlink: true,
       lineHeight: 1,
-      fontSize: 12,
+      fontSize: terminalFontSize,
       scrollback: 5_000,
-      fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: terminalFontFamily,
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);
@@ -735,6 +742,33 @@ export function TerminalViewport({
     // it is only read at mount time and must not trigger terminal teardown/recreation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cwd, environmentId, runtimeEnvKey, terminalId, threadId, worktreePath]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+    if (
+      terminal.options.fontFamily === terminalFontFamily &&
+      terminal.options.fontSize === terminalFontSize
+    ) {
+      return;
+    }
+
+    terminal.options.fontFamily = terminalFontFamily;
+    terminal.options.fontSize = terminalFontSize;
+    const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+    const frame = window.requestAnimationFrame(() => {
+      if (terminalRef.current !== terminal || fitAddonRef.current !== fitAddon) return;
+      fitTerminalSafely(fitAddon);
+      if (wasAtBottom) {
+        terminal.scrollToBottom();
+      }
+      void resizeTerminal(terminal.cols, terminal.rows);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [terminalFontFamily, terminalFontSize]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

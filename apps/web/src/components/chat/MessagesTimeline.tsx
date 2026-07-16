@@ -32,6 +32,9 @@ import {
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
+import { resolveDiffIndicators } from "../../appearance/diffIndicators";
+import { resolveActiveAppearanceTheme } from "../../appearance/appearanceThemes";
+import { useClientSettings } from "../../hooks/useSettings";
 import {
   getRenderablePatch,
   resolveDiffThemeName,
@@ -127,6 +130,7 @@ interface TimelineRowSharedState {
   threadRef: ScopedThreadRef | null;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
+  diffIndicators: ReturnType<typeof resolveDiffIndicators>;
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
@@ -220,6 +224,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
 }: MessagesTimelineProps) {
+  const diffIndicators = useClientSettings((settings) =>
+    resolveDiffIndicators(resolveActiveAppearanceTheme(settings.appearance).diffMarkerStyle),
+  );
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
@@ -422,6 +429,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       threadRef: parseScopedThreadKey(routeThreadKey),
       markdownCwd,
       resolvedTheme,
+      diffIndicators,
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
@@ -436,6 +444,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
+      diffIndicators,
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
@@ -1685,6 +1694,7 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
             options={{
               collapsed: false,
               diffStyle: "unified",
+              diffIndicators: ctx.diffIndicators,
               theme: resolveDiffThemeName(ctx.resolvedTheme),
             }}
           />
