@@ -44,7 +44,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   getLocalEnvironmentBearerToken: () =>
     ipcRenderer.invoke(IpcChannels.GET_LOCAL_ENVIRONMENT_BEARER_TOKEN_CHANNEL),
-  getClientSettings: () => ipcRenderer.invoke(IpcChannels.GET_CLIENT_SETTINGS_CHANNEL),
+  getClientSettings: () =>
+    ipcRenderer.invoke(IpcChannels.GET_CLIENT_SETTINGS_CHANNEL) as ReturnType<
+      DesktopBridge["getClientSettings"]
+    >,
   setClientSettings: (settings) =>
     ipcRenderer.invoke(IpcChannels.SET_CLIENT_SETTINGS_CHANNEL, settings),
   getConnectionCatalog: () => ipcRenderer.invoke(IpcChannels.GET_CONNECTION_CATALOG_CHANNEL),
