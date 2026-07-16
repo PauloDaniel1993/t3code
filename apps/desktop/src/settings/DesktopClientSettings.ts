@@ -18,10 +18,12 @@ const ClientSettingsDocumentSchema = Schema.Struct({
 
 const ClientSettingsJson = fromLenientJson(ClientSettingsSchema);
 const LegacyClientSettingsDocumentJson = fromLenientJson(ClientSettingsDocumentSchema);
+const UnknownJson = fromLenientJson(Schema.Unknown);
 const decodeLegacyClientSettingsDocumentJson = Schema.decodeEffect(
   LegacyClientSettingsDocumentJson,
 );
 const decodeClientSettingsJsonValue = Schema.decodeEffect(ClientSettingsJson);
+const decodeUnknownJson = Schema.decodeEffect(UnknownJson);
 const decodeClientSettingsJson = (raw: string): Effect.Effect<ClientSettings, Schema.SchemaError> =>
   decodeLegacyClientSettingsDocumentJson(raw).pipe(
     Effect.map((document) => document.settings),
@@ -30,6 +32,37 @@ const decodeClientSettingsJson = (raw: string): Effect.Effect<ClientSettings, Sc
     }),
   );
 const encodeClientSettingsJson = Schema.encodeEffect(ClientSettingsJson);
+
+export interface DesktopClientSettingsSnapshot {
+  readonly settings: ClientSettings;
+  readonly appearanceWasPersisted: boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function rawAppearanceWasPersisted(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const settingsValue = isRecord(value.settings) ? value.settings : value;
+  return Object.hasOwn(settingsValue, "appearance");
+}
+
+const decodeClientSettingsJsonWithMeta = (
+  raw: string,
+): Effect.Effect<DesktopClientSettingsSnapshot, Schema.SchemaError> =>
+  decodeClientSettingsJson(raw).pipe(
+    Effect.flatMap((settings) =>
+      decodeUnknownJson(raw).pipe(
+        Effect.map((rawValue) => ({
+          settings,
+          appearanceWasPersisted: rawAppearanceWasPersisted(rawValue),
+        })),
+      ),
+    ),
+  );
 
 const DesktopClientSettingsWriteOperation = Schema.Literals([
   "create-temporary-file-name",
@@ -56,6 +89,7 @@ export class DesktopClientSettings extends Context.Service<
   DesktopClientSettings,
   {
     readonly get: Effect.Effect<Option.Option<ClientSettings>>;
+    readonly getWithMeta: Effect.Effect<Option.Option<DesktopClientSettingsSnapshot>>;
     readonly set: (
       settings: ClientSettings,
     ) => Effect.Effect<void, DesktopClientSettingsWriteError>;
@@ -65,7 +99,7 @@ export class DesktopClientSettings extends Context.Service<
 const readClientSettings = (
   fileSystem: FileSystem.FileSystem,
   settingsPath: string,
-): Effect.Effect<Option.Option<ClientSettings>> =>
+): Effect.Effect<Option.Option<DesktopClientSettingsSnapshot>> =>
   fileSystem.readFileString(settingsPath).pipe(
     Effect.map(Option.some),
     Effect.catchTags({
@@ -79,15 +113,15 @@ const readClientSettings = (
     }),
     Effect.flatMap(
       Option.match({
-        onNone: () => Effect.succeed(Option.none<ClientSettings>()),
+        onNone: () => Effect.succeed(Option.none<DesktopClientSettingsSnapshot>()),
         onSome: (raw) =>
-          decodeClientSettingsJson(raw).pipe(
-            Effect.map((settings) => Option.some(settings)),
+          decodeClientSettingsJsonWithMeta(raw).pipe(
+            Effect.map((snapshot) => Option.some(snapshot)),
             Effect.catchTags({
               SchemaError: (cause) =>
                 Effect.logWarning("Could not decode desktop client settings.", cause).pipe(
                   Effect.annotateLogs({ settingsPath }),
-                  Effect.as(Option.none<ClientSettings>()),
+                  Effect.as(Option.none<DesktopClientSettingsSnapshot>()),
                 ),
             }),
           ),
@@ -152,10 +186,14 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
 
+  const getWithMeta = readClientSettings(fileSystem, environment.clientSettingsPath);
+
   return DesktopClientSettings.of({
-    get: readClientSettings(fileSystem, environment.clientSettingsPath).pipe(
+    get: getWithMeta.pipe(
+      Effect.map(Option.map((snapshot) => snapshot.settings)),
       Effect.withSpan("desktop.clientSettings.get"),
     ),
+    getWithMeta: getWithMeta.pipe(Effect.withSpan("desktop.clientSettings.getWithMeta")),
     set: (settings) =>
       crypto.randomUUIDv4.pipe(
         Effect.map((uuid) => uuid.replace(/-/g, "")),
@@ -190,6 +228,9 @@ export const layerTest = (initialSettings: Option.Option<ClientSettings> = Optio
       const settingsRef = yield* Ref.make(initialSettings);
       return DesktopClientSettings.of({
         get: Ref.get(settingsRef),
+        getWithMeta: Ref.get(settingsRef).pipe(
+          Effect.map(Option.map((settings) => ({ settings, appearanceWasPersisted: true }))),
+        ),
         set: (settings) => Ref.set(settingsRef, Option.some(settings)),
       });
     }),
