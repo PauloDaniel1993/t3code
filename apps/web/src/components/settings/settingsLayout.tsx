@@ -74,7 +74,7 @@ export function SettingsRow({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-h-5 items-center gap-1.5">
-            <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">
+            <h3 className="settings-ui-text-13 font-semibold tracking-[-0.01em] text-foreground">
               {title}
             </h3>
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
