@@ -45,6 +45,7 @@ export function SettingsSection({
 export function SettingsRow({
   title,
   description,
+  descriptionId,
   status,
   resetAction,
   control,
@@ -54,6 +55,7 @@ export function SettingsRow({
 }: Omit<ComponentPropsWithoutRef<"div">, "title"> & {
   title: ReactNode;
   description: ReactNode;
+  descriptionId?: string;
   status?: ReactNode;
   resetAction?: ReactNode;
   control?: ReactNode;
@@ -74,7 +76,10 @@ export function SettingsRow({
               {resetAction}
             </span>
           </div>
-          <p className="max-w-xl text-[13px] leading-[1.45] text-muted-foreground/80">
+          <p
+            id={descriptionId}
+            className="max-w-xl text-[13px] leading-[1.45] text-muted-foreground/80"
+          >
             {description}
           </p>
           {status ? <div className="pt-0.5 text-xs text-muted-foreground">{status}</div> : null}
