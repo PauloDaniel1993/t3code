@@ -63,6 +63,11 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
       });
       return `${attachment.id}${extension}`;
     }
+    case "document":
+    case "file":
+      throw new Error(
+        `Attachment type "${attachment.type}" is not supported by the image attachment store yet.`,
+      );
   }
 }
 
