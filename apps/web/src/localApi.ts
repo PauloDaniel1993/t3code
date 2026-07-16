@@ -1,10 +1,39 @@
-import type { ContextMenuItem, LocalApi } from "@t3tools/contracts";
+import type { ClientSettings, ContextMenuItem, LocalApi } from "@t3tools/contracts";
 
 import { resetRequestLatencyStateForTests } from "./rpc/requestLatencyState";
 import { showContextMenuFallback } from "./contextMenuFallback";
-import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
+import {
+  readBrowserClientSettingsWithMeta,
+  writeBrowserClientSettings,
+} from "./clientPersistenceStorage";
 
 let cachedApi: LocalApi | undefined;
+
+export interface ClientSettingsPersistenceReadResult {
+  readonly settings: ClientSettings | null;
+  readonly appearanceWasPersisted: boolean;
+}
+
+/** Reads recovery-decoded settings while preserving raw Appearance presence metadata. */
+export async function readClientSettingsWithMeta(): Promise<ClientSettingsPersistenceReadResult> {
+  if (typeof window === "undefined") {
+    return { settings: null, appearanceWasPersisted: false };
+  }
+
+  if (window.desktopBridge) {
+    const result = await window.desktopBridge.getClientSettings();
+    if (result === null) {
+      return { settings: null, appearanceWasPersisted: false };
+    }
+    const { appearanceWasPersisted, ...settings } = result;
+    return {
+      settings,
+      appearanceWasPersisted: appearanceWasPersisted ?? Object.hasOwn(result, "appearance"),
+    };
+  }
+
+  return readBrowserClientSettingsWithMeta();
+}
 
 function createBrowserLocalApi(): LocalApi {
   return {
@@ -45,12 +74,7 @@ function createBrowserLocalApi(): LocalApi {
       },
     },
     persistence: {
-      getClientSettings: async () => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.getClientSettings();
-        }
-        return readBrowserClientSettings();
-      },
+      getClientSettings: async () => (await readClientSettingsWithMeta()).settings,
       setClientSettings: async (settings) => {
         if (window.desktopBridge) {
           return window.desktopBridge.setClientSettings(settings);
