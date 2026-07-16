@@ -1,6 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { ClientSettingsSchema, type ClientSettings } from "@t3tools/contracts";
+import {
+  ClientSettingsSchema,
+  DEFAULT_CLIENT_SETTINGS,
+  type ClientSettings,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -13,6 +17,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  ...DEFAULT_CLIENT_SETTINGS,
   autoOpenPlanSidebar: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
@@ -151,6 +156,37 @@ describe("DesktopClientSettings", () => {
         assert.isTrue(Option.isSome(persisted));
         if (Option.isSome(persisted)) {
           assert.equal(persisted.value.timestampFormat, "24-hour");
+        }
+        const snapshot = yield* settings.getWithMeta;
+        assert.isTrue(Option.isSome(snapshot));
+        if (Option.isSome(snapshot)) {
+          assert.isFalse(snapshot.value.appearanceWasPersisted);
+        }
+      }),
+    ),
+  );
+
+  it.effect("detects raw Appearance presence before recovery decoding", () =>
+    withClientSettings(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const settings = yield* DesktopClientSettings.DesktopClientSettings;
+        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+        yield* fileSystem.writeFileString(
+          environment.clientSettingsPath,
+          `{
+            "appearance": {
+              "customThemes": 42
+            }
+          }\n`,
+        );
+
+        const snapshot = yield* settings.getWithMeta;
+        assert.isTrue(Option.isSome(snapshot));
+        if (Option.isSome(snapshot)) {
+          assert.isTrue(snapshot.value.appearanceWasPersisted);
+          assert.deepEqual(snapshot.value.settings.appearance, DEFAULT_CLIENT_SETTINGS.appearance);
         }
       }),
     ),
