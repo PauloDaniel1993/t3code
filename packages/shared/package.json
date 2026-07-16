@@ -7,6 +7,10 @@
       "types": "./src/projectFavicon.ts",
       "import": "./src/projectFavicon.ts"
     },
+    "./attachmentFileTypes": {
+      "types": "./src/attachmentFileTypes.ts",
+      "import": "./src/attachmentFileTypes.ts"
+    },
     "./model": {
       "types": "./src/model.ts",
       "import": "./src/model.ts"
