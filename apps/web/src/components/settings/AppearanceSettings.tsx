@@ -21,9 +21,24 @@ import { isBuiltInThemeId, resolveActiveAppearanceTheme } from "../../appearance
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { useClientSettings, useUpdateAppearance } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
+import {
+  NumberField,
+  NumberFieldDecrement,
+  NumberFieldGroup,
+  NumberFieldIncrement,
+  NumberFieldInput,
+} from "../ui/number-field";
+import {
+  Select,
+  SelectGroup,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { Switch } from "../ui/switch";
 import {
   APPEARANCE_MONO_FONT_OPTIONS,
@@ -38,6 +53,13 @@ import {
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 
 const COLOR_TOKENS = ["accent", "background", "foreground", "surface", "muted"] as const;
+const COLOR_TOKEN_DESCRIPTIONS = {
+  accent: "Actions, links, focus rings, and selected items.",
+  background: "The main canvas behind every screen.",
+  foreground: "Primary text and high-emphasis icons.",
+  surface: "Cards, panels, menus, and raised controls.",
+  muted: "Subtle fills for secondary and inactive areas.",
+} as const satisfies Record<(typeof COLOR_TOKENS)[number], string>;
 const FONT_SIZE_ROWS = [
   {
     key: "uiFontSizePx",
@@ -108,6 +130,58 @@ function appearanceSelectClassName(disabled: boolean): string {
     "h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground shadow-xs/5 outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 sm:h-7",
     disabled ? "cursor-not-allowed opacity-64" : "cursor-pointer",
   ].join(" ");
+}
+
+function ColorSchemePreview({ scheme }: { readonly scheme: AppearanceColorScheme }) {
+  const isLight = scheme === "light";
+  const isDark = scheme === "dark";
+  const splitBackground =
+    "bg-[linear-gradient(to_right,#a3a3a3_0%,#a3a3a3_50%,#52525b_50%,#52525b_100%)]";
+  const splitSurface =
+    "bg-[linear-gradient(to_right,#fafafa_0%,#fafafa_50%,#27272a_50%,#27272a_100%)]";
+
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "relative block aspect-[1.55/1] w-full overflow-hidden rounded-[10px] border shadow-sm",
+        isLight && "border-zinc-300 bg-zinc-100",
+        isDark && "border-zinc-600 bg-zinc-700",
+        scheme === "system" && `border-zinc-400 ${splitBackground}`,
+      )}
+      data-testid={`color-scheme-preview-${scheme}`}
+    >
+      <span
+        className={cn(
+          "absolute top-[21%] left-1/2 h-1 w-[34%] -translate-x-1/2 rounded-full",
+          isLight && "bg-zinc-300",
+          isDark && "bg-zinc-400",
+          scheme === "system" && "bg-zinc-400",
+        )}
+      />
+      <span
+        className={cn(
+          "absolute inset-x-[7%] top-[38%] bottom-0 rounded-t-md",
+          isLight && "bg-white",
+          isDark && "bg-zinc-800",
+          scheme === "system" && splitSurface,
+        )}
+      >
+        {[30, 48, 38].map((width, index) => (
+          <span
+            key={width}
+            className={cn(
+              "absolute left-[8%] h-1 rounded-full",
+              isLight && "bg-zinc-200",
+              isDark && "bg-zinc-600",
+              scheme === "system" && "bg-zinc-400/70",
+            )}
+            style={{ top: `${18 + index * 25}%`, width: `${width}%` }}
+          />
+        ))}
+      </span>
+    </span>
+  );
 }
 
 function AppearancePreview({
@@ -198,33 +272,43 @@ function AppearancePreview({
 function ColorVariantControls({
   variantName,
   variant,
+  initiallyOpen,
   disabled,
   colorDrafts,
   colorErrors,
   onColorChange,
   onContrastChange,
-  onTranslucentSidebarChange,
 }: {
   readonly variantName: ColorVariantName;
   readonly variant: AppearanceThemeVariant;
+  readonly initiallyOpen: boolean;
   readonly disabled: boolean;
   readonly colorDrafts: ColorDrafts;
   readonly colorErrors: ColorErrors;
   readonly onColorChange: (variant: ColorVariantName, token: ColorToken, value: string) => void;
   readonly onContrastChange: (variant: ColorVariantName, value: number) => void;
-  readonly onTranslucentSidebarChange: (variant: ColorVariantName, value: boolean) => void;
 }) {
   const title = variantName === "light" ? "Light colors" : "Dark colors";
+  const [isOpen, setIsOpen] = useState(initiallyOpen);
+
+  useEffect(() => {
+    setIsOpen(initiallyOpen);
+  }, [initiallyOpen]);
 
   return (
-    <details open className="border-t border-border/60 first:border-t-0">
+    <details
+      className="border-t border-border/60 first:border-t-0"
+      onToggle={(event) => setIsOpen(event.currentTarget.open)}
+      open={isOpen}
+    >
       <summary className="cursor-pointer px-4 py-3 text-xs font-semibold text-foreground sm:px-5">
         {title}
       </summary>
-      <div className="space-y-3 px-4 pb-4 sm:px-5">
+      <div className="flex flex-col gap-3 px-4 pb-4 sm:px-5">
         {COLOR_TOKENS.map((token) => {
           const draftKey = colorDraftKey(variantName, token);
           const inputId = `appearance-${variantName}-${token}`;
+          const descriptionId = `${inputId}-description`;
           const errorId = `${inputId}-error`;
           const error = colorErrors[draftKey];
           const value = colorDrafts[draftKey] ?? variant[token];
@@ -235,12 +319,18 @@ function ColorVariantControls({
               key={token}
               className="grid gap-1.5 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
             >
-              <label htmlFor={inputId} className="text-xs font-medium capitalize text-foreground">
-                {token}
-              </label>
+              <div className="min-w-0">
+                <label htmlFor={inputId} className="text-xs font-medium capitalize text-foreground">
+                  {token}
+                </label>
+                <p id={descriptionId} className="text-[11px] leading-relaxed text-muted-foreground">
+                  {COLOR_TOKEN_DESCRIPTIONS[token]}
+                </p>
+              </div>
               <input
+                aria-describedby={descriptionId}
                 aria-label={`${label} color swatch`}
-                className="size-8 cursor-pointer rounded-md border border-input bg-transparent p-0.5 disabled:cursor-not-allowed disabled:opacity-64 sm:size-7"
+                className="size-8 cursor-pointer rounded-md border border-input bg-popover p-0.5 shadow-xs/5 outline-none transition-[background-color,border-color,box-shadow] hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-64 sm:size-7"
                 disabled={disabled}
                 onChange={(event) => onColorChange(variantName, token, event.target.value)}
                 type="color"
@@ -248,7 +338,7 @@ function ColorVariantControls({
               />
               <div className="w-full sm:w-36">
                 <Input
-                  aria-describedby={error ? errorId : undefined}
+                  aria-describedby={error ? `${descriptionId} ${errorId}` : descriptionId}
                   aria-invalid={error ? true : undefined}
                   disabled={disabled}
                   id={inputId}
@@ -266,12 +356,20 @@ function ColorVariantControls({
           );
         })}
         <div className="flex flex-col gap-2 border-t border-border/60 pt-3 sm:flex-row sm:items-center sm:justify-between">
-          <label
-            htmlFor={`appearance-${variantName}-contrast`}
-            className="text-xs font-medium text-foreground"
-          >
-            Contrast
-          </label>
+          <div className="min-w-0">
+            <label
+              htmlFor={`appearance-${variantName}-contrast`}
+              className="text-xs font-medium text-foreground"
+            >
+              Contrast
+            </label>
+            <p
+              id={`appearance-${variantName}-contrast-description`}
+              className="text-[11px] leading-relaxed text-muted-foreground"
+            >
+              Controls the tonal separation between surfaces and text.
+            </p>
+          </div>
           <div className="flex items-center gap-2">
             <NumberField
               disabled={disabled}
@@ -287,25 +385,15 @@ function ColorVariantControls({
               className="w-28"
             >
               <NumberFieldGroup>
-                <NumberFieldInput aria-label={`${title} contrast`} />
+                <NumberFieldDecrement aria-label={`Decrease ${title.toLowerCase()} contrast`} />
+                <NumberFieldInput
+                  aria-describedby={`appearance-${variantName}-contrast-description`}
+                  aria-label={`${title} contrast`}
+                />
+                <NumberFieldIncrement aria-label={`Increase ${title.toLowerCase()} contrast`} />
               </NumberFieldGroup>
             </NumberField>
           </div>
-        </div>
-        <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-3">
-          <label
-            htmlFor={`appearance-${variantName}-translucent-sidebar`}
-            className="text-xs font-medium text-foreground"
-          >
-            Translucent sidebar
-          </label>
-          <Switch
-            aria-label={`${title} translucent sidebar`}
-            checked={variant.translucentSidebar}
-            disabled={disabled}
-            id={`appearance-${variantName}-translucent-sidebar`}
-            onCheckedChange={(checked) => onTranslucentSidebarChange(variantName, Boolean(checked))}
-          />
         </div>
       </div>
     </details>
@@ -629,8 +717,13 @@ export function AppearanceSettings() {
   );
 
   const handleTranslucentSidebarChange = useCallback(
-    (variant: ColorVariantName, value: boolean) => {
-      commitThemeUpdate({ variants: { [variant]: { translucentSidebar: value } } });
+    (value: boolean) => {
+      commitThemeUpdate({
+        variants: {
+          light: { translucentSidebar: value },
+          dark: { translucentSidebar: value },
+        },
+      });
     },
     [commitThemeUpdate],
   );
@@ -638,29 +731,38 @@ export function AppearanceSettings() {
   return (
     <SettingsPageContainer>
       <SettingsSection title="Themes">
-        <ul className="space-y-1 p-3 sm:p-4" aria-label="Appearance themes">
-          {themeList.map((item) => (
-            <li key={item.id}>
-              <button
-                aria-current={item.isActive ? "true" : undefined}
-                aria-pressed={item.isActive}
-                className={[
-                  "flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  item.isActive
-                    ? "bg-primary text-primary-foreground"
-                    : "text-foreground hover:bg-muted",
-                ].join(" ")}
-                onClick={() => handleThemeSelect(item.id)}
-                type="button"
-              >
-                <span>{item.name}</span>
-                {item.isBuiltIn ? <span className="text-xs opacity-75">Built-in</span> : null}
-              </button>
-            </li>
-          ))}
-        </ul>
         <SettingsRow
-          title="Selected theme"
+          title="Active theme"
+          description="Choose a built-in preset or one of your custom themes."
+          control={
+            <Select
+              value={appearance.activeThemeId}
+              onValueChange={(value) => {
+                if (typeof value === "string") handleThemeSelect(value);
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-56" aria-label="Appearance theme">
+                <SelectValue>{activeTheme.name}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectGroup>
+                  {themeList.map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      <span className="flex min-w-0 items-center justify-between gap-4">
+                        <span className="truncate">{item.name}</span>
+                        {item.isBuiltIn ? (
+                          <span className="text-xs text-muted-foreground">Built-in</span>
+                        ) : null}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Manage theme"
           description={
             isReadOnly
               ? "Built-in themes are read-only. Duplicate this theme to customize it."
@@ -738,7 +840,7 @@ export function AppearanceSettings() {
 
       <SettingsSection title="Mode">
         <div
-          className="grid gap-2 p-3 sm:grid-cols-3 sm:p-4"
+          className="grid grid-cols-3 gap-2 p-3 sm:gap-3 sm:p-4"
           role="radiogroup"
           aria-label="Color scheme mode"
         >
@@ -748,70 +850,69 @@ export function AppearanceSettings() {
               <button
                 key={option}
                 aria-checked={selected}
-                className={[
-                  "rounded-xl border px-3 py-3 text-left text-sm font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  selected
-                    ? "border-primary bg-primary/10 text-foreground"
-                    : "border-border bg-card text-muted-foreground hover:bg-muted",
-                ].join(" ")}
+                className={cn(
+                  "group flex min-w-0 flex-col gap-2 rounded-xl p-1.5 text-center text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-2 sm:text-sm",
+                  selected ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60",
+                )}
                 onClick={() => setTheme(option)}
                 role="radio"
                 type="button"
               >
-                {option}
+                <span
+                  className={cn(
+                    "rounded-[11px] border-2 p-0.5 transition-colors",
+                    selected ? "border-primary" : "border-transparent group-hover:border-border",
+                  )}
+                >
+                  <ColorSchemePreview scheme={option} />
+                </span>
+                <span>{option}</span>
               </button>
             );
           })}
         </div>
       </SettingsSection>
 
-      <SettingsSection title="Typography">
+      <SettingsSection title="Text sizes">
         {FONT_SIZE_ROWS.map((row) => {
           const bounds = APPEARANCE_FONT_SIZE_BOUNDS[row.key];
           const value = fontSizeDrafts[row.key] ?? activeTheme[row.key];
-          const rangeId = `appearance-${row.key}-range`;
 
           return (
-            <SettingsRow key={row.key} title={row.label} description={row.description}>
-              <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <label htmlFor={rangeId} className="sr-only">
-                  {row.label}
-                </label>
-                <input
-                  aria-label={row.label}
-                  className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted accent-primary disabled:cursor-not-allowed disabled:opacity-64"
-                  disabled={isReadOnly}
-                  id={rangeId}
-                  max={bounds.max}
-                  min={bounds.min}
-                  onInput={(event) =>
-                    handleFontSizeChange(row.key, Number((event.target as HTMLInputElement).value))
-                  }
-                  step={1}
-                  type="range"
-                  value={value}
-                />
+            <SettingsRow
+              key={row.key}
+              title={row.label}
+              description={`${row.description} Choose ${bounds.min}–${bounds.max} px.`}
+              control={
                 <div className="flex shrink-0 items-center gap-2">
                   <NumberField
                     disabled={isReadOnly}
+                    id={`appearance-${row.key}`}
                     max={bounds.max}
                     min={bounds.min}
-                    onValueChange={(nextValue) => handleFontSizeChange(row.key, nextValue)}
+                    onValueChange={(nextValue) => {
+                      if (nextValue !== null) handleFontSizeChange(row.key, nextValue);
+                    }}
                     size="sm"
                     step={1}
                     value={value}
-                    className="w-24"
+                    className="w-28"
                   >
                     <NumberFieldGroup>
+                      <NumberFieldDecrement aria-label={`Decrease ${row.label.toLowerCase()}`} />
                       <NumberFieldInput aria-label={`${row.label} in pixels`} />
+                      <NumberFieldIncrement aria-label={`Increase ${row.label.toLowerCase()}`} />
                     </NumberFieldGroup>
                   </NumberField>
                   <span className="text-xs text-muted-foreground">px</span>
                 </div>
-              </div>
-            </SettingsRow>
+              }
+            />
           );
         })}
+      </SettingsSection>
+
+      <SettingsSection title="Fonts & layout">
         <SettingsRow title="UI font" description="Choose from the curated interface font options.">
           <div className="mt-3 grid gap-1.5">
             <label htmlFor="appearance-ui-font" className="text-xs font-medium text-foreground">
@@ -944,9 +1045,9 @@ export function AppearanceSettings() {
           colorDrafts={colorDrafts}
           colorErrors={colorErrors}
           disabled={isReadOnly}
+          initiallyOpen={resolvedTheme === "light"}
           onColorChange={handleColorChange}
           onContrastChange={handleContrastChange}
-          onTranslucentSidebarChange={handleTranslucentSidebarChange}
           variant={activeTheme.variants.light}
           variantName="light"
         />
@@ -954,11 +1055,29 @@ export function AppearanceSettings() {
           colorDrafts={colorDrafts}
           colorErrors={colorErrors}
           disabled={isReadOnly}
+          initiallyOpen={resolvedTheme === "dark"}
           onColorChange={handleColorChange}
           onContrastChange={handleContrastChange}
-          onTranslucentSidebarChange={handleTranslucentSidebarChange}
           variant={activeTheme.variants.dark}
           variantName="dark"
+        />
+        <SettingsRow
+          control={
+            <Switch
+              aria-describedby="appearance-translucent-sidebar-description"
+              aria-label="Translucent sidebar in light and dark modes"
+              checked={
+                activeTheme.variants.light.translucentSidebar &&
+                activeTheme.variants.dark.translucentSidebar
+              }
+              disabled={isReadOnly}
+              id="appearance-translucent-sidebar"
+              onCheckedChange={(checked) => handleTranslucentSidebarChange(Boolean(checked))}
+            />
+          }
+          description="Lets supported desktop window materials show through the sidebar in both light and dark modes."
+          descriptionId="appearance-translucent-sidebar-description"
+          title="Translucent sidebar"
         />
       </SettingsSection>
 
