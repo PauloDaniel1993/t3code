@@ -14,6 +14,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ProviderItemId,
   ThreadId,
@@ -141,7 +142,19 @@ export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
+export const PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const PROVIDER_INLINE_FILE_MAX_CHARS = 256 * 1024;
+const DATA_URL_CHARS_ROUNDING = 1_000_000;
+const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS =
+  Math.ceil((PROVIDER_SEND_TURN_MAX_IMAGE_BYTES * 4) / (3 * DATA_URL_CHARS_ROUNDING)) *
+  DATA_URL_CHARS_ROUNDING;
+const PROVIDER_SEND_TURN_MAX_DOCUMENT_DATA_URL_CHARS =
+  Math.ceil((PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES * 4) / (3 * DATA_URL_CHARS_ROUNDING)) *
+  DATA_URL_CHARS_ROUNDING;
+const PROVIDER_SEND_TURN_MAX_FILE_DATA_URL_CHARS =
+  Math.ceil((PROVIDER_SEND_TURN_MAX_FILE_BYTES * 4) / (3 * DATA_URL_CHARS_ROUNDING)) *
+  DATA_URL_CHARS_ROUNDING;
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 // Correlation id is command id by design in this model.
 export const CorrelationId = CommandId;
@@ -162,7 +175,7 @@ export const ChatImageAttachment = Schema.Struct({
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
 
-const UploadChatImageAttachment = Schema.Struct({
+export const UploadChatImageAttachment = Schema.Struct({
   type: Schema.Literal("image"),
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
@@ -173,9 +186,57 @@ const UploadChatImageAttachment = Schema.Struct({
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+export const ChatDocumentAttachment = Schema.Struct({
+  type: Schema.Literal("document"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: Schema.Literal("application/pdf"),
+  sizeBytes: PositiveInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES)),
+});
+export type ChatDocumentAttachment = typeof ChatDocumentAttachment.Type;
+
+export const UploadChatDocumentAttachment = Schema.Struct({
+  type: Schema.Literal("document"),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: Schema.Literal("application/pdf"),
+  sizeBytes: PositiveInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES)),
+  dataUrl: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_DOCUMENT_DATA_URL_CHARS),
+  ),
+});
+export type UploadChatDocumentAttachment = typeof UploadChatDocumentAttachment.Type;
+
+export const ChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: PositiveInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
+});
+export type ChatFileAttachment = typeof ChatFileAttachment.Type;
+
+export const UploadChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: PositiveInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
+  dataUrl: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_FILE_DATA_URL_CHARS),
+  ),
+});
+export type UploadChatFileAttachment = typeof UploadChatFileAttachment.Type;
+
+export const ChatAttachment = Schema.Union([
+  ChatImageAttachment,
+  ChatDocumentAttachment,
+  ChatFileAttachment,
+]);
 export type ChatAttachment = typeof ChatAttachment.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+export const UploadChatAttachment = Schema.Union([
+  UploadChatImageAttachment,
+  UploadChatDocumentAttachment,
+  UploadChatFileAttachment,
+]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -640,7 +701,9 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
-    attachments: Schema.Array(UploadChatAttachment),
+    attachments: Schema.Array(UploadChatAttachment).check(
+      Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
+    ),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),

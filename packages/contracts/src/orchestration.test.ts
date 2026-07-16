@@ -3,6 +3,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
+  ChatAttachment,
+  ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   ModelSelection,
@@ -14,6 +16,9 @@ import {
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
+  PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  UploadChatAttachment,
   OrchestrationSession,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
@@ -49,6 +54,13 @@ const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPaylo
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
+const decodeChatAttachments = Schema.decodeUnknownEffect(Schema.Array(ChatAttachment));
+const encodeChatAttachments = Schema.encodeUnknownEffect(Schema.Array(ChatAttachment));
+const decodeUploadChatAttachment = Schema.decodeUnknownEffect(UploadChatAttachment);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
+
+const roundedDataUrlCharLimit = (maxBytes: number): number =>
+  Math.ceil((maxBytes * 4) / (3 * 1_000_000)) * 1_000_000;
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
@@ -244,6 +256,263 @@ it.effect("preserves explicit provider and runtime mode in thread.turn.start", (
     assert.strictEqual(parsed.modelSelection?.instanceId, "codex");
     assert.strictEqual(parsed.runtimeMode, "full-access");
     assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+  }),
+);
+
+it.effect("decodes valid persisted document and file attachment metadata", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeChatAttachments([
+      {
+        type: "document",
+        id: "pdf-1",
+        name: "design.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1,
+      },
+      {
+        type: "file",
+        id: "file-1",
+        name: "notes.md",
+        mimeType: "text/markdown",
+        sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+      },
+    ]);
+
+    assert.deepStrictEqual(
+      parsed.map((attachment) => attachment.type),
+      ["document", "file"],
+    );
+    assert.strictEqual(parsed[0]?.mimeType, "application/pdf");
+    assert.strictEqual(parsed[1]?.sizeBytes, PROVIDER_SEND_TURN_MAX_FILE_BYTES);
+  }),
+);
+
+it.effect("decodes valid document and file uploads", () =>
+  Effect.gen(function* () {
+    const document = yield* decodeUploadChatAttachment({
+      type: "document",
+      name: "design.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4,
+      dataUrl: "data:application/pdf;base64,JVBERg==",
+    });
+    const file = yield* decodeUploadChatAttachment({
+      type: "file",
+      name: "notes.md",
+      mimeType: "text/markdown",
+      sizeBytes: 4,
+      dataUrl: "data:text/markdown;base64,dGVzdA==",
+    });
+
+    assert.strictEqual(document.type, "document");
+    assert.strictEqual(file.type, "file");
+  }),
+);
+
+it.effect("rejects empty document and file attachments", () =>
+  Effect.gen(function* () {
+    for (const attachment of [
+      {
+        type: "document",
+        name: "empty.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 0,
+        dataUrl: "data:application/pdf;base64,",
+      },
+      {
+        type: "file",
+        name: "empty.txt",
+        mimeType: "text/plain",
+        sizeBytes: 0,
+        dataUrl: "data:text/plain;base64,",
+      },
+    ]) {
+      const result = yield* Effect.exit(decodeUploadChatAttachment(attachment));
+      assert.strictEqual(result._tag, "Failure");
+    }
+  }),
+);
+
+it.effect("enforces document and file decoded byte boundaries", () =>
+  Effect.gen(function* () {
+    const validDocument = yield* decodeUploadChatAttachment({
+      type: "document",
+      name: "boundary.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES,
+      dataUrl: "data:application/pdf;base64,JVBERg==",
+    });
+    const validFile = yield* decodeUploadChatAttachment({
+      type: "file",
+      name: "boundary.txt",
+      mimeType: "text/plain",
+      sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+      dataUrl: "data:text/plain;base64,eA==",
+    });
+    assert.strictEqual(validDocument.sizeBytes, PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES);
+    assert.strictEqual(validFile.sizeBytes, PROVIDER_SEND_TURN_MAX_FILE_BYTES);
+
+    const oversizedDocument = yield* Effect.exit(
+      decodeUploadChatAttachment({
+        type: "document",
+        name: "oversized.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES + 1,
+        dataUrl: "data:application/pdf;base64,JVBERg==",
+      }),
+    );
+    const oversizedFile = yield* Effect.exit(
+      decodeUploadChatAttachment({
+        type: "file",
+        name: "oversized.txt",
+        mimeType: "text/plain",
+        sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1,
+        dataUrl: "data:text/plain;base64,eA==",
+      }),
+    );
+    assert.strictEqual(oversizedDocument._tag, "Failure");
+    assert.strictEqual(oversizedFile._tag, "Failure");
+  }),
+);
+
+it.effect("rejects document and file uploads over their encoded data URL caps", () =>
+  Effect.gen(function* () {
+    const oversizedDocument = yield* Effect.exit(
+      decodeUploadChatAttachment({
+        type: "document",
+        name: "oversized.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1,
+        dataUrl: "x".repeat(roundedDataUrlCharLimit(PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES) + 1),
+      }),
+    );
+    const oversizedFile = yield* Effect.exit(
+      decodeUploadChatAttachment({
+        type: "file",
+        name: "oversized.txt",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+        dataUrl: "x".repeat(roundedDataUrlCharLimit(PROVIDER_SEND_TURN_MAX_FILE_BYTES) + 1),
+      }),
+    );
+    assert.strictEqual(oversizedDocument._tag, "Failure");
+    assert.strictEqual(oversizedFile._tag, "Failure");
+  }),
+);
+
+it.effect("rejects non-canonical PDF MIME and malformed attachment variants", () =>
+  Effect.gen(function* () {
+    const nonCanonicalPdf = yield* Effect.exit(
+      decodeUploadChatAttachment({
+        type: "document",
+        name: "design.pdf",
+        mimeType: "Application/PDF",
+        sizeBytes: 1,
+        dataUrl: "data:application/pdf;base64,eA==",
+      }),
+    );
+    const missingFileData = yield* Effect.exit(
+      decodeUploadChatAttachment({
+        type: "file",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+      }),
+    );
+    const unknownVariant = yield* Effect.exit(
+      decodeUploadChatAttachment({
+        type: "archive",
+        name: "source.zip",
+        mimeType: "application/zip",
+        sizeBytes: 1,
+        dataUrl: "data:application/zip;base64,eA==",
+      }),
+    );
+    assert.strictEqual(nonCanonicalPdf._tag, "Failure");
+    assert.strictEqual(missingFileData._tag, "Failure");
+    assert.strictEqual(unknownVariant._tag, "Failure");
+  }),
+);
+
+it.effect("round-trips mixed attachment order and discriminants", () =>
+  Effect.gen(function* () {
+    const input = [
+      {
+        type: "image",
+        id: "image-1",
+        name: "first.png",
+        mimeType: "image/png",
+        sizeBytes: 10,
+      },
+      {
+        type: "document",
+        id: "pdf-1",
+        name: "second.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 20,
+      },
+      {
+        type: "file",
+        id: "file-1",
+        name: "third.json",
+        mimeType: "application/json",
+        sizeBytes: 30,
+      },
+    ] as const;
+
+    const decoded = yield* decodeChatAttachments(input);
+    const encoded = yield* encodeChatAttachments(decoded);
+    assert.deepStrictEqual(
+      decoded.map((attachment) => attachment.type),
+      ["image", "document", "file"],
+    );
+    assert.deepStrictEqual(encoded, input);
+  }),
+);
+
+it.effect("rejects nine mixed upload attachments in a client turn command", () =>
+  Effect.gen(function* () {
+    const attachments = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        type: "image" as const,
+        name: `image-${index}.png`,
+        mimeType: "image/png",
+        sizeBytes: 1,
+        dataUrl: "data:image/png;base64,eA==",
+      })),
+      ...Array.from({ length: 2 }, (_, index) => ({
+        type: "document" as const,
+        name: `document-${index}.pdf`,
+        mimeType: "application/pdf" as const,
+        sizeBytes: 1,
+        dataUrl: "data:application/pdf;base64,eA==",
+      })),
+      {
+        type: "file" as const,
+        name: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+        dataUrl: "data:text/plain;base64,eA==",
+      },
+    ];
+
+    const result = yield* Effect.exit(
+      decodeClientOrchestrationCommand({
+        type: "thread.turn.start",
+        commandId: "cmd-too-many-attachments",
+        threadId: "thread-1",
+        message: {
+          messageId: "msg-too-many-attachments",
+          role: "user",
+          text: "",
+          attachments,
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    assert.strictEqual(result._tag, "Failure");
   }),
 );
 
