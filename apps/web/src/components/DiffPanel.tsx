@@ -27,6 +27,8 @@ import { useCheckpointDiff } from "~/lib/checkpointDiffState";
 import { cn } from "~/lib/utils";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../diffPanelStore";
 import { useTheme } from "../hooks/useTheme";
+import { resolveDiffIndicators } from "../appearance/diffIndicators";
+import { resolveActiveAppearanceTheme } from "../appearance/appearanceThemes";
 import {
   buildFileDiffRenderKey,
   getDiffCollapseIconClassName,
@@ -195,6 +197,9 @@ export default function DiffPanel({
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
   const [initialGitScope] = useState(initialGitScopeProp);
+  const diffIndicators = resolveDiffIndicators(
+    resolveActiveAppearanceTheme(settings.appearance).diffMarkerStyle,
+  );
   const [diffRenderMode, setDiffRenderMode] = useState<DiffRenderMode>("stacked");
   const [wordWrap, setWordWrap] = useState(settings.wordWrap);
   const [diffIgnoreWhitespace, setDiffIgnoreWhitespace] = useState(settings.diffIgnoreWhitespace);
@@ -906,6 +911,7 @@ export default function DiffPanel({
                   }}
                   options={{
                     diffStyle: diffRenderMode === "split" ? "split" : "unified",
+                    diffIndicators,
                     lineDiffType: "none",
                     overflow: wordWrap ? "wrap" : "scroll",
                     theme: resolveDiffThemeName(resolvedTheme),

@@ -122,11 +122,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --animate-status-pulse: status-pulse 2s infinite;
   --animate-status-ping: status-ping 2s infinite;
   --animate-sidebar-working-text: sidebar-working-text 3.4s infinite;
-  --font-sans:
-    "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
-    sans-serif;
-  --font-mono:
-    "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  --font-sans: var(--app-ui-font-family);
+  --font-mono: var(--app-mono-font-family);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-success-foreground: var(--success-foreground);
@@ -812,6 +809,19 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
 :root {
   color-scheme: light;
+  --app-ui-font-family:
+    "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
+  --app-mono-font-family:
+    "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  --app-terminal-font-family:
+    "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  --app-ui-font-size: 14px;
+  --app-ui-font-delta: calc(var(--app-ui-font-size) - 14px);
+  --app-chat-font-size: 14px;
+  --app-code-font-size: 12px;
+  --app-terminal-font-size: 12px;
+  --app-density-scale: 1;
   --radius: 0.625rem;
   --background: var(--color-zinc-25);
   --app-chrome-background: var(--background);
@@ -950,16 +960,19 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 }
 
 body {
-  font-family:
-    "DM Sans Variable",
-    "DM Sans",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
+  font-family: var(--app-ui-font-family);
   margin: 0;
   padding: 0;
+}
+
+/* Settings text keeps its established default size and follows UI-size changes
+   by the same delta. Explicit classes avoid overriding Tailwind utilities. */
+.settings-ui-text-sm {
+  font-size: calc(14px + var(--app-ui-font-delta));
+}
+
+.settings-ui-text-13 {
+  font-size: calc(13px + var(--app-ui-font-delta));
 }
 
 html,
@@ -1008,8 +1021,7 @@ body {
 
 pre,
 code {
-  font-family:
-    "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--app-mono-font-family);
 }
 
 /* Window drag region (frameless titlebar) */
@@ -1090,6 +1102,7 @@ label:has(> select#reasoning-effort) select {
 
 /* Chat markdown rendering */
 .chat-markdown {
+  font-size: var(--app-chat-font-size);
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -1252,7 +1265,7 @@ label:has(> select#reasoning-effort) select {
   background: var(--muted);
   padding: 0.1rem 0.35rem;
   color: var(--foreground);
-  font-size: 0.75rem;
+  font-size: var(--app-code-font-size);
 }
 
 .chat-markdown a.chat-markdown-file-link {
@@ -1283,7 +1296,7 @@ label:has(> select#reasoning-effort) select {
   border: none;
   background: transparent;
   padding: 0;
-  font-size: 0.75rem;
+  font-size: var(--app-code-font-size);
 }
 
 .chat-markdown pre {
