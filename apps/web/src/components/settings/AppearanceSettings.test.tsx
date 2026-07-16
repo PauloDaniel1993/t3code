@@ -184,24 +184,50 @@ beforeEach(() => {
 });
 
 describe("AppearanceSettings", () => {
-  it("renders the built-in themes in their required order", () => {
+  it("renders the built-in themes in their required order inside a dropdown", () => {
     const page = renderAppearanceSettings();
-    const themeList = findElement(
+    const themeTrigger = findElement(
       page,
-      (element) => element.props["aria-label"] === "Appearance themes",
+      (element) => element.props["aria-label"] === "Appearance theme",
+    );
+    const themeSelect = findElement(
+      page,
+      (element) =>
+        element.props.value === "default" &&
+        typeof element.props.onValueChange === "function" &&
+        textContent(element).includes("DefaultBuilt-inReadableBuilt-in"),
     );
 
-    expect(textContent(themeList)).toContain(
+    expect(textContent(themeSelect)).toContain(
       "DefaultBuilt-inReadableBuilt-inCompactBuilt-inTerminalBuilt-in",
     );
-    expect(themeList.type).toBe("ul");
+    expect(textContent(themeTrigger)).toBe("Default");
 
-    const themeButton = findElement(
-      themeList,
-      (element) => element.type === "button" && element.props["aria-pressed"] !== undefined,
+    (themeSelect.props.onValueChange as (value: string) => void)("readable");
+    expect(store.appearance!.activeThemeId).toBe("readable");
+  });
+
+  it("renders accessible Codex-style previews for every color scheme", () => {
+    const page = renderAppearanceSettings();
+    const modeGroup = findElement(
+      page,
+      (element) => element.props["aria-label"] === "Color scheme mode",
     );
-    expect(themeButton.props.role).toBeUndefined();
-    expect(themeButton.props["aria-pressed"]).toBe(true);
+
+    for (const option of ["system", "light", "dark"] as const) {
+      const radio = findElement(
+        modeGroup,
+        (element) => element.props.role === "radio" && textContent(element) === option,
+      );
+      const preview = findElement(
+        radio,
+        (element) =>
+          componentName(element) === "ColorSchemePreview" && element.props.scheme === option,
+      );
+
+      expect(radio.props["aria-checked"]).toBe(option === "system");
+      expect(preview).toBeDefined();
+    }
   });
 
   it("keeps built-in controls disabled while allowing duplication", () => {
@@ -212,9 +238,10 @@ describe("AppearanceSettings", () => {
       (element) =>
         componentName(element) === "Input" && element.props.id === "appearance-theme-name",
     );
-    const fontSlider = findElement(
+    const fontSizeField = findElement(
       page,
-      (element) => element.type === "input" && element.props.type === "range",
+      (element) =>
+        componentName(element) === "NumberField" && element.props.id === "appearance-uiFontSizePx",
     );
     const colors = findElement(
       page,
@@ -224,7 +251,7 @@ describe("AppearanceSettings", () => {
 
     expect(duplicate.props.disabled).toBeUndefined();
     expect(nameInput.props.disabled).toBe(true);
-    expect(fontSlider.props.disabled).toBe(true);
+    expect(fontSizeField.props.disabled).toBe(true);
     expect(colors.props.disabled).toBe(true);
   });
 
@@ -243,13 +270,14 @@ describe("AppearanceSettings", () => {
       (element) =>
         componentName(element) === "Input" && element.props.id === "appearance-theme-name",
     );
-    const fontSlider = findElement(
+    const fontSizeField = findElement(
       customPage,
-      (element) => element.type === "input" && element.props.type === "range",
+      (element) =>
+        componentName(element) === "NumberField" && element.props.id === "appearance-uiFontSizePx",
     );
 
     expect(nameInput.props.disabled).toBe(false);
-    expect(fontSlider.props.disabled).toBe(false);
+    expect(fontSizeField.props.disabled).toBe(false);
   });
 
   it("replays duplication against hydrated appearance instead of replacing it", () => {
@@ -414,17 +442,101 @@ describe("AppearanceSettings", () => {
     );
   });
 
-  it("shows the current pixel value beside each font-size slider", () => {
+  it("shows compact steppers for every font-size field", () => {
     const page = renderAppearanceSettings();
-    const fontSlider = findElement(
+
+    for (const [key, label, value] of [
+      ["uiFontSizePx", "ui font size", 14],
+      ["chatFontSizePx", "chat font size", 14],
+      ["codeFontSizePx", "code font size", 12],
+      ["terminalFontSizePx", "terminal font size", 12],
+    ] as const) {
+      const field = findElement(
+        page,
+        (element) =>
+          componentName(element) === "NumberField" && element.props.id === `appearance-${key}`,
+      );
+
+      expect(field.props.value).toBe(value);
+      expect(
+        findElement(field, (element) => element.props["aria-label"] === `Decrease ${label}`),
+      ).toBeDefined();
+      expect(
+        findElement(field, (element) => element.props["aria-label"] === `Increase ${label}`),
+      ).toBeDefined();
+    }
+  });
+
+  it("opens only the color variant for the resolved mode by default", () => {
+    const page = renderAppearanceSettings();
+    const lightColors = findElement(
       page,
       (element) =>
-        element.type === "input" &&
-        element.props.type === "range" &&
-        element.props.id === "appearance-uiFontSizePx-range",
+        componentName(element) === "ColorVariantControls" && element.props.variantName === "light",
+    );
+    const darkColors = findElement(
+      page,
+      (element) =>
+        componentName(element) === "ColorVariantControls" && element.props.variantName === "dark",
     );
 
-    expect(fontSlider.props.value).toBe(14);
+    expect(lightColors.props.initiallyOpen).toBe(true);
+    expect(darkColors.props.initiallyOpen).toBe(false);
+  });
+
+  it("explains every editable color token", () => {
+    const lightColors = renderColorControls(renderAppearanceSettings(), "light");
+
+    for (const token of ["accent", "background", "foreground", "surface", "muted"] as const) {
+      const description = findElement(
+        lightColors,
+        (element) => element.props.id === `appearance-light-${token}-description`,
+      );
+      const input = findElement(
+        lightColors,
+        (element) => element.props.id === `appearance-light-${token}`,
+      );
+
+      expect(textContent(description).length).toBeGreaterThan(10);
+      expect(input.props["aria-describedby"]).toContain(description.props.id);
+    }
+  });
+
+  it("gives color swatches button-like hover and focus feedback", () => {
+    const lightColors = renderColorControls(renderAppearanceSettings(), "light");
+    const swatch = findElement(
+      lightColors,
+      (element) => element.props["aria-label"] === "Light colors accent color swatch",
+    );
+
+    expect(swatch.props.className).toContain("hover:bg-accent/50");
+    expect(swatch.props.className).toContain("focus-visible:ring-2");
+  });
+
+  it("applies the translucent sidebar preference to both color modes", () => {
+    const customThemeId = "custom-translucent-theme";
+    store.appearance = duplicateAppearanceTheme(store.appearance!, "default", () => customThemeId);
+    const page = renderAppearanceSettings();
+    const translucentSidebar = findElement(
+      page,
+      (element) =>
+        componentName(element) === "Switch" &&
+        element.props.id === "appearance-translucent-sidebar",
+    );
+
+    expect(translucentSidebar.props.checked).toBe(false);
+    expect(translucentSidebar.props["aria-describedby"]).toBe(
+      "appearance-translucent-sidebar-description",
+    );
+
+    (translucentSidebar.props.onCheckedChange as (checked: boolean) => void)(true);
+
+    expect(store.appearance!.customThemes[customThemeId]!.variants.light.translucentSidebar).toBe(
+      true,
+    );
+    expect(store.appearance!.customThemes[customThemeId]!.variants.dark.translucentSidebar).toBe(
+      true,
+    );
   });
 
   it("shows invalid hex feedback without persisting the invalid value", () => {
