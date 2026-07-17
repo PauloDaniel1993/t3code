@@ -139,10 +139,27 @@ interface PromptFromMessageInput {
   additionalInstructions?: string | undefined;
 }
 
+function attachmentMetadataLine(attachment: ChatAttachment): string {
+  const metadata = `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`;
+  switch (attachment.type) {
+    case "image":
+    case "document":
+    case "file":
+      return metadata;
+    default: {
+      const unknown = attachment as unknown as {
+        readonly type?: unknown;
+        readonly name?: unknown;
+        readonly mimeType?: unknown;
+        readonly sizeBytes?: unknown;
+      };
+      return `- ${String(unknown.name ?? "unnamed attachment")} (${String(unknown.mimeType ?? "unknown MIME")}, ${String(unknown.sizeBytes ?? "unknown")} bytes; unsupported attachment kind ${JSON.stringify(String(unknown.type))})`;
+    }
+  }
+}
+
 function buildPromptFromMessage(input: PromptFromMessageInput): string {
-  const attachmentLines = (input.attachments ?? []).map(
-    (attachment) => `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
-  );
+  const attachmentLines = (input.attachments ?? []).map(attachmentMetadataLine);
 
   const promptSections = [
     input.instruction,

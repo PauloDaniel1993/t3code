@@ -1,4 +1,13 @@
-import { OpenCodeSettings, ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
+import {
+  type ChatAttachment,
+  OpenCodeSettings,
+  ProviderInstanceId,
+  TextGenerationError,
+} from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
@@ -9,7 +18,9 @@ import * as TestClock from "effect/testing/TestClock";
 import * as NetService from "@t3tools/shared/Net";
 import { beforeEach, expect } from "vite-plus/test";
 
+import { attachmentRelativePath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import { providerFileUri } from "../provider/attachmentDelivery.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 import * as OpenCodeTextGeneration from "./OpenCodeTextGeneration.ts";
 import * as TextGeneration from "./TextGeneration.ts";
@@ -18,6 +29,7 @@ const runtimeMock = {
   state: {
     startCalls: [] as string[],
     promptUrls: [] as string[],
+    promptInputs: [] as Array<unknown>,
     authHeaders: [] as Array<string | null>,
     closeCalls: [] as string[],
     sessionCreateError: undefined as unknown,
@@ -30,6 +42,7 @@ const runtimeMock = {
   reset() {
     this.state.startCalls.length = 0;
     this.state.promptUrls.length = 0;
+    this.state.promptInputs.length = 0;
     this.state.authHeaders.length = 0;
     this.state.closeCalls.length = 0;
     this.state.sessionCreateError = undefined;
@@ -73,8 +86,9 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntime.OpenCodeRuntimeShape = {
           }
           return runtimeMock.state.sessionResult ?? { data: { id: `${baseUrl}/session` } };
         },
-        prompt: async () => {
+        prompt: async (input: unknown) => {
           runtimeMock.state.promptUrls.push(baseUrl);
+          runtimeMock.state.promptInputs.push(input);
           runtimeMock.state.authHeaders.push(
             serverPassword ? `Basic ${btoa(`opencode:${serverPassword}`)}` : null,
           );
@@ -166,6 +180,17 @@ function withOpenCodeTextGeneration<A, E, R>(
     const textGeneration = yield* OpenCodeTextGeneration.makeOpenCodeTextGeneration(settings);
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
+}
+
+function writeStoredAttachment(
+  attachmentsDir: string,
+  attachment: ChatAttachment,
+  bytes: Uint8Array,
+): string {
+  const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+  NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+  NodeFS.writeFileSync(attachmentPath, bytes);
+  return attachmentPath;
 }
 
 beforeEach(() => {
@@ -365,6 +390,89 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
           subject: "Tighten OpenCode parsing",
           body: "Handle JSON text output locally.",
         });
+      }),
+    ),
+  );
+
+  it.effect("materializes only images while preserving document and file metadata", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+      Effect.gen(function* () {
+        const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+        const image = {
+          type: "image" as const,
+          id: "opencode-text-image",
+          name: "screen shot.png",
+          mimeType: "image/png",
+          sizeBytes: 2,
+        };
+        const document = {
+          type: "document" as const,
+          id: "opencode-text-document",
+          name: "requirements.pdf",
+          mimeType: "application/pdf" as const,
+          sizeBytes: 3,
+        };
+        const file = {
+          type: "file" as const,
+          id: "opencode-text-file",
+          name: "notes.md",
+          mimeType: "text/markdown",
+          sizeBytes: 4,
+        };
+        const imagePath = writeStoredAttachment(attachmentsDir, image, Uint8Array.from([1, 2]));
+        runtimeMock.state.promptResult = {
+          data: { parts: [{ type: "text", text: '{"branch":"fix/supplied-context"}' }] },
+        };
+
+        const result = yield* textGeneration.generateBranchName({
+          cwd: process.cwd(),
+          message: "Use all supplied context.",
+          attachments: [document, image, file],
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        });
+
+        expect(result.branch).toBe("fix/supplied-context");
+        const promptInput = runtimeMock.state.promptInputs.at(-1) as {
+          parts: Array<Record<string, unknown>>;
+        };
+        expect(promptInput.parts).toHaveLength(2);
+        expect(promptInput.parts[0]).toMatchObject({ type: "text" });
+        expect(String(promptInput.parts[0]?.text)).toContain("requirements.pdf");
+        expect(String(promptInput.parts[0]?.text)).toContain("notes.md");
+        expect(promptInput.parts[1]).toEqual({
+          type: "file",
+          mime: "image/png",
+          filename: "screen shot.png",
+          url: providerFileUri(imagePath),
+        });
+      }),
+    ),
+  );
+
+  it.effect("rejects a missing OpenCode text-generation image before prompting", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+      Effect.gen(function* () {
+        const error = yield* textGeneration
+          .generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Name this thread.",
+            attachments: [
+              {
+                type: "image",
+                id: "opencode-text-missing-image",
+                name: "missing.png",
+                mimeType: "image/png",
+                sizeBytes: 1,
+              },
+            ],
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          })
+          .pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(TextGenerationError);
+        expect(error.message).toContain("missing.png");
+        expect(runtimeMock.state.promptInputs).toEqual([]);
+        expect(runtimeMock.state.startCalls).toEqual([]);
       }),
     ),
   );
