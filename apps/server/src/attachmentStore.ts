@@ -15,6 +15,8 @@ const LEGACY_IMAGE_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"]
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+export const ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE =
+  "Attachment staging requires a thread ID with only lowercase letters, digits, underscores, and single hyphens; it cannot begin or end with a separator and must be at most 80 characters.";
 const ATTACHMENT_ID_PATTERN = new RegExp(
   `^(${ATTACHMENT_ID_THREAD_SEGMENT_PATTERN})-(${ATTACHMENT_ID_UUID_PATTERN})$`,
   "i",
@@ -35,12 +37,10 @@ export function toSafeThreadAttachmentSegment(threadId: string): string | null {
   return segment;
 }
 
-export function createAttachmentId(threadId: string): string {
+export function createAttachmentId(threadId: string): string | null {
   const threadSegment = toSafeThreadAttachmentSegment(threadId);
   if (threadSegment !== threadId) {
-    throw new Error(
-      "Attachment staging requires a thread ID with only lowercase letters, digits, underscores, and single hyphens; it cannot begin or end with a separator and must be at most 80 characters.",
-    );
+    return null;
   }
   return `${threadSegment}-${NodeCrypto.randomUUID()}`;
 }

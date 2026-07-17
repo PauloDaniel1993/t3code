@@ -26,6 +26,7 @@ import * as SqlError from "effect/unstable/sql/SqlError";
 import { expect } from "vite-plus/test";
 
 import { ATTACHMENT_STAGING_DIRECTORY_NAME, sweepAttachmentStaging } from "../attachmentStaging.ts";
+import { ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -66,12 +67,13 @@ function upload(
 function turnCommand(input: {
   readonly commandId: string;
   readonly messageId?: string;
+  readonly threadId?: string;
   readonly attachments: ReadonlyArray<UploadChatAttachment>;
 }): Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }> {
   return {
     type: "thread.turn.start",
     commandId: CommandId.make(input.commandId),
-    threadId: ThreadId.make("thread-attachments"),
+    threadId: ThreadId.make(input.threadId ?? "thread-attachments"),
     message: {
       messageId: MessageId.make(input.messageId ?? `message-${input.commandId}`),
       role: "user",
@@ -327,6 +329,30 @@ it.layer(DefaultAttachmentDispatchEnvironment.layer)("authoritative attachment d
         expectNoAttachmentOrphans(system.config);
         expect(providerTurnPublications(system.published, command.commandId)).toEqual([]);
       }
+    });
+  });
+
+  it.effect("rejects lossy thread ids as typed staging errors without creating files", () => {
+    return Effect.gen(function* () {
+      const system = yield* makeSystem();
+      const command = turnCommand({
+        commandId: "command-lossy-thread-id",
+        threadId: "notes.1",
+        attachments: [
+          upload({
+            type: "file",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            bytes: Buffer.from("notes"),
+          }),
+        ],
+      });
+
+      const error = yield* normalizeDispatchCommand(command).pipe(Effect.flip);
+
+      expect(error._tag).toBe("OrchestrationDispatchCommandError");
+      expect(error.message).toContain(ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE);
+      expectNoAttachmentOrphans(system.config);
     });
   });
 
