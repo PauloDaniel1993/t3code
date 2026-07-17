@@ -124,9 +124,9 @@ describe("buildBranchNamePrompt", () => {
     expect(result.prompt).not.toContain("Attachment metadata:");
   });
 
-  it("includes attachment metadata when attachments are provided", () => {
+  it("includes ordered image, document, and file metadata", () => {
     const result = buildBranchNamePrompt({
-      message: "Fix the layout from screenshot",
+      message: "Fix the layout from the supplied context",
       attachments: [
         {
           type: "image" as const,
@@ -135,13 +135,51 @@ describe("buildBranchNamePrompt", () => {
           mimeType: "image/png",
           sizeBytes: 12345,
         },
+        {
+          type: "document" as const,
+          id: "att-124",
+          name: "requirements.pdf",
+          mimeType: "application/pdf" as const,
+          sizeBytes: 23456,
+        },
+        {
+          type: "file" as const,
+          id: "att-125",
+          name: "notes.md",
+          mimeType: "text/markdown",
+          sizeBytes: 34567,
+        },
       ],
     });
 
     expect(result.prompt).toContain("Attachment metadata:");
-    expect(result.prompt).toContain("screenshot.png");
-    expect(result.prompt).toContain("image/png");
-    expect(result.prompt).toContain("12345 bytes");
+    const imageIndex = result.prompt.indexOf("screenshot.png");
+    const documentIndex = result.prompt.indexOf("requirements.pdf");
+    const fileIndex = result.prompt.indexOf("notes.md");
+    expect(imageIndex).toBeGreaterThan(-1);
+    expect(documentIndex).toBeGreaterThan(imageIndex);
+    expect(fileIndex).toBeGreaterThan(documentIndex);
+    expect(result.prompt).toContain("application/pdf");
+    expect(result.prompt).toContain("text/markdown");
+    expect(result.prompt).toContain("34567 bytes");
+  });
+
+  it("surfaces unknown attachment kinds in metadata instead of dropping them", () => {
+    const result = buildBranchNamePrompt({
+      message: "Name this work",
+      attachments: [
+        {
+          type: "archive",
+          id: "att-unknown",
+          name: "bundle.zip",
+          mimeType: "application/zip",
+          sizeBytes: 42,
+        } as never,
+      ],
+    });
+
+    expect(result.prompt).toContain("bundle.zip");
+    expect(result.prompt).toContain('unsupported attachment kind "archive"');
   });
 });
 

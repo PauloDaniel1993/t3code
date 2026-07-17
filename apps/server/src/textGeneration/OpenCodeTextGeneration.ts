@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -18,6 +19,7 @@ import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import * as ServerConfig from "../config.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
+import { providerFileUri } from "../provider/attachmentDelivery.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
@@ -194,6 +196,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
   environment?: NodeJS.ProcessEnv,
 ) {
   const serverConfig = yield* ServerConfig.ServerConfig;
+  const fileSystem = yield* FileSystem.FileSystem;
   const openCodeRuntime = yield* OpenCodeRuntime.OpenCodeRuntime;
   const resolvedEnvironment = environment ?? process.env;
   const idleFiberScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -358,6 +361,74 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     ),
   );
 
+  const materializeOpenCodeImageParts = Effect.fn("materializeOpenCodeImageParts")(
+    function* (input: {
+      readonly operation: OpenCodeTextGenerationOperation;
+      readonly attachments: ReadonlyArray<ChatAttachment> | undefined;
+    }) {
+      const parts: Array<{
+        readonly type: "file";
+        readonly mime: string;
+        readonly filename: string;
+        readonly url: string;
+      }> = [];
+
+      for (const attachment of input.attachments ?? []) {
+        switch (attachment.type) {
+          case "image": {
+            const resolvedPath = resolveAttachmentPath({
+              attachmentsDir: serverConfig.attachmentsDir,
+              attachment,
+            });
+            if (!resolvedPath) {
+              return yield* new TextGenerationError({
+                operation: input.operation,
+                detail: `Image attachment '${attachment.name}' could not be resolved for OpenCode text generation.`,
+              });
+            }
+            const fileInfo = yield* fileSystem.stat(resolvedPath).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new TextGenerationError({
+                    operation: input.operation,
+                    detail: `Image attachment '${attachment.name}' could not be read for OpenCode text generation.`,
+                    cause,
+                  }),
+              ),
+            );
+            if (fileInfo.type !== "File") {
+              return yield* new TextGenerationError({
+                operation: input.operation,
+                detail: `Image attachment '${attachment.name}' is not a file for OpenCode text generation.`,
+              });
+            }
+            parts.push({
+              type: "file",
+              mime: attachment.mimeType,
+              filename: attachment.name,
+              url: providerFileUri(resolvedPath),
+            });
+            break;
+          }
+          case "document":
+          case "file":
+            // Secondary git/title generation keeps non-image metadata in the
+            // prompt and deliberately avoids materializing those files.
+            break;
+          default: {
+            const type = (attachment as unknown as { readonly type?: unknown }).type;
+            return yield* new TextGenerationError({
+              operation: input.operation,
+              detail: `Unsupported OpenCode text-generation attachment kind '${String(type)}'.`,
+            });
+          }
+        }
+      }
+
+      return parts;
+    },
+  );
+
   const runOpenCodeJson = Effect.fn("runOpenCodeJson")(function* <S extends Schema.Top>(input: {
     readonly operation: OpenCodeTextGenerationOperation;
     readonly cwd: string;
@@ -374,10 +445,9 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       });
     }
 
-    const fileParts = OpenCodeRuntime.toOpenCodeFileParts({
+    const fileParts = yield* materializeOpenCodeImageParts({
+      operation: input.operation,
       attachments: input.attachments,
-      resolveAttachmentPath: (attachment) =>
-        resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
     });
 
     const runAgainstServer = Effect.fn("runOpenCodeJson.runAgainstServer")(

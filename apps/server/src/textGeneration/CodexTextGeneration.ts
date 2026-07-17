@@ -36,6 +36,76 @@ import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 const CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT = "low";
 const CODEX_TIMEOUT_MS = 180_000;
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
+
+type CodexTextGenerationOperation =
+  | "generateCommitMessage"
+  | "generatePrContent"
+  | "generateBranchName"
+  | "generateThreadTitle";
+
+type MaterializedImageAttachments = {
+  readonly imagePaths: ReadonlyArray<string>;
+};
+
+export const prepareCodexTextGenerationAttachments = Effect.fn(
+  "prepareCodexTextGenerationAttachments",
+)(function* (input: {
+  readonly operation: CodexTextGenerationOperation;
+  readonly attachments: TextGeneration.BranchNameGenerationInput["attachments"];
+  readonly attachmentsDir: string;
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+}): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
+  const imagePaths: string[] = [];
+  for (const attachment of input.attachments ?? []) {
+    switch (attachment.type) {
+      case "image": {
+        const resolvedPath = resolveAttachmentPath({
+          attachmentsDir: input.attachmentsDir,
+          attachment,
+        });
+        if (!resolvedPath || !input.path.isAbsolute(resolvedPath)) {
+          return yield* new TextGenerationError({
+            operation: input.operation,
+            detail: `Image attachment '${attachment.name}' could not be resolved for Codex text generation.`,
+          });
+        }
+        const fileInfo = yield* input.fileSystem.stat(resolvedPath).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TextGenerationError({
+                operation: input.operation,
+                detail: `Image attachment '${attachment.name}' could not be read for Codex text generation.`,
+                cause,
+              }),
+          ),
+        );
+        if (fileInfo.type !== "File") {
+          return yield* new TextGenerationError({
+            operation: input.operation,
+            detail: `Image attachment '${attachment.name}' is not a file for Codex text generation.`,
+          });
+        }
+        imagePaths.push(resolvedPath);
+        break;
+      }
+      case "document":
+      case "file":
+        // Secondary git/title generation uses non-image metadata from the
+        // shared prompt builder and materializes only actual image inputs.
+        break;
+      default: {
+        const type = (attachment as unknown as { readonly type?: unknown }).type;
+        return yield* new TextGenerationError({
+          operation: input.operation,
+          detail: `Unsupported Codex text-generation attachment kind '${String(type)}'.`,
+        });
+      }
+    }
+  }
+  return { imagePaths };
+});
+
 /**
  * Build a Codex text-generation closure bound to a specific `CodexSettings`
  * payload. See `makeCodexAdapter` for the overall per-instance rationale.
@@ -49,10 +119,6 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverConfig = yield* Effect.service(ServerConfig.ServerConfig);
   const resolvedEnvironment = environment ?? process.env;
-
-  type MaterializedImageAttachments = {
-    readonly imagePaths: ReadonlyArray<string>;
-  };
 
   const readStreamAsString = <E>(
     operation: string,
@@ -111,40 +177,6 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           }),
       ),
     );
-
-  const materializeImageAttachments = Effect.fn("materializeImageAttachments")(function* (
-    _operation:
-      | "generateCommitMessage"
-      | "generatePrContent"
-      | "generateBranchName"
-      | "generateThreadTitle",
-    attachments: TextGeneration.BranchNameGenerationInput["attachments"],
-  ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
-    if (!attachments || attachments.length === 0) {
-      return { imagePaths: [] };
-    }
-
-    const imagePaths: string[] = [];
-    for (const attachment of attachments) {
-      if (attachment.type !== "image") {
-        continue;
-      }
-
-      const resolvedPath = resolveAttachmentPath({
-        attachmentsDir: serverConfig.attachmentsDir,
-        attachment,
-      });
-      if (!resolvedPath || !path.isAbsolute(resolvedPath)) {
-        continue;
-      }
-      const fileInfo = yield* fileSystem.stat(resolvedPath).pipe(Effect.orElseSucceed(() => null));
-      if (!fileInfo || fileInfo.type !== "File") {
-        continue;
-      }
-      imagePaths.push(resolvedPath);
-    }
-    return { imagePaths };
-  });
 
   const runCodexJson = Effect.fn("runCodexJson")(function* <S extends Schema.Top>({
     operation,
@@ -353,10 +385,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
   const generateBranchName: TextGeneration.TextGeneration["Service"]["generateBranchName"] =
     Effect.fn("CodexTextGeneration.generateBranchName")(function* (input) {
-      const { imagePaths } = yield* materializeImageAttachments(
-        "generateBranchName",
-        input.attachments,
-      );
+      const { imagePaths } = yield* prepareCodexTextGenerationAttachments({
+        operation: "generateBranchName",
+        attachments: input.attachments,
+        attachmentsDir: serverConfig.attachmentsDir,
+        fileSystem,
+        path,
+      });
       const { prompt, outputSchema } = buildBranchNamePrompt({
         message: input.message,
         attachments: input.attachments,
@@ -378,10 +413,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
   const generateThreadTitle: TextGeneration.TextGeneration["Service"]["generateThreadTitle"] =
     Effect.fn("CodexTextGeneration.generateThreadTitle")(function* (input) {
-      const { imagePaths } = yield* materializeImageAttachments(
-        "generateThreadTitle",
-        input.attachments,
-      );
+      const { imagePaths } = yield* prepareCodexTextGenerationAttachments({
+        operation: "generateThreadTitle",
+        attachments: input.attachments,
+        attachmentsDir: serverConfig.attachmentsDir,
+        fileSystem,
+        path,
+      });
       const { prompt, outputSchema } = buildThreadTitlePrompt({
         message: input.message,
         previousTitle: input.previousTitle,
