@@ -17,20 +17,23 @@ import {
 const THREAD_ONE_ID = "thread-1-00000000-0000-4000-8000-000000000001";
 const THREAD_TWO_ID = "thread-2-00000000-0000-4000-8000-000000000002";
 
-describe("attachmentStore", () => {
-  it("sanitizes thread ids when creating attachment ids", () => {
-    const attachmentId = createAttachmentId("thread.folder/unsafe space");
-    expect(attachmentId).toBeTruthy();
-    if (!attachmentId) {
-      return;
-    }
+const UUID_THREAD_ID = "00000000000040008000000000000001";
+const DASHED_UUID_THREAD_ID = "00000000-0000-4000-8000-000000000001";
 
-    const threadSegment = parseThreadSegmentFromAttachmentId(attachmentId);
-    expect(threadSegment).toBeTruthy();
-    expect(threadSegment).toMatch(/^[a-z0-9_-]+$/i);
-    expect(threadSegment).not.toContain(".");
-    expect(threadSegment).not.toContain("%");
-    expect(threadSegment).not.toContain("/");
+describe("attachmentStore", () => {
+  it("rejects collision-prone thread ids with an actionable staging error", () => {
+    for (const threadId of ["notes.1", "notes/1"]) {
+      expect(() => createAttachmentId(threadId)).toThrow(
+        "Attachment staging requires a thread ID with only lowercase letters, digits, underscores, and single hyphens",
+      );
+    }
+  });
+
+  it("creates attachment ids for canonical UUID thread ids", () => {
+    for (const threadId of [UUID_THREAD_ID, DASHED_UUID_THREAD_ID]) {
+      const attachmentId = createAttachmentId(threadId);
+      expect(parseThreadSegmentFromAttachmentId(attachmentId)).toBe(threadId);
+    }
   });
 
   it("parses exact thread segments from attachment ids without prefix collisions", () => {
@@ -41,13 +44,10 @@ describe("attachmentStore", () => {
     expect(parseThreadSegmentFromAttachmentId(fooBarId)).toBe("foo-bar");
   });
 
-  it("normalizes created thread segments to lowercase", () => {
-    const attachmentId = createAttachmentId("Thread.Foo");
-    expect(attachmentId).toBeTruthy();
-    if (!attachmentId) {
-      return;
-    }
-    expect(parseThreadSegmentFromAttachmentId(attachmentId)).toBe("thread-foo");
+  it("rejects thread ids that require lowercase normalization", () => {
+    expect(() => createAttachmentId("Thread.Foo")).toThrow(
+      "Attachment staging requires a thread ID",
+    );
   });
 
   it("uses implementation-owned extensions and ignores traversal-shaped display names", () => {
