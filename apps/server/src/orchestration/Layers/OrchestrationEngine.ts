@@ -4,7 +4,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import { OrchestrationCommand, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -22,6 +22,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { sweepAttachmentStaging, type AttachmentStage } from "../../attachmentStaging.ts";
+import { ServerConfig } from "../../config.ts";
 import {
   metricAttributes,
   orchestrationCommandAckDuration,
@@ -52,6 +54,7 @@ const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvar
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
+  attachmentStage?: AttachmentStage;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
 }
@@ -83,6 +86,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
+  const serverConfig = yield* ServerConfig;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
@@ -140,6 +144,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         });
         if (Option.isSome(existingReceipt)) {
           if (existingReceipt.value.status === "accepted") {
+            if (envelope.attachmentStage) {
+              yield* envelope.attachmentStage.abort;
+            }
             return {
               sequence: existingReceipt.value.resultSequence,
             };
@@ -187,6 +194,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 });
               }
 
+              // Finalize only after every event and projection has succeeded. The
+              // surrounding SQL transaction still has to commit; any later failure
+              // exits through the stage rollback finalizer before publication.
+              if (envelope.attachmentStage) {
+                yield* envelope.attachmentStage.commit;
+              }
+
               yield* commandReceiptRepository.upsert({
                 commandId: envelope.command.commandId,
                 aggregateKind: lastSavedEvent.aggregateKind,
@@ -212,6 +226,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             ),
           );
 
+        if (envelope.attachmentStage) {
+          yield* envelope.attachmentStage.complete;
+        }
         commandReadModel = committedCommand.nextCommandReadModel;
         for (const [index, event] of committedCommand.committedEvents.entries()) {
           yield* PubSub.publish(eventPubSub, event);
@@ -229,7 +246,14 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
         }
         return { sequence: committedCommand.lastSequence };
-      }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
+      }).pipe(
+        Effect.withSpan(`orchestration.command.${envelope.command.type}`),
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) && envelope.attachmentStage
+            ? envelope.attachmentStage.abort
+            : Effect.void,
+        ),
+      ),
     ).pipe(
       Effect.flatMap((exit) =>
         Effect.gen(function* () {
@@ -297,6 +321,20 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     );
   };
 
+  yield* sweepAttachmentStaging({
+    attachmentsDir: serverConfig.attachmentsDir,
+    getReceiptStatus: (commandId) =>
+      commandReceiptRepository.getByCommandId({ commandId }).pipe(
+        Effect.map(Option.map((receipt) => receipt.status)),
+        Effect.mapError(
+          (cause) =>
+            new OrchestrationDispatchCommandError({
+              message: "Failed to inspect an attachment staging command receipt.",
+              cause,
+            }),
+        ),
+      ),
+  });
   yield* projectionPipeline.bootstrap;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
 
@@ -309,16 +347,30 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive, limit) =>
     eventStore.readFromSequence(fromSequenceExclusive, limit);
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
-    Effect.gen(function* () {
-      const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
-      yield* Queue.offer(commandQueue, {
-        command,
-        result,
-        startedAtMs: yield* Clock.currentTimeMillis,
-      });
-      return yield* Deferred.await(result);
-    });
+  const dispatch: OrchestrationEngineShape["dispatch"] = (command, options) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        if (options?.attachmentStage) {
+          yield* options.attachmentStage.claim;
+        }
+        const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
+        const offered = yield* Queue.offer(commandQueue, {
+          command,
+          ...(options?.attachmentStage ? { attachmentStage: options.attachmentStage } : {}),
+          result,
+          startedAtMs: yield* Clock.currentTimeMillis,
+        });
+        if (!offered) {
+          if (options?.attachmentStage) {
+            yield* options.attachmentStage.abort;
+          }
+          return yield* new OrchestrationDispatchCommandError({
+            message: "The orchestration command queue is unavailable.",
+          });
+        }
+        return yield* restore(Deferred.await(result));
+      }),
+    );
 
   return {
     readEvents,

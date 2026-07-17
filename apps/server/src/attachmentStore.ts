@@ -3,6 +3,10 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 
 import type { ChatAttachment } from "@t3tools/contracts";
+import {
+  ACCEPTED_ATTACHMENT_FILE_EXTENSIONS,
+  lookupAttachmentFileType,
+} from "@t3tools/shared/attachmentFileTypes";
 
 import {
   normalizeAttachmentRelativePath,
@@ -10,7 +14,14 @@ import {
 } from "./attachmentPaths.ts";
 import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 
-const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
+const ATTACHMENT_FILENAME_EXTENSIONS = [
+  ...new Set([
+    ...SAFE_IMAGE_FILE_EXTENSIONS,
+    ".bin",
+    ".pdf",
+    ...ACCEPTED_ATTACHMENT_FILE_EXTENSIONS.map((extension) => `.${extension}`),
+  ]),
+];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -64,10 +75,16 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
       return `${attachment.id}${extension}`;
     }
     case "document":
-    case "file":
-      throw new Error(
-        `Attachment type "${attachment.type}" is not supported by the image attachment store yet.`,
-      );
+      return `${attachment.id}.pdf`;
+    case "file": {
+      const fileType = lookupAttachmentFileType(attachment.name);
+      const extensionIndex = attachment.name.lastIndexOf(".");
+      if (!fileType || extensionIndex <= 0 || extensionIndex === attachment.name.length - 1) {
+        throw new Error(`Attachment '${attachment.name}' does not have a registered extension.`);
+      }
+      const extension = attachment.name.slice(extensionIndex + 1).toLowerCase();
+      return `${attachment.id}.${extension}`;
+    }
   }
 }
 

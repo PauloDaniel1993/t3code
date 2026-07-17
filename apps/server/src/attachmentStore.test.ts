@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  attachmentRelativePath,
   createAttachmentId,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPathById,
@@ -42,6 +43,27 @@ describe("attachmentStore", () => {
       return;
     }
     expect(parseThreadSegmentFromAttachmentId(attachmentId)).toBe("thread-foo");
+  });
+
+  it("uses implementation-owned document and registry extensions", () => {
+    expect(
+      attachmentRelativePath({
+        type: "document",
+        id: "thread-1-document",
+        name: "original-name.anything",
+        mimeType: "application/pdf",
+        sizeBytes: 10,
+      }),
+    ).toBe("thread-1-document.pdf");
+    expect(
+      attachmentRelativePath({
+        type: "file",
+        id: "thread-1-file",
+        name: "../unsafe/path/Source.TS",
+        mimeType: "text/plain",
+        sizeBytes: 10,
+      }),
+    ).toBe("thread-1-file.ts");
   });
 
   it("resolves attachment path by id using the extension that exists on disk", () => {
