@@ -966,18 +966,31 @@ describe("composerDraftStore project draft thread mapping", () => {
     }
   });
 
-  it("clears orphaned composer drafts when remapping a project to a new draft thread", () => {
+  it("clears orphaned composer drafts and revokes only their image previews when remapping", () => {
     const store = useComposerDraftStore.getState();
-    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
-    store.setPrompt(draftId, "orphan me");
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const revokeSpy = vi.fn<(url: string) => void>();
+    URL.revokeObjectURL = revokeSpy;
 
-    store.setProjectDraftThreadId(projectRef, otherDraftId, { threadId: otherThreadId });
+    try {
+      store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+      store.setProjectDraftThreadId(otherProjectRef, sharedDraftId, { threadId: otherThreadId });
+      store.setPrompt(draftId, "orphan me");
+      store.addImage(draftId, makeImage({ id: "img-orphaned", previewUrl: "blob:orphaned" }));
+      store.addImage(sharedDraftId, makeImage({ id: "img-retained", previewUrl: "blob:retained" }));
 
-    expect(useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)?.threadId).toBe(
-      otherThreadId,
-    );
-    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
-    expect(draftByKey(draftId)).toBeUndefined();
+      store.setProjectDraftThreadId(projectRef, otherDraftId, { threadId: otherThreadId });
+
+      expect(
+        useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)?.threadId,
+      ).toBe(otherThreadId);
+      expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
+      expect(draftByKey(draftId)).toBeUndefined();
+      expect(draftByKey(sharedDraftId)?.images).toHaveLength(1);
+      expect(revokeSpy).toHaveBeenCalledExactlyOnceWith("blob:orphaned");
+    } finally {
+      URL.revokeObjectURL = originalRevokeObjectUrl;
+    }
   });
 
   it("keeps composer drafts when the thread is still mapped by another project", () => {

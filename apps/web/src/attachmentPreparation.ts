@@ -18,7 +18,15 @@ export const COMPOSER_ATTACHMENT_INPUT_ACCEPT = [
   getAttachmentFileInputAccept(),
 ].join(",");
 
-export type AttachmentPreparationRejectionReason = "unsupported" | "empty" | "oversized" | "count";
+// Matches the Chat*Attachment name constraints in @t3tools/contracts.
+const MAX_ATTACHMENT_NAME_CHARS = 255;
+
+export type AttachmentPreparationRejectionReason =
+  | "unsupported"
+  | "name"
+  | "empty"
+  | "oversized"
+  | "count";
 
 export interface AttachmentPreparationRejection {
   readonly fileName: string;
@@ -46,14 +54,7 @@ function classifyFile(
   | { readonly type: "document"; readonly mimeType: "application/pdf"; readonly maxBytes: number }
   | { readonly type: "file"; readonly mimeType: string; readonly maxBytes: number }
   | null {
-  if (file.type.toLowerCase().startsWith("image/")) {
-    return {
-      type: "image",
-      mimeType: file.type,
-      maxBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-    };
-  }
-  if (file.type.toLowerCase() === "application/pdf" || /\.pdf$/i.test(file.name)) {
+  if (/\.pdf$/i.test(file.name)) {
     return {
       type: "document",
       mimeType: "application/pdf",
@@ -61,13 +62,21 @@ function classifyFile(
     };
   }
   const registered = lookupAttachmentFileType(file.name);
-  return registered
-    ? {
-        type: "file",
-        mimeType: registered.mimeType,
-        maxBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-      }
-    : null;
+  if (registered) {
+    return {
+      type: "file",
+      mimeType: registered.mimeType,
+      maxBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+    };
+  }
+  if (file.type.toLowerCase().startsWith("image/")) {
+    return {
+      type: "image",
+      mimeType: file.type,
+      maxBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+    };
+  }
+  return null;
 }
 
 export function prepareComposerAttachments(
@@ -84,6 +93,15 @@ export function prepareComposerAttachments(
 
   for (const file of files) {
     const name = displayName(file);
+    if (name.length > MAX_ATTACHMENT_NAME_CHARS) {
+      rejections.push({
+        fileName: name,
+        reason: "name",
+        message: `'${name}' has a name longer than ${MAX_ATTACHMENT_NAME_CHARS} characters and cannot be attached.`,
+      });
+      continue;
+    }
+
     const classification = classifyFile(file);
     if (!classification) {
       rejections.push({
@@ -93,8 +111,13 @@ export function prepareComposerAttachments(
       });
       continue;
     }
-    if (classification.type !== "image" && file.size === 0) {
-      const category = classification.type === "document" ? "PDF" : "file";
+    if (file.size === 0) {
+      const category =
+        classification.type === "image"
+          ? "image"
+          : classification.type === "document"
+            ? "PDF"
+            : "file";
       rejections.push({
         fileName: name,
         reason: "empty",
