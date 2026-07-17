@@ -218,7 +218,7 @@ function buildUserTimelineEntry(text: string) {
       createdAt: MESSAGE_CREATED_AT,
       updatedAt: MESSAGE_CREATED_AT,
       streaming: false,
-    },
+    } as import("../../types").ChatMessage,
   };
 }
 
@@ -628,6 +628,79 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Clarify this.");
     expect(markup).toContain("# Plan");
     expect(markup).not.toContain('data-testid="file-diff"');
+  });
+
+  it("renders mixed attachments as image thumbnails and accessible file cards", () => {
+    const baseEntry = buildUserTimelineEntry("Review these attachments.");
+    const entry: ReturnType<typeof buildUserTimelineEntry> = {
+      ...baseEntry,
+      message: {
+        ...baseEntry.message,
+        attachments: [
+          {
+            type: "image",
+            id: "image-1",
+            name: "screen.png",
+            mimeType: "image/png",
+            sizeBytes: 20,
+            previewUrl: "https://assets/image",
+          },
+          {
+            type: "document",
+            id: "pdf-1",
+            name: "manual.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 2048,
+            openUrl: "https://assets/pdf/open",
+            downloadUrl: "https://assets/pdf/download",
+          },
+          {
+            type: "file",
+            id: "file-1",
+            name: "Program.cs",
+            mimeType: "text/plain",
+            sizeBytes: 512,
+            downloadUrl: "https://assets/file/download",
+          },
+        ],
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+    expect(markup).toContain('<img src="https://assets/image"');
+    expect(markup).toContain('aria-label="Open manual.pdf"');
+    expect(markup).toContain('aria-label="Download manual.pdf"');
+    expect(markup).toContain('aria-label="Download Program.cs"');
+    expect(markup).not.toContain('alt="manual.pdf"');
+    expect(markup).not.toContain('alt="Program.cs"');
+  });
+
+  it("keeps preview annotation rendering image-only in mixed messages", () => {
+    const baseEntry = buildUserTimelineEntry(
+      '<preview_annotation id="preview-1" target="button">Fix this</preview_annotation>',
+    );
+    const entry: ReturnType<typeof buildUserTimelineEntry> = {
+      ...baseEntry,
+      message: {
+        ...baseEntry.message,
+        attachments: [
+          {
+            type: "file",
+            id: "file-1",
+            name: "preview-annotation-not-image.md",
+            mimeType: "text/markdown",
+            sizeBytes: 10,
+            downloadUrl: "https://assets/file",
+          },
+        ],
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+    expect(markup).toContain("preview-annotation-not-image.md");
+    expect(markup).not.toContain("Annotated preview crop");
   });
 
   it("renders a failure marker for failed tool lifecycle entries", () => {

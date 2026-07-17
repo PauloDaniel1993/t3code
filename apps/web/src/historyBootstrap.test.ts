@@ -107,6 +107,43 @@ describe("buildBootstrapInput", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("summarizes documents and generic files in transcript order", () => {
+    const result = buildBootstrapInput(
+      [
+        {
+          id: messageId("u-files"),
+          role: "user",
+          text: "",
+          attachments: [
+            {
+              type: "document",
+              id: "pdf-1",
+              name: "manual.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 100,
+            },
+            {
+              type: "file",
+              id: "file-1",
+              name: "Program.cs",
+              mimeType: "text/plain",
+              sizeBytes: 50,
+            },
+          ],
+          createdAt: "2026-02-09T00:00:00.000Z",
+          turnId: null,
+          updatedAt: "2026-02-09T00:00:00.000Z",
+          streaming: false,
+        },
+      ],
+      "Continue",
+      1_500,
+    );
+    expect(result.text).toContain("[Attached PDF manual.pdf]");
+    expect(result.text).toContain("[Attached file Program.cs]");
+    expect(result.text.indexOf("manual.pdf")).toBeLessThan(result.text.indexOf("Program.cs"));
+  });
+
   it("captures user image attachment context in transcript blocks", () => {
     const result = buildBootstrapInput(
       [
