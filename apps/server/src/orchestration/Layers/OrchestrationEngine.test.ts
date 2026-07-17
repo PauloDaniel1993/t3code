@@ -2,27 +2,37 @@ import {
   CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EventId,
   MessageId,
   ProjectId,
   ThreadId,
   TurnId,
+  type ChatAttachment,
   type OrchestrationEvent,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlError from "effect/unstable/sql/SqlError";
 import { describe, expect, it } from "vite-plus/test";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../../persistence/Layers/Sqlite.ts";
 import {
   OrchestrationEventStore,
   type OrchestrationEventStoreShape,
@@ -43,6 +53,42 @@ const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
+
+function makeFailingTransactionSqlLayer(consumeFailure: () => boolean) {
+  return Layer.effect(
+    SqlClient.SqlClient,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return new Proxy(sql, {
+        get(target, property, receiver) {
+          if (property !== "withTransaction") {
+            return Reflect.get(target, property, receiver) as unknown;
+          }
+          return <R, E, A>(effect: Effect.Effect<A, E, R>) => {
+            if (!consumeFailure()) {
+              return sql.withTransaction(effect);
+            }
+            return sql.withTransaction(
+              effect.pipe(
+                Effect.flatMap(() =>
+                  Effect.fail(
+                    new SqlError.SqlError({
+                      reason: new SqlError.UnknownError({
+                        cause: "injected outer transaction failure",
+                        message: "injected outer transaction failure",
+                        operation: "COMMIT",
+                      }),
+                    }),
+                  ),
+                ),
+              ),
+            );
+          };
+        },
+      });
+    }),
+  ).pipe(Layer.provide(SqlitePersistenceMemory));
+}
 
 async function createOrchestrationSystem() {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -451,6 +497,325 @@ describe("OrchestrationEngine", () => {
       "thread.deleted",
     ]);
     await system.dispose();
+  });
+
+  it("rolls back thread-delete and revert cleanup intents before filesystem execution", async () => {
+    let failNextTransaction = false;
+    const sqlLayer = makeFailingTransactionSqlLayer(() => {
+      if (!failNextTransaction) return false;
+      failNextTransaction = false;
+      return true;
+    });
+    const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
+      prefix: "t3-orchestration-cleanup-rollback-test-",
+    });
+    const orchestrationLayer = Layer.mergeAll(
+      OrchestrationEngineLive.pipe(
+        Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provide(OrchestrationProjectionPipelineLive),
+      ),
+      OrchestrationProjectionSnapshotQueryLive,
+    ).pipe(
+      Layer.provide(OrchestrationEventStoreLive),
+      Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provide(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(sqlLayer),
+      Layer.provideMerge(ServerConfigLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const runtime = ManagedRuntime.make(orchestrationLayer);
+    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const config = await runtime.runPromise(Effect.service(ServerConfig));
+    const fileSystem = await runtime.runPromise(Effect.service(FileSystem.FileSystem));
+    const path = await runtime.runPromise(Effect.service(Path.Path));
+    const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
+    const createdAt = now();
+    const projectId = asProjectId("project-cleanup-rollback");
+
+    await runtime.runPromise(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-cleanup-rollback-project"),
+        projectId,
+        title: "Cleanup rollback",
+        workspaceRoot: "/tmp/cleanup-rollback",
+        defaultModelSelection: null,
+        createdAt,
+      }),
+    );
+
+    const deleteThreadId = ThreadId.make("thread-rollback-delete");
+    await runtime.runPromise(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-cleanup-rollback-delete-thread"),
+        threadId: deleteThreadId,
+        projectId,
+        title: "Delete rollback",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    const deleteAttachment: ChatAttachment = {
+      type: "file",
+      id: "thread-rollback-delete-00000000-0000-4000-8000-000000000001",
+      name: "delete.txt",
+      mimeType: "text/plain",
+      sizeBytes: 6,
+    };
+    const deleteAttachmentPath = path.join(
+      config.attachmentsDir,
+      attachmentRelativePath(deleteAttachment),
+    );
+    await runtime.runPromise(fileSystem.writeFileString(deleteAttachmentPath, "delete"));
+
+    failNextTransaction = true;
+    await expect(
+      runtime.runPromise(
+        engine.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("cmd-cleanup-rollback-delete"),
+          threadId: deleteThreadId,
+        }),
+      ),
+    ).rejects.toThrow("OrchestrationEngine.processEnvelope:transaction");
+    expect(await runtime.runPromise(fileSystem.exists(deleteAttachmentPath))).toBe(true);
+
+    const deleteThreadRows = await runtime.runPromise(
+      sql<{ readonly deletedAt: string | null }>`
+        SELECT deleted_at AS "deletedAt"
+        FROM projection_threads
+        WHERE thread_id = ${deleteThreadId}
+      `,
+    );
+    expect(deleteThreadRows).toEqual([{ deletedAt: null }]);
+    const queueAfterDeleteRollback = await runtime.runPromise(
+      sql<{ readonly count: number }>`SELECT COUNT(*) AS "count" FROM attachment_cleanup_queue`,
+    );
+    expect(queueAfterDeleteRollback[0]?.count).toBe(0);
+
+    const revertThreadId = ThreadId.make("thread-rollback-revert");
+    await runtime.runPromise(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-cleanup-rollback-revert-thread"),
+        threadId: revertThreadId,
+        projectId,
+        title: "Revert rollback",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    const revertAttachment: ChatAttachment = {
+      type: "file",
+      id: "thread-rollback-revert-00000000-0000-4000-8000-000000000002",
+      name: "revert.txt",
+      mimeType: "text/plain",
+      sizeBytes: 6,
+    };
+    await runtime.runPromise(
+      engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-cleanup-rollback-revert-turn"),
+        threadId: revertThreadId,
+        message: {
+          messageId: MessageId.make("message-cleanup-rollback-revert"),
+          role: "user",
+          text: "revert",
+          attachments: [revertAttachment],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await runtime.runPromise(
+      engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-cleanup-rollback-revert-checkpoint"),
+        threadId: revertThreadId,
+        turnId: TurnId.make("turn-cleanup-rollback-revert"),
+        completedAt: "2026-01-01T00:00:02.000Z",
+        checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-rollback-revert/turn/1"),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    const revertAttachmentPath = path.join(
+      config.attachmentsDir,
+      attachmentRelativePath(revertAttachment),
+    );
+    await runtime.runPromise(fileSystem.writeFileString(revertAttachmentPath, "revert"));
+
+    failNextTransaction = true;
+    await expect(
+      runtime.runPromise(
+        engine.dispatch({
+          type: "thread.revert.complete",
+          commandId: CommandId.make("cmd-cleanup-rollback-revert"),
+          threadId: revertThreadId,
+          turnCount: 0,
+          createdAt: "2026-01-01T00:00:03.000Z",
+        }),
+      ),
+    ).rejects.toThrow("OrchestrationEngine.processEnvelope:transaction");
+    expect(await runtime.runPromise(fileSystem.exists(revertAttachmentPath))).toBe(true);
+
+    const revertMessageRows = await runtime.runPromise(
+      sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS "count"
+        FROM projection_thread_messages
+        WHERE thread_id = ${revertThreadId}
+      `,
+    );
+    expect(revertMessageRows[0]?.count).toBe(1);
+    const queueAfterRevertRollback = await runtime.runPromise(
+      sql<{ readonly count: number }>`SELECT COUNT(*) AS "count" FROM attachment_cleanup_queue`,
+    );
+    expect(queueAfterRevertRollback[0]?.count).toBe(0);
+
+    await runtime.dispose();
+  });
+
+  it("drains committed cleanup intents during startup after a crash window", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-attachment-cleanup-startup-test-",
+          });
+          const dbPath = path.join(baseDir, "userdata", "state.sqlite");
+          const configLayer = ServerConfig.layerTest(process.cwd(), baseDir);
+          const attachment: ChatAttachment = {
+            type: "file",
+            id: "thread-startup-cleanup-00000000-0000-4000-8000-000000000001",
+            name: "startup.txt",
+            mimeType: "text/plain",
+            sizeBytes: 7,
+          };
+          const attachmentPath = path.join(
+            baseDir,
+            "userdata",
+            "attachments",
+            attachmentRelativePath(attachment),
+          );
+
+          const seedLayer = Layer.mergeAll(
+            OrchestrationProjectionPipelineLive.pipe(Layer.provide(OrchestrationEventStoreLive)),
+            OrchestrationEventStoreLive,
+          ).pipe(
+            Layer.provideMerge(makeSqlitePersistenceLive(dbPath)),
+            Layer.provideMerge(configLayer),
+            Layer.provideMerge(NodeServices.layer),
+          );
+
+          yield* Effect.acquireUseRelease(
+            Effect.sync(() => ManagedRuntime.make(seedLayer)),
+            (seedRuntime) =>
+              Effect.gen(function* () {
+                const projectionPipeline = yield* Effect.promise(() =>
+                  seedRuntime.runPromise(Effect.service(OrchestrationProjectionPipeline)),
+                );
+                const eventStore = yield* Effect.promise(() =>
+                  seedRuntime.runPromise(Effect.service(OrchestrationEventStore)),
+                );
+                const sql = yield* Effect.promise(() =>
+                  seedRuntime.runPromise(Effect.service(SqlClient.SqlClient)),
+                );
+                yield* fileSystem.writeFileString(attachmentPath, "startup");
+                const savedEvent = yield* Effect.promise(() =>
+                  seedRuntime.runPromise(
+                    eventStore.append({
+                      type: "thread.deleted",
+                      eventId: EventId.make("evt-startup-cleanup"),
+                      aggregateKind: "thread",
+                      aggregateId: ThreadId.make("thread-startup-cleanup"),
+                      occurredAt: "2026-01-01T00:00:00.000Z",
+                      commandId: CommandId.make("cmd-startup-cleanup"),
+                      causationEventId: null,
+                      correlationId: CommandId.make("cmd-startup-cleanup"),
+                      metadata: {},
+                      payload: {
+                        threadId: ThreadId.make("thread-startup-cleanup"),
+                        deletedAt: "2026-01-01T00:00:00.000Z",
+                      },
+                    }),
+                  ),
+                );
+                yield* Effect.promise(() =>
+                  seedRuntime.runPromise(projectionPipeline.projectEvent(savedEvent)),
+                );
+                const queued = yield* Effect.promise(() =>
+                  seedRuntime.runPromise(
+                    sql<{ readonly count: number }>`
+                      SELECT COUNT(*) AS "count" FROM attachment_cleanup_queue
+                    `,
+                  ),
+                );
+                expect(queued[0]?.count).toBe(1);
+                expect(yield* fileSystem.exists(attachmentPath)).toBe(true);
+              }),
+            (seedRuntime) => Effect.promise(() => seedRuntime.dispose()).pipe(Effect.orDie),
+          );
+
+          const recoveryLayer = Layer.mergeAll(
+            OrchestrationEngineLive.pipe(
+              Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+              Layer.provide(OrchestrationProjectionPipelineLive),
+            ),
+            OrchestrationProjectionSnapshotQueryLive,
+          ).pipe(
+            Layer.provide(OrchestrationEventStoreLive),
+            Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+            Layer.provide(RepositoryIdentityResolver.layer),
+            Layer.provideMerge(makeSqlitePersistenceLive(dbPath)),
+            Layer.provideMerge(configLayer),
+            Layer.provideMerge(NodeServices.layer),
+          );
+
+          yield* Effect.acquireUseRelease(
+            Effect.sync(() => ManagedRuntime.make(recoveryLayer)),
+            (recoveryRuntime) =>
+              Effect.gen(function* () {
+                yield* Effect.promise(() =>
+                  recoveryRuntime.runPromise(Effect.service(OrchestrationEngineService)),
+                );
+                const sql = yield* Effect.promise(() =>
+                  recoveryRuntime.runPromise(Effect.service(SqlClient.SqlClient)),
+                );
+                expect(yield* fileSystem.exists(attachmentPath)).toBe(false);
+                const queued = yield* Effect.promise(() =>
+                  recoveryRuntime.runPromise(
+                    sql<{ readonly count: number }>`
+                      SELECT COUNT(*) AS "count" FROM attachment_cleanup_queue
+                    `,
+                  ),
+                );
+                expect(queued[0]?.count).toBe(0);
+              }),
+            (recoveryRuntime) => Effect.promise(() => recoveryRuntime.dispose()).pipe(Effect.orDie),
+          );
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
   });
 
   it("streams persisted domain events in order", async () => {
