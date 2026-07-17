@@ -13,6 +13,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
@@ -22,7 +23,11 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { sweepAttachmentStaging, type AttachmentStage } from "../../attachmentStaging.ts";
+import {
+  drainAttachmentCleanupQueue,
+  sweepAttachmentStaging,
+  type AttachmentStage,
+} from "../../attachmentStaging.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   metricAttributes,
@@ -31,6 +36,8 @@ import {
   orchestrationCommandDuration,
 } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { AttachmentCleanupQueueRepositoryLive } from "../../persistence/Layers/AttachmentCleanupQueue.ts";
+import { AttachmentCleanupQueueRepository } from "../../persistence/Services/AttachmentCleanupQueue.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
@@ -83,9 +90,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const eventStore = yield* OrchestrationEventStore;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
+  const attachmentCleanupQueue = yield* AttachmentCleanupQueueRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
   const serverConfig = yield* ServerConfig;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -93,6 +102,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
+
+  const drainAttachmentCleanupBestEffort = drainAttachmentCleanupQueue({
+    attachmentsDir: serverConfig.attachmentsDir,
+    queue: attachmentCleanupQueue,
+  }).pipe(
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
+    Effect.catch((cause) =>
+      Effect.logWarning("failed to drain the attachment cleanup queue", { cause }),
+    ),
+  );
 
   const projectEventsOntoReadModel = (
     baseReadModel: OrchestrationReadModel,
@@ -138,6 +157,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           "orchestration.aggregate_kind": aggregateRef.aggregateKind,
           "orchestration.aggregate_id": aggregateRef.aggregateId,
         });
+        yield* drainAttachmentCleanupBestEffort;
 
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
           commandId: envelope.command.commandId,
@@ -230,6 +250,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           yield* envelope.attachmentStage.complete;
         }
         commandReadModel = committedCommand.nextCommandReadModel;
+        // Cleanup rows were committed with the projection above. Drain only now,
+        // before publication, so observers see post-commit filesystem state while
+        // cleanup failures remain retryable and cannot fail the accepted command.
+        yield* drainAttachmentCleanupBestEffort;
         for (const [index, event] of committedCommand.committedEvents.entries()) {
           yield* PubSub.publish(eventPubSub, event);
           if (index === 0) {
@@ -336,6 +360,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ),
   });
   yield* projectionPipeline.bootstrap;
+  yield* drainAttachmentCleanupBestEffort;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
 
   const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
@@ -392,4 +417,4 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
   makeOrchestrationEngine,
-);
+).pipe(Layer.provide(AttachmentCleanupQueueRepositoryLive));
