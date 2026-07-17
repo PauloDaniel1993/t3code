@@ -231,8 +231,10 @@ import {
   PullRequestDialogState,
   cloneComposerAttachmentForRetry,
   deriveLockedProvider,
+  mergeFailedSendDraft,
   readFileAsDataUrl,
   reconcileMountedTerminalThreadIds,
+  removeOptimisticUserMessage,
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
@@ -4259,52 +4261,88 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     if (failure !== null) {
-      if (
-        promptRef.current.length === 0 &&
-        composerAttachmentsRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0 &&
-        composerElementContextsRef.current.length === 0 &&
-        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.previewAnnotations
-          .length ?? 0) === 0 &&
-        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
-          .length ?? 0) === 0
-      ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
+      const currentComposerDraft = useComposerDraftStore
+        .getState()
+        .getComposerDraft(composerDraftTarget);
+      const currentComposerPrompt = currentComposerDraft?.prompt ?? promptRef.current;
+      const currentComposerAttachments =
+        currentComposerDraft?.attachments ?? composerAttachmentsRef.current;
+      const currentComposerTerminalContexts =
+        currentComposerDraft?.terminalContexts ?? composerTerminalContextsRef.current;
+      const currentComposerElementContexts =
+        currentComposerDraft?.elementContexts ?? composerElementContextsRef.current;
+      const failedSendDraftMerge = mergeFailedSendDraft({
+        currentPrompt: currentComposerPrompt,
+        failedPrompt: promptForSend,
+        currentAttachments: currentComposerAttachments,
+        failedAttachments: composerAttachmentsSnapshot,
+      });
+      const composerWasEmpty =
+        currentComposerPrompt.length === 0 &&
+        currentComposerAttachments.length === 0 &&
+        currentComposerTerminalContexts.length === 0 &&
+        currentComposerElementContexts.length === 0 &&
+        (currentComposerDraft?.previewAnnotations.length ?? 0) === 0 &&
+        (currentComposerDraft?.reviewComments.length ?? 0) === 0;
+
+      const failedOptimisticMessageCleanup = removeOptimisticUserMessage(
+        optimisticUserMessagesRef.current,
+        messageIdForSend,
+      );
+      if (failedOptimisticMessageCleanup.removedMessage) {
+        revokeUserMessagePreviewUrls(failedOptimisticMessageCleanup.removedMessage);
+      }
+      setOptimisticUserMessages(failedOptimisticMessageCleanup.messages);
+
+      const restoredRetryAttachments = failedSendDraftMerge.restoredFailedAttachments.map(
+        cloneComposerAttachmentForRetry,
+      );
+      const nextComposerAttachments = [...currentComposerAttachments, ...restoredRetryAttachments];
+      composerAttachmentsRef.current = nextComposerAttachments;
+      composerImagesRef.current = nextComposerAttachments.filter(
+        (attachment): attachment is ComposerImageAttachment => attachment.type === "image",
+      );
+      if (restoredRetryAttachments.length > 0) {
+        addComposerDraftAttachments(composerDraftTarget, restoredRetryAttachments);
+      }
+
+      if (failedSendDraftMerge.restoredFailedText) {
+        promptRef.current = failedSendDraftMerge.prompt;
+        setComposerDraftPrompt(composerDraftTarget, failedSendDraftMerge.prompt);
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(
+            failedSendDraftMerge.prompt,
+            failedSendDraftMerge.prompt.length,
+          ),
+          prompt: failedSendDraftMerge.prompt,
+          detectTrigger: true,
         });
-        promptRef.current = promptForSend;
-        const retryComposerAttachments = composerAttachmentsSnapshot.map(
-          cloneComposerAttachmentForRetry,
-        );
-        composerAttachmentsRef.current = retryComposerAttachments;
-        composerImagesRef.current = retryComposerAttachments.filter(
-          (attachment): attachment is ComposerImageAttachment => attachment.type === "image",
-        );
+      }
+
+      if (composerWasEmpty) {
         composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
         composerElementContextsRef.current = composerElementContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, promptForSend);
-        addComposerDraftAttachments(composerDraftTarget, retryComposerAttachments);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
         setComposerDraftElementContexts(composerDraftTarget, composerElementContextsSnapshot);
         setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
         setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
-        composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
-          prompt: promptForSend,
-          detectTrigger: true,
-        });
       }
+
+      const droppedAttachmentNames = failedSendDraftMerge.droppedFailedAttachments
+        .map((attachment) => `'${attachment.name}'`)
+        .join(", ");
+      const attachmentRestoreError = droppedAttachmentNames
+        ? `${droppedAttachmentNames} could not be restored because a message can contain at most ${failedSendDraftMerge.maxAttachments} attachments.`
+        : null;
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
+        const failureMessage = error instanceof Error ? error.message : "Failed to send message.";
         setThreadError(
           threadIdForSend,
-          error instanceof Error ? error.message : "Failed to send message.",
+          attachmentRestoreError ? `${failureMessage}\n${attachmentRestoreError}` : failureMessage,
         );
+      } else if (attachmentRestoreError) {
+        setThreadError(threadIdForSend, attachmentRestoreError);
       }
     }
     sendInFlightRef.current = false;
