@@ -16,15 +16,18 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { drainAttachmentCleanupQueue } from "../../attachmentStaging.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
+import { AttachmentCleanupQueueRepository } from "../../persistence/Services/AttachmentCleanupQueue.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -53,6 +56,15 @@ const exists = (filePath: string) =>
     const fileInfo = yield* Effect.result(fileSystem.stat(filePath));
     return fileInfo._tag === "Success";
   });
+
+const drainProjectedAttachmentCleanup = Effect.fn("drainProjectedAttachmentCleanup")(function* (
+  fileSystem?: FileSystem.FileSystem,
+) {
+  const queue = yield* AttachmentCleanupQueueRepository;
+  const { attachmentsDir } = yield* ServerConfig;
+  const drain = drainAttachmentCleanupQueue({ attachmentsDir, queue });
+  yield* fileSystem ? drain.pipe(Effect.provideService(FileSystem.FileSystem, fileSystem)) : drain;
+});
 
 const AttachmentArrayJson = Schema.fromJsonString(Schema.Array(ChatAttachment));
 const encodeAttachmentsJson = Schema.encodeSync(AttachmentArrayJson);
@@ -724,6 +736,8 @@ it.layer(
       });
       yield* projectionPipeline.projectEvent(savedEvent);
 
+      assert.isTrue(yield* exists(oldDocumentPath));
+      yield* drainProjectedAttachmentCleanup();
       assert.isFalse(yield* exists(oldDocumentPath));
       assert.isTrue(yield* exists(sharedFilePath));
       assert.isTrue(yield* exists(newFilePath));
@@ -976,6 +990,60 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-clea
   },
 );
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-cleanup-retry-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("retains failed cleanup intents and removes the file on retry", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const queue = yield* AttachmentCleanupQueueRepository;
+        const { attachmentsDir } = yield* ServerConfig;
+        const threadId = ThreadId.make("thread-cleanup-retry");
+        const relativePath = "thread-cleanup-retry-00000000-0000-4000-8000-000000000001.txt";
+        const attachmentPath = path.join(attachmentsDir, relativePath);
+        yield* fileSystem.writeFileString(attachmentPath, "retry");
+        yield* queue.enqueue({
+          operation: "delete-path",
+          threadId,
+          relativePath,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+
+        let failFirstRemove = true;
+        const failingFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          remove: (candidate, options) => {
+            if (failFirstRemove && String(candidate) === attachmentPath) {
+              failFirstRemove = false;
+              return Effect.fail(
+                PlatformError.systemError({
+                  _tag: "PermissionDenied",
+                  module: "FileSystem",
+                  method: "remove",
+                  pathOrDescriptor: String(candidate),
+                  description: "injected cleanup lock",
+                }),
+              );
+            }
+            return fileSystem.remove(candidate, options);
+          },
+        });
+
+        yield* drainProjectedAttachmentCleanup(failingFileSystem);
+        assert.isTrue(yield* exists(attachmentPath));
+        const pendingAfterFailure = yield* queue.listPending({ limit: 10 });
+        assert.equal(pendingAfterFailure.length, 1);
+        assert.equal(pendingAfterFailure[0]?.attemptCount, 1);
+
+        yield* drainProjectedAttachmentCleanup();
+        assert.isFalse(yield* exists(attachmentPath));
+        assert.deepEqual(yield* queue.listPending({ limit: 10 }), []);
+      }),
+    );
+  },
+);
+
 it.layer(
   Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-overwrite-")),
 )("OrchestrationProjectionPipeline", (it) => {
@@ -1178,6 +1246,8 @@ it.layer(
         },
       });
 
+      assert.isTrue(yield* exists(removePath));
+      yield* drainProjectedAttachmentCleanup();
       assert.isTrue(yield* exists(keepPath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
@@ -1372,6 +1442,8 @@ it.layer(
       });
       yield* projectionPipeline.projectEvent(savedEvent);
 
+      assert.isTrue(yield* exists(attachmentPaths.get(removeDocument.id)!));
+      yield* drainProjectedAttachmentCleanup();
       assert.isTrue(yield* exists(attachmentPaths.get(keepDocument.id)!));
       assert.isTrue(yield* exists(attachmentPaths.get(sharedFile.id)!));
       assert.isTrue(yield* exists(attachmentPaths.get(keepLegacyImage.id)!));
@@ -1509,6 +1581,8 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           },
         });
 
+        assert.isTrue(yield* exists(threadAttachmentPath));
+        yield* drainProjectedAttachmentCleanup();
         assert.isFalse(yield* exists(threadAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
       }),
@@ -1592,6 +1666,10 @@ it.layer(
       });
       yield* projectionPipeline.projectEvent(savedEvent);
 
+      for (const attachmentPath of attachmentPaths.slice(0, attachments.length)) {
+        assert.isTrue(yield* exists(attachmentPath));
+      }
+      yield* drainProjectedAttachmentCleanup();
       for (const attachmentPath of attachmentPaths.slice(0, attachments.length)) {
         assert.isFalse(yield* exists(attachmentPath));
       }
