@@ -50,8 +50,8 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { resolveProviderAttachment } from "../attachmentDelivery.ts";
 import {
   CodexResumeCursorSchema,
   CodexSessionRuntimeThreadIdMissingError,
@@ -69,6 +69,15 @@ const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
+
+function unsupportedCodexAttachment(attachment: never): ProviderAdapterRequestError {
+  const type = (attachment as unknown as { readonly type?: unknown }).type;
+  return new ProviderAdapterRequestError({
+    provider: PROVIDER,
+    method: "turn/start",
+    detail: `Unsupported Codex attachment kind '${String(type)}'.`,
+  });
+}
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -1491,32 +1500,39 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     input: ProviderSendTurnInput,
     attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
   ) {
-    const attachmentPath = resolveAttachmentPath({
+    const resolved = yield* resolveProviderAttachment({
       attachmentsDir: serverConfig.attachmentsDir,
+      threadId: input.threadId,
       attachment,
-    });
-    if (!attachmentPath) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/start",
-        detail: `Invalid attachment id '${attachment.id}'.`,
-      });
-    }
-    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+      fileSystem,
+    }).pipe(
       Effect.mapError(
         (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "turn/start",
-            detail: `Failed to read attachment file: ${cause.message}.`,
+            detail: cause.message,
             cause,
           }),
       ),
     );
-    return {
-      type: "image" as const,
-      url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-    };
+
+    switch (attachment.type) {
+      case "image":
+        return {
+          type: "image" as const,
+          url: `data:${attachment.mimeType};base64,${Buffer.from(resolved.bytes).toString("base64")}`,
+        };
+      case "document":
+      case "file":
+        return {
+          type: "mention" as const,
+          name: attachment.name,
+          path: resolved.absolutePath,
+        };
+      default:
+        return yield* unsupportedCodexAttachment(attachment);
+    }
   });
 
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
@@ -1548,7 +1564,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           : {}),
         ...(serviceTier ? { serviceTier } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-        ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+        ...(codexAttachments.length > 0
+          ? {
+              // The generated Codex turn schema supports ordered `mention` inputs,
+              // while this runtime facade still exposes its legacy image-only type.
+              attachments: codexAttachments as ReadonlyArray<{
+                readonly type: "image";
+                readonly url: string;
+              }>,
+            }
+          : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
   });
