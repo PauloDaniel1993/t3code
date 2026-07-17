@@ -241,6 +241,7 @@ import {
   type LocalDispatchSnapshot,
   PullRequestDialogState,
   cloneComposerAttachmentForRetry,
+  composerAttachmentIdentityKeys,
   deriveLockedProvider,
   mergeFailedSendDraft,
   readFileAsDataUrl,
@@ -4443,19 +4444,23 @@ function ChatViewContent(props: ChatViewProps) {
         currentComposerDraft?.terminalContexts ?? composerTerminalContextsRef.current;
       const currentComposerElementContexts =
         currentComposerDraft?.elementContexts ?? composerElementContextsRef.current;
+      const currentComposerPreviewAnnotations = currentComposerDraft?.previewAnnotations ?? [];
+      const currentComposerReviewComments = currentComposerDraft?.reviewComments ?? [];
       const failedSendDraftMerge = mergeFailedSendDraft({
         currentPrompt: currentComposerPrompt,
         failedPrompt: promptForSend,
         currentAttachments: currentComposerAttachments,
         failedAttachments: composerAttachmentsSnapshot,
+        currentTerminalContexts: currentComposerTerminalContexts,
+        failedTerminalContexts: composerTerminalContextsSnapshot,
+        currentElementContexts: currentComposerElementContexts,
+        failedElementContexts: composerElementContextsSnapshot,
+        currentPreviewAnnotations: currentComposerPreviewAnnotations,
+        failedPreviewAnnotations: composerPreviewAnnotationsSnapshot,
+        currentReviewComments: currentComposerReviewComments,
+        failedReviewComments: composerReviewCommentsSnapshot,
+        attachmentIdentityKeys: composerAttachmentIdentityKeys,
       });
-      const composerWasEmpty =
-        currentComposerPrompt.length === 0 &&
-        currentComposerAttachments.length === 0 &&
-        currentComposerTerminalContexts.length === 0 &&
-        currentComposerElementContexts.length === 0 &&
-        (currentComposerDraft?.previewAnnotations.length ?? 0) === 0 &&
-        (currentComposerDraft?.reviewComments.length ?? 0) === 0;
 
       const failedOptimisticMessageCleanup = removeOptimisticUserMessage(
         optimisticUserMessagesRef.current,
@@ -4469,7 +4474,15 @@ function ChatViewContent(props: ChatViewProps) {
       const restoredRetryAttachments = failedSendDraftMerge.restoredFailedAttachments.map(
         cloneComposerAttachmentForRetry,
       );
-      const nextComposerAttachments = [...currentComposerAttachments, ...restoredRetryAttachments];
+      const restoredRetryAttachmentsByOriginal = new Map(
+        failedSendDraftMerge.restoredFailedAttachments.map((attachment, index) => [
+          attachment,
+          restoredRetryAttachments[index]!,
+        ]),
+      );
+      const nextComposerAttachments = failedSendDraftMerge.attachments.map(
+        (attachment) => restoredRetryAttachmentsByOriginal.get(attachment) ?? attachment,
+      );
       composerAttachmentsRef.current = nextComposerAttachments;
       composerImagesRef.current = nextComposerAttachments.filter(
         (attachment): attachment is ComposerImageAttachment => attachment.type === "image",
@@ -4478,7 +4491,7 @@ function ChatViewContent(props: ChatViewProps) {
         addComposerDraftAttachments(composerDraftTarget, restoredRetryAttachments);
       }
 
-      if (failedSendDraftMerge.restoredFailedText) {
+      if (failedSendDraftMerge.prompt !== currentComposerPrompt) {
         promptRef.current = failedSendDraftMerge.prompt;
         setComposerDraftPrompt(composerDraftTarget, failedSendDraftMerge.prompt);
         composerRef.current?.resetCursorState({
@@ -4491,14 +4504,15 @@ function ChatViewContent(props: ChatViewProps) {
         });
       }
 
-      if (composerWasEmpty) {
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        composerElementContextsRef.current = composerElementContextsSnapshot;
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
-        setComposerDraftElementContexts(composerDraftTarget, composerElementContextsSnapshot);
-        setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
-        setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
-      }
+      composerTerminalContextsRef.current = failedSendDraftMerge.terminalContexts;
+      composerElementContextsRef.current = failedSendDraftMerge.elementContexts;
+      setComposerDraftTerminalContexts(composerDraftTarget, failedSendDraftMerge.terminalContexts);
+      setComposerDraftElementContexts(composerDraftTarget, failedSendDraftMerge.elementContexts);
+      setComposerDraftPreviewAnnotations(
+        composerDraftTarget,
+        failedSendDraftMerge.previewAnnotations,
+      );
+      setComposerDraftReviewComments(composerDraftTarget, failedSendDraftMerge.reviewComments);
 
       const droppedAttachmentNames = failedSendDraftMerge.droppedFailedAttachments
         .map((attachment) => `'${attachment.name}'`)
