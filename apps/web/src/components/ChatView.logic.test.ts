@@ -187,7 +187,7 @@ describe("deriveComposerSendState", () => {
   it("treats expired terminal pills as non-sendable content", () => {
     const state = deriveComposerSendState({
       prompt: "\uFFFC",
-      imageCount: 0,
+      attachmentCount: 0,
       terminalContexts: [
         {
           id: "ctx-expired",
@@ -211,7 +211,7 @@ describe("deriveComposerSendState", () => {
   it("keeps text sendable while excluding expired terminal pills", () => {
     const state = deriveComposerSendState({
       prompt: `yoo \uFFFC waddup`,
-      imageCount: 0,
+      attachmentCount: 0,
       terminalContexts: [
         {
           id: "ctx-expired",
@@ -234,7 +234,7 @@ describe("deriveComposerSendState", () => {
   it("treats element contexts as sendable content (no text, no images, no terminals)", () => {
     const state = deriveComposerSendState({
       prompt: "",
-      imageCount: 0,
+      attachmentCount: 0,
       terminalContexts: [],
       elementContextCount: 1,
     });
@@ -244,11 +244,23 @@ describe("deriveComposerSendState", () => {
     expect(state.hasSendableContent).toBe(true);
   });
 
+  it("treats PDF-only, file-only, and mixed attachment drafts as sendable", () => {
+    for (const attachmentCount of [1, 2, 8]) {
+      expect(
+        deriveComposerSendState({
+          prompt: "",
+          attachmentCount,
+          terminalContexts: [],
+        }).hasSendableContent,
+      ).toBe(true);
+    }
+  });
+
   it("does NOT treat zero element contexts as sendable", () => {
     expect(
       deriveComposerSendState({
         prompt: "",
-        imageCount: 0,
+        attachmentCount: 0,
         terminalContexts: [],
         elementContextCount: 0,
       }).hasSendableContent,
