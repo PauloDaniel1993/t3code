@@ -113,6 +113,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           turn_id,
           role,
           text,
+          attachments_json,
           is_streaming,
           created_at,
           updated_at
@@ -123,6 +124,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'turn-1',
           'assistant',
           'hello from projection',
+          '[{"type":"image","id":"thread-1-image","name":"diagram.png","mimeType":"image/png","sizeBytes":5},{"type":"document","id":"thread-1-document","name":"reference.pdf","mimeType":"application/pdf","sizeBytes":7},{"type":"file","id":"thread-1-file","name":"notes.ts","mimeType":"text/plain","sizeBytes":9}]',
           0,
           '2026-02-24T00:00:04.000Z',
           '2026-02-24T00:00:05.000Z'
@@ -314,6 +316,29 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               id: asMessageId("message-1"),
               role: "assistant",
               text: "hello from projection",
+              attachments: [
+                {
+                  type: "image",
+                  id: "thread-1-image",
+                  name: "diagram.png",
+                  mimeType: "image/png",
+                  sizeBytes: 5,
+                },
+                {
+                  type: "document",
+                  id: "thread-1-document",
+                  name: "reference.pdf",
+                  mimeType: "application/pdf",
+                  sizeBytes: 7,
+                },
+                {
+                  type: "file",
+                  id: "thread-1-file",
+                  name: "notes.ts",
+                  mimeType: "text/plain",
+                  sizeBytes: 9,
+                },
+              ],
               turnId: asTurnId("turn-1"),
               streaming: false,
               createdAt: "2026-02-24T00:00:04.000Z",
@@ -439,6 +464,96 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
       }
+    }),
+  );
+
+  it.effect("fails thread history hydration for an unknown future attachment kind", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-future-attachment");
+
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES (
+          ${threadId},
+          'project-future-attachment',
+          'Future attachment thread',
+          '{"instanceId":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          NULL,
+          '2026-02-24T00:00:04.000Z',
+          0,
+          0,
+          0,
+          '2026-02-24T00:00:02.000Z',
+          '2026-02-24T00:00:03.000Z',
+          NULL,
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          'message-future-attachment',
+          ${threadId},
+          NULL,
+          'user',
+          'future attachment',
+          '[{"type":"archive","id":"thread-future-attachment-1","name":"bundle.zip","mimeType":"application/zip","sizeBytes":12}]',
+          0,
+          '2026-02-24T00:00:04.000Z',
+          '2026-02-24T00:00:04.000Z'
+        )
+      `;
+
+      const result = yield* Effect.result(snapshotQuery.getThreadDetailSnapshot(threadId));
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "PersistenceDecodeError");
+        assert.equal(
+          result.failure.operation,
+          "ProjectionSnapshotQuery.getThreadDetailById:listMessages:decodeRows",
+        );
+      }
+      yield* sql`DELETE FROM projection_thread_messages WHERE thread_id = ${threadId}`;
+      yield* sql`DELETE FROM projection_threads WHERE thread_id = ${threadId}`;
     }),
   );
 
