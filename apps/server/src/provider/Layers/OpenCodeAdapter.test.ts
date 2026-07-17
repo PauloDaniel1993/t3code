@@ -1,4 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeAssert from "node:assert/strict";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -14,13 +18,16 @@ import * as TestClock from "effect/testing/TestClock";
 import { beforeEach } from "vite-plus/test";
 
 import {
+  type ChatAttachment,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { providerFileUri } from "../attachmentDelivery.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
@@ -41,6 +48,17 @@ class OpenCodeAdapter extends Context.Service<OpenCodeAdapter, OpenCodeAdapterSh
 ) {}
 
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
+
+function writeStoredAttachment(
+  attachmentsDir: string,
+  attachment: ChatAttachment,
+  bytes: Uint8Array,
+): string {
+  const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+  NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+  NodeFS.writeFileSync(attachmentPath, bytes);
+  return attachmentPath;
+}
 
 type MessageEntry = {
   info: {
@@ -562,6 +580,140 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
     }).pipe(Effect.provide(adapterLayer));
   });
+
+  it.effect("delivers all OpenCode attachment variants as ordered file parts", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const threadId = asThreadId("thread-opencode-attachments");
+      const document = {
+        type: "document" as const,
+        id: "thread-opencode-attachments-12345678-1234-1234-1234-123456789abc",
+        name: "design notes.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 3,
+      };
+      const image = {
+        type: "image" as const,
+        id: "thread-opencode-attachments-22345678-1234-1234-1234-123456789abc",
+        name: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 2,
+      };
+      const file = {
+        type: "file" as const,
+        id: "thread-opencode-attachments-32345678-1234-1234-1234-123456789abc",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 4,
+      };
+      const documentPath = writeStoredAttachment(
+        attachmentsDir,
+        document,
+        Uint8Array.from([1, 2, 3]),
+      );
+      const imagePath = writeStoredAttachment(attachmentsDir, image, Uint8Array.from([4, 5]));
+      const filePath = writeStoredAttachment(attachmentsDir, file, Uint8Array.from([6, 7, 8, 9]));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          for (const storedPath of [documentPath, imagePath, filePath]) {
+            NodeFS.rmSync(storedPath, { force: true });
+          }
+        }),
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      runtimeMock.state.promptCalls.length = 0;
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Inspect these attachments",
+        attachments: [document, image, file],
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+
+      NodeAssert.deepStrictEqual(runtimeMock.state.promptCalls, [
+        {
+          sessionID: "http://127.0.0.1:9999/session",
+          model: { providerID: "openai", modelID: "gpt-5" },
+          parts: [
+            { type: "text", text: "Inspect these attachments" },
+            {
+              type: "file",
+              mime: "application/pdf",
+              filename: "design notes.pdf",
+              url: providerFileUri(documentPath),
+            },
+            {
+              type: "file",
+              mime: "image/png",
+              filename: "diagram.png",
+              url: providerFileUri(imagePath),
+            },
+            {
+              type: "file",
+              mime: "text/plain",
+              filename: "notes.txt",
+              url: providerFileUri(filePath),
+            },
+          ],
+        },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects a missing OpenCode attachment before the prompt call", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const threadId = asThreadId("thread-opencode-missing");
+      const valid = {
+        type: "image" as const,
+        id: "thread-opencode-missing-42345678-1234-1234-1234-123456789abc",
+        name: "valid.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+      };
+      const missing = {
+        type: "document" as const,
+        id: "thread-opencode-missing-52345678-1234-1234-1234-123456789abc",
+        name: "missing.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 1,
+      };
+      const validPath = writeStoredAttachment(attachmentsDir, valid, Uint8Array.from([1]));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(validPath, { force: true })),
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      runtimeMock.state.promptCalls.length = 0;
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          attachments: [valid, missing],
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "openai/gpt-5",
+          },
+        })
+        .pipe(Effect.flip);
+
+      NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
+      NodeAssert.match(error.message, /missing\.pdf/);
+      NodeAssert.deepStrictEqual(runtimeMock.state.promptCalls, []);
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("rejects sendTurn model selections for another instance id", () => {
     const instanceId = ProviderInstanceId.make("opencode_zen");

@@ -10,6 +10,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -18,6 +19,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   CursorSettings,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -25,10 +27,12 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { providerFileUri } from "../attachmentDelivery.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
-import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { makeCursorAdapter, prepareCursorAcpPromptParts } from "./CursorAdapter.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
@@ -100,6 +104,17 @@ async function readJsonLines(filePath: string) {
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+async function writeStoredAttachment(
+  attachmentsDir: string,
+  attachment: ChatAttachment,
+  bytes: Uint8Array,
+): Promise<string> {
+  const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+  await NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true });
+  await NodeFSP.writeFile(attachmentPath, bytes);
+  return attachmentPath;
+}
+
 async function waitForFileContent(filePath: string, attempts = 40) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -129,6 +144,105 @@ function waitForJsonLogMatch(
     return yield* Effect.promise(() => readJsonLines(filePath));
   });
 }
+
+it.effect("prepares mixed Cursor ACP attachment blocks hermetically", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "cursor-attachment-parts-",
+    });
+    const threadId = ThreadId.make("cursor-hermetic-attachments");
+    const document = {
+      type: "document" as const,
+      id: "cursor-hermetic-attachments-12345678-1234-1234-1234-123456789abc",
+      name: "requirements.pdf",
+      mimeType: "application/pdf" as const,
+      sizeBytes: 3,
+    };
+    const image = {
+      type: "image" as const,
+      id: "cursor-hermetic-attachments-22345678-1234-1234-1234-123456789abc",
+      name: "screen.png",
+      mimeType: "image/png",
+      sizeBytes: 2,
+    };
+    const file = {
+      type: "file" as const,
+      id: "cursor-hermetic-attachments-32345678-1234-1234-1234-123456789abc",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+    };
+    const documentPath = yield* Effect.promise(() =>
+      writeStoredAttachment(attachmentsDir, document, Uint8Array.from([1, 2, 3])),
+    );
+    yield* Effect.promise(() =>
+      writeStoredAttachment(attachmentsDir, image, Uint8Array.from([4, 5])),
+    );
+    const filePath = yield* Effect.promise(() =>
+      writeStoredAttachment(attachmentsDir, file, Uint8Array.from([6, 7, 8, 9])),
+    );
+
+    const parts = yield* prepareCursorAcpPromptParts({
+      text: "Inspect all context",
+      attachmentsDir,
+      threadId,
+      attachments: [document, image, file],
+      fileSystem,
+    });
+
+    assert.deepStrictEqual(parts, [
+      { type: "text", text: "Inspect all context" },
+      {
+        type: "resource_link",
+        name: "requirements.pdf",
+        mimeType: "application/pdf",
+        size: 3,
+        uri: providerFileUri(documentPath),
+      },
+      { type: "image", data: "BAU=", mimeType: "image/png" },
+      {
+        type: "resource_link",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        size: 4,
+        uri: providerFileUri(filePath),
+      },
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("rejects missing Cursor attachments before a caller can send", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "cursor-missing-parts-",
+    });
+    let sent = false;
+    const error = yield* prepareCursorAcpPromptParts({
+      text: "Do not send",
+      attachmentsDir,
+      threadId: ThreadId.make("cursor-hermetic-missing"),
+      attachments: [
+        {
+          type: "document",
+          id: "cursor-hermetic-missing-42345678-1234-1234-1234-123456789abc",
+          name: "missing.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 1,
+        },
+      ],
+      fileSystem,
+    }).pipe(
+      Effect.tap(() => Effect.sync(() => (sent = true))),
+      Effect.flip,
+    );
+
+    assert.equal(error._tag, "ProviderAdapterRequestError");
+    assert.match(error.message, /missing\.pdf/);
+    assert.isFalse(sent);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 // Tests mutate `ServerSettingsService` mid-flight (e.g. setting
 // `providers.cursor.binaryPath` to a mock ACP wrapper). The adapter

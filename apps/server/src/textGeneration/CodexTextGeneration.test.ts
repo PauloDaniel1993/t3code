@@ -13,7 +13,10 @@ import { CodexSettings, ProviderInstanceId, TextGenerationError } from "@t3tools
 
 import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
+import {
+  makeCodexTextGeneration,
+  prepareCodexTextGenerationAttachments,
+} from "./CodexTextGeneration.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
@@ -180,6 +183,70 @@ function withFakeCodexEnv<A, E, R>(
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
+
+it.effect("keeps Codex secondary materialization image-only", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "codex-secondary-attachments-",
+    });
+
+    const prepared = yield* prepareCodexTextGenerationAttachments({
+      operation: "generateBranchName",
+      attachmentsDir,
+      fileSystem,
+      path,
+      attachments: [
+        {
+          type: "document",
+          id: "codex-secondary-document",
+          name: "requirements.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 24,
+        },
+        {
+          type: "file",
+          id: "codex-secondary-file",
+          name: "notes.md",
+          mimeType: "text/markdown",
+          sizeBytes: 12,
+        },
+      ],
+    });
+
+    expect(prepared.imagePaths).toEqual([]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("rejects unknown Codex secondary attachment kinds", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "codex-secondary-unknown-",
+    });
+
+    const error = yield* prepareCodexTextGenerationAttachments({
+      operation: "generateThreadTitle",
+      attachmentsDir,
+      fileSystem,
+      path,
+      attachments: [
+        {
+          type: "archive",
+          id: "codex-secondary-archive",
+          name: "bundle.zip",
+          mimeType: "application/zip",
+          sizeBytes: 1,
+        } as never,
+      ],
+    }).pipe(Effect.flip);
+
+    expect(error).toBeInstanceOf(TextGenerationError);
+    expect(error.message).toContain("archive");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
   it.effect("generates and sanitizes commit messages without branch by default", () =>
@@ -502,13 +569,12 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
-  it.effect("ignores missing attachment ids for codex image inputs", () =>
+  it.effect("rejects missing codex image inputs instead of silently skipping them", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({
           branch: "fix/ui-regression",
         }),
-        requireImage: true,
       },
       (textGeneration) =>
         Effect.gen(function* () {
@@ -539,7 +605,8 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           expect(Result.isFailure(result)).toBe(true);
           if (Result.isFailure(result)) {
             expect(result.failure).toBeInstanceOf(TextGenerationError);
-            expect(result.failure.message).toContain("missing --image input");
+            expect(result.failure.message).toContain("outside.png");
+            expect(result.failure.message).toContain("could not be read");
           }
         }),
     ),
