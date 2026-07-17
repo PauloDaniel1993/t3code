@@ -166,6 +166,9 @@ describe("OrchestrationEngine", () => {
       })),
     };
     let fullSnapshotReadCount = 0;
+    const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
+      prefix: "t3-orchestration-engine-bootstrap-test-",
+    });
 
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
@@ -212,6 +215,7 @@ describe("OrchestrationEngine", () => {
       Layer.provide(Layer.succeed(OrchestrationEventStore, eventStore)),
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(SqlitePersistenceMemory),
+      Layer.provideMerge(ServerConfigLayer),
       Layer.provideMerge(NodeServices.layer),
     );
 
@@ -885,6 +889,9 @@ describe("OrchestrationEngine", () => {
         return Effect.void;
       },
     };
+    const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
+      prefix: "t3-orchestration-engine-projection-failure-test-",
+    });
 
     const runtime = ManagedRuntime.make(
       OrchestrationEngineLive.pipe(
@@ -894,7 +901,8 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolver.layer),
         Layer.provide(SqlitePersistenceMemory),
-        Layer.provide(NodeServices.layer),
+        Layer.provideMerge(ServerConfigLayer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -1028,6 +1036,9 @@ describe("OrchestrationEngine", () => {
         return Effect.void;
       },
     };
+    const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
+      prefix: "t3-orchestration-engine-reconcile-failure-test-",
+    });
 
     const runtime = ManagedRuntime.make(
       OrchestrationEngineLive.pipe(
@@ -1037,7 +1048,8 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolver.layer),
         Layer.provide(SqlitePersistenceMemory),
-        Layer.provide(NodeServices.layer),
+        Layer.provideMerge(ServerConfigLayer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
