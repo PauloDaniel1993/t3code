@@ -2,12 +2,16 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ThreadId } from "@t3tools/contracts";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 
+import { base64UrlDecodeUtf8, base64UrlEncode } from "../auth/utils.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
@@ -27,6 +31,8 @@ const testLayer = Layer.mergeAll(
   ),
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
 ).pipe(Layer.provideMerge(NodeServices.layer));
+const decodeUnknownJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 describe("AssetAccess", () => {
   it.effect("issues workspace URLs that resolve the entry file and sibling assets", () =>
@@ -182,7 +188,7 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("issues exact attachment capabilities by attachment id", () =>
+  it.effect("keeps pre-existing image-only attachment claims compatible", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -203,6 +209,169 @@ describe("AssetAccess", () => {
         kind: "file",
         path: attachmentPath,
       });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("issues typed PDF claims that resolve exact metadata-derived paths", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000011";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.pdf`);
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(attachmentPath, "%PDF-1.7");
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "attachment",
+          attachmentId,
+          threadId: ThreadId.make("thread.1"),
+          disposition: "inline-pdf",
+        },
+        attachmentContext: {
+          threadId: "thread.1",
+          dispositionMode: "inline-pdf",
+          attachment: {
+            type: "document",
+            id: attachmentId,
+            name: "Quarterly Résumé.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 8,
+          },
+        },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+
+      expect(yield* resolveAsset(token, suffix.slice(separatorIndex + 1))).toEqual({
+        kind: "attachment",
+        path: attachmentPath,
+        attachmentKind: "document",
+        dispositionMode: "inline-pdf",
+        displayName: "Quarterly Résumé.pdf",
+        contentType: "application/pdf",
+      });
+
+      yield* fileSystem.remove(attachmentPath);
+      expect(yield* resolveAsset(token, "Quarterly%20R%C3%A9sum%C3%A9.pdf")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects expired typed attachment claims", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000012";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.pdf`);
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(attachmentPath, "%PDF-1.7");
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "attachment", attachmentId },
+        attachmentContext: {
+          threadId: "thread.1",
+          dispositionMode: "download",
+          attachment: {
+            type: "document",
+            id: attachmentId,
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 8,
+          },
+        },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+      yield* TestClock.adjust(Duration.hours(2));
+
+      expect(yield* resolveAsset(token, "report.pdf")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("invalidates tampering of every new typed attachment claim field", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000013";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.pdf`);
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(attachmentPath, "%PDF-1.7");
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "attachment", attachmentId },
+        attachmentContext: {
+          threadId: "thread.1",
+          dispositionMode: "inline-pdf",
+          attachment: {
+            type: "document",
+            id: attachmentId,
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 8,
+          },
+        },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+      const [encodedPayload, signature] = token.split(".");
+      expect(encodedPayload).toBeTruthy();
+      expect(signature).toBeTruthy();
+      const decodedClaims = decodeUnknownJson(base64UrlDecodeUtf8(encodedPayload!));
+      if (
+        typeof decodedClaims !== "object" ||
+        decodedClaims === null ||
+        Array.isArray(decodedClaims)
+      ) {
+        return yield* Effect.die("Expected an object-shaped attachment claim.");
+      }
+      const claims = decodedClaims as Record<string, unknown>;
+      const mutations: ReadonlyArray<readonly [string, unknown]> = [
+        ["attachmentKind", "file"],
+        ["dispositionMode", "download"],
+        ["displayName", "renamed.pdf"],
+        ["mimeType", "text/html"],
+      ];
+
+      for (const [field, value] of mutations) {
+        const tamperedPayload = base64UrlEncode(encodeUnknownJson({ ...claims, [field]: value }));
+        expect(yield* resolveAsset(`${tamperedPayload}.${signature}`, "report.pdf")).toBeNull();
+      }
+      expect(yield* resolveAsset("missing", "report.pdf")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects typed attachment issuance across thread ownership", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-2-00000000-0000-4000-8000-000000000014";
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(config.attachmentsDir, `${attachmentId}.pdf`),
+        "%PDF-1.7",
+      );
+
+      const error = yield* issueAssetUrl({
+        resource: { _tag: "attachment", attachmentId },
+        attachmentContext: {
+          threadId: "thread.1",
+          dispositionMode: "download",
+          attachment: {
+            type: "document",
+            id: attachmentId,
+            name: "other.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 8,
+          },
+        },
+      }).pipe(Effect.flip);
+
+      expect(error._tag).toBe("AssetAttachmentNotFoundError");
     }).pipe(Effect.provide(testLayer)),
   );
 

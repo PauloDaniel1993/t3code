@@ -3,10 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 
 import type { ChatAttachment } from "@t3tools/contracts";
-import {
-  ACCEPTED_ATTACHMENT_FILE_EXTENSIONS,
-  lookupAttachmentFileType,
-} from "@t3tools/shared/attachmentFileTypes";
+import { lookupAttachmentFileType } from "@t3tools/shared/attachmentFileTypes";
 
 import {
   normalizeAttachmentRelativePath,
@@ -14,14 +11,7 @@ import {
 } from "./attachmentPaths.ts";
 import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 
-const ATTACHMENT_FILENAME_EXTENSIONS = [
-  ...new Set([
-    ...SAFE_IMAGE_FILE_EXTENSIONS,
-    ".bin",
-    ".pdf",
-    ...ACCEPTED_ATTACHMENT_FILE_EXTENSIONS.map((extension) => `.${extension}`),
-  ]),
-];
+const LEGACY_IMAGE_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -65,6 +55,15 @@ export function parseThreadSegmentFromAttachmentId(attachmentId: string): string
   return match[1]?.toLowerCase() ?? null;
 }
 
+export function isAttachmentOwnedByThread(input: {
+  readonly attachmentId: string;
+  readonly threadId: string;
+}): boolean {
+  const expectedThreadSegment = toSafeThreadAttachmentSegment(input.threadId);
+  const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(input.attachmentId);
+  return expectedThreadSegment !== null && attachmentThreadSegment === expectedThreadSegment;
+}
+
 export function attachmentRelativePath(attachment: ChatAttachment): string {
   switch (attachment.type) {
     case "image": {
@@ -91,22 +90,43 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
 export function resolveAttachmentPath(input: {
   readonly attachmentsDir: string;
   readonly attachment: ChatAttachment;
+  readonly threadId?: string;
 }): string | null {
-  return resolveAttachmentRelativePath({
-    attachmentsDir: input.attachmentsDir,
-    relativePath: attachmentRelativePath(input.attachment),
-  });
+  if (
+    input.threadId !== undefined &&
+    !isAttachmentOwnedByThread({ attachmentId: input.attachment.id, threadId: input.threadId })
+  ) {
+    return null;
+  }
+
+  try {
+    return resolveAttachmentRelativePath({
+      attachmentsDir: input.attachmentsDir,
+      relativePath: attachmentRelativePath(input.attachment),
+    });
+  } catch {
+    return null;
+  }
 }
 
+/** Legacy image-only lookup for claims issued before typed attachment metadata was signed. */
 export function resolveAttachmentPathById(input: {
   readonly attachmentsDir: string;
   readonly attachmentId: string;
+  readonly threadId?: string;
 }): string | null {
+  if (
+    input.threadId !== undefined &&
+    !isAttachmentOwnedByThread({ attachmentId: input.attachmentId, threadId: input.threadId })
+  ) {
+    return null;
+  }
+
   const normalizedId = normalizeAttachmentRelativePath(input.attachmentId);
   if (!normalizedId || normalizedId.includes("/") || normalizedId.includes(".")) {
     return null;
   }
-  for (const extension of ATTACHMENT_FILENAME_EXTENSIONS) {
+  for (const extension of LEGACY_IMAGE_FILENAME_EXTENSIONS) {
     const maybePath = resolveAttachmentRelativePath({
       attachmentsDir: input.attachmentsDir,
       relativePath: `${normalizedId}${extension}`,
