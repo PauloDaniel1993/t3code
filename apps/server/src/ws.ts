@@ -49,6 +49,7 @@ import {
   OrchestrationReplayEventsError,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
+  AssetAttachmentNotFoundError,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   EnvironmentAuthorizationError,
@@ -1702,8 +1703,46 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
             Effect.gen(function* () {
-              if (input.resource._tag !== "workspace-file") {
+              if (input.resource._tag === "project-favicon") {
                 return yield* issueAssetUrl({ resource: input.resource });
+              }
+              if (input.resource._tag === "attachment") {
+                const resource = input.resource;
+                if (resource.threadId === undefined) {
+                  return yield* issueAssetUrl({ resource });
+                }
+                const thread = yield* projectionSnapshotQuery
+                  .getThreadDetailById(resource.threadId)
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new AssetWorkspaceContextResolutionError({
+                          resource,
+                          cause,
+                        }),
+                    ),
+                  );
+                if (Option.isNone(thread)) {
+                  return yield* new AssetAttachmentNotFoundError({ resource });
+                }
+                const attachment = thread.value.messages
+                  .flatMap((message) => message.attachments ?? [])
+                  .find((candidate) => candidate.id === resource.attachmentId);
+                if (!attachment) {
+                  return yield* new AssetAttachmentNotFoundError({ resource });
+                }
+                const dispositionMode =
+                  attachment.type === "document"
+                    ? (resource.disposition ?? "inline-pdf")
+                    : "download";
+                return yield* issueAssetUrl({
+                  resource,
+                  attachmentContext: {
+                    threadId: resource.threadId,
+                    attachment,
+                    dispositionMode,
+                  },
+                });
               }
               const thread = yield* projectionSnapshotQuery
                 .getThreadShellById(input.resource.threadId)
