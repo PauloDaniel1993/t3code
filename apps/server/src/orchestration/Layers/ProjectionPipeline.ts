@@ -106,9 +106,20 @@ interface AttachmentSideEffects {
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
 }
 
+function preserveAttachmentForProjection(attachment: ChatAttachment): ChatAttachment {
+  switch (attachment.type) {
+    case "image":
+    case "document":
+    case "file":
+      return attachment;
+    default:
+      throw new Error("Unsupported attachment type in projection payload.");
+  }
+}
+
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
   (input: { readonly attachments: ReadonlyArray<ChatAttachment> }) =>
-    Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
+    Effect.sync(() => input.attachments.map(preserveAttachmentForProjection)),
 );
 
 function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
@@ -338,9 +349,6 @@ function collectThreadAttachmentRelativePaths(
   const relativePaths = new Set<string>();
   for (const message of messages) {
     for (const attachment of message.attachments ?? []) {
-      if (attachment.type !== "image") {
-        continue;
-      }
       const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachment.id);
       if (!attachmentThreadSegment || attachmentThreadSegment !== threadSegment) {
         continue;
@@ -406,7 +414,6 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
 
   const pruneThreadAttachmentEntry = Effect.fn("pruneThreadAttachmentEntry")(function* (
     threadSegment: string,
-    keptThreadRelativePaths: Set<string>,
     entry: string,
   ) {
     const relativePath = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
@@ -428,14 +435,12 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
       return;
     }
 
-    if (!keptThreadRelativePaths.has(relativePath)) {
-      yield* fileSystem.remove(absolutePath, { force: true });
-    }
+    yield* fileSystem.remove(absolutePath, { force: true });
   });
 
   const pruneThreadAttachments = Effect.fn("pruneThreadAttachments")(function* (
     threadId: string,
-    keptThreadRelativePaths: Set<string>,
+    prunableThreadRelativePaths: Set<string>,
   ) {
     if (sideEffects.deletedThreadIds.has(threadId)) {
       return;
@@ -447,10 +452,9 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
       return;
     }
 
-    const entries = yield* readAttachmentRootEntries;
     yield* Effect.forEach(
-      entries,
-      (entry) => pruneThreadAttachmentEntry(threadSegment, keptThreadRelativePaths, entry),
+      prunableThreadRelativePaths,
+      (entry) => pruneThreadAttachmentEntry(threadSegment, entry),
       { concurrency: 1 },
     );
   });
@@ -461,8 +465,8 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
 
   yield* Effect.forEach(
     sideEffects.prunedThreadRelativePaths.entries(),
-    ([threadId, keptThreadRelativePaths]) =>
-      pruneThreadAttachments(threadId, keptThreadRelativePaths),
+    ([threadId, prunableThreadRelativePaths]) =>
+      pruneThreadAttachments(threadId, prunableThreadRelativePaths),
     { concurrency: 1 },
   );
 });
@@ -923,6 +927,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
           });
+
+          if (previousMessage !== undefined && event.payload.attachments !== undefined) {
+            const prunableRelativePaths = collectThreadAttachmentRelativePaths(
+              event.payload.threadId,
+              [previousMessage],
+            );
+            if (prunableRelativePaths.size > 0) {
+              const currentRows = yield* projectionThreadMessageRepository.listByThreadId({
+                threadId: event.payload.threadId,
+              });
+              for (const referencedRelativePath of collectThreadAttachmentRelativePaths(
+                event.payload.threadId,
+                currentRows,
+              )) {
+                prunableRelativePaths.delete(referencedRelativePath);
+              }
+              if (prunableRelativePaths.size > 0) {
+                attachmentSideEffects.prunedThreadRelativePaths.set(
+                  event.payload.threadId,
+                  prunableRelativePaths,
+                );
+              }
+            }
+          }
           return;
         }
 
@@ -946,16 +974,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
 
+          const keptMessageIds = new Set(keptRows.map((message) => message.messageId));
+          const prunableRelativePaths = collectThreadAttachmentRelativePaths(
+            event.payload.threadId,
+            existingRows.filter((message) => !keptMessageIds.has(message.messageId)),
+          );
+          for (const referencedRelativePath of collectThreadAttachmentRelativePaths(
+            event.payload.threadId,
+            keptRows,
+          )) {
+            prunableRelativePaths.delete(referencedRelativePath);
+          }
+
           yield* projectionThreadMessageRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
-          attachmentSideEffects.prunedThreadRelativePaths.set(
-            event.payload.threadId,
-            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
-          );
+          if (prunableRelativePaths.size > 0) {
+            attachmentSideEffects.prunedThreadRelativePaths.set(
+              event.payload.threadId,
+              prunableRelativePaths,
+            );
+          }
           return;
         }
 
