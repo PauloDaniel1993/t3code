@@ -4,6 +4,7 @@ import {
   ProjectId,
   type ModelSelection,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  type PreviewAnnotationPayload,
   type ProviderDriverKind,
   type ServerProvider,
   type ScopedProjectRef,
@@ -25,6 +26,8 @@ import {
   stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
 } from "../lib/terminalContext";
+import { elementContextDedupKey, type ElementContextDraft } from "../lib/elementContext";
+import type { ReviewCommentContext } from "../reviewCommentContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
@@ -271,11 +274,68 @@ export function cloneComposerAttachmentForRetry(
   return attachment.type === "image" ? cloneComposerImageForRetry(attachment) : attachment;
 }
 
-export function mergeFailedSendDraft<T>(input: {
+function mergeByIdentityKeys<T>(
+  currentItems: ReadonlyArray<T>,
+  failedItems: ReadonlyArray<T>,
+  getIdentityKeys: (item: T) => ReadonlyArray<string>,
+): T[] {
+  const seenIdentityKeys = new Set<string>();
+  const mergedItems: T[] = [];
+
+  for (const item of [...currentItems, ...failedItems]) {
+    const identityKeys = getIdentityKeys(item);
+    if (identityKeys.some((key) => seenIdentityKeys.has(key))) {
+      continue;
+    }
+    mergedItems.push(item);
+    for (const key of identityKeys) {
+      seenIdentityKeys.add(key);
+    }
+  }
+
+  return mergedItems;
+}
+
+export function composerAttachmentIdentityKeys(
+  attachment: ComposerAttachment,
+): ReadonlyArray<string> {
+  return [
+    `id:${attachment.id}`,
+    `content:${attachment.type}\u0000${attachment.mimeType}\u0000${attachment.sizeBytes}\u0000${attachment.name}`,
+  ];
+}
+
+function terminalContextIdentityKeys(context: TerminalContextDraft): ReadonlyArray<string> {
+  return [
+    `id:${context.id}`,
+    `selection:${context.terminalId}\u0000${context.lineStart}\u0000${context.lineEnd}`,
+  ];
+}
+
+function mergeFailedSendPrompt(currentPrompt: string, failedPrompt: string): string {
+  if (currentPrompt.length === 0) {
+    return failedPrompt;
+  }
+  if (failedPrompt.length === 0 || currentPrompt === failedPrompt) {
+    return currentPrompt;
+  }
+  return `${currentPrompt}\n\n${failedPrompt}`;
+}
+
+export function mergeFailedSendDraft<T extends { id: string }>(input: {
   currentPrompt: string;
   failedPrompt: string;
   currentAttachments: ReadonlyArray<T>;
   failedAttachments: ReadonlyArray<T>;
+  currentTerminalContexts?: ReadonlyArray<TerminalContextDraft>;
+  failedTerminalContexts?: ReadonlyArray<TerminalContextDraft>;
+  currentElementContexts?: ReadonlyArray<ElementContextDraft>;
+  failedElementContexts?: ReadonlyArray<ElementContextDraft>;
+  currentPreviewAnnotations?: ReadonlyArray<PreviewAnnotationPayload>;
+  failedPreviewAnnotations?: ReadonlyArray<PreviewAnnotationPayload>;
+  currentReviewComments?: ReadonlyArray<ReviewCommentContext>;
+  failedReviewComments?: ReadonlyArray<ReviewCommentContext>;
+  attachmentIdentityKeys?: (attachment: T) => ReadonlyArray<string>;
   maxAttachments?: number;
 }): {
   prompt: string;
@@ -283,23 +343,68 @@ export function mergeFailedSendDraft<T>(input: {
   restoredFailedAttachments: T[];
   droppedFailedAttachments: T[];
   restoredFailedText: boolean;
+  terminalContexts: TerminalContextDraft[];
+  elementContexts: ElementContextDraft[];
+  previewAnnotations: PreviewAnnotationPayload[];
+  reviewComments: ReviewCommentContext[];
   maxAttachments: number;
 } {
   const maxAttachments = Math.max(
     0,
     Math.floor(input.maxAttachments ?? PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
   );
-  const restoredFailedText = input.currentPrompt.length === 0;
-  const availableAttachmentSlots = Math.max(0, maxAttachments - input.currentAttachments.length);
-  const restoredFailedAttachments = input.failedAttachments.slice(0, availableAttachmentSlots);
-  const droppedFailedAttachments = input.failedAttachments.slice(availableAttachmentSlots);
+  const attachmentIdentityKeys =
+    input.attachmentIdentityKeys ?? ((attachment: T) => [`id:${attachment.id}`]);
+  const attachments = mergeByIdentityKeys(input.currentAttachments, [], attachmentIdentityKeys);
+  const restoredFailedAttachments: T[] = [];
+  const droppedFailedAttachments: T[] = [];
+  const seenAttachmentIdentityKeys = new Set<string>(
+    attachments.flatMap((attachment) => attachmentIdentityKeys(attachment)),
+  );
 
+  for (const attachment of input.failedAttachments) {
+    const identityKeys = attachmentIdentityKeys(attachment);
+    if (identityKeys.some((key) => seenAttachmentIdentityKeys.has(key))) {
+      continue;
+    }
+    if (attachments.length >= maxAttachments) {
+      droppedFailedAttachments.push(attachment);
+      continue;
+    }
+    attachments.push(attachment);
+    restoredFailedAttachments.push(attachment);
+    for (const key of identityKeys) {
+      seenAttachmentIdentityKeys.add(key);
+    }
+  }
+
+  const prompt = mergeFailedSendPrompt(input.currentPrompt, input.failedPrompt);
   return {
-    prompt: restoredFailedText ? input.failedPrompt : input.currentPrompt,
-    attachments: [...input.currentAttachments, ...restoredFailedAttachments],
+    prompt,
+    attachments,
     restoredFailedAttachments,
     droppedFailedAttachments,
-    restoredFailedText,
+    restoredFailedText: prompt !== input.currentPrompt,
+    terminalContexts: mergeByIdentityKeys(
+      input.currentTerminalContexts ?? [],
+      input.failedTerminalContexts ?? [],
+      terminalContextIdentityKeys,
+    ),
+    elementContexts: mergeByIdentityKeys(
+      input.currentElementContexts ?? [],
+      input.failedElementContexts ?? [],
+      (context) => [elementContextDedupKey(context)],
+    ),
+    previewAnnotations: mergeByIdentityKeys(
+      input.currentPreviewAnnotations ?? [],
+      input.failedPreviewAnnotations ?? [],
+      (annotation) => [annotation.id],
+    ),
+    reviewComments: mergeByIdentityKeys(
+      input.currentReviewComments ?? [],
+      input.failedReviewComments ?? [],
+      (comment) => [comment.id],
+    ),
     maxAttachments,
   };
 }
