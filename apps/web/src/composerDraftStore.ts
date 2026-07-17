@@ -2349,7 +2349,6 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...state.draftThreadsByThreadKey,
               [draftId]: nextDraftThread,
             };
-            let nextDraftsByThreadKey = state.draftsByThreadKey;
             const previousDraftThread =
               previousThreadKeyForLogicalProject === undefined
                 ? undefined
@@ -2363,14 +2362,18 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ) &&
               !isDraftThreadPromoting(previousDraftThread)
             ) {
-              delete nextDraftThreadsByThreadKey[previousThreadKeyForLogicalProject];
-              if (state.draftsByThreadKey[previousThreadKeyForLogicalProject] !== undefined) {
-                nextDraftsByThreadKey = { ...state.draftsByThreadKey };
-                delete nextDraftsByThreadKey[previousThreadKeyForLogicalProject];
-              }
+              return removeDraftThreadReferences(
+                {
+                  draftsByThreadKey: state.draftsByThreadKey,
+                  draftThreadsByThreadKey: nextDraftThreadsByThreadKey,
+                  logicalProjectDraftThreadKeyByLogicalProjectKey:
+                    nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
+                },
+                previousThreadKeyForLogicalProject,
+              );
             }
             return {
-              draftsByThreadKey: nextDraftsByThreadKey,
+              draftsByThreadKey: state.draftsByThreadKey,
               draftThreadsByThreadKey: nextDraftThreadsByThreadKey,
               logicalProjectDraftThreadKeyByLogicalProjectKey:
                 nextLogicalProjectDraftThreadKeyByLogicalProjectKey,

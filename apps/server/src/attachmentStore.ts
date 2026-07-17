@@ -35,10 +35,12 @@ export function toSafeThreadAttachmentSegment(threadId: string): string | null {
   return segment;
 }
 
-export function createAttachmentId(threadId: string): string | null {
+export function createAttachmentId(threadId: string): string {
   const threadSegment = toSafeThreadAttachmentSegment(threadId);
-  if (!threadSegment) {
-    return null;
+  if (threadSegment !== threadId) {
+    throw new Error(
+      "Attachment staging requires a thread ID with only lowercase letters, digits, underscores, and single hyphens; it cannot begin or end with a separator and must be at most 80 characters.",
+    );
   }
   return `${threadSegment}-${NodeCrypto.randomUUID()}`;
 }

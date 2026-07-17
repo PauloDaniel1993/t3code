@@ -259,6 +259,48 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues and resolves attachment URLs with isolated surrogate filenames", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000015";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.pdf`);
+      const displayName = "report-\uD800.pdf";
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(attachmentPath, "%PDF-1.7");
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "attachment", attachmentId },
+        attachmentContext: {
+          threadId: "thread.1",
+          dispositionMode: "download",
+          attachment: {
+            type: "document",
+            id: attachmentId,
+            name: displayName,
+            mimeType: "application/pdf",
+            sizeBytes: 8,
+          },
+        },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+
+      expect(suffix.endsWith("/report-%EF%BF%BD.pdf")).toBe(true);
+      expect(
+        yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
+      ).toEqual({
+        kind: "attachment",
+        path: attachmentPath,
+        attachmentKind: "document",
+        dispositionMode: "download",
+        displayName,
+        contentType: "application/pdf",
+      });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects expired typed attachment claims", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

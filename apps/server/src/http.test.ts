@@ -7,7 +7,12 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { describe } from "vite-plus/test";
 
-import { createAssetFileResponse, isLoopbackHostname, resolveDevRedirectUrl } from "./http.ts";
+import {
+  attachmentContentDisposition,
+  createAssetFileResponse,
+  isLoopbackHostname,
+  resolveDevRedirectUrl,
+} from "./http.ts";
 
 const assetResponseLayer = Layer.mergeAll(NodeServices.layer, NodeHttpPlatform.layer);
 
@@ -36,6 +41,19 @@ describe("http dev routing", () => {
 });
 
 describe("attachment asset responses", () => {
+  it("replaces isolated surrogates in Content-Disposition filenames", () => {
+    expect(
+      attachmentContentDisposition({
+        kind: "attachment",
+        path: "/tmp/attachment.pdf",
+        attachmentKind: "document",
+        dispositionMode: "download",
+        displayName: "report-\uD800.pdf",
+        contentType: "application/pdf",
+      }),
+    ).toBe("attachment; filename=\"report-_.pdf\"; filename*=UTF-8''report-%EF%BF%BD.pdf");
+  });
+
   it.effect("forces active generic content to download with canonical MIME and nosniff", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

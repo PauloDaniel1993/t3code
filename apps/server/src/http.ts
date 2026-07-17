@@ -27,7 +27,12 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { OtlpTracer } from "effect/unstable/observability";
 
 import * as ServerConfig from "./config.ts";
-import { ASSET_ROUTE_PREFIX, resolveAsset, type ResolvedAsset } from "./assets/AssetAccess.ts";
+import {
+  ASSET_ROUTE_PREFIX,
+  resolveAsset,
+  toWellFormedUnicode,
+  type ResolvedAsset,
+} from "./assets/AssetAccess.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
@@ -259,7 +264,7 @@ export function sanitizeAttachmentDisplayName(displayName: string): string {
 }
 
 function encodeRfc5987Value(value: string): string {
-  return encodeURIComponent(value).replace(
+  return encodeURIComponent(toWellFormedUnicode(value)).replace(
     /[!'()*]/g,
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
