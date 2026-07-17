@@ -21,18 +21,17 @@ const UUID_THREAD_ID = "00000000000040008000000000000001";
 const DASHED_UUID_THREAD_ID = "00000000-0000-4000-8000-000000000001";
 
 describe("attachmentStore", () => {
-  it("rejects collision-prone thread ids with an actionable staging error", () => {
+  it("returns null for collision-prone thread ids", () => {
     for (const threadId of ["notes.1", "notes/1"]) {
-      expect(() => createAttachmentId(threadId)).toThrow(
-        "Attachment staging requires a thread ID with only lowercase letters, digits, underscores, and single hyphens",
-      );
+      expect(createAttachmentId(threadId)).toBeNull();
     }
   });
 
   it("creates attachment ids for canonical UUID thread ids", () => {
     for (const threadId of [UUID_THREAD_ID, DASHED_UUID_THREAD_ID]) {
       const attachmentId = createAttachmentId(threadId);
-      expect(parseThreadSegmentFromAttachmentId(attachmentId)).toBe(threadId);
+      expect(attachmentId).not.toBeNull();
+      expect(parseThreadSegmentFromAttachmentId(attachmentId ?? "")).toBe(threadId);
     }
   });
 
@@ -44,10 +43,8 @@ describe("attachmentStore", () => {
     expect(parseThreadSegmentFromAttachmentId(fooBarId)).toBe("foo-bar");
   });
 
-  it("rejects thread ids that require lowercase normalization", () => {
-    expect(() => createAttachmentId("Thread.Foo")).toThrow(
-      "Attachment staging requires a thread ID",
-    );
+  it("returns null for thread ids that require lowercase normalization", () => {
+    expect(createAttachmentId("Thread.Foo")).toBeNull();
   });
 
   it("uses implementation-owned extensions and ignores traversal-shaped display names", () => {

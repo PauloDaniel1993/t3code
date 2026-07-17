@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
+  ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE,
   attachmentRelativePath,
   createAttachmentId,
   parseAttachmentIdFromRelativePath,
@@ -134,7 +135,7 @@ export const stageValidatedAttachments = Effect.fn("stageValidatedAttachments")(
     const id = createAttachmentId(input.threadId);
     if (!id) {
       return yield* stageError(
-        `Failed to create a safe attachment identifier for '${attachment.name}'.`,
+        `${ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE} Cannot stage attachment '${attachment.name}'.`,
       );
     }
     persistedAttachments.push(toPersistedAttachment(attachment, id));
