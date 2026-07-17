@@ -27,7 +27,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { OtlpTracer } from "effect/unstable/observability";
 
 import * as ServerConfig from "./config.ts";
-import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
+import { ASSET_ROUTE_PREFIX, resolveAsset, type ResolvedAsset } from "./assets/AssetAccess.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
@@ -247,6 +247,56 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
   ),
 );
 
+export function sanitizeAttachmentDisplayName(displayName: string): string {
+  let withoutControls = "";
+  for (const character of displayName) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) continue;
+    withoutControls += character;
+  }
+  const sanitized = withoutControls.replaceAll("\\", "_").replaceAll("/", "_").trim();
+  return sanitized.length > 0 ? sanitized : "attachment";
+}
+
+function encodeRfc5987Value(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+export function attachmentContentDisposition(
+  asset: Extract<ResolvedAsset, { readonly kind: "attachment" }>,
+): string {
+  const displayName = sanitizeAttachmentDisplayName(asset.displayName);
+  const fallbackName =
+    displayName
+      .normalize("NFKD")
+      .replace(/[^\x20-\x7e]/g, "_")
+      .replace(/["\\;]/g, "_") || "attachment";
+  const disposition =
+    asset.attachmentKind === "document" && asset.dispositionMode === "inline-pdf"
+      ? "inline"
+      : "attachment";
+  return `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encodeRfc5987Value(displayName)}`;
+}
+
+export const createAssetFileResponse = Effect.fn("http.createAssetFileResponse")(function* (
+  asset: ResolvedAsset,
+) {
+  return yield* HttpServerResponse.file(asset.path, {
+    status: 200,
+    ...(asset.kind === "attachment" ? { contentType: asset.contentType } : {}),
+    headers: {
+      "Cache-Control": "private, max-age=3600",
+      "X-Content-Type-Options": "nosniff",
+      ...(asset.kind === "attachment"
+        ? { "Content-Disposition": attachmentContentDisposition(asset) }
+        : {}),
+    },
+  });
+});
+
 export const assetRouteLayer = HttpRouter.add(
   "GET",
   `${ASSET_ROUTE_PREFIX}/*`,
@@ -270,13 +320,7 @@ export const assetRouteLayer = HttpRouter.add(
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
-    return yield* HttpServerResponse.file(asset.path, {
-      status: 200,
-      headers: {
-        "Cache-Control": "private, max-age=3600",
-        "X-Content-Type-Options": "nosniff",
-      },
-    }).pipe(
+    return yield* createAssetFileResponse(asset).pipe(
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
     );
   }),
