@@ -1,4 +1,4 @@
-import { MessageId, ThreadId } from "@t3tools/contracts";
+import { MessageId, ThreadId, type ChatAttachment } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,13 +19,27 @@ layer("ProjectionThreadMessageRepository", (it) => {
       const messageId = MessageId.make("message-preserve-attachments");
       const createdAt = "2026-02-28T19:00:00.000Z";
       const updatedAt = "2026-02-28T19:00:01.000Z";
-      const persistedAttachments = [
+      const persistedAttachments: ReadonlyArray<ChatAttachment> = [
         {
-          type: "image" as const,
+          type: "image",
           id: "thread-preserve-attachments-att-1",
           name: "example.png",
           mimeType: "image/png",
           sizeBytes: 5,
+        },
+        {
+          type: "document",
+          id: "thread-preserve-attachments-att-2",
+          name: "reference.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 7,
+        },
+        {
+          type: "file",
+          id: "thread-preserve-attachments-att-3",
+          name: "notes.ts",
+          mimeType: "text/plain",
+          sizeBytes: 9,
         },
       ];
 

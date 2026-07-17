@@ -2,13 +2,17 @@ import {
   EnvironmentId,
   MessageId,
   ProjectId,
+  type PreviewAnnotationPayload,
   ProviderInstanceId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import type { Thread } from "../types";
+import type { ChatMessage, Thread } from "../types";
+import type { ElementContextDraft } from "../lib/elementContext";
+import type { TerminalContextDraft } from "../lib/terminalContext";
+import type { ReviewCommentContext } from "../reviewCommentContext";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
@@ -18,9 +22,12 @@ import {
   deriveComposerSendState,
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
+  mergeFailedSendDraft,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  removeOptimisticUserMessage,
   resolveSendEnvMode,
+  revokeUserMessagePreviewUrls,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
 
@@ -28,6 +35,80 @@ const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
+
+function makeTerminalContext(
+  id: string,
+  overrides: Partial<TerminalContextDraft> = {},
+): TerminalContextDraft {
+  return {
+    id,
+    threadId,
+    terminalId: "terminal-1",
+    terminalLabel: "Terminal 1",
+    lineStart: 1,
+    lineEnd: 2,
+    text: "terminal output",
+    createdAt: now,
+    ...overrides,
+  };
+}
+
+function makeElementContext(
+  id: string,
+  overrides: Partial<ElementContextDraft> = {},
+): ElementContextDraft {
+  return {
+    id,
+    threadId,
+    pickedAt: now,
+    pageUrl: "http://localhost:3000",
+    pageTitle: "Preview",
+    tagName: "button",
+    selector: "button.save",
+    htmlPreview: "<button>Save</button>",
+    componentName: "SaveButton",
+    source: null,
+    styles: "",
+    ...overrides,
+  };
+}
+
+function makePreviewAnnotation(
+  id: string,
+  overrides: Partial<PreviewAnnotationPayload> = {},
+): PreviewAnnotationPayload {
+  return {
+    id,
+    pageUrl: "http://localhost:3000",
+    pageTitle: "Preview",
+    comment: "Review this change.",
+    elements: [],
+    regions: [],
+    strokes: [],
+    styleChanges: [],
+    screenshot: null,
+    createdAt: now,
+    ...overrides,
+  };
+}
+
+function makeReviewComment(
+  id: string,
+  overrides: Partial<ReviewCommentContext> = {},
+): ReviewCommentContext {
+  return {
+    id,
+    sectionId: "file:src/example.ts",
+    sectionTitle: "File comment",
+    filePath: "src/example.ts",
+    startIndex: 0,
+    endIndex: 1,
+    rangeLabel: "L1 to L2",
+    text: "Please update this.",
+    diff: "@@ -1,2 +1,2 @@\n example",
+    ...overrides,
+  };
+}
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -105,7 +186,7 @@ describe("deriveComposerSendState", () => {
   it("treats expired terminal pills as non-sendable content", () => {
     const state = deriveComposerSendState({
       prompt: "\uFFFC",
-      imageCount: 0,
+      attachmentCount: 0,
       terminalContexts: [
         {
           id: "ctx-expired",
@@ -129,7 +210,7 @@ describe("deriveComposerSendState", () => {
   it("keeps text sendable while excluding expired terminal pills", () => {
     const state = deriveComposerSendState({
       prompt: `yoo \uFFFC waddup`,
-      imageCount: 0,
+      attachmentCount: 0,
       terminalContexts: [
         {
           id: "ctx-expired",
@@ -152,7 +233,7 @@ describe("deriveComposerSendState", () => {
   it("treats element contexts as sendable content (no text, no images, no terminals)", () => {
     const state = deriveComposerSendState({
       prompt: "",
-      imageCount: 0,
+      attachmentCount: 0,
       terminalContexts: [],
       elementContextCount: 1,
     });
@@ -162,15 +243,202 @@ describe("deriveComposerSendState", () => {
     expect(state.hasSendableContent).toBe(true);
   });
 
+  it("treats PDF-only, file-only, and mixed attachment drafts as sendable", () => {
+    for (const attachmentCount of [1, 2, 8]) {
+      expect(
+        deriveComposerSendState({
+          prompt: "",
+          attachmentCount,
+          terminalContexts: [],
+        }).hasSendableContent,
+      ).toBe(true);
+    }
+  });
+
   it("does NOT treat zero element contexts as sendable", () => {
     expect(
       deriveComposerSendState({
         prompt: "",
-        imageCount: 0,
+        attachmentCount: 0,
         terminalContexts: [],
         elementContextCount: 0,
       }).hasSendableContent,
     ).toBe(false);
+  });
+});
+
+describe("mergeFailedSendDraft", () => {
+  it("fully restores a failed send into an empty composer", () => {
+    const failedAttachment = { id: "failed-attachment", name: "failed.png" };
+
+    expect(
+      mergeFailedSendDraft({
+        currentPrompt: "",
+        failedPrompt: "Retry this request",
+        currentAttachments: [],
+        failedAttachments: [failedAttachment],
+      }),
+    ).toEqual({
+      prompt: "Retry this request",
+      attachments: [failedAttachment],
+      restoredFailedAttachments: [failedAttachment],
+      droppedFailedAttachments: [],
+      restoredFailedText: true,
+      terminalContexts: [],
+      elementContexts: [],
+      previewAnnotations: [],
+      reviewComments: [],
+      maxAttachments: 8,
+    });
+  });
+
+  it("preserves concurrent text and contexts while restoring a failed send", () => {
+    const currentAttachment = { id: "current-attachment", name: "new.png" };
+    const duplicateFailedAttachment = { id: "current-attachment", name: "new-copy.png" };
+    const failedAttachment = { id: "failed-attachment", name: "failed.png" };
+    const overflowAttachment = { id: "overflow-attachment", name: "overflow.png" };
+    const currentTerminalContext = makeTerminalContext("terminal-current");
+    const duplicateFailedTerminalContext = makeTerminalContext("terminal-duplicate");
+    const failedTerminalContext = makeTerminalContext("terminal-failed", {
+      lineStart: 3,
+      lineEnd: 4,
+    });
+    const currentElementContext = makeElementContext("element-current");
+    const duplicateFailedElementContext = makeElementContext("element-duplicate", {
+      htmlPreview: "<button>Updated save</button>",
+    });
+    const failedElementContext = makeElementContext("element-failed", {
+      selector: "button.cancel",
+      componentName: "CancelButton",
+    });
+    const currentPreviewAnnotation = makePreviewAnnotation("preview-current");
+    const duplicateFailedPreviewAnnotation = makePreviewAnnotation("preview-current", {
+      comment: "Updated failed annotation.",
+    });
+    const failedPreviewAnnotation = makePreviewAnnotation("preview-failed");
+    const currentReviewComment = makeReviewComment("review-current");
+    const duplicateFailedReviewComment = makeReviewComment("review-current", {
+      text: "Updated failed review comment.",
+    });
+    const failedReviewComment = makeReviewComment("review-failed");
+    const merged = mergeFailedSendDraft({
+      currentPrompt: "New text typed while sending",
+      failedPrompt: "Failed text",
+      currentAttachments: [currentAttachment],
+      failedAttachments: [duplicateFailedAttachment, failedAttachment, overflowAttachment],
+      currentTerminalContexts: [currentTerminalContext],
+      failedTerminalContexts: [duplicateFailedTerminalContext, failedTerminalContext],
+      currentElementContexts: [currentElementContext],
+      failedElementContexts: [duplicateFailedElementContext, failedElementContext],
+      currentPreviewAnnotations: [currentPreviewAnnotation],
+      failedPreviewAnnotations: [duplicateFailedPreviewAnnotation, failedPreviewAnnotation],
+      currentReviewComments: [currentReviewComment],
+      failedReviewComments: [duplicateFailedReviewComment, failedReviewComment],
+      maxAttachments: 2,
+    });
+    const optimisticMessage = {
+      id: MessageId.make("optimistic-message"),
+      role: "user" as const,
+      text: "Failed text",
+      attachments: [
+        {
+          type: "image" as const,
+          id: "failed-attachment",
+          name: "failed.png",
+          mimeType: "image/png",
+          sizeBytes: 1,
+          previewUrl: "blob:failed-attachment",
+        },
+      ],
+      turnId: null,
+      createdAt: now,
+      updatedAt: now,
+      streaming: false,
+    } satisfies ChatMessage;
+
+    expect(merged.prompt).toBe("New text typed while sending\n\nFailed text");
+    expect(merged.attachments).toEqual([currentAttachment, failedAttachment]);
+    expect(merged.restoredFailedAttachments).toEqual([failedAttachment]);
+    expect(merged.droppedFailedAttachments).toEqual([overflowAttachment]);
+    expect(merged.terminalContexts).toEqual([currentTerminalContext, failedTerminalContext]);
+    expect(merged.elementContexts).toEqual([currentElementContext, failedElementContext]);
+    expect(merged.previewAnnotations).toEqual([currentPreviewAnnotation, failedPreviewAnnotation]);
+    expect(merged.reviewComments).toEqual([currentReviewComment, failedReviewComment]);
+    expect(removeOptimisticUserMessage([optimisticMessage], optimisticMessage.id).messages).toEqual(
+      [],
+    );
+  });
+
+  it("does not duplicate an identical failed prompt", () => {
+    const attachment = { id: "attachment", name: "attachment.png" };
+
+    const merged = mergeFailedSendDraft({
+      currentPrompt: "Same text",
+      failedPrompt: "Same text",
+      currentAttachments: [attachment],
+      failedAttachments: [],
+    });
+
+    expect(merged.prompt).toBe("Same text");
+    expect(merged.restoredFailedText).toBe(false);
+  });
+
+  it("keeps current attachments at the cap and reports failed attachment overflow", () => {
+    const currentAttachments = Array.from({ length: 7 }, (_, index) => ({
+      id: `current-${index}`,
+      name: `current-${index}.txt`,
+    }));
+    const restoredAttachment = { id: "failed-0", name: "restored.png" };
+    const droppedAttachments = [
+      { id: "failed-1", name: "dropped-one.pdf" },
+      { id: "failed-2", name: "dropped-two.txt" },
+    ];
+
+    const merged = mergeFailedSendDraft({
+      currentPrompt: "",
+      failedPrompt: "Failed text",
+      currentAttachments,
+      failedAttachments: [restoredAttachment, ...droppedAttachments],
+    });
+
+    expect(merged.attachments).toEqual([...currentAttachments, restoredAttachment]);
+    expect(merged.restoredFailedAttachments).toEqual([restoredAttachment]);
+    expect(merged.droppedFailedAttachments).toEqual(droppedAttachments);
+  });
+
+  it("revokes a removed optimistic image preview exactly once", () => {
+    const optimisticMessage = {
+      id: MessageId.make("optimistic-message"),
+      role: "user" as const,
+      text: "Failed text",
+      attachments: [
+        {
+          type: "image" as const,
+          id: "failed-attachment",
+          name: "failed.png",
+          mimeType: "image/png",
+          sizeBytes: 1,
+          previewUrl: "blob:failed-attachment",
+        },
+      ],
+      turnId: null,
+      createdAt: now,
+      updatedAt: now,
+      streaming: false,
+    } satisfies ChatMessage;
+    const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+
+    try {
+      const cleanup = removeOptimisticUserMessage([optimisticMessage], optimisticMessage.id);
+      expect(cleanup.removedMessage).toBe(optimisticMessage);
+      if (cleanup.removedMessage) {
+        revokeUserMessagePreviewUrls(cleanup.removedMessage);
+      }
+      expect(revoke).toHaveBeenCalledTimes(1);
+      expect(revoke).toHaveBeenCalledWith("blob:failed-attachment");
+    } finally {
+      revoke.mockRestore();
+    }
   });
 });
 

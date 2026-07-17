@@ -1,5 +1,6 @@
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   type GrokSettings,
   EventId,
   type ProviderApprovalDecision,
@@ -32,8 +33,8 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { mapAcpAttachments } from "../acpAttachments.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterProcessError,
@@ -221,6 +222,30 @@ export function grokPromptSettlementBelongsToContext(input: {
   return (
     input.liveAcpSessionId === input.expectedAcpSessionId &&
     (input.liveActiveTurnId === input.turnId || input.liveSessionActiveTurnId === input.turnId)
+  );
+}
+
+export function prepareGrokAcpPromptParts(input: {
+  readonly text: string | undefined;
+  readonly attachmentsDir: string;
+  readonly threadId: ThreadId;
+  readonly attachments: ReadonlyArray<ChatAttachment> | undefined;
+  readonly fileSystem: FileSystem.FileSystem;
+}) {
+  return mapAcpAttachments(input).pipe(
+    Effect.map((attachmentParts) => [
+      ...(input.text?.trim() ? [{ type: "text" as const, text: input.text.trim() }] : []),
+      ...attachmentParts,
+    ]),
+    Effect.mapError(
+      (cause) =>
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session/prompt",
+          detail: cause.message,
+          cause,
+        }),
+    ),
   );
 }
 
@@ -915,6 +940,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           input.threadId,
           Effect.gen(function* () {
             const ctx = yield* requireSession(input.threadId);
+            const promptParts = yield* prepareGrokAcpPromptParts({
+              text: input.input,
+              attachmentsDir: serverConfig.attachmentsDir,
+              threadId: input.threadId,
+              attachments: input.attachments,
+              fileSystem,
+            });
             // A sendTurn while a prompt is in flight is a steer: the agent
             // folds the new prompt into the ongoing work, so the active turn
             // id is reused instead of opening a new turn.
@@ -949,45 +981,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 mapError: (cause) =>
                   mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
               });
-
-              const text = input.input?.trim();
-              const imagePromptParts = yield* Effect.forEach(
-                input.attachments ?? [],
-                (attachment) =>
-                  Effect.gen(function* () {
-                    const attachmentPath = resolveAttachmentPath({
-                      attachmentsDir: serverConfig.attachmentsDir,
-                      attachment,
-                    });
-                    if (!attachmentPath) {
-                      return yield* new ProviderAdapterRequestError({
-                        provider: PROVIDER,
-                        method: "session/prompt",
-                        detail: `Invalid attachment id '${attachment.id}'.`,
-                      });
-                    }
-                    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapterRequestError({
-                            provider: PROVIDER,
-                            method: "session/prompt",
-                            detail: cause.message,
-                            cause,
-                          }),
-                      ),
-                    );
-                    return {
-                      type: "image",
-                      data: Buffer.from(bytes).toString("base64"),
-                      mimeType: attachment.mimeType,
-                    } satisfies EffectAcpSchema.ContentBlock;
-                  }),
-              );
-              const promptParts: Array<EffectAcpSchema.ContentBlock> = [
-                ...(text ? [{ type: "text" as const, text }] : []),
-                ...imagePromptParts,
-              ];
 
               if (promptParts.length === 0) {
                 return yield* new ProviderAdapterValidationError({

@@ -48,6 +48,7 @@ import {
   OrchestrationReplayEventsError,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
+  AssetAttachmentNotFoundError,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   EnvironmentAuthorizationError,
@@ -67,7 +68,10 @@ import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
-import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
+import {
+  normalizeDispatchCommand,
+  type NormalizedDispatchCommand,
+} from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -679,6 +683,7 @@ const makeWsRpcLayer = (
 
       const dispatchBootstrapTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+        attachmentStage: NormalizedDispatchCommand["attachmentStage"],
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
         Effect.gen(function* () {
           const bootstrap = command.bootstrap;
@@ -869,7 +874,10 @@ const makeWsRpcLayer = (
 
             yield* runSetupProgram();
 
-            return yield* orchestrationEngine.dispatch(finalTurnStartCommand);
+            return yield* orchestrationEngine.dispatch(
+              finalTurnStartCommand,
+              attachmentStage ? { attachmentStage } : undefined,
+            );
           });
 
           return yield* bootstrapProgram.pipe(
@@ -884,26 +892,26 @@ const makeWsRpcLayer = (
         });
 
       const dispatchNormalizedCommand = (
-        normalizedCommand: OrchestrationCommand,
+        normalized: NormalizedDispatchCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
+        const { command, attachmentStage } = normalized;
         const dispatchEffect =
-          normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
-            ? dispatchBootstrapTurnStart(normalizedCommand)
+          command.type === "thread.turn.start" && command.bootstrap
+            ? dispatchBootstrapTurnStart(command, attachmentStage)
             : orchestrationEngine
-                .dispatch(normalizedCommand)
+                .dispatch(command, attachmentStage ? { attachmentStage } : undefined)
                 .pipe(
                   Effect.mapError((cause) =>
                     toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
                   ),
                 );
 
-        return startup
-          .enqueueCommand(dispatchEffect)
-          .pipe(
-            Effect.mapError((cause) =>
-              toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-            ),
-          );
+        return startup.enqueueCommand(dispatchEffect).pipe(
+          Effect.ensuring(attachmentStage?.abortIfUnclaimed ?? Effect.void),
+          Effect.mapError((cause) =>
+            toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+          ),
+        );
       };
 
       const loadServerConfig = Effect.gen(function* () {
@@ -948,7 +956,8 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
-              const normalizedCommand = yield* normalizeDispatchCommand(command);
+              const normalized = yield* normalizeDispatchCommand(command);
+              const normalizedCommand = normalized.command;
               const shouldStopSessionAfterArchive =
                 normalizedCommand.type === "thread.archive"
                   ? yield* projectionSnapshotQuery
@@ -964,7 +973,7 @@ const makeWsRpcLayer = (
                         Effect.orElseSucceed(() => false),
                       )
                   : false;
-              const result = yield* dispatchNormalizedCommand(normalizedCommand);
+              const result = yield* dispatchNormalizedCommand(normalized);
               if (normalizedCommand.type === "thread.archive") {
                 if (shouldStopSessionAfterArchive) {
                   yield* Effect.gen(function* () {
@@ -1477,8 +1486,46 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
             Effect.gen(function* () {
-              if (input.resource._tag !== "workspace-file") {
+              if (input.resource._tag === "project-favicon") {
                 return yield* issueAssetUrl({ resource: input.resource });
+              }
+              if (input.resource._tag === "attachment") {
+                const resource = input.resource;
+                if (resource.threadId === undefined) {
+                  return yield* issueAssetUrl({ resource });
+                }
+                const thread = yield* projectionSnapshotQuery
+                  .getThreadDetailById(resource.threadId)
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new AssetWorkspaceContextResolutionError({
+                          resource,
+                          cause,
+                        }),
+                    ),
+                  );
+                if (Option.isNone(thread)) {
+                  return yield* new AssetAttachmentNotFoundError({ resource });
+                }
+                const attachment = thread.value.messages
+                  .flatMap((message) => message.attachments ?? [])
+                  .find((candidate) => candidate.id === resource.attachmentId);
+                if (!attachment) {
+                  return yield* new AssetAttachmentNotFoundError({ resource });
+                }
+                const dispositionMode =
+                  attachment.type === "document"
+                    ? (resource.disposition ?? "inline-pdf")
+                    : "download";
+                return yield* issueAssetUrl({
+                  resource,
+                  attachmentContext: {
+                    threadId: resource.threadId,
+                    attachment,
+                    dispositionMode,
+                  },
+                });
               }
               const thread = yield* projectionSnapshotQuery
                 .getThreadShellById(input.resource.threadId)

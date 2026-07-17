@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   CodexSettings,
   EventId,
   ProviderDriverKind,
@@ -34,6 +35,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
@@ -57,6 +59,17 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
+
+function writeStoredAttachment(
+  attachmentsDir: string,
+  attachment: ChatAttachment,
+  bytes: Uint8Array | string,
+): string {
+  const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+  NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+  NodeFS.writeFileSync(attachmentPath, bytes);
+  return attachmentPath;
+}
 
 class FakeCodexRuntime implements CodexSessionRuntimeShape {
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
@@ -219,6 +232,25 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   listThreadIds: () => Effect.succeed([]),
   listBindings: () => Effect.succeed([]),
 });
+
+function makeAttachmentHarness(baseDir: string) {
+  const runtimeFactory = makeRuntimeFactory();
+  const layer = Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        makeRuntime: runtimeFactory.factory,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return { layer, runtimeFactory };
+}
 
 const validationRuntimeFactory = makeRuntimeFactory();
 const validationLayer = it.layer(
@@ -413,6 +445,125 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       });
     }).pipe(Effect.provide(customLayer));
   });
+});
+
+it.effect("delivers mixed Codex attachments as ordered images and local-path mentions", () => {
+  const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "codex-attachments-"));
+  const harness = makeAttachmentHarness(baseDir);
+  return Effect.gen(function* () {
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+    );
+    const adapter = yield* CodexAdapter;
+    const { attachmentsDir } = yield* ServerConfig;
+    const threadId = asThreadId("thread-codex-attachments");
+    const image = {
+      type: "image" as const,
+      id: "thread-codex-attachments-12345678-1234-1234-1234-123456789abc",
+      name: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 2,
+    };
+    const pdf = {
+      type: "document" as const,
+      id: "thread-codex-attachments-22345678-1234-1234-1234-123456789abc",
+      name: "design notes.pdf",
+      mimeType: "application/pdf" as const,
+      sizeBytes: 1,
+    };
+    const text = {
+      type: "file" as const,
+      id: "thread-codex-attachments-32345678-1234-1234-1234-123456789abc",
+      name: "source file.ts",
+      mimeType: "text/plain",
+      sizeBytes: 1,
+    };
+    const workbook = {
+      type: "file" as const,
+      id: "thread-codex-attachments-42345678-1234-1234-1234-123456789abc",
+      name: "report.xlsx",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      sizeBytes: 4,
+    };
+    writeStoredAttachment(attachmentsDir, image, Uint8Array.from([1, 2]));
+    const pdfPath = writeStoredAttachment(attachmentsDir, pdf, Uint8Array.from([3]));
+    const textPath = writeStoredAttachment(attachmentsDir, text, Uint8Array.from([4]));
+    const workbookPath = writeStoredAttachment(
+      attachmentsDir,
+      workbook,
+      Uint8Array.from([0x50, 0x4b, 0x03, 0x04]),
+    );
+    yield* adapter.startSession({
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      runtimeMode: "full-access",
+    });
+    const runtime = harness.runtimeFactory.lastRuntime;
+    NodeAssert.ok(runtime);
+    runtime.sendTurnImpl.mockClear();
+
+    yield* adapter.sendTurn({
+      threadId,
+      input: "Inspect all attachments",
+      attachments: [image, pdf, text, workbook],
+    });
+
+    NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
+      input: "Inspect all attachments",
+      attachments: [
+        { type: "image", url: "data:image/png;base64,AQI=" },
+        { type: "mention", name: "design notes.pdf", path: pdfPath },
+        { type: "mention", name: "source file.ts", path: textPath },
+        { type: "mention", name: "report.xlsx", path: workbookPath },
+      ],
+    });
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("rejects a missing Codex attachment before any runtime sendTurn call", () => {
+  const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "codex-missing-"));
+  const harness = makeAttachmentHarness(baseDir);
+  return Effect.gen(function* () {
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+    );
+    const adapter = yield* CodexAdapter;
+    const { attachmentsDir } = yield* ServerConfig;
+    const threadId = asThreadId("thread-codex-missing");
+    const valid = {
+      type: "image" as const,
+      id: "thread-codex-missing-52345678-1234-1234-1234-123456789abc",
+      name: "valid.png",
+      mimeType: "image/png",
+      sizeBytes: 1,
+    };
+    const missing = {
+      type: "document" as const,
+      id: "thread-codex-missing-62345678-1234-1234-1234-123456789abc",
+      name: "missing.pdf",
+      mimeType: "application/pdf" as const,
+      sizeBytes: 1,
+    };
+    writeStoredAttachment(attachmentsDir, valid, Uint8Array.from([1]));
+    yield* adapter.startSession({
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      runtimeMode: "full-access",
+    });
+    const runtime = harness.runtimeFactory.lastRuntime;
+    NodeAssert.ok(runtime);
+    runtime.sendTurnImpl.mockClear();
+
+    const result = yield* adapter
+      .sendTurn({ threadId, attachments: [valid, missing] })
+      .pipe(Effect.result);
+
+    NodeAssert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") {
+      NodeAssert.match(result.failure.message, /missing\.pdf/u);
+    }
+    NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
 });
 
 const lifecycleRuntimeFactory = makeRuntimeFactory();

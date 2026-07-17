@@ -15,8 +15,13 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type { AttachmentStage } from "../../attachmentStaging.ts";
 import type { OrchestrationDispatchError } from "../Errors.ts";
 import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
+
+export interface OrchestrationDispatchOptions {
+  readonly attachmentStage?: AttachmentStage;
+}
 
 /**
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
@@ -48,6 +53,7 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
+    options?: OrchestrationDispatchOptions,
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
   /**

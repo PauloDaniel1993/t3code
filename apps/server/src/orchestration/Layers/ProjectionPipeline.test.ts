@@ -8,6 +8,7 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  ChatAttachment,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -15,14 +16,18 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { drainAttachmentCleanupQueue } from "../../attachmentStaging.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
+import { AttachmentCleanupQueueRepository } from "../../persistence/Services/AttachmentCleanupQueue.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -33,6 +38,8 @@ import {
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
+import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 
 const makeProjectionPipelinePrefixedTestLayer = (prefix: string) =>
@@ -49,6 +56,19 @@ const exists = (filePath: string) =>
     const fileInfo = yield* Effect.result(fileSystem.stat(filePath));
     return fileInfo._tag === "Success";
   });
+
+const drainProjectedAttachmentCleanup = Effect.fn("drainProjectedAttachmentCleanup")(function* (
+  fileSystem?: FileSystem.FileSystem,
+) {
+  const queue = yield* AttachmentCleanupQueueRepository;
+  const { attachmentsDir } = yield* ServerConfig;
+  const drain = drainAttachmentCleanupQueue({ attachmentsDir, queue });
+  yield* fileSystem ? drain.pipe(Effect.provideService(FileSystem.FileSystem, fileSystem)) : drain;
+});
+
+const AttachmentArrayJson = Schema.fromJsonString(Schema.Array(ChatAttachment));
+const encodeAttachmentsJson = Schema.encodeSync(AttachmentArrayJson);
+const decodeAttachmentsJson = Schema.decodeUnknownSync(AttachmentArrayJson);
 
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-test-");
 
@@ -597,6 +617,136 @@ it.layer(
 });
 
 it.layer(
+  Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-replacement-")),
+)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("attachment replacement removes only paths no longer referenced by the thread", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const { attachmentsDir } = yield* ServerConfig;
+      const threadId = ThreadId.make("Thread Replace.Mixed");
+      const oldDocument: ChatAttachment = {
+        type: "document",
+        id: "thread-replace-mixed-00000000-0000-4000-8000-000000000001",
+        name: "old.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 5,
+      };
+      const sharedFile: ChatAttachment = {
+        type: "file",
+        id: "thread-replace-mixed-00000000-0000-4000-8000-000000000002",
+        name: "shared.ts",
+        mimeType: "text/plain",
+        sizeBytes: 5,
+      };
+      const newFile: ChatAttachment = {
+        type: "file",
+        id: "thread-replace-mixed-00000000-0000-4000-8000-000000000003",
+        name: "new.json",
+        mimeType: "application/json",
+        sizeBytes: 5,
+      };
+      const otherThreadDocument: ChatAttachment = {
+        type: "document",
+        id: "thread-replace-mixed-other-00000000-0000-4000-8000-000000000004",
+        name: "other.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 5,
+      };
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        VALUES
+          (
+            'message-replace-mixed',
+            ${threadId},
+            NULL,
+            'user',
+            'old',
+            ${encodeAttachmentsJson([oldDocument, sharedFile])},
+            0,
+            ${now},
+            ${now}
+          ),
+          (
+            'message-retain-shared',
+            ${threadId},
+            NULL,
+            'user',
+            'shared',
+            ${encodeAttachmentsJson([sharedFile])},
+            0,
+            '2026-01-01T00:00:00.500Z',
+            '2026-01-01T00:00:00.500Z'
+          )
+      `;
+
+      const oldDocumentPath = path.join(attachmentsDir, attachmentRelativePath(oldDocument));
+      const sharedFilePath = path.join(attachmentsDir, attachmentRelativePath(sharedFile));
+      const newFilePath = path.join(attachmentsDir, attachmentRelativePath(newFile));
+      const otherThreadDocumentPath = path.join(
+        attachmentsDir,
+        attachmentRelativePath(otherThreadDocument),
+      );
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      for (const attachmentPath of [
+        oldDocumentPath,
+        sharedFilePath,
+        newFilePath,
+        otherThreadDocumentPath,
+      ]) {
+        yield* fileSystem.writeFileString(attachmentPath, "attachment");
+      }
+
+      const savedEvent = yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-replace-mixed"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: CommandId.make("cmd-replace-mixed"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-replace-mixed"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-replace-mixed"),
+          role: "user",
+          text: "new",
+          attachments: [newFile],
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      });
+      yield* projectionPipeline.projectEvent(savedEvent);
+
+      assert.isTrue(yield* exists(oldDocumentPath));
+      yield* drainProjectedAttachmentCleanup();
+      assert.isFalse(yield* exists(oldDocumentPath));
+      assert.isTrue(yield* exists(sharedFilePath));
+      assert.isTrue(yield* exists(newFilePath));
+      assert.isTrue(yield* exists(otherThreadDocumentPath));
+    }),
+  );
+});
+
+it.layer(
   Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-rollback-")),
 )("OrchestrationProjectionPipeline", (it) => {
   it.effect("does not persist attachment files when projector transaction rolls back", () =>
@@ -718,6 +868,181 @@ it.layer(
     }),
   );
 });
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-cleanup-rollback-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect(
+      "projection rollback does not prune attachments from the retained message state",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const { attachmentsDir } = yield* ServerConfig;
+          const threadId = ThreadId.make("Thread Cleanup.Rollback");
+          const retainedDocument: ChatAttachment = {
+            type: "document",
+            id: "thread-cleanup-rollback-00000000-0000-4000-8000-000000000001",
+            name: "retained.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 5,
+          };
+          const retainedFile: ChatAttachment = {
+            type: "file",
+            id: "thread-cleanup-rollback-00000000-0000-4000-8000-000000000002",
+            name: "retained.ts",
+            mimeType: "text/plain",
+            sizeBytes: 5,
+          };
+          const replacementFile: ChatAttachment = {
+            type: "file",
+            id: "thread-cleanup-rollback-00000000-0000-4000-8000-000000000003",
+            name: "replacement.json",
+            mimeType: "application/json",
+            sizeBytes: 5,
+          };
+          const now = "2026-01-01T00:00:00.000Z";
+
+          yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          'message-cleanup-rollback',
+          ${threadId},
+          NULL,
+          'user',
+          'retained',
+          ${encodeAttachmentsJson([retainedDocument, retainedFile])},
+          0,
+          ${now},
+          ${now}
+        )
+      `;
+          const retainedDocumentPath = path.join(
+            attachmentsDir,
+            attachmentRelativePath(retainedDocument),
+          );
+          const retainedFilePath = path.join(attachmentsDir, attachmentRelativePath(retainedFile));
+          yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+          yield* fileSystem.writeFileString(retainedDocumentPath, "document");
+          yield* fileSystem.writeFileString(retainedFilePath, "file");
+
+          yield* sql`
+        CREATE TRIGGER fail_cleanup_projection_state_update
+        BEFORE INSERT ON projection_state
+        WHEN NEW.projector = 'projection.thread-messages'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced-cleanup-projection-state-failure');
+        END;
+      `;
+
+          const savedEvent = yield* eventStore.append({
+            type: "thread.message-sent",
+            eventId: EventId.make("evt-cleanup-rollback"),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: "2026-01-01T00:00:01.000Z",
+            commandId: CommandId.make("cmd-cleanup-rollback"),
+            causationEventId: null,
+            correlationId: CorrelationId.make("cmd-cleanup-rollback"),
+            metadata: {},
+            payload: {
+              threadId,
+              messageId: MessageId.make("message-cleanup-rollback"),
+              role: "user",
+              text: "replacement",
+              attachments: [replacementFile],
+              turnId: null,
+              streaming: false,
+              createdAt: now,
+              updatedAt: "2026-01-01T00:00:01.000Z",
+            },
+          });
+          const result = yield* Effect.result(projectionPipeline.projectEvent(savedEvent));
+          assert.equal(result._tag, "Failure");
+
+          assert.isTrue(yield* exists(retainedDocumentPath));
+          assert.isTrue(yield* exists(retainedFilePath));
+          const rows = yield* sql<{ readonly attachmentsJson: string }>`
+        SELECT attachments_json AS "attachmentsJson"
+        FROM projection_thread_messages
+        WHERE message_id = 'message-cleanup-rollback'
+      `;
+          assert.deepEqual(decodeAttachmentsJson(rows[0]?.attachmentsJson ?? "[]"), [
+            retainedDocument,
+            retainedFile,
+          ]);
+          yield* sql`DROP TRIGGER IF EXISTS fail_cleanup_projection_state_update`;
+        }),
+    );
+  },
+);
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-cleanup-retry-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("retains failed cleanup intents and removes the file on retry", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const queue = yield* AttachmentCleanupQueueRepository;
+        const { attachmentsDir } = yield* ServerConfig;
+        const threadId = ThreadId.make("thread-cleanup-retry");
+        const relativePath = "thread-cleanup-retry-00000000-0000-4000-8000-000000000001.txt";
+        const attachmentPath = path.join(attachmentsDir, relativePath);
+        yield* fileSystem.writeFileString(attachmentPath, "retry");
+        yield* queue.enqueue({
+          operation: "delete-path",
+          threadId,
+          relativePath,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+
+        let failFirstRemove = true;
+        const failingFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          remove: (candidate, options) => {
+            if (failFirstRemove && String(candidate) === attachmentPath) {
+              failFirstRemove = false;
+              return Effect.fail(
+                PlatformError.systemError({
+                  _tag: "PermissionDenied",
+                  module: "FileSystem",
+                  method: "remove",
+                  pathOrDescriptor: String(candidate),
+                  description: "injected cleanup lock",
+                }),
+              );
+            }
+            return fileSystem.remove(candidate, options);
+          },
+        });
+
+        yield* drainProjectedAttachmentCleanup(failingFileSystem);
+        assert.isTrue(yield* exists(attachmentPath));
+        const pendingAfterFailure = yield* queue.listPending({ limit: 10 });
+        assert.equal(pendingAfterFailure.length, 1);
+        assert.equal(pendingAfterFailure[0]?.attemptCount, 1);
+
+        yield* drainProjectedAttachmentCleanup();
+        assert.isFalse(yield* exists(attachmentPath));
+        assert.deepEqual(yield* queue.listPending({ limit: 10 }), []);
+      }),
+    );
+  },
+);
 
 it.layer(
   Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-overwrite-")),
@@ -921,9 +1246,211 @@ it.layer(
         },
       });
 
+      assert.isTrue(yield* exists(removePath));
+      yield* drainProjectedAttachmentCleanup();
       assert.isTrue(yield* exists(keepPath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
+    }),
+  );
+});
+
+it.layer(
+  Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-mixed-revert-")),
+)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("revert prunes only unreferenced mixed attachments owned by the thread", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const { attachmentsDir } = yield* ServerConfig;
+      const threadId = ThreadId.make("Thread Cleanup.Mixed");
+      const now = "2026-01-01T00:00:00.000Z";
+      const keepDocument: ChatAttachment = {
+        type: "document",
+        id: "thread-cleanup-mixed-00000000-0000-4000-8000-000000000001",
+        name: "keep.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 5,
+      };
+      const sharedFile: ChatAttachment = {
+        type: "file",
+        id: "thread-cleanup-mixed-00000000-0000-4000-8000-000000000002",
+        name: "shared.ts",
+        mimeType: "text/plain",
+        sizeBytes: 5,
+      };
+      const keepLegacyImage: ChatAttachment = {
+        type: "image",
+        id: "thread-cleanup-mixed-00000000-0000-4000-8000-000000000003",
+        name: "legacy-image",
+        mimeType: "image/x-legacy",
+        sizeBytes: 5,
+      };
+      const removeDocument: ChatAttachment = {
+        type: "document",
+        id: "thread-cleanup-mixed-00000000-0000-4000-8000-000000000004",
+        name: "remove.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 5,
+      };
+      const removeFile: ChatAttachment = {
+        type: "file",
+        id: "thread-cleanup-mixed-00000000-0000-4000-8000-000000000005",
+        name: "remove.json",
+        mimeType: "application/json",
+        sizeBytes: 5,
+      };
+      const removeLegacyImage: ChatAttachment = {
+        type: "image",
+        id: "thread-cleanup-mixed-00000000-0000-4000-8000-000000000006",
+        name: "legacy-image",
+        mimeType: "image/x-legacy",
+        sizeBytes: 5,
+      };
+      const otherThreadFile: ChatAttachment = {
+        type: "file",
+        id: "thread-cleanup-mixed-other-00000000-0000-4000-8000-000000000007",
+        name: "other.md",
+        mimeType: "text/markdown",
+        sizeBytes: 5,
+      };
+
+      yield* sql`
+          INSERT INTO projection_turns (
+            thread_id,
+            turn_id,
+            pending_message_id,
+            source_proposed_plan_thread_id,
+            source_proposed_plan_id,
+            assistant_message_id,
+            state,
+            requested_at,
+            started_at,
+            completed_at,
+            checkpoint_turn_count,
+            checkpoint_ref,
+            checkpoint_status,
+            checkpoint_files_json
+          )
+          VALUES
+            (
+              ${threadId},
+              'turn-keep-mixed',
+              NULL,
+              NULL,
+              NULL,
+              'message-keep-mixed',
+              'completed',
+              ${now},
+              ${now},
+              ${now},
+              1,
+              'refs/t3/checkpoints/thread-cleanup-mixed/turn/1',
+              'ready',
+              '[]'
+            ),
+            (
+              ${threadId},
+              'turn-remove-mixed',
+              NULL,
+              NULL,
+              NULL,
+              'message-remove-mixed',
+              'completed',
+              ${now},
+              ${now},
+              ${now},
+              2,
+              'refs/t3/checkpoints/thread-cleanup-mixed/turn/2',
+              'ready',
+              '[]'
+            )
+        `;
+      yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id,
+            thread_id,
+            turn_id,
+            role,
+            text,
+            attachments_json,
+            is_streaming,
+            created_at,
+            updated_at
+          )
+          VALUES
+            (
+              'message-keep-mixed',
+              ${threadId},
+              'turn-keep-mixed',
+              'assistant',
+              'keep',
+              ${encodeAttachmentsJson([keepDocument, sharedFile, keepLegacyImage])},
+              0,
+              ${now},
+              ${now}
+            ),
+            (
+              'message-remove-mixed',
+              ${threadId},
+              'turn-remove-mixed',
+              'assistant',
+              'remove',
+              ${encodeAttachmentsJson([removeDocument, removeFile, sharedFile, removeLegacyImage])},
+              0,
+              '2026-01-01T00:00:01.000Z',
+              '2026-01-01T00:00:01.000Z'
+            )
+        `;
+
+      const attachmentPaths = new Map(
+        [
+          keepDocument,
+          sharedFile,
+          keepLegacyImage,
+          removeDocument,
+          removeFile,
+          removeLegacyImage,
+          otherThreadFile,
+        ].map(
+          (attachment) =>
+            [attachment.id, path.join(attachmentsDir, attachmentRelativePath(attachment))] as const,
+        ),
+      );
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      for (const attachmentPath of attachmentPaths.values()) {
+        yield* fileSystem.writeFileString(attachmentPath, "attachment");
+      }
+
+      const savedEvent = yield* eventStore.append({
+        type: "thread.reverted",
+        eventId: EventId.make("evt-mixed-revert"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        commandId: CommandId.make("cmd-mixed-revert"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-mixed-revert"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnCount: 1,
+        },
+      });
+      yield* projectionPipeline.projectEvent(savedEvent);
+
+      assert.isTrue(yield* exists(attachmentPaths.get(removeDocument.id)!));
+      yield* drainProjectedAttachmentCleanup();
+      assert.isTrue(yield* exists(attachmentPaths.get(keepDocument.id)!));
+      assert.isTrue(yield* exists(attachmentPaths.get(sharedFile.id)!));
+      assert.isTrue(yield* exists(attachmentPaths.get(keepLegacyImage.id)!));
+      assert.isFalse(yield* exists(attachmentPaths.get(removeDocument.id)!));
+      assert.isFalse(yield* exists(attachmentPaths.get(removeFile.id)!));
+      assert.isFalse(yield* exists(attachmentPaths.get(removeLegacyImage.id)!));
+      assert.isTrue(yield* exists(attachmentPaths.get(otherThreadFile.id)!));
     }),
   );
 });
@@ -1054,12 +1581,104 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           },
         });
 
+        assert.isTrue(yield* exists(threadAttachmentPath));
+        yield* drainProjectedAttachmentCleanup();
         assert.isFalse(yield* exists(threadAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
       }),
     );
   },
 );
+
+it.layer(
+  Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-mixed-delete-")),
+)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("thread deletion removes every attachment kind for only the owning thread", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const { attachmentsDir } = yield* ServerConfig;
+      const threadId = ThreadId.make("Thread Delete.Mixed");
+      const attachments: ReadonlyArray<ChatAttachment> = [
+        {
+          type: "image",
+          id: "thread-delete-mixed-00000000-0000-4000-8000-000000000001",
+          name: "legacy-image",
+          mimeType: "image/x-legacy",
+          sizeBytes: 5,
+        },
+        {
+          type: "document",
+          id: "thread-delete-mixed-00000000-0000-4000-8000-000000000002",
+          name: "delete.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 5,
+        },
+        {
+          type: "file",
+          id: "thread-delete-mixed-00000000-0000-4000-8000-000000000003",
+          name: "delete.ts",
+          mimeType: "text/plain",
+          sizeBytes: 5,
+        },
+      ];
+      const otherThreadAttachments: ReadonlyArray<ChatAttachment> = [
+        {
+          type: "document",
+          id: "thread-delete-mixed-other-00000000-0000-4000-8000-000000000004",
+          name: "keep.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 5,
+        },
+        {
+          type: "file",
+          id: "thread-delete-mixed-other-00000000-0000-4000-8000-000000000005",
+          name: "keep.json",
+          mimeType: "application/json",
+          sizeBytes: 5,
+        },
+      ];
+      const attachmentPaths = [...attachments, ...otherThreadAttachments].map((attachment) =>
+        path.join(attachmentsDir, attachmentRelativePath(attachment)),
+      );
+
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      for (const attachmentPath of attachmentPaths) {
+        yield* fileSystem.writeFileString(attachmentPath, "attachment");
+      }
+
+      const savedEvent = yield* eventStore.append({
+        type: "thread.deleted",
+        eventId: EventId.make("evt-delete-mixed"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:00.000Z",
+        commandId: CommandId.make("cmd-delete-mixed"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-delete-mixed"),
+        metadata: {},
+        payload: {
+          threadId,
+          deletedAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+      yield* projectionPipeline.projectEvent(savedEvent);
+
+      for (const attachmentPath of attachmentPaths.slice(0, attachments.length)) {
+        assert.isTrue(yield* exists(attachmentPath));
+      }
+      yield* drainProjectedAttachmentCleanup();
+      for (const attachmentPath of attachmentPaths.slice(0, attachments.length)) {
+        assert.isFalse(yield* exists(attachmentPath));
+      }
+      for (const attachmentPath of attachmentPaths.slice(attachments.length)) {
+        assert.isTrue(yield* exists(attachmentPath));
+      }
+    }),
+  );
+});
 
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-delete-")))(
   "OrchestrationProjectionPipeline",
@@ -2531,7 +3150,7 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
 
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
-    Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provide(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
@@ -2547,13 +3166,94 @@ const engineLayer = it.layer(
 );
 
 engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
+  it.effect("round-trips mixed attachments through projection-backed thread history", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-mixed-history");
+      const attachments: ReadonlyArray<ChatAttachment> = [
+        {
+          type: "image",
+          id: "thread-mixed-history-image",
+          name: "diagram.png",
+          mimeType: "image/png",
+          sizeBytes: 5,
+        },
+        {
+          type: "document",
+          id: "thread-mixed-history-document",
+          name: "reference.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 7,
+        },
+        {
+          type: "file",
+          id: "thread-mixed-history-file",
+          name: "notes.ts",
+          mimeType: "text/plain",
+          sizeBytes: 9,
+        },
+      ];
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-mixed-history-project"),
+        projectId: ProjectId.make("project-mixed-history"),
+        title: "Mixed History Project",
+        workspaceRoot: "/tmp/project-mixed-history",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-mixed-history-thread"),
+        threadId,
+        projectId: ProjectId.make("project-mixed-history"),
+        title: "Mixed History Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-mixed-history-turn"),
+        threadId,
+        message: {
+          messageId: MessageId.make("message-mixed-history"),
+          role: "user",
+          text: "Inspect these attachments",
+          attachments,
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt,
+      });
+
+      const history = yield* snapshotQuery.getThreadDetailSnapshot(threadId);
+      assert.equal(history._tag, "Some");
+      if (history._tag === "Some") {
+        assert.deepEqual(history.value.thread.messages[0]?.attachments, attachments);
+      }
+    }),
+  );
+
   it.effect("projects dispatched engine events immediately", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;
       const sql = yield* SqlClient.SqlClient;
       const createdAt = "2026-01-01T00:00:00.000Z";
 
-      yield* engine.dispatch({
+      const dispatched = yield* engine.dispatch({
         type: "project.create",
         commandId: CommandId.make("cmd-live-project"),
         projectId: ProjectId.make("project-live"),
@@ -2581,7 +3281,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         FROM projection_state
         WHERE projector = 'projection.projects'
       `;
-      assert.deepEqual(projectorRows, [{ lastAppliedSequence: 1 }]);
+      assert.deepEqual(projectorRows, [{ lastAppliedSequence: dispatched.sequence }]);
     }),
   );
 

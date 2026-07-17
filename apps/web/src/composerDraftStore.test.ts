@@ -59,6 +59,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   COMPOSER_DRAFT_STORAGE_KEY,
+  COMPOSER_DRAFT_STORAGE_VERSION,
   clearComposerDraftsEnvironment,
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThread,
@@ -331,6 +332,7 @@ describe("composerDraftStore syncPersistedAttachments", () => {
 
     useComposerDraftStore.getState().syncPersistedAttachments(threadRef, [
       {
+        type: "image",
         id: image.id,
         name: image.name,
         mimeType: image.mimeType,
@@ -341,7 +343,135 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     await Promise.resolve();
 
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.persistedAttachments).toEqual([]);
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.attachments.map((entry) => entry.id)).toEqual([
+      image.id,
+    ]);
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.nonPersistedImageIds).toEqual([image.id]);
+  });
+});
+
+describe("composerDraftStore attachment persistence", () => {
+  const threadId = ThreadId.make("thread-attachment-persistence");
+  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+
+  beforeEach(resetComposerDraftStore);
+
+  it("migrates a v8 image draft without attachment data loss", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        migrate: (state: unknown, version: number) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const v8 = {
+      draftsByThreadKey: {
+        [threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]: {
+          prompt: "keep image",
+          attachments: [
+            {
+              id: "legacy-image",
+              name: "legacy.png",
+              mimeType: "image/png",
+              sizeBytes: 4,
+              dataUrl: "data:image/png;base64,AQIDBA==",
+            },
+          ],
+        },
+      },
+      draftThreadsByThreadKey: {},
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+    };
+    const migrated = persistApi.getOptions().migrate(v8, 8);
+    const merged = persistApi.getOptions().merge(migrated, useComposerDraftStore.getInitialState());
+    const draft = merged.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)];
+    expect(COMPOSER_DRAFT_STORAGE_VERSION).toBe(9);
+    expect(draft?.prompt).toBe("keep image");
+    expect(draft?.attachments).toMatchObject([
+      { type: "image", id: "legacy-image", name: "legacy.png" },
+    ]);
+  });
+
+  it("round-trips document and generic file attachments in order", () => {
+    const store = useComposerDraftStore.getState();
+    store.addAttachments(threadRef, [
+      {
+        type: "document",
+        id: "doc-1",
+        name: "manual.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 3,
+        file: new File(["pdf"], "manual.pdf", { type: "application/pdf" }),
+      },
+      {
+        type: "file",
+        id: "file-1",
+        name: "Program.cs",
+        mimeType: "text/plain",
+        sizeBytes: 2,
+        file: new File(["cs"], "Program.cs", { type: "text/plain" }),
+      },
+    ]);
+    store.syncPersistedAttachments(threadRef, [
+      {
+        type: "document",
+        id: "doc-1",
+        name: "manual.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 3,
+        dataUrl: "data:application/pdf;base64,cGRm",
+      },
+      {
+        type: "file",
+        id: "file-1",
+        name: "Program.cs",
+        mimeType: "text/plain",
+        sizeBytes: 2,
+        dataUrl: "data:text/plain;base64,Y3M=",
+      },
+    ]);
+    const partialize = (
+      useComposerDraftStore.persist as unknown as {
+        getOptions: () => {
+          partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        };
+      }
+    ).getOptions().partialize;
+    const persisted = partialize(useComposerDraftStore.getState()) as {
+      draftsByThreadKey: Record<string, { attachments: Array<{ type: string; name: string }> }>;
+    };
+    expect(
+      persisted.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.attachments,
+    ).toMatchObject([
+      { type: "document", name: "manual.pdf" },
+      { type: "file", name: "Program.cs" },
+    ]);
+  });
+
+  it("revokes object URLs only for removed image attachments", () => {
+    const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    try {
+      const image = makeImage({ id: "image", previewUrl: "blob:image" });
+      useComposerDraftStore.getState().addAttachments(threadRef, [
+        image,
+        {
+          type: "file",
+          id: "file",
+          name: "notes.md",
+          mimeType: "text/markdown",
+          sizeBytes: 1,
+          file: new File(["x"], "notes.md"),
+        },
+      ]);
+      useComposerDraftStore.getState().removeAttachment(threadRef, "file");
+      expect(revoke).not.toHaveBeenCalled();
+      useComposerDraftStore.getState().removeAttachment(threadRef, "image");
+      expect(revoke).toHaveBeenCalledWith("blob:image");
+    } finally {
+      revoke.mockRestore();
+    }
   });
 });
 
@@ -836,18 +966,31 @@ describe("composerDraftStore project draft thread mapping", () => {
     }
   });
 
-  it("clears orphaned composer drafts when remapping a project to a new draft thread", () => {
+  it("clears orphaned composer drafts and revokes only their image previews when remapping", () => {
     const store = useComposerDraftStore.getState();
-    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
-    store.setPrompt(draftId, "orphan me");
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const revokeSpy = vi.fn<(url: string) => void>();
+    URL.revokeObjectURL = revokeSpy;
 
-    store.setProjectDraftThreadId(projectRef, otherDraftId, { threadId: otherThreadId });
+    try {
+      store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+      store.setProjectDraftThreadId(otherProjectRef, sharedDraftId, { threadId: otherThreadId });
+      store.setPrompt(draftId, "orphan me");
+      store.addImage(draftId, makeImage({ id: "img-orphaned", previewUrl: "blob:orphaned" }));
+      store.addImage(sharedDraftId, makeImage({ id: "img-retained", previewUrl: "blob:retained" }));
 
-    expect(useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)?.threadId).toBe(
-      otherThreadId,
-    );
-    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
-    expect(draftByKey(draftId)).toBeUndefined();
+      store.setProjectDraftThreadId(projectRef, otherDraftId, { threadId: otherThreadId });
+
+      expect(
+        useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)?.threadId,
+      ).toBe(otherThreadId);
+      expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
+      expect(draftByKey(draftId)).toBeUndefined();
+      expect(draftByKey(sharedDraftId)?.images).toHaveLength(1);
+      expect(revokeSpy).toHaveBeenCalledExactlyOnceWith("blob:orphaned");
+    } finally {
+      URL.revokeObjectURL = originalRevokeObjectUrl;
+    }
   });
 
   it("keeps composer drafts when the thread is still mapped by another project", () => {

@@ -4,7 +4,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import { OrchestrationCommand, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -13,6 +13,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
@@ -23,12 +24,20 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  drainAttachmentCleanupQueue,
+  sweepAttachmentStaging,
+  type AttachmentStage,
+} from "../../attachmentStaging.ts";
+import { ServerConfig } from "../../config.ts";
+import {
   metricAttributes,
   orchestrationCommandAckDuration,
   orchestrationCommandsTotal,
   orchestrationCommandDuration,
 } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { AttachmentCleanupQueueRepositoryLive } from "../../persistence/Layers/AttachmentCleanupQueue.ts";
+import { AttachmentCleanupQueueRepository } from "../../persistence/Services/AttachmentCleanupQueue.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
@@ -52,6 +61,7 @@ const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvar
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
+  attachmentStage?: AttachmentStage;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
 }
@@ -80,15 +90,28 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const eventStore = yield* OrchestrationEventStore;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
+  const attachmentCleanupQueue = yield* AttachmentCleanupQueueRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const serverConfig = yield* ServerConfig;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
 
   const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
+
+  const drainAttachmentCleanupBestEffort = drainAttachmentCleanupQueue({
+    attachmentsDir: serverConfig.attachmentsDir,
+    queue: attachmentCleanupQueue,
+  }).pipe(
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
+    Effect.catch((cause) =>
+      Effect.logWarning("failed to drain the attachment cleanup queue", { cause }),
+    ),
+  );
 
   const projectEventsOntoReadModel = (
     baseReadModel: OrchestrationReadModel,
@@ -134,12 +157,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           "orchestration.aggregate_kind": aggregateRef.aggregateKind,
           "orchestration.aggregate_id": aggregateRef.aggregateId,
         });
+        yield* drainAttachmentCleanupBestEffort;
 
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
           commandId: envelope.command.commandId,
         });
         if (Option.isSome(existingReceipt)) {
           if (existingReceipt.value.status === "accepted") {
+            if (envelope.attachmentStage) {
+              yield* envelope.attachmentStage.abort;
+            }
             return {
               sequence: existingReceipt.value.resultSequence,
             };
@@ -187,6 +214,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 });
               }
 
+              // Finalize only after every event and projection has succeeded. The
+              // surrounding SQL transaction still has to commit; any later failure
+              // exits through the stage rollback finalizer before publication.
+              if (envelope.attachmentStage) {
+                yield* envelope.attachmentStage.commit;
+              }
+
               yield* commandReceiptRepository.upsert({
                 commandId: envelope.command.commandId,
                 aggregateKind: lastSavedEvent.aggregateKind,
@@ -212,7 +246,14 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             ),
           );
 
+        if (envelope.attachmentStage) {
+          yield* envelope.attachmentStage.complete;
+        }
         commandReadModel = committedCommand.nextCommandReadModel;
+        // Cleanup rows were committed with the projection above. Drain only now,
+        // before publication, so observers see post-commit filesystem state while
+        // cleanup failures remain retryable and cannot fail the accepted command.
+        yield* drainAttachmentCleanupBestEffort;
         for (const [index, event] of committedCommand.committedEvents.entries()) {
           yield* PubSub.publish(eventPubSub, event);
           if (index === 0) {
@@ -229,7 +270,14 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
         }
         return { sequence: committedCommand.lastSequence };
-      }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
+      }).pipe(
+        Effect.withSpan(`orchestration.command.${envelope.command.type}`),
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) && envelope.attachmentStage
+            ? envelope.attachmentStage.abort
+            : Effect.void,
+        ),
+      ),
     ).pipe(
       Effect.flatMap((exit) =>
         Effect.gen(function* () {
@@ -297,7 +345,22 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     );
   };
 
+  yield* sweepAttachmentStaging({
+    attachmentsDir: serverConfig.attachmentsDir,
+    getReceiptStatus: (commandId) =>
+      commandReceiptRepository.getByCommandId({ commandId }).pipe(
+        Effect.map(Option.map((receipt) => receipt.status)),
+        Effect.mapError(
+          (cause) =>
+            new OrchestrationDispatchCommandError({
+              message: "Failed to inspect an attachment staging command receipt.",
+              cause,
+            }),
+        ),
+      ),
+  });
   yield* projectionPipeline.bootstrap;
+  yield* drainAttachmentCleanupBestEffort;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
 
   const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
@@ -309,16 +372,30 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive, limit) =>
     eventStore.readFromSequence(fromSequenceExclusive, limit);
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
-    Effect.gen(function* () {
-      const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
-      yield* Queue.offer(commandQueue, {
-        command,
-        result,
-        startedAtMs: yield* Clock.currentTimeMillis,
-      });
-      return yield* Deferred.await(result);
-    });
+  const dispatch: OrchestrationEngineShape["dispatch"] = (command, options) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        if (options?.attachmentStage) {
+          yield* options.attachmentStage.claim;
+        }
+        const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
+        const offered = yield* Queue.offer(commandQueue, {
+          command,
+          ...(options?.attachmentStage ? { attachmentStage: options.attachmentStage } : {}),
+          result,
+          startedAtMs: yield* Clock.currentTimeMillis,
+        });
+        if (!offered) {
+          if (options?.attachmentStage) {
+            yield* options.attachmentStage.abort;
+          }
+          return yield* new OrchestrationDispatchCommandError({
+            message: "The orchestration command queue is unavailable.",
+          });
+        }
+        return yield* restore(Deferred.await(result));
+      }),
+    );
 
   return {
     readEvents,
@@ -335,4 +412,4 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
   makeOrchestrationEngine,
-);
+).pipe(Layer.provide(AttachmentCleanupQueueRepositoryLive));
