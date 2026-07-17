@@ -9,6 +9,7 @@ import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -17,6 +18,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   GrokSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -25,8 +27,14 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { grokPromptSettlementBelongsToContext, makeGrokAdapter } from "./GrokAdapter.ts";
+import { providerFileUri } from "../attachmentDelivery.ts";
+import {
+  grokPromptSettlementBelongsToContext,
+  makeGrokAdapter,
+  prepareGrokAcpPromptParts,
+} from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -81,6 +89,116 @@ async function readJsonLines(filePath: string) {
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
+
+async function writeStoredAttachment(
+  attachmentsDir: string,
+  attachment: ChatAttachment,
+  bytes: Uint8Array,
+): Promise<string> {
+  const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+  await NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true });
+  await NodeFSP.writeFile(attachmentPath, bytes);
+  return attachmentPath;
+}
+
+it.effect("prepares mixed Grok ACP attachment blocks hermetically", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "grok-attachment-parts-",
+    });
+    const threadId = ThreadId.make("grok-hermetic-attachments");
+    const file = {
+      type: "file" as const,
+      id: "grok-hermetic-attachments-12345678-1234-1234-1234-123456789abc",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+    };
+    const image = {
+      type: "image" as const,
+      id: "grok-hermetic-attachments-22345678-1234-1234-1234-123456789abc",
+      name: "screen.png",
+      mimeType: "image/png",
+      sizeBytes: 2,
+    };
+    const document = {
+      type: "document" as const,
+      id: "grok-hermetic-attachments-32345678-1234-1234-1234-123456789abc",
+      name: "requirements.pdf",
+      mimeType: "application/pdf" as const,
+      sizeBytes: 3,
+    };
+    const filePath = yield* Effect.promise(() =>
+      writeStoredAttachment(attachmentsDir, file, Uint8Array.from([1, 2, 3, 4])),
+    );
+    yield* Effect.promise(() =>
+      writeStoredAttachment(attachmentsDir, image, Uint8Array.from([5, 6])),
+    );
+    const documentPath = yield* Effect.promise(() =>
+      writeStoredAttachment(attachmentsDir, document, Uint8Array.from([7, 8, 9])),
+    );
+
+    const parts = yield* prepareGrokAcpPromptParts({
+      text: "Inspect all context",
+      attachmentsDir,
+      threadId,
+      attachments: [file, image, document],
+      fileSystem,
+    });
+
+    assert.deepStrictEqual(parts, [
+      { type: "text", text: "Inspect all context" },
+      {
+        type: "resource_link",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        size: 4,
+        uri: providerFileUri(filePath),
+      },
+      { type: "image", data: "BQY=", mimeType: "image/png" },
+      {
+        type: "resource_link",
+        name: "requirements.pdf",
+        mimeType: "application/pdf",
+        size: 3,
+        uri: providerFileUri(documentPath),
+      },
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("rejects missing Grok attachments before a caller can send", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "grok-missing-parts-",
+    });
+    let sent = false;
+    const error = yield* prepareGrokAcpPromptParts({
+      text: "Do not send",
+      attachmentsDir,
+      threadId: ThreadId.make("grok-hermetic-missing"),
+      attachments: [
+        {
+          type: "file",
+          id: "grok-hermetic-missing-42345678-1234-1234-1234-123456789abc",
+          name: "missing.txt",
+          mimeType: "text/plain",
+          sizeBytes: 1,
+        },
+      ],
+      fileSystem,
+    }).pipe(
+      Effect.tap(() => Effect.sync(() => (sent = true))),
+      Effect.flip,
+    );
+
+    assert.equal(error._tag, "ProviderAdapterRequestError");
+    assert.match(error.message, /missing\.txt/);
+    assert.isFalse(sent);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 const grokAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-grok-adapter-test-",

@@ -1,4 +1,5 @@
 import {
+  type ChatAttachment,
   EventId,
   type OpenCodeSettings,
   ProviderDriverKind,
@@ -23,11 +24,17 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
+import type {
+  FilePartInput,
+  OpencodeClient,
+  Part,
+  PermissionRequest,
+  QuestionRequest,
+} from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { resolveProviderAttachment } from "../attachmentDelivery.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
@@ -46,7 +53,6 @@ import {
   openCodeRuntimeErrorDetail,
   parseOpenCodeModelSlug,
   runOpenCodeSdk,
-  toOpenCodeFileParts,
   toOpenCodePermissionReply,
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
@@ -161,6 +167,34 @@ export function isSameOpenCodeDirectory(
     canonicalize(lexicalRight),
     (canonicalLeft, canonicalRight) => canonicalLeft === canonicalRight,
   );
+}
+
+function unsupportedOpenCodeAttachment(attachment: never): ProviderAdapterRequestError {
+  const type = (attachment as unknown as { readonly type?: unknown }).type;
+  return new ProviderAdapterRequestError({
+    provider: PROVIDER,
+    method: "session.promptAsync",
+    detail: `Unsupported OpenCode attachment kind '${String(type)}'.`,
+  });
+}
+
+function toOpenCodeFilePart(
+  attachment: ChatAttachment,
+  fileUri: string,
+): Effect.Effect<FilePartInput, ProviderAdapterRequestError> {
+  switch (attachment.type) {
+    case "image":
+    case "document":
+    case "file":
+      return Effect.succeed({
+        type: "file",
+        mime: attachment.mimeType,
+        filename: attachment.name,
+        url: fileUri,
+      });
+    default:
+      return Effect.fail(unsupportedOpenCodeAttachment(attachment));
+  }
 }
 
 interface OpenCodeTurnSnapshot {
@@ -567,6 +601,7 @@ export function makeOpenCodeAdapter(
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("opencode");
     const serverConfig = yield* ServerConfig;
+    const fileSystem = yield* FileSystem.FileSystem;
     const openCodeRuntime = yield* OpenCodeRuntime;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1438,14 +1473,30 @@ export function makeOpenCodeAdapter(
       }
 
       const text = input.input?.trim();
-      const fileParts = toOpenCodeFileParts({
-        attachments: input.attachments,
-        resolveAttachmentPath: (attachment) =>
-          resolveAttachmentPath({
-            attachmentsDir: serverConfig.attachmentsDir,
-            attachment,
+      const fileParts = yield* Effect.forEach(
+        input.attachments ?? [],
+        (attachment) =>
+          Effect.gen(function* () {
+            const resolved = yield* resolveProviderAttachment({
+              attachmentsDir: serverConfig.attachmentsDir,
+              threadId: input.threadId,
+              attachment,
+              fileSystem,
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "session.promptAsync",
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            );
+            return yield* toOpenCodeFilePart(attachment, resolved.fileUri);
           }),
-      });
+        { concurrency: 1 },
+      );
       if ((!text || text.length === 0) && fileParts.length === 0) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
