@@ -13,7 +13,9 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   ClaudeSettings,
+  PROVIDER_INLINE_FILE_MAX_CHARS,
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
@@ -266,6 +268,17 @@ async function readFirstPromptMessage(
 
 const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
+
+function writeStoredAttachment(
+  attachmentsDir: string,
+  attachment: ChatAttachment,
+  bytes: Uint8Array | string,
+): string {
+  const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+  NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+  NodeFS.writeFileSync(attachmentPath, bytes);
+  return attachmentPath;
+}
 
 describe("ClaudeAdapterLive", () => {
   it.effect("returns validation error for non-claude provider on startSession", () => {
@@ -729,7 +742,7 @@ describe("ClaudeAdapterLive", () => {
 
       const attachment = {
         type: "image" as const,
-        id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abc",
+        id: "thread-claude-1-12345678-1234-1234-1234-123456789abc",
         name: "diagram.png",
         mimeType: "image/png",
         sizeBytes: 4,
@@ -765,6 +778,302 @@ describe("ClaudeAdapterLive", () => {
             media_type: "image/png",
             data: "AQIDBA==",
           },
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("delivers a PDF-only turn as a base64 Claude document block", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-pdf-"));
+    const harness = makeHarness({ baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const pdf = {
+        type: "document" as const,
+        id: "thread-claude-1-22345678-1234-1234-1234-123456789abc",
+        name: "design notes.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 4,
+      };
+      writeStoredAttachment(attachmentsDir, pdf, Uint8Array.from([1, 2, 3, 4]));
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({ threadId: session.threadId, attachments: [pdf] });
+
+      const prompt = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(prompt?.message.content, [
+        {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: "AQIDBA==",
+          },
+          title: "design notes.pdf",
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("preserves mixed attachment order across native, inline, and path blocks", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-mixed-"));
+    const harness = makeHarness({ baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const image = {
+        type: "image" as const,
+        id: "thread-claude-1-32345678-1234-1234-1234-123456789abc",
+        name: "one.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+      };
+      const pdf = {
+        type: "document" as const,
+        id: "thread-claude-1-42345678-1234-1234-1234-123456789abc",
+        name: "two.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 1,
+      };
+      const text = {
+        type: "file" as const,
+        id: "thread-claude-1-52345678-1234-1234-1234-123456789abc",
+        name: "three.txt",
+        mimeType: "text/plain",
+        sizeBytes: 5,
+      };
+      const workbook = {
+        type: "file" as const,
+        id: "thread-claude-1-62345678-1234-1234-1234-123456789abc",
+        name: "four.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        sizeBytes: 4,
+      };
+      writeStoredAttachment(attachmentsDir, image, Uint8Array.from([1]));
+      writeStoredAttachment(attachmentsDir, pdf, Uint8Array.from([2]));
+      writeStoredAttachment(attachmentsDir, text, "three");
+      const workbookPath = writeStoredAttachment(
+        attachmentsDir,
+        workbook,
+        Uint8Array.from([0x50, 0x4b, 0x03, 0x04]),
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        attachments: [image, pdf, text, workbook],
+      });
+
+      const prompt = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(prompt?.message.content, [
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: "AQ==" },
+        },
+        {
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: "Ag==" },
+          title: "two.pdf",
+        },
+        { type: "text", text: '[Attachment: "three.txt"]\nthree' },
+        { type: "text", text: `[Attachment: "four.xlsx"]\nLocal path: ${workbookPath}` },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("decodes BOM-marked UTF-16 text before inlining it", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-utf16-"));
+    const harness = makeHarness({ baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachment = {
+        type: "file" as const,
+        id: "thread-claude-1-72345678-1234-1234-1234-123456789abc",
+        name: "utf16.txt",
+        mimeType: "text/plain",
+        sizeBytes: 8,
+      };
+      writeStoredAttachment(
+        attachmentsDir,
+        attachment,
+        Uint8Array.from([0xfe, 0xff, 0x00, 0x68, 0x00, 0x69, 0x00, 0x21]),
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({ threadId: session.threadId, attachments: [attachment] });
+
+      const prompt = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(prompt?.message.content, [
+        { type: "text", text: '[Attachment: "utf16.txt"]\nhi!' },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects cumulative inline overflow before starting or queuing a turn", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-budget-"));
+    const harness = makeHarness({ baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const first = {
+        type: "file" as const,
+        id: "thread-claude-1-82345678-1234-1234-1234-123456789abc",
+        name: "first.txt",
+        mimeType: "text/plain",
+        sizeBytes: PROVIDER_INLINE_FILE_MAX_CHARS,
+      };
+      const overflow = {
+        type: "file" as const,
+        id: "thread-claude-1-92345678-1234-1234-1234-123456789abc",
+        name: "large.log",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+      };
+      writeStoredAttachment(attachmentsDir, first, "a".repeat(PROVIDER_INLINE_FILE_MAX_CHARS));
+      writeStoredAttachment(attachmentsDir, overflow, "b");
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* adapter
+        .sendTurn({ threadId: session.threadId, attachments: [first, overflow] })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(result.failure.message, /large\.log/u);
+        assert.match(result.failure.message, /256 KiB/u);
+      }
+      assert.deepEqual(harness.query.setModelCalls, []);
+      const sessions = yield* adapter.listSessions();
+      assert.equal(sessions[0]?.status, "ready");
+      assert.isUndefined(sessions[0]?.activeTurnId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects an unreadable attachment before starting or queuing a turn", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-missing-"));
+    const harness = makeHarness({ baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const missing = {
+        type: "document" as const,
+        id: "thread-claude-1-a2345678-1234-1234-1234-123456789abc",
+        name: "missing.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 1,
+      };
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* adapter
+        .sendTurn({ threadId: session.threadId, attachments: [missing] })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(result.failure.message, /missing\.pdf/u);
+      }
+      const sessions = yield* adapter.listSessions();
+      assert.equal(sessions[0]?.status, "ready");
+      assert.isUndefined(sessions[0]?.activeTurnId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses a filename-labeled local path reference for xlsx files", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-xlsx-"));
+    const harness = makeHarness({ baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(baseDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const workbook = {
+        type: "file" as const,
+        id: "thread-claude-1-b2345678-1234-1234-1234-123456789abc",
+        name: "quarterly report.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        sizeBytes: 4,
+      };
+      const workbookPath = writeStoredAttachment(
+        attachmentsDir,
+        workbook,
+        Uint8Array.from([0x50, 0x4b, 0x03, 0x04]),
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({ threadId: session.threadId, attachments: [workbook] });
+
+      const prompt = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(prompt?.message.content, [
+        {
+          type: "text",
+          text: `[Attachment: "quarterly report.xlsx"]\nLocal path: ${workbookPath}`,
         },
       ]);
     }).pipe(
