@@ -1,13 +1,15 @@
 import {
+  AssetResource,
   EnvironmentId,
   EventId,
+  MessageId,
   ORCHESTRATION_WS_METHODS,
+  OrchestrationThreadDetailSnapshot,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
   type OrchestrationThread,
-  type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -15,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
@@ -97,6 +100,45 @@ const ACTIVE_THREAD: OrchestrationThread = {
     lastError: null,
     updatedAt: "2026-04-01T00:01:00.000Z",
   },
+};
+
+const MIXED_ATTACHMENTS: NonNullable<OrchestrationThread["messages"][number]["attachments"]> = [
+  {
+    type: "image",
+    id: "thread-1-image",
+    name: "diagram.png",
+    mimeType: "image/png",
+    sizeBytes: 5,
+  },
+  {
+    type: "document",
+    id: "thread-1-document",
+    name: "reference.pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 7,
+  },
+  {
+    type: "file",
+    id: "thread-1-file",
+    name: "notes.ts",
+    mimeType: "text/plain",
+    sizeBytes: 9,
+  },
+];
+const THREAD_WITH_MIXED_ATTACHMENTS: OrchestrationThread = {
+  ...BASE_THREAD,
+  messages: [
+    {
+      id: MessageId.make("message-mixed-attachments"),
+      role: "user",
+      text: "Inspect these attachments",
+      attachments: MIXED_ATTACHMENTS,
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T00:00:01.000Z",
+      updatedAt: "2026-04-01T00:00:01.000Z",
+    },
+  ],
 };
 
 type TestThreadInput = OrchestrationThreadStreamItem | Error;
@@ -522,6 +564,83 @@ describe("EnvironmentThreads", () => {
       expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
     }),
   );
+
+  it.effect("reloads every attachment variant after a replacement session reconnects", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* Queue.offer(harness.inputs, snapshot(THREAD_WITH_MIXED_ATTACHMENTS));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      yield* Queue.offer(harness.inputs, new Error("connection lost"));
+      yield* awaitThreadState(harness.observed, (value) => Option.isSome(value.error));
+
+      yield* harness.replaceSession;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) {
+          break;
+        }
+        yield* Effect.yieldNow;
+      }
+      yield* Queue.offer(
+        harness.inputs,
+        snapshot({
+          ...THREAD_WITH_MIXED_ATTACHMENTS,
+          title: "Reconnected thread",
+        }),
+      );
+
+      const recovered = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "Reconnected thread",
+      );
+      const recoveredAttachments = Option.getOrThrow(recovered.data).messages[0]?.attachments ?? [];
+      expect(recoveredAttachments).toEqual(MIXED_ATTACHMENTS);
+
+      const resources = recoveredAttachments.map((attachment) => ({
+        _tag: "attachment" as const,
+        attachmentId: attachment.id,
+        threadId: THREAD_ID,
+        ...(attachment.type === "document"
+          ? { disposition: "inline-pdf" as const }
+          : attachment.type === "file"
+            ? { disposition: "download" as const }
+            : {}),
+      }));
+      expect(resources.every(Schema.is(AssetResource))).toBe(true);
+    }),
+  );
+
+  it("rejects an unknown future attachment kind at the snapshot protocol boundary", () => {
+    const decodeSnapshot = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot);
+    const futureSnapshot = {
+      snapshotSequence: 1,
+      thread: {
+        ...THREAD_WITH_MIXED_ATTACHMENTS,
+        messages: [
+          {
+            ...THREAD_WITH_MIXED_ATTACHMENTS.messages[0],
+            attachments: [
+              {
+                type: "archive",
+                id: "thread-1-future",
+                name: "bundle.zip",
+                mimeType: "application/zip",
+                sizeBytes: 12,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    expect(() => decodeSnapshot(futureSnapshot)).toThrow();
+    expect(futureSnapshot.thread.messages[0]?.attachments[0]?.type).toBe("archive");
+  });
 
   it.effect("recovers from a transient domain failure without replacing the session", () =>
     Effect.gen(function* () {

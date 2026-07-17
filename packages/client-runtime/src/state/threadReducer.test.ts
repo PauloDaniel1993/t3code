@@ -277,6 +277,82 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    it("preserves mixed attachment metadata and order during optimistic reconciliation", () => {
+      const optimisticThread: OrchestrationThread = {
+        ...baseThread,
+        messages: [
+          {
+            id: MessageId.make("msg-mixed"),
+            role: "user",
+            text: "Inspect these",
+            attachments: [
+              {
+                type: "image",
+                id: "optimistic-image",
+                name: "diagram.png",
+                mimeType: "image/png",
+                sizeBytes: 5,
+              },
+            ],
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-04-01T06:00:00.000Z",
+            updatedAt: "2026-04-01T06:00:00.000Z",
+          },
+        ],
+      };
+      const serverAttachments: NonNullable<OrchestrationThread["messages"][number]["attachments"]> =
+        [
+          {
+            type: "file",
+            id: "server-file",
+            name: "notes.ts",
+            mimeType: "text/plain",
+            sizeBytes: 9,
+          },
+          {
+            type: "image",
+            id: "server-image",
+            name: "diagram.png",
+            mimeType: "image/png",
+            sizeBytes: 5,
+          },
+          {
+            type: "document",
+            id: "server-document",
+            name: "reference.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 7,
+          },
+        ];
+
+      const result = applyThreadDetailEvent(optimisticThread, {
+        ...baseEventFields,
+        sequence: 7,
+        occurredAt: "2026-04-01T06:01:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-mixed"),
+          role: "user",
+          text: "",
+          attachments: serverAttachments,
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:01:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages[0]?.text).toBe("Inspect these");
+        expect(result.thread.messages[0]?.attachments).toEqual(serverAttachments);
+      }
+    });
+
     it("appends text for streaming messages", () => {
       const threadWithMessage: OrchestrationThread = {
         ...baseThread,
