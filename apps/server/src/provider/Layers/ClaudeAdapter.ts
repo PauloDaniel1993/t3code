@@ -20,6 +20,7 @@ import {
   type SDKUserMessage,
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { lookupAttachmentFileType } from "@t3tools/shared/attachmentFileTypes";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import {
   ApprovalRequestId,
@@ -67,9 +68,13 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import {
+  decodeProviderText,
+  ProviderInlineTextBudget,
+  resolveProviderAttachment,
+} from "../attachmentDelivery.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
@@ -94,6 +99,16 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+
+function unsupportedClaudeAttachment(attachment: never): ProviderAdapterRequestError {
+  const type = (attachment as unknown as { readonly type?: unknown }).type;
+  return new ProviderAdapterRequestError({
+    provider: PROVIDER,
+    method: "turn/start",
+    detail: `Unsupported Claude attachment kind '${String(type)}'.`,
+  });
+}
+
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -931,6 +946,25 @@ function buildClaudeImageContentBlock(input: {
   };
 }
 
+function buildClaudePdfContentBlock(input: {
+  readonly fileName: string;
+  readonly bytes: Uint8Array;
+}): Record<string, unknown> {
+  return {
+    type: "document",
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: Buffer.from(input.bytes).toString("base64"),
+    },
+    title: input.fileName,
+  };
+}
+
+function claudeAttachmentLabel(fileName: string): string {
+  return `[Attachment: ${JSON.stringify(fileName)}]`;
+}
+
 const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   input: ProviderSendTurnInput,
   dependencies: {
@@ -941,54 +975,108 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
 ) {
   const text = buildPromptText(input, dependencies.boundInstanceId);
   const sdkContent: Array<Record<string, unknown>> = [];
+  const inlineTextBudget = new ProviderInlineTextBudget();
 
   if (text.length > 0) {
     sdkContent.push({ type: "text", text });
   }
 
   for (const attachment of input.attachments ?? []) {
-    if (attachment.type !== "image") {
-      continue;
-    }
-
-    if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/start",
-        detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
-      });
-    }
-
-    const attachmentPath = resolveAttachmentPath({
+    const resolved = yield* resolveProviderAttachment({
       attachmentsDir: dependencies.attachmentsDir,
+      threadId: input.threadId,
       attachment,
-    });
-    if (!attachmentPath) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/start",
-        detail: `Invalid attachment id '${attachment.id}'.`,
-      });
-    }
-
-    const bytes = yield* dependencies.fileSystem.readFile(attachmentPath).pipe(
+      fileSystem: dependencies.fileSystem,
+    }).pipe(
       Effect.mapError(
         (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "turn/start",
-            detail: "Failed to read attachment file.",
+            detail: cause.message,
             cause,
           }),
       ),
     );
 
-    sdkContent.push(
-      buildClaudeImageContentBlock({
-        mimeType: attachment.mimeType,
-        bytes,
-      }),
-    );
+    switch (attachment.type) {
+      case "image": {
+        if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
+          });
+        }
+        sdkContent.push(
+          buildClaudeImageContentBlock({
+            mimeType: attachment.mimeType,
+            bytes: resolved.bytes,
+          }),
+        );
+        break;
+      }
+      case "document":
+        sdkContent.push(
+          buildClaudePdfContentBlock({
+            fileName: attachment.name,
+            bytes: resolved.bytes,
+          }),
+        );
+        break;
+      case "file": {
+        const fileType = lookupAttachmentFileType(attachment.name);
+        if (!fileType || fileType.mimeType !== attachment.mimeType) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: `Unsupported Claude file attachment '${attachment.name}'.`,
+          });
+        }
+
+        if (fileType.contentKind === "binary") {
+          sdkContent.push({
+            type: "text",
+            text: `${claudeAttachmentLabel(attachment.name)}\nLocal path: ${resolved.absolutePath}`,
+          });
+          break;
+        }
+
+        const decodedText = yield* Effect.try({
+          try: () => decodeProviderText(resolved.bytes, attachment.name),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/start",
+              detail:
+                cause instanceof Error
+                  ? cause.message
+                  : `Failed to decode attachment '${attachment.name}'.`,
+              cause,
+            }),
+        });
+        yield* Effect.try({
+          try: () => inlineTextBudget.add(attachment.name, decodedText),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/start",
+              detail:
+                cause instanceof Error
+                  ? cause.message
+                  : `Attachment '${attachment.name}' exceeds the inline text limit.`,
+              cause,
+            }),
+        });
+        sdkContent.push({
+          type: "text",
+          text: `${claudeAttachmentLabel(attachment.name)}\n${decodedText}`,
+        });
+        break;
+      }
+      default:
+        return yield* unsupportedClaudeAttachment(attachment);
+    }
   }
 
   return buildUserMessage({ sdkContent });
@@ -3721,6 +3809,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
+    const message = yield* buildUserMessageEffect(input, {
+      fileSystem,
+      attachmentsDir: serverConfig.attachmentsDir,
+      boundInstanceId,
+    });
     const modelSelection =
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
         ? input.modelSelection
@@ -3801,12 +3894,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         providerRefs: {},
       });
     }
-
-    const message = yield* buildUserMessageEffect(input, {
-      fileSystem,
-      attachmentsDir: serverConfig.attachmentsDir,
-      boundInstanceId,
-    });
 
     yield* Queue.offer(context.promptQueue, {
       type: "message",
