@@ -3,6 +3,7 @@ import {
   isProviderDriverKind,
   ProjectId,
   type ModelSelection,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type ProviderDriverKind,
   type ServerProvider,
   type ScopedThreadRef,
@@ -246,6 +247,50 @@ export function cloneComposerAttachmentForRetry(
   attachment: ComposerAttachment,
 ): ComposerAttachment {
   return attachment.type === "image" ? cloneComposerImageForRetry(attachment) : attachment;
+}
+
+export function mergeFailedSendDraft<T>(input: {
+  currentPrompt: string;
+  failedPrompt: string;
+  currentAttachments: ReadonlyArray<T>;
+  failedAttachments: ReadonlyArray<T>;
+  maxAttachments?: number;
+}): {
+  prompt: string;
+  attachments: T[];
+  restoredFailedAttachments: T[];
+  droppedFailedAttachments: T[];
+  restoredFailedText: boolean;
+  maxAttachments: number;
+} {
+  const maxAttachments = Math.max(
+    0,
+    Math.floor(input.maxAttachments ?? PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
+  );
+  const restoredFailedText = input.currentPrompt.length === 0;
+  const availableAttachmentSlots = Math.max(0, maxAttachments - input.currentAttachments.length);
+  const restoredFailedAttachments = input.failedAttachments.slice(0, availableAttachmentSlots);
+  const droppedFailedAttachments = input.failedAttachments.slice(availableAttachmentSlots);
+
+  return {
+    prompt: restoredFailedText ? input.failedPrompt : input.currentPrompt,
+    attachments: [...input.currentAttachments, ...restoredFailedAttachments],
+    restoredFailedAttachments,
+    droppedFailedAttachments,
+    restoredFailedText,
+    maxAttachments,
+  };
+}
+
+export function removeOptimisticUserMessage(
+  messages: ReadonlyArray<ChatMessage>,
+  messageId: ChatMessage["id"],
+): { messages: ChatMessage[]; removedMessage: ChatMessage | null } {
+  const removedMessage = messages.find((message) => message.id === messageId) ?? null;
+  return {
+    messages: messages.filter((message) => message.id !== messageId),
+    removedMessage,
+  };
 }
 
 export function deriveComposerSendState(options: {

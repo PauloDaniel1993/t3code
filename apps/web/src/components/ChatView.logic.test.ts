@@ -6,9 +6,9 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import type { Thread } from "../types";
+import type { ChatMessage, Thread } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
@@ -21,10 +21,13 @@ import {
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
+  mergeFailedSendDraft,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  removeOptimisticUserMessage,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
+  revokeUserMessagePreviewUrls,
   shouldShowBranchMismatchBanner,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
@@ -218,6 +221,122 @@ describe("deriveComposerSendState", () => {
         elementContextCount: 0,
       }).hasSendableContent,
     ).toBe(false);
+  });
+});
+
+describe("mergeFailedSendDraft", () => {
+  it("fully restores a failed send into an empty composer", () => {
+    const failedAttachment = { id: "failed-attachment", name: "failed.png" };
+
+    expect(
+      mergeFailedSendDraft({
+        currentPrompt: "",
+        failedPrompt: "Retry this request",
+        currentAttachments: [],
+        failedAttachments: [failedAttachment],
+      }),
+    ).toEqual({
+      prompt: "Retry this request",
+      attachments: [failedAttachment],
+      restoredFailedAttachments: [failedAttachment],
+      droppedFailedAttachments: [],
+      restoredFailedText: true,
+      maxAttachments: 8,
+    });
+  });
+
+  it("keeps concurrently typed text, merges failed attachments, and removes the optimistic row", () => {
+    const currentAttachment = { id: "current-attachment", name: "new.png" };
+    const failedAttachment = { id: "failed-attachment", name: "failed.png" };
+    const merged = mergeFailedSendDraft({
+      currentPrompt: "New text typed while sending",
+      failedPrompt: "Failed text",
+      currentAttachments: [currentAttachment],
+      failedAttachments: [failedAttachment],
+    });
+    const optimisticMessage = {
+      id: MessageId.make("optimistic-message"),
+      role: "user" as const,
+      text: "Failed text",
+      attachments: [
+        {
+          type: "image" as const,
+          id: "failed-attachment",
+          name: "failed.png",
+          mimeType: "image/png",
+          sizeBytes: 1,
+          previewUrl: "blob:failed-attachment",
+        },
+      ],
+      turnId: null,
+      createdAt: now,
+      updatedAt: now,
+      streaming: false,
+    } satisfies ChatMessage;
+
+    expect(merged.prompt).toBe("New text typed while sending");
+    expect(merged.attachments).toEqual([currentAttachment, failedAttachment]);
+    expect(removeOptimisticUserMessage([optimisticMessage], optimisticMessage.id).messages).toEqual(
+      [],
+    );
+  });
+
+  it("keeps current attachments at the cap and reports failed attachment overflow", () => {
+    const currentAttachments = Array.from({ length: 7 }, (_, index) => ({
+      id: `current-${index}`,
+      name: `current-${index}.txt`,
+    }));
+    const restoredAttachment = { id: "failed-0", name: "restored.png" };
+    const droppedAttachments = [
+      { id: "failed-1", name: "dropped-one.pdf" },
+      { id: "failed-2", name: "dropped-two.txt" },
+    ];
+
+    const merged = mergeFailedSendDraft({
+      currentPrompt: "",
+      failedPrompt: "Failed text",
+      currentAttachments,
+      failedAttachments: [restoredAttachment, ...droppedAttachments],
+    });
+
+    expect(merged.attachments).toEqual([...currentAttachments, restoredAttachment]);
+    expect(merged.restoredFailedAttachments).toEqual([restoredAttachment]);
+    expect(merged.droppedFailedAttachments).toEqual(droppedAttachments);
+  });
+
+  it("revokes a removed optimistic image preview exactly once", () => {
+    const optimisticMessage = {
+      id: MessageId.make("optimistic-message"),
+      role: "user" as const,
+      text: "Failed text",
+      attachments: [
+        {
+          type: "image" as const,
+          id: "failed-attachment",
+          name: "failed.png",
+          mimeType: "image/png",
+          sizeBytes: 1,
+          previewUrl: "blob:failed-attachment",
+        },
+      ],
+      turnId: null,
+      createdAt: now,
+      updatedAt: now,
+      streaming: false,
+    } satisfies ChatMessage;
+    const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+
+    try {
+      const cleanup = removeOptimisticUserMessage([optimisticMessage], optimisticMessage.id);
+      expect(cleanup.removedMessage).toBe(optimisticMessage);
+      if (cleanup.removedMessage) {
+        revokeUserMessagePreviewUrls(cleanup.removedMessage);
+      }
+      expect(revoke).toHaveBeenCalledTimes(1);
+      expect(revoke).toHaveBeenCalledWith("blob:failed-attachment");
+    } finally {
+      revoke.mockRestore();
+    }
   });
 });
 

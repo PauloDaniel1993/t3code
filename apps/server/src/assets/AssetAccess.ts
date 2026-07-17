@@ -43,6 +43,32 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 
+export function toWellFormedUnicode(value: string): string {
+  const toWellFormed = String.prototype.toWellFormed;
+  if (typeof toWellFormed === "function") {
+    return toWellFormed.call(value);
+  }
+
+  let normalized = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+        normalized += value[index]! + value[index + 1]!;
+        index += 1;
+      } else {
+        normalized += "�";
+      }
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      normalized += "�";
+    } else {
+      normalized += value[index]!;
+    }
+  }
+  return normalized;
+}
+
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const PREVIEW_ASSET_EXTENSIONS = new Set([
@@ -457,7 +483,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   const encodedPayload = base64UrlEncode(encodeAssetClaims(claims));
   const token = `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
   return {
-    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(fileName)}`,
+    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(toWellFormedUnicode(fileName))}`,
     expiresAt,
   };
 });
