@@ -77,6 +77,13 @@ function blocked(message = "Authentication required.") {
   });
 }
 
+function protocolVersionMismatch() {
+  return new ConnectionBlockedError({
+    reason: "unsupported",
+    detail: "The environment protocol version is not supported by this client.",
+  });
+}
+
 function awaitState(
   state: SubscriptionRef.SubscriptionRef<SupervisorConnectionState>,
   predicate: (value: SupervisorConnectionState) => boolean,
@@ -498,6 +505,30 @@ describe("EnvironmentSupervisor", () => {
       yield* supervisor.retryNow;
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       expect(yield* Ref.get(harness.prepareCount)).toBe(2);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("keeps protocol-version mismatches on the existing blocked path", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        prepare: () => Effect.fail(protocolVersionMismatch()),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      const mismatch = yield* awaitState(supervisor.state, (state) => state.phase === "blocked");
+      expect(mismatch).toMatchObject({
+        phase: "blocked",
+        lastFailure: {
+          _tag: "ConnectionBlockedError",
+          reason: "unsupported",
+          message: "The environment protocol version is not supported by this client.",
+        },
+      });
+
+      yield* TestClock.adjust("1 hour");
+      expect(yield* Ref.get(harness.prepareCount)).toBe(1);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
