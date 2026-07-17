@@ -10,7 +10,11 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { type ChatMessage, type SessionPhase, type Thread } from "../types";
-import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
+import {
+  type ComposerAttachment,
+  type ComposerImageAttachment,
+  type DraftThreadState,
+} from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadDetails } from "../state/threads";
@@ -209,9 +213,15 @@ export function cloneComposerImageForRetry(
   }
 }
 
+export function cloneComposerAttachmentForRetry(
+  attachment: ComposerAttachment,
+): ComposerAttachment {
+  return attachment.type === "image" ? cloneComposerImageForRetry(attachment) : attachment;
+}
+
 export function deriveComposerSendState(options: {
   prompt: string;
-  imageCount: number;
+  attachmentCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   /**
    * Optional element-pick attachment count. Element contexts contribute to
@@ -236,7 +246,7 @@ export function deriveComposerSendState(options: {
     expiredTerminalContextCount,
     hasSendableContent:
       trimmedPrompt.length > 0 ||
-      options.imageCount > 0 ||
+      options.attachmentCount > 0 ||
       sendableTerminalContexts.length > 0 ||
       elementContextCount > 0,
   };

@@ -65,6 +65,7 @@ import {
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
+import { AttachmentFileCard } from "./AttachmentFileCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
@@ -844,6 +845,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const userImages = (row.message.attachments ?? []).filter(
     (attachment) => attachment.type === "image",
   );
+  const userFiles = (row.message.attachments ?? []).filter(
+    (attachment) => attachment.type !== "image",
+  );
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const previewAnnotations: ParsedPreviewAnnotation[] = [];
@@ -866,6 +870,19 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   return (
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl border border-border bg-secondary p-3">
+        {userFiles.length > 0 ? (
+          <div className="mb-2 grid min-w-64 gap-2">
+            {userFiles.map((attachment) => (
+              <AttachmentFileCard
+                key={attachment.id}
+                attachment={attachment}
+                variant="persisted"
+                openUrl={attachment.type === "document" ? attachment.openUrl : null}
+                downloadUrl={attachment.downloadUrl}
+              />
+            ))}
+          </div>
+        ) : null}
         {regularImages.length > 0 && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
             {regularImages.map((image) => (
