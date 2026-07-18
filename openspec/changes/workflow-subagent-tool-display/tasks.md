@@ -16,16 +16,16 @@
 - [ ] 3.2 Keep task entries out of neutral-status filtering (done in spike — verify)
 - [ ] 3.3 Add derivation for step→worker association (latest active plan step at task start; unmatched → "Other activity")
 - [ ] 3.4 Use latest usage snapshot per task (no snapshot summing) for worker and panel totals
-- [ ] 3.5 Respect `skipTranscript` (side panel yes, timeline no)
+- [ ] 3.5 Respect `skipTranscript` (workflow activity card yes, timeline no)
 
 ## 4. Workflow activity panel (Option F)
 
-- [ ] 4.1 Replace `ActivitySidebar` with the Option F panel: step heading, counter, segmented progress strip, clickable step labels
+- [ ] 4.1 Build the Option F card as a pinned main-area component: step heading, counter, segmented progress strip, clickable step labels
 - [ ] 4.2 Inline worker expansion in the same container; same-step click collapses, other-step click switches
 - [ ] 4.3 Worker cards: status badge, cumulative tokens, tool count, duration, last tool
 - [ ] 4.4 Collapsed "Progress" disclosure per worker when a progress summary exists; collapsed turn-level "Reasoning" disclosure when displayable reasoning exists
 - [ ] 4.5 Bounded compact recent-tools list
-- [ ] 4.6 Wire `PlanSidebar`/`ChatView` to the panel
+- [ ] 4.6 Wire `ChatView` to render the pinned card above the message timeline (PlanSidebar remains unchanged)
 
 ## 5. Timeline task cards
 
