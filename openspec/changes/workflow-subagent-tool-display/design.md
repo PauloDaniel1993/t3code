@@ -3,6 +3,7 @@
 Claude Agent SDK emits enough structured data to build the approved Option F experience, but T3 Code currently discards or weakly encodes part of it.
 
 Available SDK task data:
+
 - `task_started`: `task_id`, `tool_use_id`, `description`, `subagent_type`, `task_type`, `workflow_name`, `prompt`, `skip_transcript`.
 - `task_progress`: task/tool-use identity, description, subagent type, cumulative `total_tokens`, `tool_uses`, `duration_ms`, `last_tool_name`, and optional AI-generated progress `summary`.
 - `task_notification`: task/tool-use identity, final status, output file, summary, and cumulative usage.
@@ -13,7 +14,8 @@ The current canonical task payload retains only a subset of those fields. `tool_
 ## Goals / Non-Goals
 
 **Goals:**
-- Implement the approved Option F layout in the existing plan/tasks side panel.
+
+- Implement the approved Option F layout as a pinned card in the main conversation area, above the message timeline and outside the scrolling message flow, reflecting the latest turn's activity.
 - Show step progress and inline worker expansion within the same container.
 - Toggle a selected step closed when clicked again; switch worker content when a different step is clicked.
 - Show cumulative worker token usage, tool count, duration, last tool, status, and output/result summary when present.
@@ -22,9 +24,10 @@ The current canonical task payload retains only a subset of those fields. `tool_
 - Keep compact tool rows and distinct task cards in the transcript.
 
 **Non-Goals:**
+
 - Do not expose hidden/raw chain-of-thought. The UI only displays summaries or reasoning text explicitly delivered by the provider runtime.
 - Do not invent token counts, tool counts, durations, reasoning, or task-to-step relationships when metadata is unavailable.
-- Do not require a separate right-panel surface in the first iteration; reuse the Plan/Tasks panel.
+- Do not require a separate right-panel surface in the first iteration; the card lives in the main conversation area and the timeline keeps its current rows.
 - Do not recursively render arbitrary nested subagent hierarchies in the first iteration.
 
 ## Decisions
@@ -57,7 +60,7 @@ The current canonical task payload retains only a subset of those fields. `tool_
    - Worker expansion state is local UI state and resets when the active turn/thread changes.
 
 6. **Respect transcript visibility metadata.**
-   - `skipTranscript` tasks remain available in the side-panel worker model but are omitted from inline transcript task cards.
+   - `skipTranscript` tasks remain available in the workflow activity card's worker model but are omitted from inline transcript task cards.
    - Rationale: this matches the SDK’s ambient/housekeeping task semantics.
 
 ## Risks / Trade-offs
@@ -68,14 +71,14 @@ The current canonical task payload retains only a subset of those fields. `tool_
   **Mitigation:** make every metric optional and omit separators/labels for absent values.
 - **[Risk]** Reasoning deltas may be absent, empty, or provider-filtered.  
   **Mitigation:** render the disclosure only when non-empty displayable content exists; use task progress summaries as progress feedback, not as raw reasoning.
-- **[Risk]** The Plan sidebar may become dense.  
+- **[Risk]** The pinned card may crowd the main conversation area.  
   **Mitigation:** compact rows, collapsed worker details, bounded recent-tool list, and one expanded step at a time.
 
 ## Migration Plan
 
 1. Extend contracts additively and update adapter/ingestion mapping.
 2. Add pure client derivation for workflow steps, worker association, cumulative usage, and compact tools.
-3. Replace the temporary activity sidebar with the Option F component.
+3. Add the Option F component as a pinned card in the main conversation area.
 4. Add focused tests and browser verification.
 
 Rollback is limited to removing the new panel and leaving additive canonical fields unused.
