@@ -31,6 +31,6 @@ T3 Code currently flattens tool calls, subagent tasks, workflow progress, and pr
 - Provider/runtime contract changes in `packages/contracts/src/providerRuntime.ts`.
 - Claude event mapping changes in `apps/server/src/provider/Layers/ClaudeAdapter.ts` and orchestration ingestion.
 - Web derivation changes in `apps/web/src/session-logic.ts` or a dedicated workflow-activity model.
-- Side-panel UI changes in `ActivitySidebar.tsx`, `PlanSidebar.tsx`, and `ChatView.tsx`.
+- Main-area UI changes: a new pinned workflow activity card component wired into `ChatView.tsx` above the message timeline.
 - Timeline task-card updates in `MessagesTimeline.tsx`.
 - Contract, adapter, ingestion, derivation, rendering, interaction, and browser tests.
