@@ -195,6 +195,128 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   );
 });
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-activity-committed-sequence-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect(
+      "stores rich activity payloads in committed event order across bootstrap replay",
+      () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const threadId = ThreadId.make("thread-rich-activities");
+          const createdAt = "2026-01-01T00:00:00.000Z";
+          const inputs = [
+            {
+              id: "task-started",
+              kind: "task.started",
+              payload: { taskId: "task-1", toolUseId: "tool-use-1", skipTranscript: false },
+            },
+            {
+              id: "task-progress",
+              kind: "task.progress",
+              payload: {
+                taskId: "task-1",
+                toolUseId: "tool-use-1",
+                usage: { totalTokens: 0, toolUses: 2 },
+              },
+            },
+            {
+              id: "task-completed",
+              kind: "task.completed",
+              payload: {
+                taskId: "task-1",
+                toolUseId: "tool-use-1",
+                skipTranscript: true,
+                outputFile: "/tmp/task-1.txt",
+                usage: { durationMs: 0 },
+              },
+            },
+            {
+              id: "tool-progress",
+              kind: "tool.progress",
+              payload: {
+                taskId: "task-1",
+                toolUseId: "tool-use-2",
+                parentToolUseId: null,
+              },
+            },
+            {
+              id: "reasoning-summary",
+              kind: "turn.reasoning.summary",
+              payload: { reasoningSummary: "Compared the replay paths." },
+            },
+          ] as const;
+
+          const committedEvents = yield* Effect.forEach(
+            inputs,
+            (input) =>
+              eventStore.append({
+                type: "thread.activity-appended",
+                eventId: EventId.make(`event-${input.id}`),
+                aggregateKind: "thread",
+                aggregateId: threadId,
+                occurredAt: createdAt,
+                commandId: CommandId.make(`cmd-${input.id}`),
+                causationEventId: null,
+                correlationId: CorrelationId.make(`cmd-${input.id}`),
+                metadata: {},
+                payload: {
+                  threadId,
+                  activity: {
+                    id: EventId.make(input.id),
+                    tone: input.kind === "tool.progress" ? "tool" : "info",
+                    kind: input.kind,
+                    summary: input.kind,
+                    payload: input.payload,
+                    turnId: TurnId.make("turn-1"),
+                    sequence: 999,
+                    createdAt,
+                  },
+                },
+              }),
+            { concurrency: 1 },
+          );
+
+          yield* projectionPipeline.bootstrap;
+
+          const readRows = () =>
+            sql<{
+              readonly activityId: string;
+              readonly payloadJson: string;
+              readonly sequence: number | null;
+            }>`
+          SELECT
+            activity_id AS "activityId",
+            payload_json AS "payloadJson",
+            sequence
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+          ORDER BY sequence ASC, activity_id ASC
+        `;
+          const firstRows = yield* readRows();
+          yield* projectionPipeline.bootstrap;
+          const replayedRows = yield* readRows();
+
+          assert.deepEqual(replayedRows, firstRows);
+          assert.deepEqual(
+            firstRows.map((row) => ({
+              activityId: row.activityId,
+              sequence: row.sequence,
+              payload: JSON.parse(row.payloadJson),
+            })),
+            inputs.map((input, index) => ({
+              activityId: input.id,
+              sequence: committedEvents[index]!.sequence,
+              payload: input.payload,
+            })),
+          );
+        }),
+    );
+  },
+);
+
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
   "OrchestrationProjectionPipeline",
   (it) => {
