@@ -269,6 +269,16 @@ async function readFirstPromptMessage(
 const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 
+function payloadWithStringTaskId(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || !("taskId" in payload)) {
+    return payload;
+  }
+  return {
+    ...payload,
+    taskId: String(payload.taskId),
+  };
+}
+
 function writeStoredAttachment(
   attachmentsDir: string,
   attachment: ChatAttachment,
@@ -2015,6 +2025,436 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("maps complete and sparse Claude task lifecycle messages", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "task.started" ||
+            event.type === "task.progress" ||
+            event.type === "task.completed",
+        ),
+        Stream.take(6),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      assert.isUndefined(harness.getLastCreateQueryInput()?.options.agentProgressSummaries);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-start-complete",
+        tool_use_id: "tool-task-complete",
+        description: "Run the review workflow",
+        subagent_type: "code-reviewer",
+        task_type: "local_workflow",
+        workflow_name: "review",
+        prompt: "",
+        skip_transcript: false,
+        session_id: "sdk-session-task-lifecycle",
+        uuid: "task-start-complete",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-start-sparse",
+        description: "Minimal task",
+        session_id: "sdk-session-task-lifecycle",
+        uuid: "task-start-sparse",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-progress-complete",
+        tool_use_id: "tool-progress-complete",
+        description: "Reviewing the adapter",
+        subagent_type: "code-reviewer",
+        summary: "Checked the lifecycle mapping.",
+        usage: {
+          total_tokens: 0,
+          tool_uses: 0,
+          duration_ms: 0,
+        },
+        last_tool_name: "Read",
+        session_id: "sdk-session-task-lifecycle",
+        uuid: "task-progress-complete",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-progress-sparse",
+        description: "Waiting for more work",
+        session_id: "sdk-session-task-lifecycle",
+        uuid: "task-progress-sparse",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-completed-complete",
+        tool_use_id: "tool-completed-complete",
+        status: "completed",
+        output_file: "task-output.txt",
+        summary: "Review completed.",
+        usage: {
+          total_tokens: 12,
+          tool_uses: 2,
+          duration_ms: 345,
+        },
+        skip_transcript: false,
+        session_id: "sdk-session-task-lifecycle",
+        uuid: "task-completed-complete",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-completed-sparse",
+        status: "stopped",
+        session_id: "sdk-session-task-lifecycle",
+        uuid: "task-completed-sparse",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[0]?.payload), {
+        taskId: "task-start-complete",
+        description: "Run the review workflow",
+        taskType: "local_workflow",
+        toolUseId: "tool-task-complete",
+        subagentType: "code-reviewer",
+        workflowName: "review",
+        prompt: "",
+        skipTranscript: false,
+      });
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[1]?.payload), {
+        taskId: "task-start-sparse",
+        description: "Minimal task",
+      });
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[2]?.payload), {
+        taskId: "task-progress-complete",
+        description: "Reviewing the adapter",
+        toolUseId: "tool-progress-complete",
+        subagentType: "code-reviewer",
+        summary: "Checked the lifecycle mapping.",
+        usage: {
+          totalTokens: 0,
+          toolUses: 0,
+          durationMs: 0,
+        },
+        lastToolName: "Read",
+      });
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[3]?.payload), {
+        taskId: "task-progress-sparse",
+        description: "Waiting for more work",
+      });
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[4]?.payload), {
+        taskId: "task-completed-complete",
+        status: "completed",
+        toolUseId: "tool-completed-complete",
+        outputFile: "task-output.txt",
+        skipTranscript: false,
+        summary: "Review completed.",
+        usage: {
+          totalTokens: 12,
+          toolUses: 2,
+          durationMs: 345,
+        },
+      });
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[5]?.payload), {
+        taskId: "task-completed-sparse",
+        status: "stopped",
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("maps Claude tool progress with typed task correlation and parent identity", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "tool.progress"),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "tool_progress",
+        tool_use_id: "tool-ordinary",
+        parent_tool_use_id: null,
+        tool_name: "Bash",
+        elapsed_time_seconds: 0,
+        session_id: "sdk-session-tool-progress",
+        uuid: "tool-progress-ordinary",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "tool_progress",
+        tool_use_id: "tool-task-linked",
+        parent_tool_use_id: "parent-tool",
+        tool_name: "Read",
+        elapsed_time_seconds: 1.25,
+        task_id: "task-linked",
+        session_id: "sdk-session-tool-progress",
+        uuid: "tool-progress-task-linked",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "tool_progress",
+        tool_use_id: "tool-malformed-elapsed",
+        parent_tool_use_id: null,
+        tool_name: "Grep",
+        elapsed_time_seconds: Number.NaN,
+        session_id: "sdk-session-tool-progress",
+        uuid: "tool-progress-malformed-elapsed",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[0]?.payload), {
+        toolUseId: "tool-ordinary",
+        parentToolUseId: null,
+        toolName: "Bash",
+        elapsedSeconds: 0,
+      });
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[1]?.payload), {
+        toolUseId: "tool-task-linked",
+        taskId: "task-linked",
+        parentToolUseId: "parent-tool",
+        toolName: "Read",
+        elapsedSeconds: 1.25,
+      });
+      assert.deepEqual(runtimeEvents[2]?.payload, {
+        toolUseId: "tool-malformed-elapsed",
+        parentToolUseId: null,
+        toolName: "Grep",
+      });
+      assert.equal(
+        runtimeEvents.some(
+          (event) =>
+            "summary" in event.payload &&
+            typeof event.payload.summary === "string" &&
+            event.payload.summary.startsWith("task:"),
+        ),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("preserves repeated Claude task usage snapshots without summing them", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      for (const [uuid, totalTokens, toolUses, durationMs] of [
+        ["task-snapshot-1", 10, 1, 100],
+        ["task-snapshot-2", 25, 2, 250],
+      ] as const) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_progress",
+          task_id: "task-repeated",
+          description: "Working",
+          usage: {
+            total_tokens: totalTokens,
+            tool_uses: toolUses,
+            duration_ms: durationMs,
+          },
+          session_id: "sdk-session-task-snapshots",
+          uuid,
+        } as unknown as SDKMessage);
+      }
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.map((event) => event.payload.usage),
+        [
+          { totalTokens: 10, toolUses: 1, durationMs: 100 },
+          { totalTokens: 25, toolUses: 2, durationMs: 250 },
+        ],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("never promotes Claude raw or redacted thinking into reasoning summaries", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Think carefully",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-thinking-boundary",
+        uuid: "thinking-delta-visible",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "thinking_delta",
+            thinking: "Raw provider thinking",
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-thinking-boundary",
+        uuid: "redacted-thinking-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: {
+            type: "redacted_thinking",
+            data: "opaque-redacted-data",
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-thinking-boundary",
+        uuid: "thinking-token-estimate",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: {
+            type: "thinking_delta",
+            estimated_tokens: 42,
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-thinking-boundary",
+        uuid: "thinking-signature",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "signature_delta",
+            signature: "opaque-signature",
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-thinking-boundary",
+        uuid: "assistant-thinking-snapshot",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-thinking-snapshot",
+          content: [
+            { type: "thinking", thinking: "Completed raw thinking", signature: "signature" },
+            { type: "redacted_thinking", data: "completed-redacted-data" },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "thinking_tokens",
+        estimated_tokens: 42,
+        estimated_tokens_delta: 42,
+        session_id: "sdk-session-thinking-boundary",
+        uuid: "thinking-tokens-system",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: false,
+        errors: ["interrupted by user"],
+        session_id: "sdk-session-thinking-boundary",
+        uuid: "thinking-interrupted-result",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const contentEvents = runtimeEvents.filter((event) => event.type === "content.delta");
+      assert.equal(contentEvents.length, 1);
+      assert.deepEqual(contentEvents[0]?.payload, {
+        streamKind: "reasoning_text",
+        delta: "Raw provider thinking",
+      });
+      assert.equal(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "content.delta" && event.payload.streamKind === "reasoning_summary_text",
+        ),
+        false,
+      );
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal(completed.payload.state, "interrupted");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards Claude task progress summaries for subagent updates", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -2055,6 +2495,87 @@ describe("ClaudeAdapterLive", () => {
           "Code reviewer checked the migration edge cases.",
         );
         assert.equal(progressEvent.payload.description, "Running background teammate");
+        assert.deepEqual(progressEvent.payload.usage, {
+          totalTokens: 123,
+          toolUses: 4,
+          durationMs: 987,
+        });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("normalizes sparse Claude task completion usage without fabricating counters", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-completed-zero-usage",
+        status: "completed",
+        output_file: "task-output.txt",
+        summary: "Completed without consuming tokens or tools.",
+        usage: {
+          total_tokens: 0,
+          tool_uses: 0,
+        },
+        session_id: "sdk-session-task-completed",
+        uuid: "task-completed-zero-usage",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-completed-malformed-usage",
+        status: "failed",
+        output_file: "task-error.txt",
+        summary: "Provider supplied malformed usage counters.",
+        usage: {
+          total_tokens: "unknown",
+          tool_uses: -1,
+          duration_ms: 1.5,
+        },
+        session_id: "sdk-session-task-completed",
+        uuid: "task-completed-malformed-usage",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const zeroUsageEvent = runtimeEvents.find(
+        (event) =>
+          event.type === "task.completed" &&
+          String(event.payload.taskId) === "task-completed-zero-usage",
+      );
+      assert.equal(zeroUsageEvent?.type, "task.completed");
+      if (zeroUsageEvent?.type === "task.completed") {
+        assert.deepEqual(zeroUsageEvent.payload.usage, {
+          totalTokens: 0,
+          toolUses: 0,
+        });
+      }
+
+      const malformedUsageEvent = runtimeEvents.find(
+        (event) =>
+          event.type === "task.completed" &&
+          String(event.payload.taskId) === "task-completed-malformed-usage",
+      );
+      assert.equal(malformedUsageEvent?.type, "task.completed");
+      if (malformedUsageEvent?.type === "task.completed") {
+        assert.isUndefined(malformedUsageEvent.payload.usage);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
