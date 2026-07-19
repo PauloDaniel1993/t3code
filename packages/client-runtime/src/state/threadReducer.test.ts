@@ -597,7 +597,135 @@ describe("applyThreadDetailEvent", () => {
       if (result.kind === "updated") {
         expect(result.thread.activities).toHaveLength(1);
         expect(result.thread.activities[0]?.kind).toBe("file-edit");
+        expect(result.thread.activities[0]?.sequence).toBe(12);
       }
+    });
+
+    it("orders rich live activities by committed event sequence without losing payload fields", () => {
+      const activityAt = "2026-04-01T11:00:00.000Z";
+      const threadWithLegacyActivities: OrchestrationThread = {
+        ...baseThread,
+        activities: [
+          {
+            id: EventId.make("legacy-b"),
+            tone: "info",
+            kind: "legacy.progress",
+            summary: "legacy b",
+            payload: { legacy: true },
+            turnId: null,
+            createdAt: activityAt,
+          },
+          {
+            id: EventId.make("legacy-a"),
+            tone: "info",
+            kind: "legacy.started",
+            summary: "legacy a",
+            payload: { legacy: true },
+            turnId: null,
+            createdAt: activityAt,
+          },
+        ],
+      };
+      const eventInputs = [
+        {
+          sequence: 17,
+          id: "reasoning-summary",
+          kind: "turn.reasoning.summary",
+          payload: { reasoningSummary: "Compared the replay paths." },
+        },
+        {
+          sequence: 13,
+          id: "task-started",
+          kind: "task.started",
+          payload: { taskId: "task-1", toolUseId: "tool-use-1", skipTranscript: false },
+        },
+        {
+          sequence: 15,
+          id: "task-completed",
+          kind: "task.completed",
+          payload: {
+            taskId: "task-1",
+            toolUseId: "tool-use-1",
+            skipTranscript: true,
+            outputFile: "/tmp/task-1.txt",
+            usage: { durationMs: 0 },
+          },
+        },
+        {
+          sequence: 14,
+          id: "task-progress",
+          kind: "task.progress",
+          payload: {
+            taskId: "task-1",
+            toolUseId: "tool-use-1",
+            usage: { totalTokens: 0, toolUses: 2 },
+          },
+        },
+        {
+          sequence: 16,
+          id: "tool-progress",
+          kind: "tool.progress",
+          payload: {
+            taskId: "task-1",
+            toolUseId: "tool-use-2",
+            parentToolUseId: null,
+          },
+        },
+      ] as const;
+
+      const reduced = eventInputs.reduce((thread, input) => {
+        const result = applyThreadDetailEvent(thread, {
+          ...baseEventFields,
+          sequence: input.sequence,
+          eventId: EventId.make(`event-${input.sequence}`),
+          occurredAt: activityAt,
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            activity: {
+              id: EventId.make(input.id),
+              tone: input.kind === "tool.progress" ? "tool" : "info",
+              kind: input.kind,
+              summary: input.kind,
+              payload: input.payload,
+              turnId: TurnId.make("turn-1"),
+              sequence: 999,
+              createdAt: activityAt,
+            },
+          },
+        });
+        expect(result.kind).toBe("updated");
+        return result.kind === "updated" ? result.thread : thread;
+      }, threadWithLegacyActivities);
+
+      expect(reduced.activities.map(({ id, sequence }) => ({ id, sequence }))).toEqual([
+        { id: "legacy-a", sequence: undefined },
+        { id: "legacy-b", sequence: undefined },
+        { id: "task-started", sequence: 13 },
+        { id: "task-progress", sequence: 14 },
+        { id: "task-completed", sequence: 15 },
+        { id: "tool-progress", sequence: 16 },
+        { id: "reasoning-summary", sequence: 17 },
+      ]);
+      expect(reduced.activities.slice(2).map((activity) => activity.payload)).toEqual([
+        { taskId: "task-1", toolUseId: "tool-use-1", skipTranscript: false },
+        {
+          taskId: "task-1",
+          toolUseId: "tool-use-1",
+          usage: { totalTokens: 0, toolUses: 2 },
+        },
+        {
+          taskId: "task-1",
+          toolUseId: "tool-use-1",
+          skipTranscript: true,
+          outputFile: "/tmp/task-1.txt",
+          usage: { durationMs: 0 },
+        },
+        { taskId: "task-1", toolUseId: "tool-use-2", parentToolUseId: null },
+        { reasoningSummary: "Compared the replay paths." },
+      ]);
     });
 
     it("preserves the complete activity history when live events arrive", () => {

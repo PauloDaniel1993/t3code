@@ -912,12 +912,34 @@ function compareActivityLifecycleRank(kind: string): number {
   return 1;
 }
 
-const activityOrder = Order.combineAll<OrchestrationThreadActivity>([
-  Order.mapInput(Order.Number, (activity) => activity.sequence ?? Number.MAX_SAFE_INTEGER),
-  Order.mapInput(Order.String, (activity) => activity.createdAt),
-  Order.mapInput(Order.Number, (activity) => compareActivityLifecycleRank(activity.kind)),
-  Order.mapInput(Order.String, (activity) => activity.id),
-]);
+// Activities with a committed sequence order ascending, but legacy
+// sequence-less activities always order first so a legacy request reduces
+// before the sequenced resolution that closed it. Mirrors the SQL snapshot
+// query, the server projector, the web comparator, and the shared client
+// reducer.
+const activityOrder = Order.make<OrchestrationThreadActivity>((left, right) => {
+  if (left.sequence !== undefined && right.sequence !== undefined) {
+    if (left.sequence !== right.sequence) {
+      return left.sequence < right.sequence ? -1 : 1;
+    }
+  } else if (left.sequence !== undefined) {
+    return 1;
+  } else if (right.sequence !== undefined) {
+    return -1;
+  }
+
+  const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
+  if (createdAtOrder !== 0) {
+    return createdAtOrder < 0 ? -1 : 1;
+  }
+  const lifecycleRankOrder =
+    compareActivityLifecycleRank(left.kind) - compareActivityLifecycleRank(right.kind);
+  if (lifecycleRankOrder !== 0) {
+    return lifecycleRankOrder < 0 ? -1 : 1;
+  }
+  const idOrder = left.id.localeCompare(right.id);
+  return idOrder === 0 ? 0 : idOrder < 0 ? -1 : 1;
+});
 
 function isEmptyMessage(entry: RawThreadFeedEntry): boolean {
   if (entry.type !== "message") {
