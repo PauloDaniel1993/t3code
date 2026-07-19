@@ -12,6 +12,7 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveTaskLifecycles,
   deriveTimelineEntries,
   deriveWorkLogEntries,
   findLatestProposedPlan,
@@ -1489,6 +1490,457 @@ describe("deriveWorkLogEntries", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]?.id).toBe("a-complete-same-timestamp");
+  });
+
+  it("keeps keyed task presentation identity stable while reducing the latest lifecycle state", () => {
+    const started = makeActivity({
+      id: "stable-task-start",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      turnId: "turn-start",
+      sequence: 1,
+      kind: "task.started",
+      summary: "Task started",
+      payload: {
+        taskId: "stable-task",
+        toolUseId: "tool-use-start",
+        description: "Inspect the implementation",
+        taskType: "agent",
+        subagentType: "explorer",
+        workflowName: "review-workflow",
+        prompt: "Inspect all changed files",
+        skipTranscript: true,
+      },
+    });
+    const progress = makeActivity({
+      id: "stable-task-progress",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      turnId: "turn-progress-must-not-replace-start",
+      sequence: 2,
+      kind: "task.progress",
+      summary: "Reasoning update",
+      payload: {
+        taskId: "stable-task",
+        toolUseId: "tool-use-progress",
+        description: "Inspecting the tests",
+        subagentType: "test-reviewer",
+        summary: "Compared the lifecycle cases",
+        usage: { total_tokens: 12, tool_uses: 3, duration_ms: 40 },
+        lastToolName: "Read",
+      },
+    });
+    const completed = makeActivity({
+      id: "stable-task-completed",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      turnId: "turn-completed-must-not-replace-start",
+      sequence: 3,
+      kind: "task.completed",
+      summary: "Task failed",
+      payload: {
+        taskId: "stable-task",
+        status: "failed",
+        summary: "Found a lifecycle regression",
+        outputFile: "/tmp/stable-task.txt",
+        skipTranscript: false,
+        usage: { duration_ms: 55 },
+      },
+    });
+
+    const startEntry = deriveWorkLogEntries([started])[0];
+    const progressEntry = deriveWorkLogEntries([progress, started])[0];
+    const completedEntry = deriveWorkLogEntries([completed, started, progress])[0];
+
+    for (const entry of [startEntry, progressEntry, completedEntry]) {
+      expect(entry).toMatchObject({
+        id: "stable-task-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId: TurnId.make("turn-start"),
+        taskId: "stable-task",
+        taskType: "agent",
+        workflowName: "review-workflow",
+        prompt: "Inspect all changed files",
+      });
+    }
+    expect(startEntry).toMatchObject({
+      label: "Inspect the implementation",
+      tone: "info",
+      description: "Inspect the implementation",
+      toolUseId: "tool-use-start",
+      subagentType: "explorer",
+      skipTranscript: true,
+      toolLifecycleStatus: "inProgress",
+      sourceActivityKind: "task.started",
+    });
+    expect(progressEntry).toMatchObject({
+      label: "Compared the lifecycle cases",
+      tone: "thinking",
+      description: "Inspecting the tests",
+      toolUseId: "tool-use-progress",
+      subagentType: "test-reviewer",
+      progressSummary: "Compared the lifecycle cases",
+      usage: { totalTokens: 12, toolUses: 3, durationMs: 40 },
+      lastToolName: "Read",
+      skipTranscript: true,
+      toolLifecycleStatus: "inProgress",
+      sourceActivityKind: "task.progress",
+    });
+    expect(completedEntry).toMatchObject({
+      label: "Found a lifecycle regression",
+      tone: "error",
+      description: "Inspecting the tests",
+      progressSummary: "Compared the lifecycle cases",
+      resultSummary: "Found a lifecycle regression",
+      outputFile: "/tmp/stable-task.txt",
+      usage: { durationMs: 55 },
+      lastToolName: "Read",
+      skipTranscript: false,
+      toolLifecycleStatus: "failed",
+      sourceActivityKind: "task.completed",
+    });
+    expect(completedEntry?.usage).not.toHaveProperty("totalTokens");
+    expect(completedEntry?.usage).not.toHaveProperty("toolUses");
+  });
+
+  it("reduces interleaved task lifecycles by task id without losing start metadata", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "task-a-start",
+        turnId: "turn-1",
+        sequence: 1,
+        kind: "task.started",
+        summary: "Task started",
+        payload: {
+          taskId: "task-a",
+          toolUseId: "task-tool-a",
+          description: "Review the implementation",
+          taskType: "agent",
+          subagentType: "code-reviewer",
+          workflowName: "parallel-review",
+          prompt: "Review this change",
+          skipTranscript: false,
+        },
+      }),
+      makeActivity({
+        id: "task-b-progress",
+        turnId: "turn-1",
+        sequence: 2,
+        kind: "task.progress",
+        summary: "Reasoning update",
+        payload: {
+          taskId: "task-b",
+          description: "Running tests",
+          summary: "Tests are running",
+          usage: { total_tokens: 5, tool_uses: 1 },
+        },
+      }),
+      makeActivity({
+        id: "task-a-progress",
+        turnId: "turn-1",
+        sequence: 3,
+        kind: "task.progress",
+        summary: "Reasoning update",
+        payload: {
+          taskId: "task-a",
+          description: "Reviewing the diff",
+          summary: "Checked the changed files",
+          lastToolName: "Read",
+          usage: { totalTokens: 10, toolUses: 2, durationMs: 30 },
+        },
+      }),
+      makeActivity({
+        id: "task-a-complete",
+        turnId: "turn-1",
+        sequence: 4,
+        kind: "task.completed",
+        summary: "Task completed",
+        payload: {
+          taskId: "task-a",
+          status: "completed",
+          resultIgnored: true,
+          summary: "No regressions found",
+          outputFile: "/tmp/review.md",
+          usage: { duration_ms: 40 },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries([
+      activities[2]!,
+      activities[0]!,
+      activities[3]!,
+      activities[1]!,
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      id: "task-a-start",
+      taskId: "task-a",
+      toolUseId: "task-tool-a",
+      taskType: "agent",
+      subagentType: "code-reviewer",
+      workflowName: "parallel-review",
+      prompt: "Review this change",
+      skipTranscript: false,
+      progressSummary: "Checked the changed files",
+      resultSummary: "No regressions found",
+      outputFile: "/tmp/review.md",
+      lastToolName: "Read",
+      usage: { durationMs: 40 },
+      toolLifecycleStatus: "completed",
+      sourceActivityKind: "task.completed",
+    });
+    expect(entries[0]?.usage).not.toHaveProperty("totalTokens");
+    expect(entries[0]?.usage).not.toHaveProperty("toolUses");
+    expect(entries[1]).toMatchObject({
+      id: "task-b-progress",
+      taskId: "task-b",
+      description: "Running tests",
+      progressSummary: "Tests are running",
+      usage: { totalTokens: 5, toolUses: 1 },
+      toolLifecycleStatus: "inProgress",
+    });
+  });
+
+  it("emits a keyed started-only task immediately with start metadata intact", () => {
+    const started = makeActivity({
+      id: "task-start-only",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      turnId: "turn-1",
+      sequence: 1,
+      kind: "task.started",
+      summary: "Task started",
+      payload: {
+        taskId: "task-start-only-id",
+        toolUseId: "task-start-only-tool",
+        description: "Review the implementation",
+        taskType: "agent",
+        subagentType: "code-reviewer",
+        workflowName: "ambient-work",
+        prompt: "Review this change",
+        skipTranscript: true,
+      },
+    });
+
+    expect(deriveWorkLogEntries([started])).toEqual([
+      {
+        id: "task-start-only",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId: TurnId.make("turn-1"),
+        label: "Review the implementation",
+        tone: "info",
+        taskId: "task-start-only-id",
+        toolUseId: "task-start-only-tool",
+        description: "Review the implementation",
+        taskType: "agent",
+        subagentType: "code-reviewer",
+        workflowName: "ambient-work",
+        prompt: "Review this change",
+        skipTranscript: true,
+        toolLifecycleStatus: "inProgress",
+        sourceActivityKind: "task.started",
+      },
+    ]);
+    expect(deriveTaskLifecycles([started])).toMatchObject([
+      {
+        taskId: "task-start-only-id",
+        hasTranscriptActivity: false,
+      },
+    ]);
+  });
+
+  it("uses the earliest observed keyed event as the stable identity when start is missing", () => {
+    const progress = makeActivity({
+      id: "missing-start-progress",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      turnId: "turn-progress",
+      sequence: 2,
+      kind: "task.progress",
+      summary: "Reasoning update",
+      payload: {
+        taskId: "missing-start-task",
+        description: "Recovered task",
+        summary: "Recovery in progress",
+        usage: { totalTokens: 4 },
+      },
+    });
+    const completed = makeActivity({
+      id: "missing-start-completed",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      turnId: "turn-completed",
+      sequence: 3,
+      kind: "task.completed",
+      summary: "Task completed",
+      payload: {
+        taskId: "missing-start-task",
+        status: "completed",
+        summary: "Recovery complete",
+        outputFile: "/tmp/recovered.txt",
+        usage: { toolUses: 2 },
+      },
+    });
+
+    const progressEntry = deriveWorkLogEntries([progress])[0];
+    const completedEntry = deriveWorkLogEntries([completed, progress])[0];
+
+    expect(progressEntry).toMatchObject({
+      id: "missing-start-progress",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      turnId: TurnId.make("turn-progress"),
+      label: "Recovery in progress",
+      description: "Recovered task",
+      progressSummary: "Recovery in progress",
+      usage: { totalTokens: 4 },
+      toolLifecycleStatus: "inProgress",
+      sourceActivityKind: "task.progress",
+    });
+    expect(completedEntry).toMatchObject({
+      id: "missing-start-progress",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      turnId: TurnId.make("turn-progress"),
+      label: "Recovery complete",
+      description: "Recovered task",
+      progressSummary: "Recovery in progress",
+      resultSummary: "Recovery complete",
+      outputFile: "/tmp/recovered.txt",
+      usage: { toolUses: 2 },
+      toolLifecycleStatus: "completed",
+      sourceActivityKind: "task.completed",
+    });
+    expect(completedEntry?.usage).not.toHaveProperty("totalTokens");
+  });
+
+  it("keeps the first terminal state when late progress and duplicate notifications arrive", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "terminal-start",
+        sequence: 1,
+        kind: "task.started",
+        summary: "Task started",
+        payload: { taskId: "terminal-task", taskType: "agent" },
+      }),
+      makeActivity({
+        id: "terminal-failed",
+        sequence: 2,
+        kind: "task.completed",
+        summary: "Task failed",
+        payload: {
+          taskId: "terminal-task",
+          status: "failed",
+          summary: "Initial failure",
+          usage: { totalTokens: 10 },
+        },
+      }),
+      makeActivity({
+        id: "late-progress",
+        sequence: 3,
+        kind: "task.progress",
+        summary: "Reasoning update",
+        payload: {
+          taskId: "terminal-task",
+          description: "Late replay",
+          usage: { toolUses: 3 },
+        },
+      }),
+      makeActivity({
+        id: "duplicate-completed",
+        sequence: 4,
+        kind: "task.completed",
+        summary: "Task completed",
+        payload: {
+          taskId: "terminal-task",
+          status: "completed",
+          outputFile: "/tmp/result.txt",
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "terminal-start",
+      taskId: "terminal-task",
+      taskType: "agent",
+      description: "Late replay",
+      resultSummary: "Initial failure",
+      outputFile: "/tmp/result.txt",
+      usage: { toolUses: 3 },
+      toolLifecycleStatus: "failed",
+      tone: "error",
+      sourceActivityKind: "task.completed",
+    });
+    expect(entries[0]?.usage).not.toHaveProperty("totalTokens");
+  });
+
+  it("excludes panel-only tool progress and turn reasoning summary activities", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "panel-tool-progress",
+        kind: "tool.progress",
+        summary: "Reading file",
+        payload: { toolUseId: "tool-1", taskId: "task-1" },
+      }),
+      makeActivity({
+        id: "panel-reasoning",
+        kind: "turn.reasoning.summary",
+        summary: "Reasoning summary",
+        payload: { reasoningSummary: "Compared the options." },
+      }),
+      makeActivity({
+        id: "ordinary-tool",
+        kind: "tool.completed",
+        summary: "Read complete",
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.id)).toEqual(["ordinary-tool"]);
+  });
+
+  it("never classifies task entries as neutral or ordinary tools", () => {
+    const taskEntry = {
+      id: "task-entry",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      label: "Working",
+      tone: "thinking" as const,
+      taskId: "task-1",
+      toolLifecycleStatus: "inProgress" as const,
+    };
+
+    expect(workEntryIndicatesToolNeutralStatus(taskEntry)).toBe(false);
+    expect(workEntryIndicatesToolSuccess(taskEntry)).toBe(false);
+  });
+
+  it("uses lifecycle rank and id only for legacy unsequenced timestamp ties", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "z-completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "legacy.completed",
+        summary: "Completed",
+      }),
+      makeActivity({
+        id: "b-progress",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "legacy.progress",
+        summary: "Progress b",
+      }),
+      makeActivity({
+        id: "a-progress",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "legacy.progress",
+        summary: "Progress a",
+      }),
+      makeActivity({
+        id: "started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "legacy.started",
+        summary: "Started",
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "started",
+      "a-progress",
+      "b-progress",
+      "z-completed",
+    ]);
   });
 });
 
