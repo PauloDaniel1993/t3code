@@ -7,6 +7,7 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
   ProviderDriverKind,
+  type TaskUsageSnapshot,
   type ToolLifecycleItemType,
   type UserInputQuestion,
   type ThreadId,
@@ -74,10 +75,32 @@ export interface WorkLogEntry {
   toolData?: unknown;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
+  taskId?: string;
+  toolUseId?: string;
+  description?: string;
+  taskType?: string;
+  subagentType?: string;
+  workflowName?: string;
+  prompt?: string;
+  usage?: TaskUsageSnapshot;
+  progressSummary?: string;
+  resultSummary?: string;
+  outputFile?: string;
+  skipTranscript?: boolean;
+  lastToolName?: string;
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+}
+
+export interface DerivedTaskLifecycle {
+  taskId: string;
+  firstActivity: OrchestrationThreadActivity;
+  latestActivity: OrchestrationThreadActivity;
+  displayActivity: OrchestrationThreadActivity;
+  hasTranscriptActivity: boolean;
+  entry: WorkLogEntry;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -140,6 +163,9 @@ export type TimelineEntry =
     };
 
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
+  if (entry.taskId !== undefined) {
+    return false;
+  }
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
     return true;
   }
@@ -628,19 +654,290 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const entries: DerivedWorkLogEntry[] = [];
+  const keyedTaskActivityIds = new Set<string>();
+  const orderedEntries: Array<{
+    activity: OrchestrationThreadActivity;
+    entry: DerivedWorkLogEntry;
+  }> = [];
+  const taskLifecycles = deriveTaskLifecycles(ordered);
+  const keyedTaskIds = new Set(taskLifecycles.map((lifecycle) => lifecycle.taskId));
   for (const activity of ordered) {
+    const taskId = extractTaskId(activity);
+    if (taskId && keyedTaskIds.has(taskId)) {
+      keyedTaskActivityIds.add(activity.id);
+    }
+  }
+
+  for (const lifecycle of taskLifecycles) {
+    orderedEntries.push({
+      activity: lifecycle.firstActivity,
+      entry: {
+        ...lifecycle.entry,
+        activityKind: lifecycle.displayActivity.kind,
+      },
+    });
+  }
+
+  for (const activity of ordered) {
+    if (keyedTaskActivityIds.has(activity.id)) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
+    if (activity.kind === "tool.progress") continue;
+    if (activity.kind === "turn.reasoning.summary") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
-    entries.push(toDerivedWorkLogEntry(activity));
+    orderedEntries.push({
+      activity,
+      entry: toDerivedWorkLogEntry(activity),
+    });
   }
+
+  const entries = orderedEntries
+    .toSorted((left, right) => compareActivitiesByOrder(left.activity, right.activity))
+    .map(({ entry }) => entry);
   return collapseDerivedWorkLogEntries(entries).map((entry) => {
     const { activityKind, collapseKey: _collapseKey, ...rest } = entry;
     return Object.assign(rest, { sourceActivityKind: activityKind });
   });
+}
+
+interface TaskLifecycleAccumulator {
+  taskId: string;
+  firstActivity: OrchestrationThreadActivity;
+  latestActivity: OrchestrationThreadActivity;
+  displayActivity: OrchestrationThreadActivity;
+  hasTranscriptActivity: boolean;
+  terminalStatus?: Extract<WorkLogToolLifecycleStatus, "completed" | "failed" | "stopped">;
+  toolUseId?: string;
+  description?: string;
+  taskType?: string;
+  subagentType?: string;
+  workflowName?: string;
+  prompt?: string;
+  usage?: TaskUsageSnapshot;
+  progressSummary?: string;
+  resultSummary?: string;
+  outputFile?: string;
+  skipTranscript?: boolean;
+  lastToolName?: string;
+}
+
+export function deriveTaskLifecycles(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): DerivedTaskLifecycle[] {
+  const byTaskId = new Map<string, TaskLifecycleAccumulator>();
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+
+  for (const activity of ordered) {
+    if (!isTaskLifecycleActivity(activity)) {
+      continue;
+    }
+    const taskId = extractTaskId(activity);
+    if (!taskId) {
+      continue;
+    }
+    const payload = asRecord(activity.payload);
+    let accumulator = byTaskId.get(taskId);
+    if (!accumulator) {
+      accumulator = {
+        taskId,
+        firstActivity: activity,
+        latestActivity: activity,
+        displayActivity: activity,
+        hasTranscriptActivity: activity.kind !== "task.started",
+      };
+      byTaskId.set(taskId, accumulator);
+    } else {
+      accumulator.latestActivity = activity;
+      if (activity.kind !== "task.started") {
+        accumulator.hasTranscriptActivity = true;
+      }
+    }
+
+    mergeTaskLifecyclePayload(accumulator, activity, payload);
+  }
+
+  return [...byTaskId.values()]
+    .map(toDerivedTaskLifecycle)
+    .toSorted((left, right) => compareActivitiesByOrder(left.firstActivity, right.firstActivity));
+}
+
+function isTaskLifecycleActivity(activity: OrchestrationThreadActivity): boolean {
+  return (
+    activity.kind === "task.started" ||
+    activity.kind === "task.progress" ||
+    activity.kind === "task.completed"
+  );
+}
+
+function extractTaskId(activity: OrchestrationThreadActivity): string | null {
+  if (!isTaskLifecycleActivity(activity)) {
+    return null;
+  }
+  return asTrimmedString(asRecord(activity.payload)?.taskId);
+}
+
+function mergeTaskLifecyclePayload(
+  accumulator: TaskLifecycleAccumulator,
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): void {
+  if (activity.kind === "task.started") {
+    assignTaskString(accumulator, "description", payload?.description ?? payload?.detail);
+    assignTaskString(accumulator, "taskType", payload?.taskType);
+    assignTaskString(accumulator, "toolUseId", payload?.toolUseId);
+    assignTaskString(accumulator, "subagentType", payload?.subagentType);
+    assignTaskString(accumulator, "workflowName", payload?.workflowName);
+    assignTaskRawString(accumulator, "prompt", payload?.prompt);
+    assignTaskBoolean(accumulator, "skipTranscript", payload?.skipTranscript);
+    return;
+  }
+
+  if (activity.kind === "task.progress") {
+    if (!accumulator.terminalStatus) {
+      accumulator.displayActivity = activity;
+    }
+    assignTaskString(accumulator, "description", payload?.description);
+    assignTaskString(accumulator, "toolUseId", payload?.toolUseId);
+    assignTaskString(accumulator, "subagentType", payload?.subagentType);
+    assignTaskString(accumulator, "progressSummary", payload?.summary ?? payload?.detail);
+    assignTaskString(accumulator, "lastToolName", payload?.lastToolName);
+    assignLatestTaskUsage(accumulator, payload?.usage);
+    return;
+  }
+
+  accumulator.displayActivity = activity;
+  const status = extractTerminalTaskStatus(payload?.status);
+  if (!accumulator.terminalStatus && status) {
+    accumulator.terminalStatus = status;
+  }
+  assignTaskString(accumulator, "toolUseId", payload?.toolUseId);
+  assignTaskRawString(accumulator, "outputFile", payload?.outputFile);
+  assignTaskBoolean(accumulator, "skipTranscript", payload?.skipTranscript);
+  assignTaskString(accumulator, "resultSummary", payload?.summary ?? payload?.detail);
+  assignLatestTaskUsage(accumulator, payload?.usage);
+}
+
+function extractTerminalTaskStatus(
+  value: unknown,
+): Extract<WorkLogToolLifecycleStatus, "completed" | "failed" | "stopped"> | undefined {
+  return value === "completed" || value === "failed" || value === "stopped" ? value : undefined;
+}
+
+function assignTaskString<Key extends keyof TaskLifecycleAccumulator>(
+  accumulator: TaskLifecycleAccumulator,
+  key: Key,
+  value: unknown,
+): void {
+  const normalized = asTrimmedString(value);
+  if (normalized !== null) {
+    Object.assign(accumulator, { [key]: normalized });
+  }
+}
+
+function assignTaskRawString<Key extends keyof TaskLifecycleAccumulator>(
+  accumulator: TaskLifecycleAccumulator,
+  key: Key,
+  value: unknown,
+): void {
+  if (typeof value === "string") {
+    Object.assign(accumulator, { [key]: value });
+  }
+}
+
+function assignTaskBoolean<Key extends keyof TaskLifecycleAccumulator>(
+  accumulator: TaskLifecycleAccumulator,
+  key: Key,
+  value: unknown,
+): void {
+  if (typeof value === "boolean") {
+    Object.assign(accumulator, { [key]: value });
+  }
+}
+
+function assignLatestTaskUsage(accumulator: TaskLifecycleAccumulator, value: unknown): void {
+  const usage = normalizeTaskUsageSnapshot(value);
+  if (usage !== null) {
+    accumulator.usage = usage;
+  }
+}
+
+export function normalizeTaskUsageSnapshot(value: unknown): TaskUsageSnapshot | null {
+  const usage = asRecord(value);
+  if (!usage) {
+    return null;
+  }
+  const totalTokens = normalizeTaskUsageMetric(usage.totalTokens ?? usage.total_tokens);
+  const toolUses = normalizeTaskUsageMetric(usage.toolUses ?? usage.tool_uses);
+  const durationMs = normalizeTaskUsageMetric(usage.durationMs ?? usage.duration_ms);
+  if (totalTokens === null && toolUses === null && durationMs === null) {
+    return null;
+  }
+  return {
+    ...(totalTokens !== null ? { totalTokens } : {}),
+    ...(toolUses !== null ? { toolUses } : {}),
+    ...(durationMs !== null ? { durationMs } : {}),
+  };
+}
+
+function normalizeTaskUsageMetric(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function toDerivedTaskLifecycle(accumulator: TaskLifecycleAccumulator): DerivedTaskLifecycle {
+  const status = accumulator.terminalStatus ?? "inProgress";
+  const label =
+    accumulator.resultSummary ??
+    accumulator.progressSummary ??
+    accumulator.description ??
+    accumulator.displayActivity.summary;
+  const detail =
+    accumulator.description && accumulator.description !== label
+      ? accumulator.description
+      : undefined;
+  const entry: WorkLogEntry = {
+    id: accumulator.firstActivity.id,
+    createdAt: accumulator.firstActivity.createdAt,
+    turnId: accumulator.firstActivity.turnId,
+    label,
+    tone:
+      status === "failed"
+        ? "error"
+        : status === "inProgress" && accumulator.hasTranscriptActivity
+          ? "thinking"
+          : "info",
+    taskId: accumulator.taskId,
+    toolLifecycleStatus: status,
+    sourceActivityKind: accumulator.displayActivity.kind,
+    ...(detail !== undefined ? { detail } : {}),
+    ...(accumulator.toolUseId !== undefined ? { toolUseId: accumulator.toolUseId } : {}),
+    ...(accumulator.description !== undefined ? { description: accumulator.description } : {}),
+    ...(accumulator.taskType !== undefined ? { taskType: accumulator.taskType } : {}),
+    ...(accumulator.subagentType !== undefined ? { subagentType: accumulator.subagentType } : {}),
+    ...(accumulator.workflowName !== undefined ? { workflowName: accumulator.workflowName } : {}),
+    ...(accumulator.prompt !== undefined ? { prompt: accumulator.prompt } : {}),
+    ...(accumulator.usage !== undefined ? { usage: accumulator.usage } : {}),
+    ...(accumulator.progressSummary !== undefined
+      ? { progressSummary: accumulator.progressSummary }
+      : {}),
+    ...(accumulator.resultSummary !== undefined
+      ? { resultSummary: accumulator.resultSummary }
+      : {}),
+    ...(accumulator.outputFile !== undefined ? { outputFile: accumulator.outputFile } : {}),
+    ...(accumulator.skipTranscript !== undefined
+      ? { skipTranscript: accumulator.skipTranscript }
+      : {}),
+    ...(accumulator.lastToolName !== undefined ? { lastToolName: accumulator.lastToolName } : {}),
+  };
+  return {
+    taskId: accumulator.taskId,
+    firstActivity: accumulator.firstActivity,
+    latestActivity: accumulator.latestActivity,
+    displayActivity: accumulator.displayActivity,
+    hasTranscriptActivity: accumulator.hasTranscriptActivity,
+    entry,
+  };
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
@@ -1296,7 +1593,7 @@ function extractChangedFiles(payload: Record<string, unknown> | null): string[] 
   return changedFiles;
 }
 
-function compareActivitiesByOrder(
+export function compareActivitiesByOrder(
   left: OrchestrationThreadActivity,
   right: OrchestrationThreadActivity,
 ): number {
