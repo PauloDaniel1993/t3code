@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
-import { getAnchoredTurnMetrics, getRowBottom } from "./timelineScrollAnchoring";
+import {
+  WORKFLOW_CARD_EXPANDED_MAX_HEIGHT_PX,
+  WORKFLOW_CARD_EXPANDED_MIN_USABLE_HEIGHT_PX,
+  WORKFLOW_CARD_EXPANDED_VIEWPORT_SHARE,
+  consumeWorkflowCardHeightDelta,
+  createWorkflowCardHeightBookkeeping,
+  getAnchoredTurnMetrics,
+  getRowBottom,
+  reconcileWorkflowCardHeightOwner,
+  recordWorkflowCardHeight,
+  resolveWorkflowCardExpandedMaxHeight,
+  resolveWorkflowCardHeightDelta,
+  resolveWorkflowCardScrollCompensation,
+  type TimelineScrollMode,
+} from "./timelineScrollAnchoring";
 
 function buildState({
   positions,
@@ -134,5 +148,243 @@ describe("timeline scroll anchoring", () => {
 
     expect(withoutComposer?.overflowsUsableViewport).toBe(false);
     expect(withComposer?.overflowsUsableViewport).toBe(true);
+  });
+});
+
+describe("workflow card expanded max height", () => {
+  it("falls back to the cap before the chat column is measured", () => {
+    expect(resolveWorkflowCardExpandedMaxHeight(0)).toBe(WORKFLOW_CARD_EXPANDED_MAX_HEIGHT_PX);
+    expect(resolveWorkflowCardExpandedMaxHeight(Number.NaN)).toBe(
+      WORKFLOW_CARD_EXPANDED_MAX_HEIGHT_PX,
+    );
+    expect(resolveWorkflowCardExpandedMaxHeight(-120)).toBe(WORKFLOW_CARD_EXPANDED_MAX_HEIGHT_PX);
+  });
+
+  it("caps the expanded region on tall columns so the timeline keeps room", () => {
+    expect(resolveWorkflowCardExpandedMaxHeight(4000)).toBe(WORKFLOW_CARD_EXPANDED_MAX_HEIGHT_PX);
+  });
+
+  it("shares the measured column height on medium columns", () => {
+    const columnHeight = 600;
+    expect(resolveWorkflowCardExpandedMaxHeight(columnHeight)).toBe(
+      Math.floor(columnHeight * WORKFLOW_CARD_EXPANDED_VIEWPORT_SHARE),
+    );
+  });
+
+  it("keeps a usable minimum on very short viewports so controls stay operable", () => {
+    const columnHeight = 200;
+    expect(Math.floor(columnHeight * WORKFLOW_CARD_EXPANDED_VIEWPORT_SHARE)).toBeLessThan(
+      WORKFLOW_CARD_EXPANDED_MIN_USABLE_HEIGHT_PX,
+    );
+    expect(resolveWorkflowCardExpandedMaxHeight(columnHeight)).toBe(
+      WORKFLOW_CARD_EXPANDED_MIN_USABLE_HEIGHT_PX,
+    );
+  });
+});
+
+describe("resolveWorkflowCardHeightDelta", () => {
+  it("returns the settled delta for growing and shrinking cards", () => {
+    expect(resolveWorkflowCardHeightDelta(100, 160)).toBe(60);
+    expect(resolveWorkflowCardHeightDelta(160, 100)).toBe(-60);
+  });
+
+  it("returns zero when the settled height is unchanged", () => {
+    expect(resolveWorkflowCardHeightDelta(100, 100)).toBe(0);
+    expect(resolveWorkflowCardHeightDelta(0, 0)).toBe(0);
+  });
+
+  it("measures mount and unmount transitions from and to zero", () => {
+    expect(resolveWorkflowCardHeightDelta(0, 120)).toBe(120);
+    expect(resolveWorkflowCardHeightDelta(120, 0)).toBe(-120);
+  });
+
+  it("treats non-finite or negative measurements as no delta", () => {
+    expect(resolveWorkflowCardHeightDelta(Number.NaN, 100)).toBe(0);
+    expect(resolveWorkflowCardHeightDelta(100, Number.NaN)).toBe(0);
+    expect(resolveWorkflowCardHeightDelta(100, Number.POSITIVE_INFINITY)).toBe(0);
+    expect(resolveWorkflowCardHeightDelta(Number.NEGATIVE_INFINITY, 100)).toBe(0);
+    expect(resolveWorkflowCardHeightDelta(-4, 100)).toBe(0);
+    expect(resolveWorkflowCardHeightDelta(100, -4)).toBe(0);
+  });
+});
+
+describe("workflow card height ownership", () => {
+  it("preserves a child measurement across the later parent reset before a small resize", () => {
+    let bookkeeping = createWorkflowCardHeightBookkeeping("thread-a");
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-a", 120);
+    bookkeeping = consumeWorkflowCardHeightDelta(bookkeeping, "thread-a").bookkeeping;
+
+    bookkeeping = reconcileWorkflowCardHeightOwner(bookkeeping, "thread-b");
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-b", 180);
+
+    const afterChildMeasurement = bookkeeping;
+    bookkeeping = reconcileWorkflowCardHeightOwner(bookkeeping, "thread-b");
+    expect(bookkeeping).toBe(afterChildMeasurement);
+
+    const mounted = consumeWorkflowCardHeightDelta(bookkeeping, "thread-b");
+    expect(mounted.heightDelta).toBe(180);
+    bookkeeping = recordWorkflowCardHeight(mounted.bookkeeping, "thread-b", 184);
+
+    const resized = consumeWorkflowCardHeightDelta(bookkeeping, "thread-b");
+    expect(resized.heightDelta).toBe(4);
+    const state = buildState({
+      positions: [0, 300, 460],
+      sizes: [240, 80, 140],
+      scroll: 320,
+    });
+    expect(
+      resolveWorkflowCardScrollCompensation({
+        mode: "following-end",
+        heightDelta: resized.heightDelta,
+        state,
+      }),
+    ).toEqual({ kind: "restore-end" });
+    expect(
+      resolveWorkflowCardScrollCompensation({
+        mode: "anchoring-new-turn",
+        heightDelta: resized.heightDelta,
+        state,
+      }),
+    ).toEqual({ kind: "revalidate-anchor" });
+    expect(
+      resolveWorkflowCardScrollCompensation({
+        mode: "free-scrolling",
+        heightDelta: resized.heightDelta,
+        state,
+      }),
+    ).toEqual({ kind: "preserve-offset", offsetDelta: 4, targetOffset: 324 });
+  });
+
+  it("ignores stale measurements and pending-delta consumption from the previous thread", () => {
+    let bookkeeping = createWorkflowCardHeightBookkeeping("thread-a");
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-a", 120);
+    bookkeeping = reconcileWorkflowCardHeightOwner(bookkeeping, "thread-b");
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-b", 180);
+
+    const beforeStaleCallbacks = bookkeeping;
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-a", 124);
+    expect(bookkeeping).toBe(beforeStaleCallbacks);
+
+    const staleFrame = consumeWorkflowCardHeightDelta(bookkeeping, "thread-a");
+    expect(staleFrame.heightDelta).toBe(0);
+    expect(staleFrame.bookkeeping).toBe(bookkeeping);
+    expect(consumeWorkflowCardHeightDelta(bookkeeping, "thread-b").heightDelta).toBe(180);
+  });
+
+  it("uses real same-thread replacement and removal deltas", () => {
+    let bookkeeping = createWorkflowCardHeightBookkeeping("thread-a");
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-a", 120);
+    bookkeeping = consumeWorkflowCardHeightDelta(bookkeeping, "thread-a").bookkeeping;
+
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-a", 156);
+    const replacement = consumeWorkflowCardHeightDelta(bookkeeping, "thread-a");
+    expect(replacement.heightDelta).toBe(36);
+
+    bookkeeping = recordWorkflowCardHeight(replacement.bookkeeping, "thread-a", 0);
+    expect(consumeWorkflowCardHeightDelta(bookkeeping, "thread-a").heightDelta).toBe(-156);
+  });
+
+  it("does not enqueue compensation for a repeated settled height", () => {
+    let bookkeeping = createWorkflowCardHeightBookkeeping("thread-a");
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-a", 120);
+    bookkeeping = consumeWorkflowCardHeightDelta(bookkeeping, "thread-a").bookkeeping;
+
+    const repeated = recordWorkflowCardHeight(bookkeeping, "thread-a", 120);
+    expect(repeated).toBe(bookkeeping);
+    expect(consumeWorkflowCardHeightDelta(repeated, "thread-a").heightDelta).toBe(0);
+  });
+});
+
+describe("resolveWorkflowCardScrollCompensation", () => {
+  const ALL_MODES: readonly TimelineScrollMode[] = [
+    "following-end",
+    "anchoring-new-turn",
+    "free-scrolling",
+  ];
+  const state = buildState({
+    positions: [0, 300, 460],
+    sizes: [240, 80, 140],
+    scroll: 320,
+  });
+
+  it("ignores zero and non-finite deltas in every mode", () => {
+    for (const mode of ALL_MODES) {
+      expect(resolveWorkflowCardScrollCompensation({ mode, heightDelta: 0, state })).toEqual({
+        kind: "none",
+      });
+      expect(
+        resolveWorkflowCardScrollCompensation({ mode, heightDelta: Number.NaN, state }),
+      ).toEqual({ kind: "none" });
+    }
+  });
+
+  it("does nothing when the list state is missing or has no rows", () => {
+    for (const mode of ALL_MODES) {
+      expect(resolveWorkflowCardScrollCompensation({ mode, heightDelta: 48, state: null })).toEqual(
+        { kind: "none" },
+      );
+      expect(
+        resolveWorkflowCardScrollCompensation({ mode, heightDelta: 48, state: undefined }),
+      ).toEqual({ kind: "none" });
+      expect(
+        resolveWorkflowCardScrollCompensation({
+          mode,
+          heightDelta: 48,
+          state: buildState({ positions: [], sizes: [] }),
+        }),
+      ).toEqual({ kind: "none" });
+    }
+  });
+
+  it("restores the latest row in following-end mode for positive and negative deltas", () => {
+    expect(
+      resolveWorkflowCardScrollCompensation({ mode: "following-end", heightDelta: 48, state }),
+    ).toEqual({ kind: "restore-end" });
+    expect(
+      resolveWorkflowCardScrollCompensation({ mode: "following-end", heightDelta: -48, state }),
+    ).toEqual({ kind: "restore-end" });
+  });
+
+  it("revalidates the anchor in anchoring-new-turn mode without clearing it", () => {
+    expect(
+      resolveWorkflowCardScrollCompensation({
+        mode: "anchoring-new-turn",
+        heightDelta: 48,
+        state,
+      }),
+    ).toEqual({ kind: "revalidate-anchor" });
+    expect(
+      resolveWorkflowCardScrollCompensation({
+        mode: "anchoring-new-turn",
+        heightDelta: -48,
+        state,
+      }),
+    ).toEqual({ kind: "revalidate-anchor" });
+  });
+
+  it("shifts the offset by the measured delta in free-scrolling mode", () => {
+    expect(
+      resolveWorkflowCardScrollCompensation({ mode: "free-scrolling", heightDelta: 48, state }),
+    ).toEqual({ kind: "preserve-offset", offsetDelta: 48, targetOffset: 368 });
+    expect(
+      resolveWorkflowCardScrollCompensation({ mode: "free-scrolling", heightDelta: -48, state }),
+    ).toEqual({ kind: "preserve-offset", offsetDelta: -48, targetOffset: 272 });
+  });
+
+  it("clamps the preserved offset at zero for large negative deltas", () => {
+    expect(
+      resolveWorkflowCardScrollCompensation({ mode: "free-scrolling", heightDelta: -9999, state }),
+    ).toEqual({ kind: "preserve-offset", offsetDelta: -9999, targetOffset: 0 });
+  });
+
+  it("treats a non-finite current scroll as zero when preserving offset", () => {
+    const weirdState = { ...state, scroll: Number.NaN };
+    expect(
+      resolveWorkflowCardScrollCompensation({
+        mode: "free-scrolling",
+        heightDelta: 48,
+        state: weirdState,
+      }),
+    ).toEqual({ kind: "preserve-offset", offsetDelta: 48, targetOffset: 48 });
   });
 });
