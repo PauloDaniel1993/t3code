@@ -37,6 +37,7 @@ import {
   type ProviderRuntimeTurnStatus,
   type ProviderSendTurnInput,
   type ProviderSession,
+  type TaskUsageSnapshot,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeContentStreamKind,
@@ -383,6 +384,36 @@ function finitePositiveInteger(value: unknown): number | undefined {
     : undefined;
 }
 
+function finiteNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeClaudeTaskUsage(value: unknown): TaskUsageSnapshot | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const readCounter = (key: string): number | undefined => {
+    const counter = Reflect.get(value, key);
+    return typeof counter === "number" && Number.isInteger(counter) && counter >= 0
+      ? counter
+      : undefined;
+  };
+
+  const totalTokens = readCounter("total_tokens");
+  const toolUses = readCounter("tool_uses");
+  const durationMs = readCounter("duration_ms");
+  if (totalTokens === undefined && toolUses === undefined && durationMs === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(toolUses !== undefined ? { toolUses } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  };
+}
+
 function claudeUsageInputTokens(usage: Record<string, unknown>): number {
   return (
     (finiteNonNegativeInteger(usage.input_tokens) ?? 0) +
@@ -526,10 +557,11 @@ function normalizeClaudeTaskProgressTokenUsage(
   value: unknown,
   context: ClaudeSessionContext,
 ): ThreadTokenUsageSnapshot | undefined {
-  const totalTokens = claudeTotalProcessedTokens(value);
-  if (totalTokens === undefined || totalTokens <= 0) {
+  const taskUsage = normalizeClaudeTaskUsage(value);
+  if (!taskUsage || taskUsage.totalTokens === undefined || taskUsage.totalTokens <= 0) {
     return undefined;
   }
+  const totalTokens = taskUsage.totalTokens;
 
   const lastUsedTokens = context.lastKnownTokenUsage?.usedTokens;
   const activeTokens =
@@ -538,7 +570,6 @@ function normalizeClaudeTaskProgressTokenUsage(
     return undefined;
   }
 
-  const usage = value as Record<string, unknown>;
   const snapshot = makeClaudeTokenUsageSnapshot({
     activeTokens,
     ...(context.lastKnownContextWindow !== undefined
@@ -553,12 +584,10 @@ function normalizeClaudeTaskProgressTokenUsage(
     return undefined;
   }
 
-  const toolUses = finiteNonNegativeInteger(usage.tool_uses);
-  const durationMs = finiteNonNegativeInteger(usage.duration_ms);
   return {
     ...snapshot,
-    ...(toolUses !== undefined ? { toolUses } : {}),
-    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(taskUsage.toolUses !== undefined ? { toolUses: taskUsage.toolUses } : {}),
+    ...(taskUsage.durationMs !== undefined ? { durationMs: taskUsage.durationMs } : {}),
   };
 }
 
@@ -1098,7 +1127,7 @@ function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStat
 }
 
 function streamKindFromDeltaType(deltaType: string): ClaudeTextStreamKind {
-  return deltaType.includes("thinking") ? "reasoning_text" : "assistant_text";
+  return deltaType === "thinking_delta" ? "reasoning_text" : "assistant_text";
 }
 
 function nativeProviderRefs(
@@ -2764,18 +2793,36 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      case "task_started":
+      case "task_started": {
+        const toolUseId = readString(message.tool_use_id);
+        const description = readString(message.description);
+        const subagentType = readString(message.subagent_type);
+        const taskType = readString(message.task_type);
+        const workflowName = readString(message.workflow_name);
         yield* offerRuntimeEvent({
           ...base,
           type: "task.started",
           payload: {
             taskId: RuntimeTaskId.make(message.task_id),
-            description: message.description,
-            ...(message.task_type ? { taskType: message.task_type } : {}),
+            ...(description !== undefined ? { description } : {}),
+            ...(taskType !== undefined ? { taskType } : {}),
+            ...(toolUseId !== undefined ? { toolUseId } : {}),
+            ...(subagentType !== undefined ? { subagentType } : {}),
+            ...(workflowName !== undefined ? { workflowName } : {}),
+            ...(typeof message.prompt === "string" ? { prompt: message.prompt } : {}),
+            ...(typeof message.skip_transcript === "boolean"
+              ? { skipTranscript: message.skip_transcript }
+              : {}),
           },
         });
         return;
-      case "task_progress":
+      }
+      case "task_progress": {
+        const toolUseId = readString(message.tool_use_id);
+        const subagentType = readString(message.subagent_type);
+        const summary = readString(message.summary);
+        const lastToolName = readString(message.last_tool_name);
+        const taskUsage = normalizeClaudeTaskUsage(message.usage);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -2790,18 +2837,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: {
             taskId: RuntimeTaskId.make(message.task_id),
             description: message.description,
-            ...(message.summary ? { summary: message.summary } : {}),
-            ...(message.usage ? { usage: message.usage } : {}),
-            ...(message.last_tool_name ? { lastToolName: message.last_tool_name } : {}),
+            ...(toolUseId !== undefined ? { toolUseId } : {}),
+            ...(subagentType !== undefined ? { subagentType } : {}),
+            ...(summary !== undefined ? { summary } : {}),
+            ...(taskUsage !== undefined ? { usage: taskUsage } : {}),
+            ...(lastToolName !== undefined ? { lastToolName } : {}),
           },
         });
         return;
+      }
       // Task state patch (status/backgrounded/end_time). No runtime mapping
       // yet — the terminal task_notification reports the outcome — but it
       // must not surface as an unknown-subtype warning row.
       case "task_updated":
         return;
-      case "task_notification":
+      case "task_notification": {
+        const toolUseId = readString(message.tool_use_id);
+        const summary = readString(message.summary);
+        const taskUsage = normalizeClaudeTaskUsage(message.usage);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -2816,11 +2869,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: {
             taskId: RuntimeTaskId.make(message.task_id),
             status: message.status,
-            ...(message.summary ? { summary: message.summary } : {}),
-            ...(message.usage ? { usage: message.usage } : {}),
+            ...(toolUseId !== undefined ? { toolUseId } : {}),
+            ...(typeof message.output_file === "string" ? { outputFile: message.output_file } : {}),
+            ...(typeof message.skip_transcript === "boolean"
+              ? { skipTranscript: message.skip_transcript }
+              : {}),
+            ...(summary !== undefined ? { summary } : {}),
+            ...(taskUsage !== undefined ? { usage: taskUsage } : {}),
           },
         });
         return;
+      }
       case "files_persisted":
         yield* offerRuntimeEvent({
           ...base,
@@ -2949,14 +3008,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
 
     if (message.type === "tool_progress") {
+      const toolUseId = readString(message.tool_use_id);
+      const taskId = readString(message.task_id);
+      const toolName = readString(message.tool_name);
+      const parentToolUseId =
+        message.parent_tool_use_id === null ? null : readString(message.parent_tool_use_id);
+      const elapsedSeconds = finiteNonNegativeNumber(message.elapsed_time_seconds);
       yield* offerRuntimeEvent({
         ...base,
         type: "tool.progress",
         payload: {
-          toolUseId: message.tool_use_id,
-          toolName: message.tool_name,
-          elapsedSeconds: message.elapsed_time_seconds,
-          ...(message.task_id ? { summary: `task:${message.task_id}` } : {}),
+          ...(toolUseId !== undefined ? { toolUseId } : {}),
+          ...(taskId !== undefined ? { taskId: RuntimeTaskId.make(taskId) } : {}),
+          ...(parentToolUseId !== undefined ? { parentToolUseId } : {}),
+          ...(toolName !== undefined ? { toolName } : {}),
+          ...(elapsedSeconds !== undefined ? { elapsedSeconds } : {}),
         },
       });
       return;
