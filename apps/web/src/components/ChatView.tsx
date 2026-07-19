@@ -86,8 +86,17 @@ import {
   hasActionableProposedPlan,
   isLatestTurnSettled,
 } from "../session-logic";
+import { deriveWorkflowActivityModel } from "../workflow-activity";
 import { type LegendListRef } from "@legendapp/list/react";
-import { getAnchoredTurnMetrics, type TimelineScrollMode } from "./chat/timelineScrollAnchoring";
+import {
+  consumeWorkflowCardHeightDelta,
+  createWorkflowCardHeightBookkeeping,
+  getAnchoredTurnMetrics,
+  reconcileWorkflowCardHeightOwner,
+  recordWorkflowCardHeight,
+  resolveWorkflowCardScrollCompensation,
+  type TimelineScrollMode,
+} from "./chat/timelineScrollAnchoring";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -209,6 +218,7 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { WorkflowActivityCard } from "./WorkflowActivityCard";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -1932,6 +1942,13 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
+  // Latest-turn-only workflow model for the pinned Option F card. Recomputed
+  // when the thread's activities or latest turn identity change; never reads
+  // older turns.
+  const workflowActivityModel = useMemo(
+    () => deriveWorkflowActivityModel(threadActivities, activeLatestTurn?.turnId ?? null),
+    [activeLatestTurn?.turnId, threadActivities],
+  );
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
@@ -3363,6 +3380,39 @@ function ChatViewContent(props: ChatViewProps) {
     readonly userScrollGeneration: number;
   } | null>(null);
   const anchorScrollRestoreFrameRef = useRef<number | null>(null);
+  const workflowCardHeightBookkeepingRef = useRef(
+    createWorkflowCardHeightBookkeeping(activeThreadKey),
+  );
+  const workflowCardCompensationFrameRef = useRef<{
+    readonly ownerKey: string | null;
+    readonly requestId: number;
+  } | null>(null);
+  const cancelWorkflowCardCompensationFrame = useCallback(() => {
+    const frame = workflowCardCompensationFrameRef.current;
+    if (frame === null) {
+      return;
+    }
+    cancelAnimationFrame(frame.requestId);
+    workflowCardCompensationFrameRef.current = null;
+  }, []);
+  const resetWorkflowCardHeightOwner = useCallback(
+    (ownerKey: string | null) => {
+      const current = workflowCardHeightBookkeepingRef.current;
+      const next = reconcileWorkflowCardHeightOwner(current, ownerKey);
+      if (next === current) {
+        return;
+      }
+      workflowCardHeightBookkeepingRef.current = next;
+      cancelWorkflowCardCompensationFrame();
+    },
+    [cancelWorkflowCardCompensationFrame],
+  );
+  // Parent layout effects run before the card's passive measurement. This
+  // invalidates the old thread without erasing a baseline in the later parent
+  // passive reset, which reconciles the same owner as a no-op.
+  useLayoutEffect(() => {
+    resetWorkflowCardHeightOwner(activeThreadKey);
+  }, [activeThreadKey, resetWorkflowCardHeightOwner]);
   const cancelTimelineLiveFollowForUserNavigation = useCallback(() => {
     anchorUserScrollGenerationRef.current += 1;
     timelineScrollModeRef.current = "free-scrolling";
@@ -3431,6 +3481,107 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerOverlayHeight],
   );
+
+  // Explicit per-mode reaction to a settled workflow-card height delta. The
+  // pure decision lives in timelineScrollAnchoring; this applies it against
+  // the live list without disturbing any user-scroll bookkeeping.
+  const applyWorkflowCardScrollCompensation = useCallback(
+    (heightDelta: number) => {
+      const list = legendListRef.current;
+      const compensation = resolveWorkflowCardScrollCompensation({
+        mode: timelineScrollModeRef.current,
+        heightDelta,
+        state: list?.getState() ?? null,
+      });
+      if (compensation.kind === "none" || !list) {
+        return;
+      }
+      if (compensation.kind === "restore-end") {
+        // Following-end: the card pushed the live edge out of view. Restore the
+        // latest real row directly — user-scroll generations stay untouched so
+        // a pending manual navigation keeps its opt-out.
+        void list.scrollToEnd?.({ animated: false });
+        return;
+      }
+      if (compensation.kind === "preserve-offset") {
+        // Free-scrolling: shift the offset by the measured delta so the row
+        // under the reader's eye keeps its document position. Live-follow is
+        // never enabled here.
+        void list.scrollToOffset({ offset: compensation.targetOffset, animated: false });
+        return;
+      }
+      // Anchoring-new-turn: revalidate the anchor's reveal metrics against the
+      // resized viewport without clearing the anchor or changing modes. Skip
+      // while the anchor is still being positioned, mirroring the live-follow
+      // effect's guards.
+      if (liveFollowUserScrollGenerationRef.current !== anchorUserScrollGenerationRef.current) {
+        return;
+      }
+      if (pendingTimelineAnchorRef.current !== null) {
+        return;
+      }
+      if (
+        positionedTimelineAnchorRef.current !== null &&
+        settledTimelineAnchorRef.current !== positionedTimelineAnchorRef.current
+      ) {
+        return;
+      }
+      const metrics = getActiveTimelineTurnMetrics(list);
+      if (!metrics || metrics.scrollDeltaToRevealEnd <= 1) {
+        return;
+      }
+      const currentScroll = list.getState().scroll;
+      if (!Number.isFinite(currentScroll)) {
+        return;
+      }
+      void list.scrollToOffset({
+        offset: currentScroll + metrics.scrollDeltaToRevealEnd,
+        animated: false,
+      });
+    },
+    [getActiveTimelineTurnMetrics],
+  );
+  const handleWorkflowCardHeightChange = useCallback(
+    (nextHeight: number) => {
+      const ownerKey = activeThreadKey;
+      const current = workflowCardHeightBookkeepingRef.current;
+      const next = recordWorkflowCardHeight(current, ownerKey, nextHeight);
+      if (next === current) {
+        return;
+      }
+      workflowCardHeightBookkeepingRef.current = next;
+      if (workflowCardCompensationFrameRef.current !== null) {
+        return;
+      }
+
+      const requestId = requestAnimationFrame(() => {
+        const frame = workflowCardCompensationFrameRef.current;
+        if (frame?.requestId !== requestId || frame.ownerKey !== ownerKey) {
+          return;
+        }
+        workflowCardCompensationFrameRef.current = null;
+        const consumed = consumeWorkflowCardHeightDelta(
+          workflowCardHeightBookkeepingRef.current,
+          ownerKey,
+        );
+        workflowCardHeightBookkeepingRef.current = consumed.bookkeeping;
+        applyWorkflowCardScrollCompensation(consumed.heightDelta);
+      });
+      workflowCardCompensationFrameRef.current = { ownerKey, requestId };
+    },
+    [activeThreadKey, applyWorkflowCardScrollCompensation],
+  );
+  // When the pinned card unmounts entirely (no workflow activity for the
+  // current turn), its measured height collapses to zero — compensate for the
+  // shrink like any other height delta.
+  useEffect(() => {
+    if (workflowActivityModel === null) {
+      handleWorkflowCardHeightChange(0);
+    }
+  }, [handleWorkflowCardHeightChange, workflowActivityModel]);
+  useEffect(() => {
+    return cancelWorkflowCardCompensationFrame;
+  }, [cancelWorkflowCardCompensationFrame]);
 
   // Live-follow stays active after send/thread-open until an actual list scroll
   // gesture opts out.
@@ -3666,6 +3817,7 @@ function ChatViewContent(props: ChatViewProps) {
     positionedTimelineAnchorRef.current = null;
     settledTimelineAnchorRef.current = null;
     activeTimelineAnchorIndexRef.current = null;
+    resetWorkflowCardHeightOwner(activeThreadKey);
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
     if (planSidebarOpenOnNextThreadRef.current) {
@@ -3676,7 +3828,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
     planSidebarDismissedForTurnRef.current = null;
     // activeThreadRef resets transitively with the active thread.
-  }, [activeThread?.id]);
+  }, [activeThread?.id, activeThreadKey, resetWorkflowCardHeightOwner]);
 
   // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
   // Don't auto-open for plans carried over from a previous turn (the user can open manually).
@@ -5384,6 +5536,17 @@ function ChatViewContent(props: ChatViewProps) {
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            {/* Pinned workflow activity for the latest turn — a layout sibling above the
+                virtualized timeline, outside LegendList's scroll flow. Keyed by thread +
+                turn so local step selection resets on thread/turn replacement. Height
+                reports drive the explicit per-mode scroll compensation above. */}
+            {workflowActivityModel !== null ? (
+              <WorkflowActivityCard
+                key={`${activeThread.id}:${workflowActivityModel.turnId}`}
+                model={workflowActivityModel}
+                onHeightChange={handleWorkflowCardHeightChange}
+              />
+            ) : null}
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
