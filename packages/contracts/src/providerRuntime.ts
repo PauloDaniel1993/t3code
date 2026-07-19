@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   EventId,
   IsoDateTime,
@@ -459,18 +460,80 @@ const UserInputResolvedPayload = Schema.Struct({
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
+const TaskUsageSnapshotWire = Schema.Struct({
+  totalTokens: Schema.optional(NonNegativeInt),
+  toolUses: Schema.optional(NonNegativeInt),
+  durationMs: Schema.optional(NonNegativeInt),
+});
+
+// Claude SDK task events historically use snake_case usage counters. Decode
+// both wire shapes at this persisted-event boundary, retaining only counters
+// the provider actually supplied and exposing the canonical camelCase shape.
+const TaskUsageSnapshotSource = Schema.Struct({
+  totalTokens: Schema.optional(NonNegativeInt),
+  toolUses: Schema.optional(NonNegativeInt),
+  durationMs: Schema.optional(NonNegativeInt),
+  total_tokens: Schema.optional(NonNegativeInt),
+  tool_uses: Schema.optional(NonNegativeInt),
+  duration_ms: Schema.optional(NonNegativeInt),
+});
+type TaskUsageSnapshotWireEncoded = typeof TaskUsageSnapshotWire.Encoded;
+type TaskUsageSnapshotSourceType = typeof TaskUsageSnapshotSource.Type;
+
+export const TaskUsageSnapshot = TaskUsageSnapshotSource.pipe(
+  Schema.decodeTo(
+    TaskUsageSnapshotWire,
+    SchemaTransformation.transformOrFail<TaskUsageSnapshotWireEncoded, TaskUsageSnapshotSourceType>(
+      {
+        decode: (usage) =>
+          Effect.succeed({
+            ...(usage.totalTokens !== undefined
+              ? { totalTokens: usage.totalTokens }
+              : usage.total_tokens !== undefined
+                ? { totalTokens: usage.total_tokens }
+                : {}),
+            ...(usage.toolUses !== undefined
+              ? { toolUses: usage.toolUses }
+              : usage.tool_uses !== undefined
+                ? { toolUses: usage.tool_uses }
+                : {}),
+            ...(usage.durationMs !== undefined
+              ? { durationMs: usage.durationMs }
+              : usage.duration_ms !== undefined
+                ? { durationMs: usage.duration_ms }
+                : {}),
+          }),
+        encode: (usage) =>
+          Effect.succeed({
+            ...(usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
+            ...(usage.toolUses !== undefined ? { toolUses: usage.toolUses } : {}),
+            ...(usage.durationMs !== undefined ? { durationMs: usage.durationMs } : {}),
+          }),
+      },
+    ),
+  ),
+);
+export type TaskUsageSnapshot = typeof TaskUsageSnapshot.Type;
+
 const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
+  toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
+  workflowName: Schema.optional(TrimmedNonEmptyStringSchema),
+  prompt: Schema.optional(Schema.String),
+  skipTranscript: Schema.optional(Schema.Boolean),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
 const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
+  toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
-  usage: Schema.optional(Schema.Unknown),
+  usage: Schema.optional(TaskUsageSnapshot),
   lastToolName: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
@@ -478,8 +541,11 @@ export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 const TaskCompletedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   status: Schema.Literals(["completed", "failed", "stopped"]),
+  toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  outputFile: Schema.optional(Schema.String),
+  skipTranscript: Schema.optional(Schema.Boolean),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
-  usage: Schema.optional(Schema.Unknown),
+  usage: Schema.optional(TaskUsageSnapshot),
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
 
@@ -510,6 +576,8 @@ export type HookCompletedPayload = typeof HookCompletedPayload.Type;
 
 const ToolProgressPayload = Schema.Struct({
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  taskId: Schema.optional(RuntimeTaskId),
+  parentToolUseId: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   toolName: Schema.optional(TrimmedNonEmptyStringSchema),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
   elapsedSeconds: Schema.optional(Schema.Number),
