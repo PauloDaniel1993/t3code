@@ -29,11 +29,24 @@ const checkpointOrder = O.mapInput(
     cp.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER,
 );
 
-const activityOrder = O.combineAll<OrchestrationThreadActivity>([
-  O.mapInput(O.Number, (a) => a.sequence ?? Number.MAX_SAFE_INTEGER),
-  O.mapInput(O.String, (a) => a.createdAt),
-  O.mapInput(O.String, (a) => a.id),
-]);
+const activityOrder = O.make<OrchestrationThreadActivity>((left, right) => {
+  if (left.sequence !== undefined && right.sequence !== undefined) {
+    if (left.sequence !== right.sequence) {
+      return left.sequence < right.sequence ? -1 : 1;
+    }
+  } else if (left.sequence !== undefined) {
+    return 1;
+  } else if (right.sequence !== undefined) {
+    return -1;
+  }
+
+  const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
+  if (createdAtOrder !== 0) {
+    return createdAtOrder < 0 ? -1 : 1;
+  }
+  const idOrder = left.id.localeCompare(right.id);
+  return idOrder === 0 ? 0 : idOrder < 0 ? -1 : 1;
+});
 
 /**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
@@ -509,10 +522,11 @@ export function applyThreadDetailEvent(
 
     // ── Activities ──────────────────────────────────────────────────
     case "thread.activity-appended": {
+      const activity = { ...event.payload.activity, sequence: event.sequence };
       const activities = pipe(
         thread.activities,
-        Arr.filter((activity) => activity.id !== event.payload.activity.id),
-        Arr.append(event.payload.activity),
+        Arr.filter((entry) => entry.id !== activity.id),
+        Arr.append(activity),
         Arr.sort(activityOrder),
       );
 
