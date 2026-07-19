@@ -6,8 +6,8 @@ import {
   ThreadId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vite-plus/test";
 
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
@@ -856,12 +856,187 @@ describe("orchestration projector", () => {
     ).toEqual([{ id: "assistant-keep", role: "assistant", turnId: "turn-1" }]);
   });
 
-  it("caps message and checkpoint retention for long-lived threads", async () => {
-    const createdAt = "2026-03-01T10:00:00.000Z";
-    const model = createEmptyReadModel(createdAt);
-
+  it("normalizes rich activities to committed sequence with deterministic replay ordering", async () => {
+    const createdAt = "2026-03-01T09:00:00.000Z";
+    const activityAt = "2026-03-01T09:00:01.000Z";
     const afterCreate = await Effect.runPromise(
       projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-activities",
+          occurredAt: createdAt,
+          commandId: "cmd-create-activities",
+          payload: {
+            threadId: "thread-activities",
+            projectId: "project-1",
+            title: "activities",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const withLegacyActivities = {
+      ...afterCreate,
+      threads: afterCreate.threads.map((thread) => ({
+        ...thread,
+        activities: [
+          {
+            id: EventId.make("legacy-b"),
+            tone: "info" as const,
+            kind: "legacy.progress",
+            summary: "legacy b",
+            payload: { legacy: true },
+            turnId: null,
+            createdAt: activityAt,
+          },
+          {
+            id: EventId.make("legacy-a"),
+            tone: "info" as const,
+            kind: "legacy.started",
+            summary: "legacy a",
+            payload: { legacy: true },
+            turnId: null,
+            createdAt: activityAt,
+          },
+        ],
+      })),
+    };
+    const richActivities = [
+      {
+        sequence: 7,
+        id: "reasoning-summary",
+        kind: "turn.reasoning.summary",
+        payload: { reasoningSummary: "Compared the replay paths." },
+      },
+      {
+        sequence: 3,
+        id: "task-started",
+        kind: "task.started",
+        payload: {
+          taskId: "task-1",
+          toolUseId: "tool-use-1",
+          skipTranscript: false,
+        },
+      },
+      {
+        sequence: 5,
+        id: "task-completed",
+        kind: "task.completed",
+        payload: {
+          taskId: "task-1",
+          toolUseId: "tool-use-1",
+          skipTranscript: true,
+          outputFile: "/tmp/task-1.txt",
+          usage: { durationMs: 0 },
+        },
+      },
+      {
+        sequence: 4,
+        id: "task-progress",
+        kind: "task.progress",
+        payload: {
+          taskId: "task-1",
+          toolUseId: "tool-use-1",
+          usage: { totalTokens: 0, toolUses: 2 },
+        },
+      },
+      {
+        sequence: 6,
+        id: "tool-progress",
+        kind: "tool.progress",
+        payload: {
+          taskId: "task-1",
+          toolUseId: "tool-use-2",
+          parentToolUseId: null,
+        },
+      },
+    ].map(({ sequence, id, kind, payload }) =>
+      makeEvent({
+        sequence,
+        type: "thread.activity-appended",
+        aggregateKind: "thread",
+        aggregateId: "thread-activities",
+        occurredAt: activityAt,
+        commandId: `cmd-${id}`,
+        payload: {
+          threadId: "thread-activities",
+          activity: {
+            id,
+            tone: kind === "tool.progress" ? "tool" : "info",
+            kind,
+            summary: kind,
+            payload,
+            turnId: "turn-1",
+            sequence: 999,
+            createdAt: activityAt,
+          },
+        },
+      }),
+    );
+
+    const replay = async () =>
+      richActivities.reduce<Promise<ReturnType<typeof createEmptyReadModel>>>(
+        (statePromise, event) =>
+          statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+        Promise.resolve(withLegacyActivities),
+      );
+    const firstReplay = await replay();
+    const secondReplay = await replay();
+    const activities = firstReplay.threads[0]?.activities ?? [];
+
+    expect(secondReplay.threads[0]?.activities).toEqual(activities);
+    expect(activities.map(({ id, sequence }) => ({ id, sequence }))).toEqual([
+      { id: "legacy-a", sequence: undefined },
+      { id: "legacy-b", sequence: undefined },
+      { id: "task-started", sequence: 3 },
+      { id: "task-progress", sequence: 4 },
+      { id: "task-completed", sequence: 5 },
+      { id: "tool-progress", sequence: 6 },
+      { id: "reasoning-summary", sequence: 7 },
+    ]);
+    expect(activities.slice(2).map((activity) => activity.payload)).toEqual([
+      {
+        taskId: "task-1",
+        toolUseId: "tool-use-1",
+        skipTranscript: false,
+      },
+      {
+        taskId: "task-1",
+        toolUseId: "tool-use-1",
+        usage: { totalTokens: 0, toolUses: 2 },
+      },
+      {
+        taskId: "task-1",
+        toolUseId: "tool-use-1",
+        skipTranscript: true,
+        outputFile: "/tmp/task-1.txt",
+        usage: { durationMs: 0 },
+      },
+      {
+        taskId: "task-1",
+        toolUseId: "tool-use-2",
+        parentToolUseId: null,
+      },
+      { reasoningSummary: "Compared the replay paths." },
+    ]);
+  });
+
+  it.effect("caps message and checkpoint retention for long-lived threads", () =>
+    Effect.gen(function* () {
+      const createdAt = "2026-03-01T10:00:00.000Z";
+      const model = createEmptyReadModel(createdAt);
+      let state = yield* projectEvent(
         model,
         makeEvent({
           sequence: 1,
@@ -885,75 +1060,67 @@ describe("orchestration projector", () => {
             updatedAt: createdAt,
           },
         }),
-      ),
-    );
+      );
 
-    const messageEvents: ReadonlyArray<OrchestrationEvent> = Array.from(
-      { length: 2_100 },
-      (_, index) =>
-        makeEvent({
-          sequence: index + 2,
-          type: "thread.message-sent",
-          aggregateKind: "thread",
-          aggregateId: "thread-capped",
-          occurredAt: `2026-03-01T10:00:${String(index % 60).padStart(2, "0")}.000Z`,
-          commandId: `cmd-message-${index}`,
-          payload: {
-            threadId: "thread-capped",
-            messageId: `msg-${index}`,
-            role: "assistant",
-            text: `message-${index}`,
-            turnId: `turn-${index}`,
-            streaming: false,
-            createdAt: `2026-03-01T10:00:${String(index % 60).padStart(2, "0")}.000Z`,
-            updatedAt: `2026-03-01T10:00:${String(index % 60).padStart(2, "0")}.000Z`,
-          },
-        }),
-    );
-    const afterMessages = await messageEvents.reduce<
-      Promise<ReturnType<typeof createEmptyReadModel>>
-    >(
-      (statePromise, event) =>
-        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
-      Promise.resolve(afterCreate),
-    );
+      const messageEvents: ReadonlyArray<OrchestrationEvent> = Array.from(
+        { length: 2_100 },
+        (_, index) =>
+          makeEvent({
+            sequence: index + 2,
+            type: "thread.message-sent",
+            aggregateKind: "thread",
+            aggregateId: "thread-capped",
+            occurredAt: `2026-03-01T10:00:${String(index % 60).padStart(2, "0")}.000Z`,
+            commandId: `cmd-message-${index}`,
+            payload: {
+              threadId: "thread-capped",
+              messageId: `msg-${index}`,
+              role: "assistant",
+              text: `message-${index}`,
+              turnId: `turn-${index}`,
+              streaming: false,
+              createdAt: `2026-03-01T10:00:${String(index % 60).padStart(2, "0")}.000Z`,
+              updatedAt: `2026-03-01T10:00:${String(index % 60).padStart(2, "0")}.000Z`,
+            },
+          }),
+      );
+      for (const event of messageEvents) {
+        state = yield* projectEvent(state, event);
+      }
 
-    const checkpointEvents: ReadonlyArray<OrchestrationEvent> = Array.from(
-      { length: 600 },
-      (_, index) =>
-        makeEvent({
-          sequence: index + 2_102,
-          type: "thread.turn-diff-completed",
-          aggregateKind: "thread",
-          aggregateId: "thread-capped",
-          occurredAt: `2026-03-01T10:30:${String(index % 60).padStart(2, "0")}.000Z`,
-          commandId: `cmd-checkpoint-${index}`,
-          payload: {
-            threadId: "thread-capped",
-            turnId: `turn-${index}`,
-            checkpointTurnCount: index + 1,
-            checkpointRef: `refs/t3/checkpoints/thread-capped/turn/${index + 1}`,
-            status: "ready",
-            files: [],
-            assistantMessageId: `msg-${index}`,
-            completedAt: `2026-03-01T10:30:${String(index % 60).padStart(2, "0")}.000Z`,
-          },
-        }),
-    );
-    const finalState = await checkpointEvents.reduce<
-      Promise<ReturnType<typeof createEmptyReadModel>>
-    >(
-      (statePromise, event) =>
-        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
-      Promise.resolve(afterMessages),
-    );
+      const checkpointEvents: ReadonlyArray<OrchestrationEvent> = Array.from(
+        { length: 600 },
+        (_, index) =>
+          makeEvent({
+            sequence: index + 2_102,
+            type: "thread.turn-diff-completed",
+            aggregateKind: "thread",
+            aggregateId: "thread-capped",
+            occurredAt: `2026-03-01T10:30:${String(index % 60).padStart(2, "0")}.000Z`,
+            commandId: `cmd-checkpoint-${index}`,
+            payload: {
+              threadId: "thread-capped",
+              turnId: `turn-${index}`,
+              checkpointTurnCount: index + 1,
+              checkpointRef: `refs/t3/checkpoints/thread-capped/turn/${index + 1}`,
+              status: "ready",
+              files: [],
+              assistantMessageId: `msg-${index}`,
+              completedAt: `2026-03-01T10:30:${String(index % 60).padStart(2, "0")}.000Z`,
+            },
+          }),
+      );
+      for (const event of checkpointEvents) {
+        state = yield* projectEvent(state, event);
+      }
 
-    const thread = finalState.threads[0];
-    expect(thread?.messages).toHaveLength(2_000);
-    expect(thread?.messages[0]?.id).toBe("msg-100");
-    expect(thread?.messages.at(-1)?.id).toBe("msg-2099");
-    expect(thread?.checkpoints).toHaveLength(500);
-    expect(thread?.checkpoints[0]?.turnId).toBe("turn-100");
-    expect(thread?.checkpoints.at(-1)?.turnId).toBe("turn-599");
-  });
+      const thread = state.threads[0];
+      expect(thread?.messages).toHaveLength(2_000);
+      expect(thread?.messages[0]?.id).toBe("msg-100");
+      expect(thread?.messages.at(-1)?.id).toBe("msg-2099");
+      expect(thread?.checkpoints).toHaveLength(500);
+      expect(thread?.checkpoints[0]?.turnId).toBe("turn-100");
+      expect(thread?.checkpoints.at(-1)?.turnId).toBe("turn-599");
+    }),
+  );
 });
