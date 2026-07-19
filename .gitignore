@@ -30,6 +30,7 @@ dist-electron/
 .electron-runtime/
 .showcase/
 apps/mobile/.showcase/
+apps/server/.claude-work-test/
 artifacts/app-store/screenshots/
 native/**/target/
 node_modules/
