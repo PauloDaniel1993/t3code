@@ -4218,6 +4218,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("routes websocket rpc subscribeServerConfig streams snapshot then update", () =>
     Effect.gen(function* () {
+      const path = yield* Path.Path;
       const providers = [
         {
           instanceId: ProviderInstanceId.make("codex"),
@@ -4271,7 +4272,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.deepEqual(first.config.keybindings, []);
         assert.deepEqual(first.config.issues, []);
         assert.deepEqual(first.config.providers, providers);
-        assert.equal(first.config.observability.logsDirectoryPath.endsWith("/logs"), true);
+        assert.equal(path.basename(first.config.observability.logsDirectoryPath), "logs");
         assert.equal(first.config.observability.localTracingEnabled, true);
         assert.equal(first.config.observability.otlpTracesUrl, "http://localhost:4318/v1/traces");
         assert.equal(first.config.observability.otlpTracesEnabled, true);
@@ -6253,6 +6254,104 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(first?.kind, "project-removed");
       assert.equal(first?.kind === "project-removed" ? first.projectId : null, projectId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "preserves rich activity payloads and committed order through catch-up and live delivery",
+    () =>
+      Effect.gen(function* () {
+        const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+        const makeActivityEvent = (
+          sequence: number,
+          id: string,
+          kind: string,
+          payload: unknown,
+        ): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> => ({
+          sequence,
+          eventId: EventId.make(`event-${id}`),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt: "2026-01-01T00:00:01.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.activity-appended",
+          payload: {
+            threadId: defaultThreadId,
+            activity: {
+              id: EventId.make(id),
+              tone: kind === "tool.progress" ? "tool" : "info",
+              kind,
+              summary: kind,
+              payload,
+              turnId: null,
+              sequence: 999,
+              createdAt: "2026-01-01T00:00:01.000Z",
+            },
+          },
+        });
+        const catchUpEvents = [
+          makeActivityEvent(11, "task-started", "task.started", {
+            taskId: "task-1",
+            toolUseId: "tool-use-1",
+            skipTranscript: false,
+          }),
+          makeActivityEvent(12, "task-progress", "task.progress", {
+            taskId: "task-1",
+            toolUseId: "tool-use-1",
+            usage: { totalTokens: 0, toolUses: 2 },
+          }),
+          makeActivityEvent(13, "tool-progress", "tool.progress", {
+            taskId: "task-1",
+            toolUseId: "tool-use-2",
+            parentToolUseId: null,
+          }),
+          makeActivityEvent(14, "reasoning-summary", "turn.reasoning.summary", {
+            reasoningSummary: "Compared the replay paths.",
+          }),
+        ];
+        const liveEvent = makeActivityEvent(15, "task-completed", "task.completed", {
+          taskId: "task-1",
+          toolUseId: "tool-use-1",
+          skipTranscript: true,
+          outputFile: "/tmp/task-1.txt",
+          usage: { durationMs: 0 },
+        });
+        const readFromSequences: number[] = [];
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              streamDomainEvents: Stream.fromPubSub(liveEvents),
+              readEvents: (fromSequenceExclusive) => {
+                readFromSequences.push(fromSequenceExclusive);
+                return Stream.fromIterable(catchUpEvents).pipe(
+                  Stream.tap((event) =>
+                    event.sequence === 14 ? PubSub.publish(liveEvents, liveEvent) : Effect.void,
+                  ),
+                );
+              },
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              afterSequence: 10,
+            }).pipe(Stream.take(5), Stream.runCollect),
+          ),
+        ).pipe(Effect.timeout("2 seconds"));
+
+        assert.deepEqual(readFromSequences, [10]);
+        assert.deepEqual(
+          items.map((item) => (item.kind === "event" ? item.event : null)),
+          [...catchUpEvents, liveEvent],
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("enriches replayed project events with repository identity metadata", () =>
