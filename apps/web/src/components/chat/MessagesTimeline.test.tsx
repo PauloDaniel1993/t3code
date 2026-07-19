@@ -715,4 +715,482 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("lucide-x");
     expect(markup).toContain('aria-label="Tool call failed"');
   });
+
+  it("renders in-progress task entries as task cards with status and available metrics", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-task-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-task-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Explore the codebase",
+              tone: "info",
+              taskId: "task-1",
+              description: "Explore the codebase",
+              toolLifecycleStatus: "inProgress",
+              progressSummary: "Scanning packages",
+              usage: { totalTokens: 1234, toolUses: 3, durationMs: 45_000 },
+              lastToolName: "Read",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-task-card="true"');
+    expect(markup).toContain('data-task-id="task-1"');
+    expect(markup).toContain('data-task-status="inProgress"');
+    expect(markup).toContain("Running");
+    expect(markup).toContain("Explore the codebase");
+    expect(markup).toContain("Scanning packages");
+    expect(markup).toContain("1,234 tokens");
+    expect(markup).toContain("3 tools");
+    expect(markup).toContain("45s");
+    expect(markup).toContain("last: Read");
+    expect(markup).toContain('aria-label="1 subagent task"');
+  });
+
+  it("renders completed task cards with result and output information only", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        workspaceRoot="C:/dev/t3code"
+        timelineEntries={[
+          {
+            id: "entry-task-2",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-task-2",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Found three files",
+              tone: "info",
+              taskId: "task-2",
+              description: "Search the repo",
+              toolLifecycleStatus: "completed",
+              resultSummary: "Found three files",
+              outputFile: "C:/dev/t3code/reports/out.md",
+              usage: { toolUses: 1 },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-task-status="completed"');
+    expect(markup).toContain("Done");
+    expect(markup).toContain("Search the repo");
+    expect(markup).toContain("Found three files");
+    expect(markup).toContain("1 tool");
+    expect(markup).toContain("Output: t3code/reports/out.md");
+    // Absent provider metrics render no placeholder text.
+    expect(markup).not.toContain("tokens");
+  });
+
+  it("renders terminal lifecycle badges for failed, declined, and stopped tasks", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    for (const [status, label] of [
+      ["failed", "Failed"],
+      ["declined", "Declined"],
+      ["stopped", "Stopped"],
+    ] as const) {
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              id: "entry-task-terminal",
+              kind: "work",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              entry: {
+                id: "work-task-terminal",
+                createdAt: "2026-03-17T19:12:28.000Z",
+                label: "Explore the codebase",
+                tone: status === "failed" ? "error" : "info",
+                taskId: "task-terminal",
+                description: "Explore the codebase",
+                toolLifecycleStatus: status,
+              },
+            },
+          ]}
+        />,
+      );
+
+      expect(markup).toContain(`data-task-status="${status}"`);
+      expect(markup).toContain(label);
+    }
+  });
+
+  it("keeps ordinary tool entries on the compact row path", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-tool-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-tool-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              command: "pnpm test",
+              toolLifecycleStatus: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).not.toContain("data-task-card");
+    expect(markup).toContain("Ran command");
+    expect(markup).toContain("pnpm test");
+    expect(markup).toContain('aria-label="1 tool call"');
+  });
+
+  it("omits skipTranscript task entries from the transcript", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-tool-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-tool-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+            },
+          },
+          {
+            id: "entry-task-hidden",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-task-hidden",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Housekeeping sweep",
+              tone: "info",
+              taskId: "task-hidden",
+              description: "Housekeeping sweep",
+              skipTranscript: true,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).not.toContain("Housekeeping sweep");
+    expect(markup).not.toContain('data-task-id="task-hidden"');
+    expect(markup).toContain("Ran command");
+    expect(markup).not.toContain("previous log entry");
+    expect(markup).not.toContain("Show fewer");
+  });
+
+  it("omits panel-only activity projections from the timeline", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-panel-progress",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-panel-progress",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Read tool running",
+              tone: "info",
+              sourceActivityKind: "tool.progress",
+            },
+          },
+          {
+            id: "entry-panel-reasoning",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-panel-reasoning",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Turn reasoning details",
+              tone: "thinking",
+              sourceActivityKind: "turn.reasoning.summary",
+            },
+          },
+          {
+            id: "entry-tool-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "work-tool-1",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              label: "Ran command",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).not.toContain("Read tool running");
+    expect(markup).not.toContain("Turn reasoning details");
+    expect(markup).toContain("Ran command");
+  });
+
+  it("labels collapsed task-only groups as subagent tasks", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const taskEntry = (suffix: string, createdAt: string) => ({
+      id: `entry-task-${suffix}`,
+      kind: "work" as const,
+      createdAt,
+      entry: {
+        id: `work-task-${suffix}`,
+        createdAt,
+        label: `Explore area ${suffix}`,
+        tone: "info" as const,
+        taskId: `task-${suffix}`,
+        description: `Explore area ${suffix}`,
+        toolLifecycleStatus: "completed" as const,
+      },
+    });
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          taskEntry("1", "2026-03-17T19:12:28.000Z"),
+          taskEntry("2", "2026-03-17T19:12:29.000Z"),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="1 subagent task"');
+    expect(markup).toContain("+1 previous subagent task");
+    expect(markup).toContain('data-task-id="task-2"');
+    expect(markup).not.toContain('data-task-id="task-1"');
+  });
+
+  it("labels collapsed mixed task/tool groups as generic log entries", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-tool-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-tool-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+            },
+          },
+          {
+            id: "entry-task-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-task-1",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Explore the codebase",
+              tone: "info",
+              taskId: "task-1",
+              description: "Explore the codebase",
+              toolLifecycleStatus: "inProgress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("+1 previous log entry");
+    expect(markup).toContain('data-task-id="task-1"');
+    expect(markup).not.toContain("Ran command");
+    expect(markup).not.toContain("previous subagent task");
+    expect(markup).not.toContain("previous tool call");
+  });
+
+  it("renders compact tool rows and task cards side by side in one timeline", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-tool-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-tool-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+            },
+          },
+          {
+            id: "entry-commentary",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            message: {
+              id: MessageId.make("message-commentary"),
+              role: "assistant",
+              text: "Kicked off a subagent.",
+              turnId: null,
+              createdAt: "2026-03-17T19:12:29.000Z",
+              updatedAt: "2026-03-17T19:12:29.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "entry-task-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "work-task-1",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              label: "Explore the codebase",
+              tone: "thinking",
+              taskId: "task-1",
+              description: "Explore the codebase",
+              toolLifecycleStatus: "inProgress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Ran command");
+    expect(markup).toContain('aria-label="1 tool call"');
+    expect(markup).toContain('data-task-id="task-1"');
+    expect(markup).toContain('aria-label="1 subagent task"');
+    expect(markup).toContain("Running");
+    expect(markup).not.toContain("Work Log");
+  });
+
+  it("renders a start-only in-progress task card immediately with status and available metadata", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-task-start-only",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-task-start-only",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Explore the codebase",
+              tone: "info",
+              taskId: "task-start-only",
+              description: "Explore the codebase",
+              taskType: "local_agent",
+              subagentType: "Explore",
+              prompt: "Map the repository structure",
+              toolLifecycleStatus: "inProgress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-task-card="true"');
+    expect(markup).toContain('data-task-id="task-start-only"');
+    expect(markup).toContain('data-task-status="inProgress"');
+    expect(markup).toContain("Running");
+    expect(markup).toContain("Explore the codebase");
+    // No provider metrics yet — nothing is fabricated.
+    expect(markup).not.toContain("token");
+    expect(markup).not.toContain("last:");
+    // A native disclosure button supplies click and Enter/Space behavior. Its
+    // state always references the mounted (but initially hidden) detail region.
+    expect(markup).toContain('<button id="task-card-');
+    expect(markup).toContain('type="button"');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('aria-controls="task-card-');
+    expect(markup).toContain('aria-label="Explore the codebase, Running"');
+    expect(markup).toContain('role="region"');
+    expect(markup).toContain('aria-labelledby="task-card-');
+    expect(markup).toContain("hidden");
+    expect(markup).toContain("Prompt\nMap the repository structure");
+  });
+
+  it("uses start-only task type metadata when no description is available", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-task-start-metadata",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-task-start-metadata",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Task started",
+              tone: "info",
+              taskId: "task-start-metadata",
+              taskType: "local_agent",
+              subagentType: "Explore",
+              toolLifecycleStatus: "inProgress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain(">Explore<");
+    expect(markup).toContain("Task started");
+    expect(markup).toContain("Running");
+  });
+
+  it("exposes no expansion semantics when a task card has no detail content", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-task-plain",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-task-plain",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Explore the codebase",
+              tone: "info",
+              taskId: "task-plain",
+              description: "Explore the codebase",
+              toolLifecycleStatus: "inProgress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-task-card="true"');
+    expect(markup).toContain('data-task-id="task-plain"');
+    expect(markup).not.toContain('role="button"');
+    expect(markup).not.toContain("aria-expanded");
+    expect(markup).not.toContain("aria-controls");
+    expect(markup).not.toContain('tabindex="0"');
+  });
 });
