@@ -83,6 +83,11 @@ interface AssistantSegmentState {
   activeMessageId: MessageId | null;
 }
 
+interface ReasoningSummaryBuffer {
+  readonly textByStreamKey: ReadonlyMap<string, string>;
+  readonly totalChars: number;
+}
+
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
@@ -91,7 +96,9 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
+const BUFFERED_REASONING_SUMMARY_BY_TURN_CACHE_CAPACITY = 10_000;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const MAX_BUFFERED_REASONING_SUMMARY_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -233,6 +240,40 @@ function proposedPlanIdFromEvent(event: ProviderRuntimeEvent, threadId: ThreadId
 
 function assistantSegmentBaseKeyFromEvent(event: ProviderRuntimeEvent): string {
   return String(event.itemId ?? event.turnId ?? event.eventId);
+}
+
+function reasoningSummaryStreamKey(
+  event: Extract<ProviderRuntimeEvent, { type: "content.delta" }>,
+): string {
+  return JSON.stringify([
+    event.itemId ?? null,
+    event.payload.summaryIndex ?? null,
+    event.payload.contentIndex ?? null,
+  ]);
+}
+
+function reasoningSummaryAppendCommandId(threadId: ThreadId, turnId: TurnId): CommandId {
+  return CommandId.make(`provider:turn-reasoning-summary:${threadId}:${turnId}`);
+}
+
+function hasPersistedReasoningSummaryForTurn(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  turnId: TurnId,
+): boolean {
+  return activities.some((activity) => {
+    if (
+      activity.kind !== "turn.reasoning.summary" ||
+      activity.turnId !== turnId ||
+      typeof activity.payload !== "object" ||
+      activity.payload === null ||
+      !("reasoningSummary" in activity.payload)
+    ) {
+      return false;
+    }
+
+    const reasoningSummary = (activity.payload as { reasoningSummary?: unknown }).reasoningSummary;
+    return typeof reasoningSummary === "string" && hasRenderableAssistantText(reasoningSummary);
+  });
 }
 
 function assistantSegmentMessageId(baseKey: string, segmentIndex: number): MessageId {
@@ -500,9 +541,25 @@ export function runtimeEventToActivities(
                 : "Task started",
           payload: {
             taskId: event.payload.taskId,
-            ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
-            ...(event.payload.description
-              ? { detail: truncateDetail(event.payload.description) }
+            ...(event.payload.description !== undefined
+              ? {
+                  description: event.payload.description,
+                  detail: truncateDetail(event.payload.description),
+                }
+              : {}),
+            ...(event.payload.taskType !== undefined ? { taskType: event.payload.taskType } : {}),
+            ...(event.payload.toolUseId !== undefined
+              ? { toolUseId: event.payload.toolUseId }
+              : {}),
+            ...(event.payload.subagentType !== undefined
+              ? { subagentType: event.payload.subagentType }
+              : {}),
+            ...(event.payload.workflowName !== undefined
+              ? { workflowName: event.payload.workflowName }
+              : {}),
+            ...(event.payload.prompt !== undefined ? { prompt: event.payload.prompt } : {}),
+            ...(event.payload.skipTranscript !== undefined
+              ? { skipTranscript: event.payload.skipTranscript }
               : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -527,9 +584,18 @@ export function runtimeEventToActivities(
             ...(event.payload.description.trim().length > 0
               ? { title: truncateDetail(event.payload.description, 120) }
               : {}),
+            description: event.payload.description,
             detail: truncateDetail(event.payload.summary ?? event.payload.description),
-            ...(event.payload.summary ? { summary: truncateDetail(event.payload.summary) } : {}),
-            ...(event.payload.lastToolName ? { lastToolName: event.payload.lastToolName } : {}),
+            ...(event.payload.toolUseId !== undefined
+              ? { toolUseId: event.payload.toolUseId }
+              : {}),
+            ...(event.payload.subagentType !== undefined
+              ? { subagentType: event.payload.subagentType }
+              : {}),
+            ...(event.payload.summary !== undefined ? { summary: event.payload.summary } : {}),
+            ...(event.payload.lastToolName !== undefined
+              ? { lastToolName: event.payload.lastToolName }
+              : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -555,15 +621,50 @@ export function runtimeEventToActivities(
             taskId: event.payload.taskId,
             status: event.payload.status,
             ...(taskTitle ? { title: truncateDetail(taskTitle, 120) } : {}),
-            // summary + detail mirror task.progress: clients label the row from
-            // summary and keep detail for the preview/expanded body.
-            ...(event.payload.summary
+            ...(event.payload.toolUseId !== undefined
+              ? { toolUseId: event.payload.toolUseId }
+              : {}),
+            ...(event.payload.outputFile !== undefined
+              ? { outputFile: event.payload.outputFile }
+              : {}),
+            ...(event.payload.skipTranscript !== undefined
+              ? { skipTranscript: event.payload.skipTranscript }
+              : {}),
+            ...(event.payload.summary !== undefined
               ? {
-                  summary: truncateDetail(event.payload.summary),
+                  summary: event.payload.summary,
                   detail: truncateDetail(event.payload.summary),
                 }
               : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "tool.progress": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "tool",
+          kind: "tool.progress",
+          summary: event.payload.summary ?? event.payload.toolName ?? "Tool in progress",
+          payload: {
+            ...(event.payload.toolUseId !== undefined
+              ? { toolUseId: event.payload.toolUseId }
+              : {}),
+            ...(event.payload.parentToolUseId !== undefined
+              ? { parentToolUseId: event.payload.parentToolUseId }
+              : {}),
+            ...(event.payload.toolName !== undefined ? { toolName: event.payload.toolName } : {}),
+            ...(event.payload.elapsedSeconds !== undefined
+              ? { elapsedSeconds: event.payload.elapsedSeconds }
+              : {}),
+            ...(event.payload.taskId !== undefined ? { taskId: event.payload.taskId } : {}),
+            ...(event.payload.summary !== undefined ? { summary: event.payload.summary } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -745,6 +846,14 @@ const make = Effect.gen(function* () {
         Option.filter(description, (value) => value.length > 0).pipe(Option.getOrUndefined),
       ),
     );
+
+  const bufferedReasoningSummaryByTurnKey = yield* Cache.make<string, ReasoningSummaryBuffer>({
+    capacity: BUFFERED_REASONING_SUMMARY_BY_TURN_CACHE_CAPACITY,
+    // Reasoning summaries are turn-lifecycle state. Capacity and the per-turn
+    // character cap bound memory; elapsed wall time must not discard an open turn.
+    timeToLive: Duration.infinity,
+    lookup: () => Effect.succeed({ textByStreamKey: new Map(), totalChars: 0 }),
+  });
 
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
@@ -934,6 +1043,111 @@ const make = Effect.gen(function* () {
 
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
+
+  const appendBufferedReasoningSummary = (input: {
+    threadId: ThreadId;
+    turnId: TurnId;
+    streamKey: string;
+    delta: string;
+  }) =>
+    Cache.getOption(
+      bufferedReasoningSummaryByTurnKey,
+      providerTurnKey(input.threadId, input.turnId),
+    ).pipe(
+      Effect.flatMap((existingBuffer) => {
+        const existing = Option.getOrElse(
+          existingBuffer,
+          (): ReasoningSummaryBuffer => ({
+            textByStreamKey: new Map(),
+            totalChars: 0,
+          }),
+        );
+        const remainingChars = MAX_BUFFERED_REASONING_SUMMARY_CHARS - existing.totalChars;
+        if (remainingChars <= 0) {
+          return Effect.void;
+        }
+
+        const boundedDelta = input.delta.slice(0, remainingChars);
+        if (boundedDelta.length === 0) {
+          return Effect.void;
+        }
+
+        const textByStreamKey = new Map(existing.textByStreamKey);
+        textByStreamKey.set(
+          input.streamKey,
+          `${textByStreamKey.get(input.streamKey) ?? ""}${boundedDelta}`,
+        );
+        return Cache.set(
+          bufferedReasoningSummaryByTurnKey,
+          providerTurnKey(input.threadId, input.turnId),
+          {
+            textByStreamKey,
+            totalChars: existing.totalChars + boundedDelta.length,
+          },
+        );
+      }),
+    );
+
+  const getBufferedReasoningSummary = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.getOption(bufferedReasoningSummaryByTurnKey, providerTurnKey(threadId, turnId)).pipe(
+      Effect.map((existingBuffer) =>
+        Option.match(existingBuffer, {
+          onNone: () => "",
+          onSome: (buffer) => Array.from(buffer.textByStreamKey.values()).join(""),
+        }),
+      ),
+    );
+
+  const clearBufferedReasoningSummary = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.invalidate(bufferedReasoningSummaryByTurnKey, providerTurnKey(threadId, turnId));
+
+  const finalizeBufferedReasoningSummary = Effect.fn("finalizeBufferedReasoningSummary")(
+    function* (input: {
+      event: Extract<ProviderRuntimeEvent, { type: "turn.completed" | "turn.aborted" }>;
+      threadId: ThreadId;
+      turnId: TurnId;
+      createdAt: string;
+    }) {
+      const detailedThread = yield* resolveThreadDetail(input.threadId);
+      if (
+        detailedThread &&
+        hasPersistedReasoningSummaryForTurn(detailedThread.activities, input.turnId)
+      ) {
+        yield* clearBufferedReasoningSummary(input.threadId, input.turnId);
+        return;
+      }
+
+      const reasoningSummary = yield* getBufferedReasoningSummary(input.threadId, input.turnId);
+      if (!hasRenderableAssistantText(reasoningSummary)) {
+        yield* clearBufferedReasoningSummary(input.threadId, input.turnId);
+        return;
+      }
+
+      const eventWithSequence = input.event as ProviderRuntimeEvent & {
+        sessionSequence?: number;
+      };
+      const activity: OrchestrationThreadActivity = {
+        id: input.event.eventId,
+        createdAt: input.createdAt,
+        tone: "info",
+        kind: "turn.reasoning.summary",
+        summary: "Reasoning summary",
+        payload: { reasoningSummary },
+        turnId: input.turnId,
+        ...(eventWithSequence.sessionSequence !== undefined
+          ? { sequence: eventWithSequence.sessionSequence }
+          : {}),
+      };
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: reasoningSummaryAppendCommandId(input.threadId, input.turnId),
+        threadId: input.threadId,
+        activity,
+        createdAt: activity.createdAt,
+      });
+      yield* clearBufferedReasoningSummary(input.threadId, input.turnId);
+    },
+  );
 
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
@@ -1171,6 +1385,7 @@ const make = Effect.gen(function* () {
       const assistantSegmentKeys = Array.from(yield* Cache.keys(assistantSegmentStateByTurnKey));
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
       const taskDescriptionKeys = Array.from(yield* Cache.keys(taskDescriptionByTaskKey));
+      const reasoningSummaryKeys = Array.from(yield* Cache.keys(bufferedReasoningSummaryByTurnKey));
       yield* Effect.forEach(
         turnKeys,
         (key) =>
@@ -1210,6 +1425,14 @@ const make = Effect.gen(function* () {
         taskDescriptionKeys,
         (key) =>
           key.startsWith(prefix) ? Cache.invalidate(taskDescriptionByTaskKey, key) : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
+        reasoningSummaryKeys,
+        (key) =>
+          key.startsWith(prefix)
+            ? Cache.invalidate(bufferedReasoningSummaryByTurnKey, key)
+            : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
     });
@@ -1453,6 +1676,19 @@ const make = Effect.gen(function* () {
           : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
+      if (
+        event.type === "content.delta" &&
+        event.payload.streamKind === "reasoning_summary_text" &&
+        event.payload.delta.length > 0 &&
+        eventTurnId
+      ) {
+        yield* appendBufferedReasoningSummary({
+          threadId: thread.id,
+          turnId: eventTurnId,
+          streamKey: reasoningSummaryStreamKey(event),
+          delta: event.payload.delta,
+        });
+      }
 
       if (assistantDelta && assistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
@@ -1660,6 +1896,18 @@ const make = Effect.gen(function* () {
             planId: proposedPlanIdForTurn(thread.id, turnId),
             turnId,
             updatedAt: now,
+          });
+        }
+      }
+
+      if (event.type === "turn.completed" || event.type === "turn.aborted") {
+        const turnId = toTurnId(event.turnId);
+        if (turnId) {
+          yield* finalizeBufferedReasoningSummary({
+            event,
+            threadId: thread.id,
+            turnId,
+            createdAt: now,
           });
         }
       }
