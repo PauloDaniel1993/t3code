@@ -14,6 +14,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -30,6 +31,7 @@ import {
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
   workLogEntryIsToolLike,
+  type WorkLogToolLifecycleStatus,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
@@ -51,6 +53,7 @@ import {
   EyeIcon,
   GlobeIcon,
   HammerIcon,
+  LoaderIcon,
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
@@ -72,13 +75,17 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  deriveTaskCardMetricParts,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveTaskCardExpansionA11y,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapHeightStyle,
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapTopPercent,
+  workEntryIsTranscriptVisible,
+  workLogEntryIsTaskLike,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
   TIMELINE_MINIMAP_MIN_ITEMS,
@@ -1146,34 +1153,54 @@ const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
+  // Row construction already gates transcript visibility; repeat it here so
+  // this secondary filter path can never reintroduce hidden entries.
   const nonEmptyEntries = useMemo(
-    () => groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry)),
+    () =>
+      groupedEntries.filter(
+        (entry) =>
+          workEntryIsTranscriptVisible(entry) && !workEntryIndicatesToolNeutralStatus(entry),
+      ),
     [groupedEntries],
   );
-  const onlyToolEntries = nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
-  const groupLabel = onlyToolEntries
+  const onlyTaskEntries = nonEmptyEntries.every((entry) => workLogEntryIsTaskLike(entry));
+  const onlyToolEntries =
+    !onlyTaskEntries && nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
+  const groupLabel = onlyTaskEntries
     ? nonEmptyEntries.length === 1
-      ? "1 tool call"
-      : `${nonEmptyEntries.length} tool calls`
-    : "Work Log";
+      ? "1 subagent task"
+      : `${nonEmptyEntries.length} subagent tasks`
+    : onlyToolEntries
+      ? nonEmptyEntries.length === 1
+        ? "1 tool call"
+        : `${nonEmptyEntries.length} tool calls`
+      : "Work Log";
 
   if (nonEmptyEntries.length === 0) return null;
 
   return (
     <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label={groupLabel}>
-      {!onlyToolEntries && (
+      {!onlyToolEntries && !onlyTaskEntries && (
         <p className="px-0.5 pb-0.5 font-medium text-[11px] text-muted-foreground/65">
           {groupLabel}
         </p>
       )}
       <div className="space-y-px">
-        {nonEmptyEntries.map((workEntry) => (
-          <SimpleWorkEntryRow
-            key={workEntry.id}
-            workEntry={workEntry}
-            workspaceRoot={workspaceRoot}
-          />
-        ))}
+        {nonEmptyEntries.map((workEntry) =>
+          workLogEntryIsTaskLike(workEntry) ? (
+            <TaskWorkEntryRow
+              key={workEntry.id}
+              workEntry={workEntry}
+              workspaceRoot={workspaceRoot}
+            />
+          ) : (
+            <SimpleWorkEntryRow
+              key={workEntry.id}
+              workEntry={workEntry}
+              workspaceRoot={workspaceRoot}
+            />
+          ),
+        )}
       </div>
     </section>
   );
@@ -1185,7 +1212,11 @@ function WorkGroupToggleTimelineRow({
   row: Extract<TimelineRow, { kind: "work-toggle" }>;
 }) {
   const ctx = use(TimelineRowCtx);
-  const labelNoun = row.onlyToolEntries ? "tool call" : "log entry";
+  const labelNoun = row.onlyTaskEntries
+    ? "subagent task"
+    : row.onlyToolEntries
+      ? "tool call"
+      : "log entry";
 
   return (
     <button
@@ -1208,7 +1239,12 @@ function WorkGroupToggleTimelineRow({
       </span>
       {row.expanded ? (
         <span className="font-medium text-foreground/82">
-          Show fewer {row.onlyToolEntries ? "tool calls" : "log entries"}
+          Show fewer{" "}
+          {row.onlyTaskEntries
+            ? "subagent tasks"
+            : row.onlyToolEntries
+              ? "tool calls"
+              : "log entries"}
         </span>
       ) : (
         <span className="font-medium text-foreground/82">
@@ -2083,6 +2119,227 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           className="mt-1 ms-7 cursor-default border-s border-border/45 ps-3 pt-0.5"
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
+        >
+          <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground select-text">
+            {expandedBody}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Task cards — subagent/workflow lifecycle entries render as distinct cards
+// (status badge + available usage metrics) instead of compact tool rows.
+// ---------------------------------------------------------------------------
+
+function taskWorkEntryHeading(workEntry: TimelineWorkEntry): string {
+  for (const candidate of [
+    workEntry.description,
+    workEntry.subagentType,
+    workEntry.taskType,
+    workEntry.workflowName,
+  ]) {
+    const trimmed = candidate?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return toolWorkEntryHeading(workEntry);
+}
+
+/** Latest human-readable progress/result line, skipping whatever the heading already shows. */
+function taskWorkEntrySummary(workEntry: TimelineWorkEntry, heading: string): string | null {
+  const headingKey = heading.trim().toLowerCase();
+  const candidates = [
+    workEntry.resultSummary,
+    workEntry.progressSummary,
+    workEntry.detail,
+    workEntry.label,
+  ];
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (trimmed && trimmed.toLowerCase() !== headingKey) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function buildTaskExpandedBody(
+  workEntry: TimelineWorkEntry,
+  workspaceRoot: string | undefined,
+): string | null {
+  const blocks: string[] = [];
+  const prompt = workEntry.prompt?.trim();
+  if (prompt) {
+    blocks.push(`Prompt\n${prompt}`);
+  }
+  const progressSummary = workEntry.progressSummary?.trim();
+  if (progressSummary) {
+    blocks.push(`Progress\n${progressSummary}`);
+  }
+  const resultSummary = workEntry.resultSummary?.trim();
+  if (resultSummary) {
+    blocks.push(`Result\n${resultSummary}`);
+  }
+  const outputFile = workEntry.outputFile?.trim();
+  if (outputFile) {
+    blocks.push(`Output file\n${formatWorkspaceRelativePath(outputFile, workspaceRoot)}`);
+  }
+  const command = workEntryRawCommand(workEntry) ?? workEntry.command?.trim();
+  if (command) {
+    blocks.push(command);
+  }
+  const changedFiles = workEntry.changedFiles ?? [];
+  if (changedFiles.length > 0) {
+    blocks.push(
+      changedFiles
+        .map((filePath) => formatWorkspaceRelativePath(filePath, workspaceRoot))
+        .join("\n"),
+    );
+  }
+  return blocks.length > 0 ? blocks.join("\n\n") : null;
+}
+
+function taskStatusLabel(status: WorkLogToolLifecycleStatus): string {
+  return status === "inProgress"
+    ? "Running"
+    : status === "completed"
+      ? "Done"
+      : status === "failed"
+        ? "Failed"
+        : status === "declined"
+          ? "Declined"
+          : "Stopped";
+}
+
+function TaskStatusBadge({ status }: { status: WorkLogToolLifecycleStatus }) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide",
+        status === "inProgress" && "bg-primary/10 text-primary",
+        status === "completed" && "bg-emerald-500/10 text-emerald-600",
+        (status === "failed" || status === "declined") && "bg-destructive/10 text-destructive",
+        status === "stopped" && "bg-muted text-muted-foreground",
+      )}
+    >
+      {taskStatusLabel(status)}
+    </span>
+  );
+}
+
+/** Renders a subagent/workflow task lifecycle entry as a distinct card. */
+const TaskWorkEntryRow = memo(function TaskWorkEntryRow(props: {
+  workEntry: TimelineWorkEntry;
+  workspaceRoot: string | undefined;
+}) {
+  const { workEntry, workspaceRoot } = props;
+  const heading = taskWorkEntryHeading(workEntry);
+  const status = workEntry.toolLifecycleStatus ?? "inProgress";
+  const isInProgress = status === "inProgress";
+  const isFailed = status === "failed" || status === "declined";
+  const isCompleted = status === "completed";
+  const summary = taskWorkEntrySummary(workEntry, heading);
+  const metricParts = deriveTaskCardMetricParts(workEntry);
+  const outputFile = workEntry.outputFile?.trim();
+  const expandedBody = buildTaskExpandedBody(workEntry, workspaceRoot);
+  const canExpand = expandedBody !== null;
+  const [expanded, setExpanded] = useState(false);
+  const taskCardId = `task-card-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const triggerId = `${taskCardId}-trigger`;
+  const detailRegionId = `${taskCardId}-detail`;
+  const headerContent = (
+    <>
+      <span
+        className={cn(
+          "flex size-6 shrink-0 items-center justify-center rounded-md",
+          isInProgress
+            ? "bg-primary/8 text-primary"
+            : isFailed
+              ? "bg-destructive/10 text-destructive"
+              : isCompleted
+                ? "bg-emerald-500/10 text-emerald-600"
+                : "bg-muted text-muted-foreground",
+        )}
+      >
+        {isInProgress ? (
+          <LoaderIcon className="block size-3.5 animate-spin" aria-hidden />
+        ) : isFailed ? (
+          <XIcon className="block size-3.5" aria-hidden />
+        ) : isCompleted ? (
+          <CheckIcon className="block size-3.5" aria-hidden />
+        ) : (
+          <BotIcon className="block size-3.5" aria-hidden />
+        )}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-5">
+          <span className="min-w-0 shrink truncate font-medium text-foreground/85">{heading}</span>
+          <TaskStatusBadge status={status} />
+        </span>
+        {summary ? (
+          <span className="min-w-0 truncate text-[11px] leading-4 text-muted-foreground/60">
+            {summary}
+          </span>
+        ) : null}
+        {metricParts.length > 0 ? (
+          <span className="min-w-0 truncate text-[10px] tabular-nums leading-4 text-muted-foreground/50">
+            {metricParts.join(" · ")}
+          </span>
+        ) : null}
+        {outputFile ? (
+          <span className="min-w-0 truncate text-[10px] leading-4 text-muted-foreground/50">
+            Output: {formatWorkspaceRelativePath(outputFile, workspaceRoot)}
+          </span>
+        ) : null}
+      </span>
+      {canExpand ? (
+        <ChevronDownIcon
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground/50 transition-transform duration-200",
+            expanded && "rotate-180",
+          )}
+          aria-hidden
+        />
+      ) : null}
+    </>
+  );
+
+  return (
+    <div
+      className="flex flex-col rounded-md border border-border/40 bg-card/40 px-2 py-1.5 transition-colors"
+      data-task-card="true"
+      data-task-id={workEntry.taskId}
+      data-task-status={status}
+    >
+      {canExpand ? (
+        <button
+          id={triggerId}
+          type="button"
+          className="flex w-full cursor-pointer select-none items-center gap-2 rounded-sm text-left hover:bg-card/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+          aria-label={`${heading}, ${taskStatusLabel(status)}`}
+          onClick={() => setExpanded((value) => !value)}
+          {...resolveTaskCardExpansionA11y({
+            expandable: canExpand,
+            expanded,
+            detailRegionId,
+          })}
+        >
+          {headerContent}
+        </button>
+      ) : (
+        <div className="flex select-none items-center gap-2">{headerContent}</div>
+      )}
+      {canExpand && expandedBody ? (
+        <div
+          id={detailRegionId}
+          role="region"
+          aria-labelledby={triggerId}
+          hidden={!expanded}
+          className="mt-1.5 ms-8 cursor-default border-s border-border/45 ps-3 pt-0.5"
         >
           <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground select-text">
             {expandedBody}

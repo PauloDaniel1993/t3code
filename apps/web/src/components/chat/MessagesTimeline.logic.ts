@@ -7,7 +7,12 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
+import {
+  type MessageId,
+  type OrchestrationLatestTurn,
+  type OrchestrationThreadActivity,
+  type TurnId,
+} from "@t3tools/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
@@ -109,6 +114,7 @@ export type MessagesTimelineRow =
       hiddenCount: number;
       expanded: boolean;
       onlyToolEntries: boolean;
+      onlyTaskEntries: boolean;
     }
   | {
       kind: "turn-fold";
@@ -166,6 +172,76 @@ export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
 }
 
+// ---------------------------------------------------------------------------
+// Task (subagent/workflow) entries — distinct card path and transcript
+// visibility gating. Task entries bypass neutral-status filtering because
+// `workLogEntryIsToolLike` (session-logic) already excludes them.
+// ---------------------------------------------------------------------------
+
+/** True when a work entry carries subagent/workflow task identity and must render as a task card. */
+export function workLogEntryIsTaskLike(entry: Pick<WorkLogEntry, "taskId">): boolean {
+  return entry.taskId !== undefined && entry.taskId.length > 0;
+}
+
+/** Activity kinds whose content is projected into the workflow activity panel only — never timeline rows. */
+const PANEL_ONLY_WORK_ACTIVITY_KINDS: ReadonlySet<OrchestrationThreadActivity["kind"]> = new Set([
+  "tool.progress",
+  "turn.reasoning.summary",
+]);
+
+/**
+ * Timeline visibility gate. `skipTranscript` tasks stay in the workflow
+ * activity panel but are removed from the transcript before grouping, hidden
+ * counts, toggle construction, stable row creation, and rendering; panel-only
+ * activity projections never become timeline rows.
+ */
+export function workEntryIsTranscriptVisible(entry: WorkLogEntry): boolean {
+  if (entry.skipTranscript === true) {
+    return false;
+  }
+  if (
+    entry.sourceActivityKind !== undefined &&
+    PANEL_ONLY_WORK_ACTIVITY_KINDS.has(entry.sourceActivityKind)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function formatTaskTokenCount(totalTokens: number): string {
+  return `${totalTokens.toLocaleString("en-US")} ${totalTokens === 1 ? "token" : "tokens"}`;
+}
+
+export function formatTaskToolUseCount(toolUses: number): string {
+  return `${toolUses.toLocaleString("en-US")} ${toolUses === 1 ? "tool" : "tools"}`;
+}
+
+/**
+ * Compact metric fragments for a task card (tokens, tool count, duration,
+ * last tool). Only values the provider actually supplied are included — no
+ * placeholders that imply measured values.
+ */
+export function deriveTaskCardMetricParts(
+  entry: Pick<WorkLogEntry, "usage" | "lastToolName">,
+): string[] {
+  const parts: string[] = [];
+  const usage = entry.usage;
+  if (usage?.totalTokens !== undefined) {
+    parts.push(formatTaskTokenCount(usage.totalTokens));
+  }
+  if (usage?.toolUses !== undefined) {
+    parts.push(formatTaskToolUseCount(usage.toolUses));
+  }
+  if (usage?.durationMs !== undefined) {
+    parts.push(formatDuration(usage.durationMs));
+  }
+  const lastToolName = entry.lastToolName?.trim();
+  if (lastToolName) {
+    parts.push(`last: ${lastToolName}`);
+  }
+  return parts;
+}
+
 export function resolveAssistantMessageCopyState({
   text,
   showCopyButton,
@@ -179,6 +255,29 @@ export function resolveAssistantMessageCopyState({
   return {
     text: hasText ? text : null,
     visible: showCopyButton && hasText && !streaming,
+  };
+}
+
+/**
+ * Accessibility contract for interactive task-card expansion. The native
+ * button supplies click and Enter/Space behavior; these attributes keep its
+ * expanded state linked to the always-mounted detail region. A card without
+ * expandable detail exposes no disclosure attributes.
+ */
+export function resolveTaskCardExpansionA11y(input: {
+  readonly expandable: boolean;
+  readonly expanded: boolean;
+  readonly detailRegionId: string;
+}): {
+  readonly "aria-expanded"?: boolean;
+  readonly "aria-controls"?: string;
+} {
+  if (!input.expandable) {
+    return {};
+  }
+  return {
+    "aria-expanded": input.expanded,
+    "aria-controls": input.detailRegionId,
   };
 }
 
@@ -375,16 +474,22 @@ export function deriveMessagesTimelineRows(input: {
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
-  const durationStartByMessageId = computeMessageDurationStart(
-    input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+  // Remove transcript-hidden tasks and panel-only activity projections up
+  // front so they cannot leak into folds, grouping, hidden counts, toggle
+  // labels, stable rows, or rendering downstream.
+  const timelineEntries = input.timelineEntries.filter(
+    (entry) => entry.kind !== "work" || workEntryIsTranscriptVisible(entry.entry),
   );
-  const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
+  const durationStartByMessageId = computeMessageDurationStart(
+    timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+  );
+  const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(timelineEntries);
   const unsettledTurnId = deriveUnsettledTurnId(
     input.latestTurn ?? null,
     input.runningTurnId ?? null,
   );
   const foldsByAnchorEntryId = deriveTurnFolds({
-    timelineEntries: input.timelineEntries,
+    timelineEntries,
     terminalAssistantMessageIds,
     latestTurn: input.latestTurn ?? null,
     unsettledTurnId,
@@ -398,8 +503,8 @@ export function deriveMessagesTimelineRows(input: {
     }
   }
 
-  for (let index = 0; index < input.timelineEntries.length; index += 1) {
-    const timelineEntry = input.timelineEntries[index];
+  for (let index = 0; index < timelineEntries.length; index += 1) {
+    const timelineEntry = timelineEntries[index];
     if (!timelineEntry) {
       continue;
     }
@@ -423,8 +528,8 @@ export function deriveMessagesTimelineRows(input: {
     if (timelineEntry.kind === "work") {
       const groupedEntries = [timelineEntry.entry];
       let cursor = index + 1;
-      while (cursor < input.timelineEntries.length) {
-        const nextEntry = input.timelineEntries[cursor];
+      while (cursor < timelineEntries.length) {
+        const nextEntry = timelineEntries[cursor];
         if (
           !nextEntry ||
           nextEntry.kind !== "work" ||
@@ -471,6 +576,7 @@ export function deriveMessagesTimelineRows(input: {
             hiddenCount: hiddenEntries.length,
             expanded,
             onlyToolEntries: visibleGroupedEntries.every((entry) => workLogEntryIsToolLike(entry)),
+            onlyTaskEntries: visibleGroupedEntries.every((entry) => workLogEntryIsTaskLike(entry)),
           });
         }
       }
@@ -581,7 +687,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.groupId === bw.groupId &&
         a.hiddenCount === bw.hiddenCount &&
         a.expanded === bw.expanded &&
-        a.onlyToolEntries === bw.onlyToolEntries
+        a.onlyToolEntries === bw.onlyToolEntries &&
+        a.onlyTaskEntries === bw.onlyTaskEntries
       );
     }
 
