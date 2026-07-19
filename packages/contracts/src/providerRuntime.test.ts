@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { ProviderRuntimeEvent } from "./providerRuntime.ts";
+import { ProviderRuntimeEvent, TaskUsageSnapshot } from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
+const decodeTaskUsageSnapshot = Schema.decodeUnknownSync(TaskUsageSnapshot);
 
 describe("ProviderRuntimeEvent", () => {
   it("accepts fork-provided driver kinds as branded slugs", () => {
@@ -180,5 +181,139 @@ describe("ProviderRuntimeEvent", () => {
     }
     expect(parsed.payload.usage.maxTokens).toBe(200000);
     expect(parsed.payload.usage.usedTokens).toBe(31251);
+  });
+
+  it("normalizes canonical and historical task usage without fabricating counters", () => {
+    expect(
+      decodeTaskUsageSnapshot({
+        totalTokens: 0,
+        toolUses: 2,
+        durationMs: 0,
+      }),
+    ).toEqual({
+      totalTokens: 0,
+      toolUses: 2,
+      durationMs: 0,
+    });
+
+    expect(decodeTaskUsageSnapshot({ tool_uses: 0 })).toEqual({ toolUses: 0 });
+  });
+
+  it("rejects invalid task usage counters", () => {
+    expect(() => decodeTaskUsageSnapshot({ total_tokens: -1 })).toThrow();
+    expect(() => decodeTaskUsageSnapshot({ toolUses: 1.5 })).toThrow();
+  });
+
+  it("decodes legacy and enriched task lifecycle payloads", () => {
+    const started = decodeRuntimeEvent({
+      type: "task.started",
+      eventId: "event-task-started",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:05.000Z",
+      threadId: "thread-1",
+      payload: { taskId: "task-1" },
+    });
+    expect(started.type).toBe("task.started");
+    if (started.type !== "task.started") {
+      throw new Error("expected task.started");
+    }
+    expect(started.payload).toEqual({ taskId: "task-1" });
+
+    const enrichedStarted = decodeRuntimeEvent({
+      type: "task.started",
+      eventId: "event-task-started-enriched",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:06.000Z",
+      threadId: "thread-1",
+      payload: {
+        taskId: "task-2",
+        description: "Review the implementation",
+        taskType: "agent",
+        toolUseId: "tool-task-2",
+        subagentType: "code-reviewer",
+        workflowName: "parallel-review",
+        prompt: "Review the implementation for regressions.",
+        skipTranscript: false,
+      },
+    });
+    expect(enrichedStarted.type).toBe("task.started");
+    if (enrichedStarted.type !== "task.started") {
+      throw new Error("expected task.started");
+    }
+    expect(enrichedStarted.payload.skipTranscript).toBe(false);
+    expect(enrichedStarted.payload.workflowName).toBe("parallel-review");
+
+    const progress = decodeRuntimeEvent({
+      type: "task.progress",
+      eventId: "event-task-progress",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:07.000Z",
+      threadId: "thread-1",
+      payload: {
+        taskId: "task-2",
+        description: "Reviewing the implementation",
+        toolUseId: "tool-task-2",
+        subagentType: "code-reviewer",
+        summary: "Read the changed files",
+        usage: { total_tokens: 0, duration_ms: 0 },
+        lastToolName: "Read",
+      },
+    });
+    expect(progress.type).toBe("task.progress");
+    if (progress.type !== "task.progress") {
+      throw new Error("expected task.progress");
+    }
+    expect(progress.payload.usage).toEqual({ totalTokens: 0, durationMs: 0 });
+    expect(progress.payload).not.toHaveProperty("workflowName");
+    expect(progress.payload).not.toHaveProperty("skipTranscript");
+
+    const completed = decodeRuntimeEvent({
+      type: "task.completed",
+      eventId: "event-task-completed",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:08.000Z",
+      threadId: "thread-1",
+      payload: {
+        taskId: "task-2",
+        status: "completed",
+        toolUseId: "tool-task-2",
+        outputFile: "C:/tmp/review.md",
+        skipTranscript: false,
+        summary: "No regressions found",
+        usage: { totalTokens: 0, toolUses: 0, durationMs: 0 },
+      },
+    });
+    expect(completed.type).toBe("task.completed");
+    if (completed.type !== "task.completed") {
+      throw new Error("expected task.completed");
+    }
+    expect(completed.payload.outputFile).toBe("C:/tmp/review.md");
+    expect(completed.payload.skipTranscript).toBe(false);
+    expect(completed.payload.usage).toEqual({ totalTokens: 0, toolUses: 0, durationMs: 0 });
+  });
+
+  it("decodes tool progress without a task and with a nullable parent identity", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "tool.progress",
+      eventId: "event-tool-progress",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:09.000Z",
+      threadId: "thread-1",
+      payload: {
+        toolUseId: "tool-3",
+        parentToolUseId: null,
+        toolName: "Read",
+        summary: "Reading providerRuntime.ts",
+        elapsedSeconds: 0,
+      },
+    });
+
+    expect(parsed.type).toBe("tool.progress");
+    if (parsed.type !== "tool.progress") {
+      throw new Error("expected tool.progress");
+    }
+    expect(parsed.payload.taskId).toBeUndefined();
+    expect(parsed.payload.parentToolUseId).toBeNull();
+    expect(parsed.payload.elapsedSeconds).toBe(0);
   });
 });
