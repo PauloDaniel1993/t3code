@@ -23,6 +23,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -96,7 +97,14 @@ function isLegacyTurnCompletedEvent(
 }
 
 function createProviderServiceHarness() {
-  const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
+  interface RuntimeEventPublication {
+    readonly event: ProviderRuntimeEvent;
+    readonly consumed: Deferred.Deferred<void>;
+  }
+
+  const streamStarted = Effect.runSync(Deferred.make<void>());
+  const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<RuntimeEventPublication>());
+  const pendingPublications: Deferred.Deferred<void>[] = [];
   const runtimeSessions: ProviderSession[] = [];
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
@@ -124,7 +132,23 @@ function createProviderServiceHarness() {
     },
     rollbackConversation: () => unsupported(),
     get streamEvents() {
-      return Stream.fromPubSub(runtimeEventPubSub);
+      // The acknowledgment segment is pulled only after runForEach has
+      // delivered the preceding event to the ingestion worker's enqueue callback.
+      const publications = Stream.fromPubSub(runtimeEventPubSub).pipe(
+        Stream.flatMap((publication) =>
+          Stream.make(publication.event).pipe(
+            Stream.concat(
+              Stream.fromEffect(Deferred.succeed(publication.consumed, undefined)).pipe(
+                Stream.drain,
+              ),
+            ),
+          ),
+        ),
+      );
+      return Stream.fromEffect(Deferred.succeed(streamStarted, undefined)).pipe(
+        Stream.drain,
+        Stream.concat(publications),
+      );
     },
   };
 
@@ -153,20 +177,33 @@ function createProviderServiceHarness() {
   };
 
   const emit = (event: LegacyProviderRuntimeEvent): void => {
-    Effect.runSync(PubSub.publish(runtimeEventPubSub, normalizeLegacyEvent(event)));
+    const consumed = Effect.runSync(Deferred.make<void>());
+    pendingPublications.push(consumed);
+    Effect.runSync(
+      PubSub.publish(runtimeEventPubSub, {
+        event: normalizeLegacyEvent(event),
+        consumed,
+      }),
+    );
   };
 
-  const awaitRuntimeSubscriber = async (): Promise<void> => {
-    while (runtimeEventPubSub.subscribers.size === 0) {
-      await Effect.runPromise(Effect.yieldNow);
-    }
+  const awaitStreamStarted = () => Effect.runPromise(Deferred.await(streamStarted));
+
+  const awaitPublishedEvents = async (): Promise<void> => {
+    const publications = pendingPublications.splice(0);
+    await Effect.runPromise(
+      Effect.forEach(publications, Deferred.await, {
+        discard: true,
+      }),
+    );
   };
 
   return {
     service,
     emit,
     setSession,
-    awaitRuntimeSubscriber,
+    awaitStreamStarted,
+    awaitPublishedEvents,
   };
 }
 
@@ -282,11 +319,11 @@ describe("ProviderRuntimeIngestion", () => {
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await runtime.runPromise(ingestion.start().pipe(Scope.provide(scope)));
-    // The test PubSub is intentionally unbuffered. Wait until the ingestion
-    // stream has acquired its subscription so immediate fixture events cannot
-    // be dropped by a harness-only startup race.
-    await provider.awaitRuntimeSubscriber();
-    const drain = () => runtime!.runPromise(ingestion.drain);
+    await provider.awaitStreamStarted();
+    const drain = async () => {
+      await provider.awaitPublishedEvents();
+      await runtime!.runPromise(ingestion.drain);
+    };
 
     const createdAt = "2026-01-01T00:00:00.000Z";
     await Effect.runPromise(
@@ -349,7 +386,11 @@ describe("ProviderRuntimeIngestion", () => {
 
     return {
       engine,
-      readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      readModel: async () => {
+        await provider.awaitPublishedEvents();
+        await runtime!.runPromise(ingestion.drain);
+        return Effect.runPromise(snapshotQuery.getSnapshot());
+      },
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
@@ -2567,7 +2608,7 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
 
-    const events = await Effect.runPromise(
+    const events = await runtime!.runPromise(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),
