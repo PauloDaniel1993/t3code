@@ -55,13 +55,14 @@ export function resolveWorkflowCardHeightDelta(previousHeight: number, nextHeigh
 export interface WorkflowCardHeightBookkeeping {
   readonly ownerKey: string | null;
   readonly height: number;
+  readonly hasBaseline: boolean;
   readonly pendingDelta: number;
 }
 
 export function createWorkflowCardHeightBookkeeping(
   ownerKey: string | null,
 ): WorkflowCardHeightBookkeeping {
-  return { ownerKey, height: 0, pendingDelta: 0 };
+  return { ownerKey, height: 0, hasBaseline: false, pendingDelta: 0 };
 }
 
 export function reconcileWorkflowCardHeightOwner(
@@ -82,6 +83,21 @@ export function recordWorkflowCardHeight(
     return bookkeeping;
   }
 
+  // The first measurement for a newly selected thread establishes that
+  // thread's baseline. Treating it as a 0 -> H resize compensates for the
+  // entire incoming card after the list has already switched owners, which
+  // produces a visible whole-card jump. A real 0 -> H mount is still observed
+  // when the current owner first establishes a zero-height baseline while no
+  // card is present and then receives a card.
+  if (!bookkeeping.hasBaseline) {
+    return {
+      ownerKey,
+      height: nextHeight,
+      hasBaseline: true,
+      pendingDelta: 0,
+    };
+  }
+
   const heightDelta = resolveWorkflowCardHeightDelta(bookkeeping.height, nextHeight);
   if (heightDelta === 0) {
     return bookkeeping;
@@ -90,6 +106,7 @@ export function recordWorkflowCardHeight(
   return {
     ownerKey,
     height: nextHeight,
+    hasBaseline: true,
     pendingDelta: bookkeeping.pendingDelta + heightDelta,
   };
 }
