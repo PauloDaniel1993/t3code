@@ -8,9 +8,11 @@ import {
   GlobeIcon,
   HistoryIcon,
   LoaderIcon,
+  SquareIcon,
   SquarePenIcon,
   TerminalIcon,
   WrenchIcon,
+  XIcon,
 } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -277,6 +279,24 @@ function recentToolIcon(toolName: string | undefined) {
   }
 }
 
+function WorkflowRecentToolStatus({ status }: { readonly status: WorkLogToolLifecycleStatus }) {
+  const statusMeta = WORKER_STATUS_META[status];
+  const StatusIcon =
+    status === "inProgress"
+      ? LoaderIcon
+      : status === "completed"
+        ? CheckIcon
+        : status === "stopped"
+          ? SquareIcon
+          : XIcon;
+  return (
+    <Badge variant={statusMeta.variant} size="sm" aria-label={statusMeta.label}>
+      <StatusIcon className={cn("size-3", status === "inProgress" && "animate-spin")} aria-hidden />
+      {statusMeta.label}
+    </Badge>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Leaf components
 // ---------------------------------------------------------------------------
@@ -405,13 +425,7 @@ function WorkflowRecentToolRow({ tool }: { readonly tool: WorkflowRecentTool }) 
           {formatDuration(tool.elapsedSeconds * 1000)}
         </span>
       ) : null}
-      <span
-        className="flex size-4 shrink-0 items-center justify-center"
-        role="img"
-        aria-label="Running"
-      >
-        <LoaderIcon className="size-3 animate-spin text-muted-foreground/60" aria-hidden />
-      </span>
+      <WorkflowRecentToolStatus status={tool.status} />
     </li>
   );
 }
