@@ -414,6 +414,29 @@ describe("WorkflowActivityCard rendering", () => {
     expect(markup).not.toContain('data-slot="tool-card"');
   });
 
+  it("renders terminal recent-tool labels without leaving terminal spinners running", () => {
+    const markup = renderToStaticMarkup(
+      <WorkflowActivityCard
+        model={makeModel({
+          recentTools: [
+            makeRecentTool({ id: "tool:running", status: "inProgress" }),
+            makeRecentTool({ id: "tool:completed", status: "completed" }),
+            makeRecentTool({ id: "tool:failed", status: "failed" }),
+            makeRecentTool({ id: "tool:declined", status: "declined" }),
+            makeRecentTool({ id: "tool:stopped", status: "stopped" }),
+          ],
+        })}
+      />,
+    );
+
+    expect(markup.match(/data-slot="workflow-recent-tool"/g)).toHaveLength(5);
+    for (const label of ["Running", "Completed", "Failed", "Declined", "Stopped"]) {
+      expect(markup).toContain(`aria-label="${label}"`);
+      expect(markup).toContain(label);
+    }
+    expect(markup.match(/animate-spin/g)).toHaveLength(1);
+  });
+
   it("labels historical steps and the other-activity group", () => {
     const model = makePlanModel();
     model.historicalSteps.push(
