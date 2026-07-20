@@ -57,6 +57,8 @@ interface FixtureThreadState {
 interface FixtureDomSnapshot {
   readonly renderedTaskCards: number;
   readonly expandedTaskIds: ReadonlyArray<string>;
+  readonly recentToolRows: number;
+  readonly recentToolStatuses: ReadonlyArray<string>;
   readonly pinnedGroupExpanded: boolean;
   readonly pinnedProgressExpanded: boolean;
   readonly reasoningExpanded: boolean;
@@ -99,6 +101,8 @@ const EMPTY_REVERT_COUNTS = new Map<MessageId, number>();
 const EMPTY_DOM_SNAPSHOT: FixtureDomSnapshot = {
   renderedTaskCards: 0,
   expandedTaskIds: [],
+  recentToolRows: 0,
+  recentToolStatuses: [],
   pinnedGroupExpanded: false,
   pinnedProgressExpanded: false,
   reasoningExpanded: false,
@@ -425,6 +429,60 @@ function appendLinkedAndUnlinkedTools(
   return next;
 }
 
+function fixtureRecentToolUseId(thread: FixtureThreadState): string {
+  return `fixture-${thread.id}-turn-${thread.turnRevision}-recent-tool`;
+}
+
+function activityToolUseId(activity: OrchestrationThreadActivity): string | null {
+  if (activity.payload === null || typeof activity.payload !== "object") return null;
+  const value = (activity.payload as Record<string, unknown>).toolUseId;
+  return typeof value === "string" ? value : null;
+}
+
+function appendRecentToolProgress(
+  thread: FixtureThreadState,
+  options: { readonly reset?: boolean; readonly late?: boolean } = {},
+): FixtureThreadState {
+  const toolUseId = fixtureRecentToolUseId(thread);
+  const base = options.reset
+    ? {
+        ...thread,
+        activities: thread.activities.filter(
+          (activity) => activityToolUseId(activity) !== toolUseId,
+        ),
+      }
+    : thread;
+  return appendActivity(base, {
+    kind: "tool.progress",
+    summary: options.late ? "Late recent-tool progress" : "Recent tool in progress",
+    payload: {
+      toolUseId,
+      taskId: thread.selectedTaskId ?? undefined,
+      toolName: "Bash",
+      summary: options.late
+        ? "Late progress must not revive this terminal row"
+        : "Run the deterministic recent-tool check",
+      elapsedSeconds: options.late ? 9 : 1,
+    },
+  });
+}
+
+function appendRecentToolTerminal(
+  thread: FixtureThreadState,
+  status: "completed" | "failed",
+): FixtureThreadState {
+  return appendActivity(thread, {
+    kind: "tool.completed",
+    summary: `Recent tool ${status}`,
+    tone: status === "failed" ? "error" : "tool",
+    payload: {
+      toolUseId: fixtureRecentToolUseId(thread),
+      status,
+      detail: `Deterministic recent tool ${status}`,
+    },
+  });
+}
+
 function appendExplicitValuesScenario(thread: FixtureThreadState): FixtureThreadState {
   let next = appendTaskStart(thread, {
     description: "Explicit false / zero / null worker",
@@ -551,6 +609,9 @@ function readDomSnapshot(root: HTMLElement | null): FixtureDomSnapshot {
     return trigger && card.dataset.taskId ? [card.dataset.taskId] : [];
   });
   const workflowCard = root.querySelector<HTMLElement>("[data-slot='workflow-activity-card']");
+  const recentToolRows = workflowCard
+    ? [...workflowCard.querySelectorAll<HTMLElement>("[data-slot='workflow-recent-tool']")]
+    : [];
   const minimap = root.querySelector<HTMLElement>("[data-testid='timeline-minimap']");
   const expandedButtons = workflowCard
     ? [...workflowCard.querySelectorAll<HTMLButtonElement>("button[aria-expanded='true']")]
@@ -560,6 +621,11 @@ function readDomSnapshot(root: HTMLElement | null): FixtureDomSnapshot {
   return {
     renderedTaskCards: taskCards.length,
     expandedTaskIds,
+    recentToolRows: recentToolRows.length,
+    recentToolStatuses: recentToolRows.flatMap((row) => {
+      const label = row.querySelector<HTMLElement>("[aria-label]")?.getAttribute("aria-label");
+      return label ? [label] : [];
+    }),
     pinnedGroupExpanded: expandedButtons.some(
       (button) => !buttonHasLabel(button, "Progress") && !buttonHasLabel(button, "Reasoning"),
     ),
@@ -573,6 +639,8 @@ function readDomSnapshot(root: HTMLElement | null): FixtureDomSnapshot {
 function domSnapshotsEqual(left: FixtureDomSnapshot, right: FixtureDomSnapshot): boolean {
   return (
     left.renderedTaskCards === right.renderedTaskCards &&
+    left.recentToolRows === right.recentToolRows &&
+    left.recentToolStatuses.join("|") === right.recentToolStatuses.join("|") &&
     left.pinnedGroupExpanded === right.pinnedGroupExpanded &&
     left.pinnedProgressExpanded === right.pinnedProgressExpanded &&
     left.reasoningExpanded === right.reasoningExpanded &&
@@ -710,6 +778,9 @@ export function WorkflowActivityBrowserFixture() {
     workflowModel?.steps.filter((step) => step.status === "inProgress").length ?? 0;
   const hasExplicitNullParent =
     workflowModel?.recentTools.some((tool) => tool.parentToolUseId === null) ?? false;
+  const fixtureRecentTool = workflowModel?.recentTools.find(
+    (tool) => tool.toolUseId === fixtureRecentToolUseId(activeThread),
+  );
 
   const updateActiveThread = useCallback(
     (update: (thread: FixtureThreadState) => FixtureThreadState) => {
@@ -826,7 +897,7 @@ export function WorkflowActivityBrowserFixture() {
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["aria-expanded", "data-task-status"],
+      attributeFilter: ["aria-expanded", "aria-label", "data-task-status"],
     });
     return () => observer.disconnect();
   }, [observableRows, timelineOwnerKey, workflowModel]);
@@ -1085,6 +1156,52 @@ export function WorkflowActivityBrowserFixture() {
               </div>
             </ControlGroup>
 
+            <ControlGroup title="Recent tool lifecycle">
+              <div className="grid grid-cols-2 gap-1.5">
+                <FixtureButton
+                  onClick={() => {
+                    updateActiveThread((thread) =>
+                      appendRecentToolProgress(thread, { reset: true }),
+                    );
+                    setControlNote("Reset one canonical recent tool to Running.");
+                  }}
+                >
+                  Tool progress
+                </FixtureButton>
+                <FixtureButton
+                  disabled={fixtureRecentTool?.status !== "inProgress"}
+                  onClick={() => {
+                    updateActiveThread((thread) => appendRecentToolTerminal(thread, "completed"));
+                    setControlNote("Settled the canonical recent tool as Completed.");
+                  }}
+                >
+                  Tool completed
+                </FixtureButton>
+                <FixtureButton
+                  disabled={fixtureRecentTool?.status !== "inProgress"}
+                  onClick={() => {
+                    updateActiveThread((thread) => appendRecentToolTerminal(thread, "failed"));
+                    setControlNote("Settled the canonical recent tool as Failed.");
+                  }}
+                >
+                  Tool failed
+                </FixtureButton>
+                <FixtureButton
+                  disabled={
+                    fixtureRecentTool === undefined || fixtureRecentTool.status === "inProgress"
+                  }
+                  onClick={() => {
+                    updateActiveThread((thread) =>
+                      appendRecentToolProgress(thread, { late: true }),
+                    );
+                    setControlNote("Appended late progress; terminal status must remain latched.");
+                  }}
+                >
+                  Late tool progress
+                </FixtureButton>
+              </div>
+            </ControlGroup>
+
             <ControlGroup title="Coverage scenarios">
               <div className="grid grid-cols-2 gap-1.5">
                 <FixtureButton
@@ -1311,6 +1428,10 @@ export function WorkflowActivityBrowserFixture() {
                 <Metric
                   label="Explicit values"
                   value={`${selectedTask?.skipTranscript === false ? "false" : "missing"} / ${selectedTask?.usage?.totalTokens ?? "missing"} tok / ${selectedTask?.usage?.toolUses ?? "missing"} tools / ${selectedTask?.usage?.durationMs ?? "missing"} ms / parent ${hasExplicitNullParent ? "null" : "missing"}`}
+                />
+                <Metric
+                  label="Recent tool"
+                  value={`${domSnapshot.recentToolRows} row · ${fixtureRecentTool?.id ?? "none"} · ${fixtureRecentTool?.status ?? "none"} · aria ${domSnapshot.recentToolStatuses.join(", ") || "none"}`}
                 />
                 <Metric
                   label="Plan / active"

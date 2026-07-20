@@ -57,7 +57,7 @@ export interface WorkflowRecentTool {
   id: string;
   activityId: string;
   createdAt: string;
-  status: "inProgress";
+  status: WorkLogToolLifecycleStatus;
   toolUseId?: string;
   parentToolUseId?: string | null;
   taskId?: string;
@@ -325,12 +325,40 @@ function deriveRecentWorkflowTools(
   const toolsByKey = new Map<string, RecentToolAccumulator>();
   for (const activity of orderedActivities) {
     if (activity.kind !== "tool.progress") {
+      if (
+        activity.kind !== "tool.updated" &&
+        activity.kind !== "tool.completed" &&
+        activity.kind !== "tool.denied"
+      ) {
+        continue;
+      }
+      const payload = asRecord(activity.payload);
+      const toolUseId = asTrimmedString(payload?.toolUseId);
+      if (!toolUseId) {
+        continue;
+      }
+      const key = `tool:${toolUseId}`;
+      const previous = toolsByKey.get(key);
+      const terminalStatus = recentToolTerminalStatus(activity.kind, payload);
+      if (!previous || previous.status !== "inProgress" || terminalStatus === null) {
+        continue;
+      }
+      toolsByKey.set(key, {
+        ...previous,
+        activityId: activity.id,
+        createdAt: activity.createdAt,
+        status: terminalStatus,
+        orderActivity: activity,
+      });
       continue;
     }
     const payload = asRecord(activity.payload);
     const toolUseId = asTrimmedString(payload?.toolUseId);
     const key = toolUseId ? `tool:${toolUseId}` : `activity:${activity.id}`;
     const previous = toolsByKey.get(key);
+    if (previous && previous.status !== "inProgress") {
+      continue;
+    }
     const next: RecentToolAccumulator = {
       id: key,
       activityId: activity.id,
@@ -385,6 +413,30 @@ function deriveRecentWorkflowTools(
     .toSorted((left, right) => compareActivitiesByOrder(left.orderActivity, right.orderActivity))
     .slice(-limit)
     .map(({ orderActivity: _orderActivity, ...tool }) => tool);
+}
+
+function recentToolTerminalStatus(
+  activityKind: OrchestrationThreadActivity["kind"],
+  payload: Record<string, unknown> | null,
+): Exclude<WorkLogToolLifecycleStatus, "inProgress"> | null {
+  if (activityKind === "tool.denied") {
+    return "declined";
+  }
+  const status = normalizeRecentToolStatus(payload?.status);
+  if (activityKind === "tool.completed") {
+    return status === null || status === "inProgress" ? "completed" : status;
+  }
+  return status !== null && status !== "inProgress" ? status : null;
+}
+
+function normalizeRecentToolStatus(value: unknown): WorkLogToolLifecycleStatus | null {
+  return value === "inProgress" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "declined" ||
+    value === "stopped"
+    ? value
+    : null;
 }
 
 function normalizeRecentToolLimit(value: number | undefined): number {
