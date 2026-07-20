@@ -60,6 +60,8 @@ interface FixtureDomSnapshot {
   readonly pinnedGroupExpanded: boolean;
   readonly pinnedProgressExpanded: boolean;
   readonly reasoningExpanded: boolean;
+  readonly minimapPresent: boolean;
+  readonly minimapBottomInset: string;
 }
 
 interface CardTelemetry {
@@ -78,6 +80,20 @@ interface ActivityInput {
 }
 
 const FIXTURE_ENVIRONMENT_ID = EnvironmentId.make("workflow-fixture");
+const FIXTURE_COMPOSER_INSET_PX = 48;
+const LONG_PROGRESS_SUMMARY =
+  "This deterministic progress summary is intentionally long so the production disclosure must bound and safely wrap it without widening the card, covering neighboring controls, or crowding the virtualized timeline out of the viewport. ".repeat(
+    4,
+  );
+const LONG_RESULT_SUMMARY =
+  "This deterministic terminal result is intentionally verbose and remains available only through the production worker disclosure while preserving the card and timeline layout. ".repeat(
+    4,
+  );
+const LONG_REASONING_SUMMARY =
+  "This provider-visible synthetic reasoning summary is intentionally long and contains only provider-authorized summary content; the production disclosure must keep it bounded, readable, and isolated from hidden chain-of-thought. ".repeat(
+    4,
+  );
+const LONG_OUTPUT_FILE = `fixture-output/${"deeply-nested-segment/".repeat(12)}result-with-an-intentionally-long-file-name.md`;
 const EMPTY_TURN_DIFFS = new Map<MessageId, TurnDiffSummary>();
 const EMPTY_REVERT_COUNTS = new Map<MessageId, number>();
 const EMPTY_DOM_SNAPSHOT: FixtureDomSnapshot = {
@@ -86,6 +102,8 @@ const EMPTY_DOM_SNAPSHOT: FixtureDomSnapshot = {
   pinnedGroupExpanded: false,
   pinnedProgressExpanded: false,
   reasoningExpanded: false,
+  minimapPresent: false,
+  minimapBottomInset: "none",
 };
 
 function fixtureTimestamp(threadId: FixtureThreadId, turnRevision: number, tick: number): string {
@@ -223,6 +241,13 @@ function appendTaskTerminal(
   thread: FixtureThreadState,
   taskId: string,
   status: Extract<WorkLogToolLifecycleStatus, "completed" | "failed" | "stopped">,
+  options: {
+    readonly summary?: string;
+    readonly outputFile?: string;
+    readonly totalTokens?: number;
+    readonly toolUses?: number;
+    readonly durationMs?: number;
+  } = {},
 ): FixtureThreadState {
   return appendActivity(thread, {
     kind: "task.completed",
@@ -232,13 +257,18 @@ function appendTaskTerminal(
       taskId,
       status,
       summary:
-        status === "completed"
+        options.summary ??
+        (status === "completed"
           ? "Synthetic task result is ready."
           : status === "failed"
             ? "Synthetic task failed at a controlled boundary."
-            : "Synthetic task stopped at the requested checkpoint.",
-      outputFile: `fixture-output/${taskId}.md`,
-      usage: { totalTokens: 2_400, toolUses: 7, durationMs: 61_000 },
+            : "Synthetic task stopped at the requested checkpoint."),
+      outputFile: options.outputFile ?? `fixture-output/${taskId}.md`,
+      usage: {
+        totalTokens: options.totalTokens ?? 2_400,
+        toolUses: options.toolUses ?? 7,
+        durationMs: options.durationMs ?? 61_000,
+      },
     },
   });
 }
@@ -395,6 +425,61 @@ function appendLinkedAndUnlinkedTools(
   return next;
 }
 
+function appendExplicitValuesScenario(thread: FixtureThreadState): FixtureThreadState {
+  let next = appendTaskStart(thread, {
+    description: "Explicit false / zero / null worker",
+    skipTranscript: false,
+  });
+  const taskId = next.selectedTaskId!;
+  next = appendTaskProgress(next, taskId, {
+    summary: "Zero-valued cumulative snapshot is intentionally retained.",
+    totalTokens: 0,
+    toolUses: 0,
+    durationMs: 0,
+    lastToolName: "ZeroSnapshot",
+  });
+  return appendActivity(next, {
+    kind: "tool.progress",
+    summary: "Explicit null parent tool",
+    payload: {
+      toolUseId: `null-parent-tool-${next.nextTick}`,
+      parentToolUseId: null,
+      toolName: "Search",
+      summary: "Null-compatible parent identity is intentionally retained.",
+      elapsedSeconds: 0,
+    },
+  });
+}
+
+function appendLongContentScenario(thread: FixtureThreadState): FixtureThreadState {
+  let next = appendTaskStart(thread, { description: "Bounded long-content worker" });
+  const taskId = next.selectedTaskId!;
+  next = appendTaskProgress(next, taskId, {
+    summary: LONG_PROGRESS_SUMMARY,
+    totalTokens: 3_200,
+    toolUses: 9,
+    durationMs: 75_000,
+    lastToolName: "Read",
+  });
+  next = appendTaskTerminal(next, taskId, "completed", {
+    summary: LONG_RESULT_SUMMARY,
+    outputFile: LONG_OUTPUT_FILE,
+    totalTokens: 3_600,
+    toolUses: 11,
+    durationMs: 82_000,
+  });
+  return appendActivity(next, {
+    kind: "turn.reasoning.summary",
+    summary: "Long reasoning summary updated",
+    tone: "info",
+    payload: { reasoningSummary: LONG_REASONING_SUMMARY },
+  });
+}
+
+function removeWorkflowCard(thread: FixtureThreadState): FixtureThreadState {
+  return { ...thread, activities: [], selectedTaskId: null };
+}
+
 function appendHistoricalAndOtherGroups(thread: FixtureThreadState): FixtureThreadState {
   let next = appendPlanSnapshot(thread, {
     labelPrefix: "Earlier investigation",
@@ -466,6 +551,7 @@ function readDomSnapshot(root: HTMLElement | null): FixtureDomSnapshot {
     return trigger && card.dataset.taskId ? [card.dataset.taskId] : [];
   });
   const workflowCard = root.querySelector<HTMLElement>("[data-slot='workflow-activity-card']");
+  const minimap = root.querySelector<HTMLElement>("[data-testid='timeline-minimap']");
   const expandedButtons = workflowCard
     ? [...workflowCard.querySelectorAll<HTMLButtonElement>("button[aria-expanded='true']")]
     : [];
@@ -479,6 +565,8 @@ function readDomSnapshot(root: HTMLElement | null): FixtureDomSnapshot {
     ),
     pinnedProgressExpanded: expandedButtons.some((button) => buttonHasLabel(button, "Progress")),
     reasoningExpanded: expandedButtons.some((button) => buttonHasLabel(button, "Reasoning")),
+    minimapPresent: minimap !== null,
+    minimapBottomInset: minimap?.style.bottom || "none",
   };
 }
 
@@ -488,6 +576,8 @@ function domSnapshotsEqual(left: FixtureDomSnapshot, right: FixtureDomSnapshot):
     left.pinnedGroupExpanded === right.pinnedGroupExpanded &&
     left.pinnedProgressExpanded === right.pinnedProgressExpanded &&
     left.reasoningExpanded === right.reasoningExpanded &&
+    left.minimapPresent === right.minimapPresent &&
+    left.minimapBottomInset === right.minimapBottomInset &&
     left.expandedTaskIds.join("|") === right.expandedTaskIds.join("|")
   );
 }
@@ -566,7 +656,12 @@ export function WorkflowActivityBrowserFixture() {
   const cardBookkeepingRef = useRef(createWorkflowCardHeightBookkeeping(null));
 
   const activeThread = threads[activeThreadId];
-  const ownerKey = `${activeThread.id}:${activeThread.turnId}`;
+  // Production height ownership is thread-scoped so replacing a turn/card in
+  // the same thread measures the real old-to-new transition. Timeline anchor
+  // ownership is turn-scoped because a replaced turn must never retain an old
+  // message anchor.
+  const cardOwnerKey = activeThread.id;
+  const timelineOwnerKey = `${activeThread.id}:${activeThread.turnId}`;
   const latestTurn = useMemo<TimelineLatestTurn>(
     () => ({
       turnId: activeThread.turnId,
@@ -613,6 +708,8 @@ export function WorkflowActivityBrowserFixture() {
     workflowModel?.workers.filter((worker) => worker.skipTranscript).length ?? 0;
   const activeStepCount =
     workflowModel?.steps.filter((step) => step.status === "inProgress").length ?? 0;
+  const hasExplicitNullParent =
+    workflowModel?.recentTools.some((tool) => tool.parentToolUseId === null) ?? false;
 
   const updateActiveThread = useCallback(
     (update: (thread: FixtureThreadState) => FixtureThreadState) => {
@@ -627,23 +724,47 @@ export function WorkflowActivityBrowserFixture() {
   useLayoutEffect(() => {
     cardBookkeepingRef.current = reconcileWorkflowCardHeightOwner(
       cardBookkeepingRef.current,
-      ownerKey,
+      cardOwnerKey,
     );
     setCardTelemetry({
-      ownerKey,
+      ownerKey: cardOwnerKey,
       height: cardBookkeepingRef.current.height,
       heightDelta: 0,
       compensation: "owner-reset",
       eventCount: 0,
     });
-  }, [ownerKey]);
+  }, [cardOwnerKey]);
+
+  useLayoutEffect(() => {
+    activeAnchorIndexRef.current = null;
+    setAnchorIndex(null);
+    setAnchorSize(null);
+    if (scrollModeRef.current === "free-scrolling") {
+      setAnchorMessageId(null);
+      setIsAtEnd(false);
+      return;
+    }
+    if (scrollModeRef.current !== "anchoring-new-turn") {
+      setAnchorMessageId(null);
+      setIsAtEnd(true);
+      return;
+    }
+    const nextAnchor = [...activeThread.messages]
+      .toReversed()
+      .find((message) => message.role === "user")?.id;
+    setAnchorMessageId(nextAnchor ?? null);
+  }, [activeThread.messages, timelineOwnerKey]);
 
   const handleCardHeightChange = useCallback(
     (nextHeight: number) => {
-      const recorded = recordWorkflowCardHeight(cardBookkeepingRef.current, ownerKey, nextHeight);
+      const recorded = recordWorkflowCardHeight(
+        cardBookkeepingRef.current,
+        cardOwnerKey,
+        nextHeight,
+      );
       if (recorded === cardBookkeepingRef.current) return;
       cardBookkeepingRef.current = recorded;
-      const consumed = consumeWorkflowCardHeightDelta(cardBookkeepingRef.current, ownerKey);
+      const consumed = consumeWorkflowCardHeightDelta(cardBookkeepingRef.current, cardOwnerKey);
       cardBookkeepingRef.current = consumed.bookkeeping;
       const list = listRef.current;
       const listState = list?.getState() ?? null;
@@ -666,7 +787,7 @@ export function WorkflowActivityBrowserFixture() {
         const metrics = getAnchoredTurnMetrics({
           state: listState,
           anchorIndex: activeAnchorIndexRef.current,
-          composerOverlayHeight: 0,
+          composerOverlayHeight: FIXTURE_COMPOSER_INSET_PX,
           anchorOffset: 0,
         });
         if (metrics && metrics.scrollDeltaToRevealEnd > 1) {
@@ -678,14 +799,14 @@ export function WorkflowActivityBrowserFixture() {
       }
 
       setCardTelemetry((current) => ({
-        ownerKey,
+        ownerKey: cardOwnerKey,
         height: nextHeight,
         heightDelta: consumed.heightDelta,
         compensation: compensation.kind,
-        eventCount: current.ownerKey === ownerKey ? current.eventCount + 1 : 1,
+        eventCount: current.ownerKey === cardOwnerKey ? current.eventCount + 1 : 1,
       }));
     },
-    [ownerKey],
+    [cardOwnerKey],
   );
 
   useEffect(() => {
@@ -708,7 +829,7 @@ export function WorkflowActivityBrowserFixture() {
       attributeFilter: ["aria-expanded", "data-task-status"],
     });
     return () => observer.disconnect();
-  }, [ownerKey, observableRows, workflowModel]);
+  }, [observableRows, timelineOwnerKey, workflowModel]);
 
   const driveScrollMode = useCallback(
     (nextMode: TimelineScrollMode) => {
@@ -719,6 +840,8 @@ export function WorkflowActivityBrowserFixture() {
         setAnchorMessageId(null);
         activeAnchorIndexRef.current = null;
         setAnchorIndex(null);
+        setAnchorSize(null);
+        setIsAtEnd(true);
         void list?.scrollToEnd?.({ animated: false });
         setControlNote("Following-end mode selected; the production list was sent to its end.");
         return;
@@ -727,6 +850,8 @@ export function WorkflowActivityBrowserFixture() {
         setAnchorMessageId(null);
         activeAnchorIndexRef.current = null;
         setAnchorIndex(null);
+        setAnchorSize(null);
+        setIsAtEnd(false);
         const currentScroll = list?.getState()?.scroll ?? 0;
         void list?.scrollToOffset({
           offset: Math.max(0, currentScroll - 240),
@@ -738,6 +863,9 @@ export function WorkflowActivityBrowserFixture() {
       const anchor = [...activeThread.messages]
         .toReversed()
         .find((message) => message.role === "user")?.id;
+      activeAnchorIndexRef.current = null;
+      setAnchorIndex(null);
+      setAnchorSize(null);
       setAnchorMessageId(anchor ?? null);
       setControlNote(
         anchor
@@ -852,7 +980,7 @@ export function WorkflowActivityBrowserFixture() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(18rem,23rem)_minmax(0,1fr)] max-[980px]:grid-cols-1 max-[980px]:grid-rows-[minmax(13rem,42vh)_minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(18rem,23rem)_minmax(0,1fr)] max-[980px]:grid-cols-1 max-[980px]:grid-rows-[minmax(10rem,26vh)_minmax(0,1fr)]">
         <aside className="min-h-0 overflow-y-auto border-r border-border bg-muted/15 p-3 max-[980px]:border-r-0 max-[980px]:border-b">
           <div className="space-y-3">
             <ControlGroup title="Thread and turn">
@@ -1005,6 +1133,24 @@ export function WorkflowActivityBrowserFixture() {
                 </FixtureButton>
                 <FixtureButton
                   onClick={() => {
+                    updateActiveThread(appendExplicitValuesScenario);
+                    setControlNote(
+                      "Appended explicit false, zero, and null-compatible provider values.",
+                    );
+                  }}
+                >
+                  False / zero / null
+                </FixtureButton>
+                <FixtureButton
+                  onClick={() => {
+                    updateActiveThread(appendLongContentScenario);
+                    setControlNote("Appended deterministic long summary and output content.");
+                  }}
+                >
+                  Long content
+                </FixtureButton>
+                <FixtureButton
+                  onClick={() => {
                     updateActiveThread((thread) => {
                       let next = appendTaskStart(thread, {
                         description: "Ambient skipTranscript worker",
@@ -1083,6 +1229,16 @@ export function WorkflowActivityBrowserFixture() {
                 >
                   Add 80 transcript rows
                 </FixtureButton>
+                <FixtureButton
+                  onClick={() => {
+                    updateActiveThread(removeWorkflowCard);
+                    setControlNote(
+                      "Removed all active-turn workflow activity while preserving the transcript.",
+                    );
+                  }}
+                >
+                  Remove card
+                </FixtureButton>
               </div>
             </ControlGroup>
 
@@ -1122,7 +1278,7 @@ export function WorkflowActivityBrowserFixture() {
 
         <main className="min-h-0 min-w-0 bg-background p-2 sm:p-3">
           <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card/20">
-            <div className="shrink-0 border-b border-border/70 bg-muted/20 p-2 max-[980px]:max-h-40 max-[980px]:overflow-y-auto">
+            <div className="max-h-20 shrink-0 overflow-y-auto border-b border-border/70 bg-muted/20 p-2">
               <dl className="grid grid-cols-4 gap-1.5 max-[1180px]:grid-cols-3 max-[720px]:grid-cols-2">
                 <Metric label="Thread" value={activeThread.label} />
                 <Metric label="Turn" value={activeThread.turnId} />
@@ -1151,6 +1307,10 @@ export function WorkflowActivityBrowserFixture() {
                       ? `${selectedTask.usage.totalTokens ?? "–"} tok · ${selectedTask.usage.toolUses ?? "–"} tools · ${selectedTask.usage.durationMs ?? "–"} ms`
                       : "none"
                   }
+                />
+                <Metric
+                  label="Explicit values"
+                  value={`${selectedTask?.skipTranscript === false ? "false" : "missing"} / ${selectedTask?.usage?.totalTokens ?? "missing"} tok / ${selectedTask?.usage?.toolUses ?? "missing"} tools / ${selectedTask?.usage?.durationMs ?? "missing"} ms / parent ${hasExplicitNullParent ? "null" : "missing"}`}
                 />
                 <Metric
                   label="Plan / active"
@@ -1186,6 +1346,7 @@ export function WorkflowActivityBrowserFixture() {
                   label="Compensation"
                   value={`${cardTelemetry.compensation} #${cardTelemetry.eventCount}`}
                 />
+                <Metric label="Card owner" value={cardTelemetry.ownerKey || "none"} />
                 <Metric
                   label="Anchor"
                   value={
@@ -1194,6 +1355,12 @@ export function WorkflowActivityBrowserFixture() {
                       : "none"
                   }
                 />
+                <Metric
+                  label="Minimap"
+                  value={`${domSnapshot.minimapPresent ? "present" : "absent"} / bottom ${domSnapshot.minimapBottomInset}`}
+                />
+                <Metric label="Composer inset" value={`${FIXTURE_COMPOSER_INSET_PX}px`} />
+                <Metric label="Scroll affordance" value={isAtEnd ? "hidden" : "visible"} />
               </dl>
               <p
                 className="mt-1.5 truncate text-[11px] text-muted-foreground"
@@ -1207,7 +1374,7 @@ export function WorkflowActivityBrowserFixture() {
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" data-fixture-chat-column>
               {workflowModel ? (
                 <WorkflowActivityCard
-                  key={ownerKey}
+                  key={timelineOwnerKey}
                   model={workflowModel}
                   onHeightChange={handleCardHeightChange}
                 />
@@ -1243,10 +1410,37 @@ export function WorkflowActivityBrowserFixture() {
                   onAnchorSizeChanged={(messageId, size) => {
                     if (messageId === anchorMessageId) setAnchorSize(size);
                   }}
-                  contentInsetEndAdjustment={0}
-                  onIsAtEndChange={setIsAtEnd}
+                  contentInsetEndAdjustment={FIXTURE_COMPOSER_INSET_PX}
+                  onIsAtEndChange={(nextIsAtEnd) => {
+                    setIsAtEnd(scrollModeRef.current === "free-scrolling" ? false : nextIsAtEnd);
+                  }}
                   onManualNavigation={() => driveScrollMode("free-scrolling")}
                 />
+                {!isAtEnd ? (
+                  <div
+                    className="pointer-events-none absolute left-1/2 z-30 flex -translate-x-1/2 justify-center py-1.5"
+                    style={{ bottom: FIXTURE_COMPOSER_INSET_PX + 4 }}
+                  >
+                    <button
+                      type="button"
+                      aria-label="Scroll to end"
+                      title="Scroll to end"
+                      data-fixture-scroll-to-end
+                      onClick={() => driveScrollMode("following-end")}
+                      className="pointer-events-auto cursor-pointer rounded-full border border-border/60 bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm transition-colors hover:border-border hover:text-foreground"
+                    >
+                      Scroll to end
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              <div
+                aria-label={`Synthetic composer inset ${FIXTURE_COMPOSER_INSET_PX} pixels`}
+                data-fixture-composer
+                className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-center justify-center border-t border-border/60 bg-card/90 text-[11px] text-muted-foreground backdrop-blur-sm"
+                style={{ height: FIXTURE_COMPOSER_INSET_PX }}
+              >
+                Synthetic composer inset · {FIXTURE_COMPOSER_INSET_PX}px
               </div>
             </div>
           </section>
