@@ -155,10 +155,17 @@ function createProviderServiceHarness() {
     Effect.runSync(PubSub.publish(runtimeEventPubSub, normalizeLegacyEvent(event)));
   };
 
+  const awaitRuntimeSubscriber = async (): Promise<void> => {
+    while (runtimeEventPubSub.subscribers.size === 0) {
+      await Effect.runPromise(Effect.yieldNow);
+    }
+  };
+
   return {
     service,
     emit,
     setSession,
+    awaitRuntimeSubscriber,
   };
 }
 
@@ -273,8 +280,12 @@ describe("ProviderRuntimeIngestion", () => {
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
-    const drain = () => Effect.runPromise(ingestion.drain);
+    await runtime.runPromise(ingestion.start().pipe(Scope.provide(scope)));
+    // The test PubSub is intentionally unbuffered. Wait until the ingestion
+    // stream has acquired its subscription so immediate fixture events cannot
+    // be dropped by a harness-only startup race.
+    await provider.awaitRuntimeSubscriber();
+    const drain = () => runtime!.runPromise(ingestion.drain);
 
     const createdAt = "2026-01-01T00:00:00.000Z";
     await Effect.runPromise(
@@ -1973,7 +1984,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resumedMessage?.text).toBe(" second half");
     expect(resumedMessage?.streaming).toBe(false);
 
-    const events = await Effect.runPromise(
+    const events = await runtime!.runPromise(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),
@@ -3089,6 +3100,91 @@ describe("ProviderRuntimeIngestion", () => {
       ),
     ).toHaveLength(2);
     expect(thread.messages).toHaveLength(0);
+  });
+
+  it("preserves canonical tool identity and terminal status across lifecycle projections", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnId = asTurnId("turn-tool-lifecycle");
+    const itemId = asItemId("tool-lifecycle-1");
+
+    harness.emit({
+      type: "tool.progress",
+      eventId: asEventId("evt-tool-lifecycle-progress"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        toolUseId: itemId,
+        toolName: "Bash",
+        summary: "Running focused tests",
+        elapsedSeconds: 1,
+      },
+    });
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-tool-lifecycle-updated"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Bash",
+        data: { toolName: "Bash", input: { command: "pnpm test" } },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-tool-lifecycle-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "failed",
+        title: "Bash",
+        detail: "Focused tests failed",
+        data: { toolName: "Bash", result: "exit 1" },
+      },
+    });
+    await harness.drain();
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      [
+        "evt-tool-lifecycle-progress",
+        "evt-tool-lifecycle-updated",
+        "evt-tool-lifecycle-completed",
+      ].every((activityId) => entry.activities.some((activity) => activity.id === activityId)),
+    );
+    const lifecycle = thread.activities.filter((activity) =>
+      activity.id.startsWith("evt-tool-lifecycle-"),
+    );
+
+    expect(lifecycle).toHaveLength(3);
+    expect(
+      lifecycle.map((activity) =>
+        activity.payload && typeof activity.payload === "object"
+          ? (activity.payload as Record<string, unknown>).toolUseId
+          : undefined,
+      ),
+    ).toEqual([itemId, itemId, itemId]);
+    expect(lifecycle.map((activity) => activity.kind)).toEqual([
+      "tool.progress",
+      "tool.updated",
+      "tool.completed",
+    ]);
+    expect(lifecycle[1]?.payload).toMatchObject({ status: "inProgress" });
+    expect(lifecycle[2]?.payload).toMatchObject({
+      status: "failed",
+      detail: "Focused tests failed",
+      data: { toolName: "Bash", result: "exit 1" },
+    });
   });
 
   it("coalesces only displayable reasoning-summary deltas at turn completion", async () => {

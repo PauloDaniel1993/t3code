@@ -420,6 +420,113 @@ describe("deriveWorkflowActivityModel", () => {
     });
   });
 
+  it("latches correlated terminal tool states and ignores late progress", () => {
+    const activities = [
+      makeActivity({
+        id: "complete-progress",
+        sequence: 1,
+        kind: "tool.progress",
+        payload: {
+          toolUseId: "complete",
+          toolName: "Read",
+          summary: "Read the source",
+          taskId: "task-a",
+        },
+      }),
+      makeActivity({
+        id: "complete-terminal",
+        sequence: 2,
+        kind: "tool.completed",
+        payload: { toolUseId: "complete" },
+      }),
+      makeActivity({
+        id: "complete-late-progress",
+        sequence: 3,
+        kind: "tool.progress",
+        payload: {
+          toolUseId: "complete",
+          summary: "This late snapshot must not revive the row",
+        },
+      }),
+      makeActivity({
+        id: "failed-progress",
+        sequence: 4,
+        kind: "tool.progress",
+        payload: { toolUseId: "failed", toolName: "Bash", summary: "Run tests" },
+      }),
+      makeActivity({
+        id: "failed-terminal",
+        sequence: 5,
+        kind: "tool.completed",
+        payload: { toolUseId: "failed", status: "failed" },
+      }),
+      makeActivity({
+        id: "declined-progress",
+        sequence: 6,
+        kind: "tool.progress",
+        payload: { toolUseId: "declined", toolName: "Write", summary: "Write output" },
+      }),
+      makeActivity({
+        id: "declined-terminal",
+        sequence: 7,
+        kind: "tool.denied",
+        payload: { toolUseId: "declined" },
+      }),
+      makeActivity({
+        id: "stopped-progress",
+        sequence: 8,
+        kind: "tool.progress",
+        payload: { toolUseId: "stopped", toolName: "Task", summary: "Delegate review" },
+      }),
+      makeActivity({
+        id: "stopped-terminal",
+        sequence: 9,
+        kind: "tool.updated",
+        payload: { toolUseId: "stopped", status: "stopped" },
+      }),
+      makeActivity({
+        id: "uncorrelated-terminal",
+        sequence: 10,
+        kind: "tool.completed",
+        payload: { status: "failed" },
+      }),
+    ];
+
+    const canonical = deriveWorkflowActivityModel(activities, TurnId.make("turn-current"));
+    const shuffled = deriveWorkflowActivityModel(
+      activities.toReversed(),
+      TurnId.make("turn-current"),
+    );
+
+    expect(shuffled?.recentTools).toEqual(canonical?.recentTools);
+    expect(canonical?.recentTools).toMatchObject([
+      {
+        id: "tool:complete",
+        activityId: "complete-terminal",
+        status: "completed",
+        toolName: "Read",
+        summary: "Read the source",
+        taskId: "task-a",
+      },
+      {
+        id: "tool:failed",
+        activityId: "failed-terminal",
+        status: "failed",
+      },
+      {
+        id: "tool:declined",
+        activityId: "declined-terminal",
+        status: "declined",
+      },
+      {
+        id: "tool:stopped",
+        activityId: "stopped-terminal",
+        status: "stopped",
+      },
+    ]);
+    expect(canonical?.recentTools).toHaveLength(4);
+  });
+
   it("orders legacy unsequenced tool progress deterministically by timestamp and id", () => {
     const a = makeActivity({
       id: "legacy-a",
