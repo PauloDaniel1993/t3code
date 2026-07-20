@@ -222,7 +222,7 @@ describe("workflow card height ownership", () => {
     expect(bookkeeping).toBe(afterChildMeasurement);
 
     const mounted = consumeWorkflowCardHeightDelta(bookkeeping, "thread-b");
-    expect(mounted.heightDelta).toBe(180);
+    expect(mounted.heightDelta).toBe(0);
     bookkeeping = recordWorkflowCardHeight(mounted.bookkeeping, "thread-b", 184);
 
     const resized = consumeWorkflowCardHeightDelta(bookkeeping, "thread-b");
@@ -268,7 +268,7 @@ describe("workflow card height ownership", () => {
     const staleFrame = consumeWorkflowCardHeightDelta(bookkeeping, "thread-a");
     expect(staleFrame.heightDelta).toBe(0);
     expect(staleFrame.bookkeeping).toBe(bookkeeping);
-    expect(consumeWorkflowCardHeightDelta(bookkeeping, "thread-b").heightDelta).toBe(180);
+    expect(consumeWorkflowCardHeightDelta(bookkeeping, "thread-b").heightDelta).toBe(0);
   });
 
   it("uses real same-thread replacement and removal deltas", () => {
@@ -282,6 +282,16 @@ describe("workflow card height ownership", () => {
 
     bookkeeping = recordWorkflowCardHeight(replacement.bookkeeping, "thread-a", 0);
     expect(consumeWorkflowCardHeightDelta(bookkeeping, "thread-a").heightDelta).toBe(-156);
+  });
+
+  it("treats a card appearing after a same-owner empty baseline as a real mount", () => {
+    let bookkeeping = createWorkflowCardHeightBookkeeping("thread-a");
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-a", 0);
+    expect(bookkeeping.hasBaseline).toBe(true);
+    expect(consumeWorkflowCardHeightDelta(bookkeeping, "thread-a").heightDelta).toBe(0);
+
+    bookkeeping = recordWorkflowCardHeight(bookkeeping, "thread-a", 120);
+    expect(consumeWorkflowCardHeightDelta(bookkeeping, "thread-a").heightDelta).toBe(120);
   });
 
   it("does not enqueue compensation for a repeated settled height", () => {
