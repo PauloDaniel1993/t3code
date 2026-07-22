@@ -194,6 +194,18 @@ interface ClaudeTaskState {
   readonly blockedBy: Set<string>;
 }
 
+interface ClaudeAgentTaskAttempt {
+  readonly taskId: string;
+  readonly turnId?: TurnId;
+  readonly description?: string;
+  readonly prompt?: string;
+  readonly subagentType?: string;
+  readonly taskType?: string;
+  retryOfTaskId?: string;
+  retriedByTaskId?: string;
+  status: "inProgress" | "completed" | "failed" | "stopped";
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -211,6 +223,7 @@ interface ClaudeSessionContext {
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
+  readonly agentTaskAttempts: Map<string, ClaudeAgentTaskAttempt>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
@@ -746,6 +759,54 @@ function normalizeClaudeTaskStatus(value: unknown): PlanStep["status"] {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function sameClaudeAgentTaskIdentity(
+  failed: ClaudeAgentTaskAttempt,
+  next: ClaudeAgentTaskAttempt,
+): boolean {
+  if (failed.prompt !== undefined && next.prompt !== undefined) {
+    return failed.prompt === next.prompt;
+  }
+  if (failed.description === undefined || failed.description !== next.description) {
+    return false;
+  }
+  if (
+    failed.subagentType !== undefined &&
+    next.subagentType !== undefined &&
+    failed.subagentType !== next.subagentType
+  ) {
+    return false;
+  }
+  return !(
+    failed.taskType !== undefined &&
+    next.taskType !== undefined &&
+    failed.taskType !== next.taskType
+  );
+}
+
+function linkClaudeAgentTaskRetry(
+  attempts: Map<string, ClaudeAgentTaskAttempt>,
+  next: ClaudeAgentTaskAttempt,
+): string | undefined {
+  const failedAttempt = [...attempts.values()]
+    .toReversed()
+    .find(
+      (attempt) =>
+        attempt.status === "failed" &&
+        attempt.retriedByTaskId === undefined &&
+        sameClaudeAgentTaskIdentity(attempt, next),
+    );
+  if (failedAttempt === undefined) {
+    return undefined;
+  }
+  failedAttempt.retriedByTaskId = next.taskId;
+  next.retryOfTaskId = failedAttempt.taskId;
+  return failedAttempt.taskId;
+}
+
+function resolveClaudeAgentTaskTurnId(context: ClaudeSessionContext): TurnId | undefined {
+  return context.turnState?.turnId ?? context.turns.at(-1)?.id;
 }
 
 function readStringArray(value: unknown): Array<string> {
@@ -2794,16 +2855,39 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_started": {
+        const taskId = RuntimeTaskId.make(message.task_id);
+        const taskTurnId = resolveClaudeAgentTaskTurnId(context);
         const toolUseId = readString(message.tool_use_id);
         const description = readString(message.description);
         const subagentType = readString(message.subagent_type);
         const taskType = readString(message.task_type);
         const workflowName = readString(message.workflow_name);
+        const prompt = readString(message.prompt);
+        const existingAttempt = context.agentTaskAttempts.get(message.task_id);
+        const attempt: ClaudeAgentTaskAttempt = existingAttempt ?? {
+          taskId: message.task_id,
+          ...(taskTurnId !== undefined ? { turnId: taskTurnId } : {}),
+          ...(description !== undefined ? { description } : {}),
+          ...(prompt !== undefined ? { prompt } : {}),
+          ...(subagentType !== undefined ? { subagentType } : {}),
+          ...(taskType !== undefined ? { taskType } : {}),
+          status: "inProgress",
+        };
+        const retryOfTaskId =
+          attempt.retryOfTaskId ??
+          (existingAttempt === undefined
+            ? linkClaudeAgentTaskRetry(context.agentTaskAttempts, attempt)
+            : undefined);
+        context.agentTaskAttempts.set(message.task_id, attempt);
         yield* offerRuntimeEvent({
           ...base,
+          ...(attempt.turnId !== undefined ? { turnId: asCanonicalTurnId(attempt.turnId) } : {}),
           type: "task.started",
           payload: {
-            taskId: RuntimeTaskId.make(message.task_id),
+            taskId,
+            ...(retryOfTaskId !== undefined
+              ? { retryOfTaskId: RuntimeTaskId.make(retryOfTaskId) }
+              : {}),
             ...(description !== undefined ? { description } : {}),
             ...(taskType !== undefined ? { taskType } : {}),
             ...(toolUseId !== undefined ? { toolUseId } : {}),
@@ -2818,6 +2902,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return;
       }
       case "task_progress": {
+        const taskTurnId =
+          context.agentTaskAttempts.get(message.task_id)?.turnId ??
+          resolveClaudeAgentTaskTurnId(context);
         const toolUseId = readString(message.tool_use_id);
         const subagentType = readString(message.subagent_type);
         const summary = readString(message.summary);
@@ -2833,6 +2920,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         );
         yield* offerRuntimeEvent({
           ...base,
+          ...(taskTurnId !== undefined ? { turnId: asCanonicalTurnId(taskTurnId) } : {}),
           type: "task.progress",
           payload: {
             taskId: RuntimeTaskId.make(message.task_id),
@@ -2855,6 +2943,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const toolUseId = readString(message.tool_use_id);
         const summary = readString(message.summary);
         const taskUsage = normalizeClaudeTaskUsage(message.usage);
+        const attempt = context.agentTaskAttempts.get(message.task_id);
+        const taskTurnId = attempt?.turnId ?? resolveClaudeAgentTaskTurnId(context);
+        if (attempt !== undefined) {
+          attempt.status = message.status;
+        }
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -2865,6 +2958,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         );
         yield* offerRuntimeEvent({
           ...base,
+          ...(taskTurnId !== undefined ? { turnId: asCanonicalTurnId(taskTurnId) } : {}),
           type: "task.completed",
           payload: {
             taskId: RuntimeTaskId.make(message.task_id),
@@ -2875,6 +2969,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               ? { skipTranscript: message.skip_transcript }
               : {}),
             ...(summary !== undefined ? { summary } : {}),
+            ...(message.status === "failed" && summary !== undefined ? { error: summary } : {}),
             ...(taskUsage !== undefined ? { usage: taskUsage } : {}),
           },
         });
@@ -3344,6 +3439,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
       const inFlightTools = new Map<number, ToolInFlight>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
+      const agentTaskAttempts = new Map<string, ClaudeAgentTaskAttempt>();
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
 
@@ -3785,6 +3881,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         turns: [],
         inFlightTools,
         claudeTasks,
+        agentTaskAttempts,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,

@@ -541,6 +541,9 @@ export function runtimeEventToActivities(
                 : "Task started",
           payload: {
             taskId: event.payload.taskId,
+            ...(event.payload.retryOfTaskId !== undefined
+              ? { retryOfTaskId: event.payload.retryOfTaskId }
+              : {}),
             ...(event.payload.description !== undefined
               ? {
                   description: event.payload.description,
@@ -636,6 +639,7 @@ export function runtimeEventToActivities(
                   detail: truncateDetail(event.payload.summary),
                 }
               : {}),
+            ...(event.payload.error !== undefined ? { error: event.payload.error } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,

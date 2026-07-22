@@ -227,6 +227,7 @@ describe("ProviderRuntimeEvent", () => {
       threadId: "thread-1",
       payload: {
         taskId: "task-2",
+        retryOfTaskId: "task-1",
         description: "Review the implementation",
         taskType: "agent",
         toolUseId: "tool-task-2",
@@ -242,6 +243,7 @@ describe("ProviderRuntimeEvent", () => {
     }
     expect(enrichedStarted.payload.skipTranscript).toBe(false);
     expect(enrichedStarted.payload.workflowName).toBe("parallel-review");
+    expect(enrichedStarted.payload.retryOfTaskId).toBe("task-1");
 
     const progress = decodeRuntimeEvent({
       type: "task.progress",
@@ -290,6 +292,25 @@ describe("ProviderRuntimeEvent", () => {
     expect(completed.payload.outputFile).toBe("C:/tmp/review.md");
     expect(completed.payload.skipTranscript).toBe(false);
     expect(completed.payload.usage).toEqual({ totalTokens: 0, toolUses: 0, durationMs: 0 });
+
+    const failed = decodeRuntimeEvent({
+      type: "task.completed",
+      eventId: "event-task-failed",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:09.000Z",
+      threadId: "thread-1",
+      payload: {
+        taskId: "task-3",
+        status: "failed",
+        summary: "Worker stopped unexpectedly",
+        error: "Connection to the worker was lost.",
+      },
+    });
+    expect(failed.type).toBe("task.completed");
+    if (failed.type !== "task.completed") {
+      throw new Error("expected failed task.completed");
+    }
+    expect(failed.payload.error).toBe("Connection to the worker was lost.");
   });
 
   it("decodes tool progress without a task and with a nullable parent identity", () => {
