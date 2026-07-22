@@ -3,6 +3,7 @@ import {
   WORKFLOW_CARD_EXPANDED_MAX_HEIGHT_PX,
   WORKFLOW_CARD_EXPANDED_MIN_USABLE_HEIGHT_PX,
   WORKFLOW_CARD_EXPANDED_VIEWPORT_SHARE,
+  WORKFLOW_CARD_COMPOSER_HEIGHT_MULTIPLIER,
   consumeWorkflowCardHeightDelta,
   createWorkflowCardHeightBookkeeping,
   getAnchoredTurnMetrics,
@@ -11,9 +12,24 @@ import {
   recordWorkflowCardHeight,
   resolveWorkflowCardExpandedMaxHeight,
   resolveWorkflowCardHeightDelta,
+  resolveWorkflowCardMaxHeight,
   resolveWorkflowCardScrollCompensation,
   type TimelineScrollMode,
 } from "./timelineScrollAnchoring";
+
+describe("resolveWorkflowCardMaxHeight", () => {
+  it("caps the activity surface at two composer heights", () => {
+    expect(WORKFLOW_CARD_COMPOSER_HEIGHT_MULTIPLIER).toBe(2);
+    expect(resolveWorkflowCardMaxHeight(140)).toBe(280);
+    expect(resolveWorkflowCardMaxHeight(101)).toBe(202);
+  });
+
+  it("waits for a valid positive composer measurement", () => {
+    expect(resolveWorkflowCardMaxHeight(0)).toBeUndefined();
+    expect(resolveWorkflowCardMaxHeight(-1)).toBeUndefined();
+    expect(resolveWorkflowCardMaxHeight(Number.NaN)).toBeUndefined();
+  });
+});
 
 function buildState({
   positions,

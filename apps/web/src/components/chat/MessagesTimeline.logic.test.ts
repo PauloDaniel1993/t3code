@@ -1,4 +1,4 @@
-import { EventId, TurnId, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import { EventId, MessageId, TurnId, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { deriveTimelineEntries, deriveWorkLogEntries } from "../../session-logic";
 import {
@@ -6,9 +6,11 @@ import {
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
   deriveTaskCardMetricParts,
+  deriveTimelineActivityCycles,
   formatTaskTokenCount,
   formatTaskToolUseCount,
   normalizeCompactToolLabel,
+  resolveActiveTimelineActivityCycle,
   resolveAssistantMessageCopyState,
   resolveTaskCardExpansionA11y,
   workEntryIsTranscriptVisible,
@@ -16,6 +18,147 @@ import {
   type MessagesTimelineRow,
   type StableMessagesTimelineRowsState,
 } from "./MessagesTimeline.logic";
+
+function makeActivityCycleMessageRow(input: {
+  readonly id: string;
+  readonly role: "user" | "assistant";
+  readonly turnId?: TurnId | null;
+}): Extract<MessagesTimelineRow, { kind: "message" }> {
+  const createdAt = "2026-01-01T00:00:00Z";
+  return {
+    kind: "message",
+    id: `entry:${input.id}`,
+    createdAt,
+    message: {
+      id: MessageId.make(input.id),
+      role: input.role,
+      text: input.id,
+      turnId: input.turnId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+      streaming: false,
+    },
+    durationStart: createdAt,
+    showAssistantMeta: input.role === "assistant",
+    showAssistantCopyButton: input.role === "assistant",
+    assistantCopyStreaming: false,
+  };
+}
+
+describe("timeline activity cycles", () => {
+  const turnOne = TurnId.make("turn-one");
+  const turnTwo = TurnId.make("turn-two");
+  const turnRetry = TurnId.make("turn-retry");
+
+  it("partitions at user messages, keeps empty cycles, and chooses the latest meaningful turn", () => {
+    const cycles = deriveTimelineActivityCycles({
+      rows: [
+        makeActivityCycleMessageRow({ id: "user-1", role: "user" }),
+        makeActivityCycleMessageRow({ id: "assistant-1", role: "assistant", turnId: turnOne }),
+        makeActivityCycleMessageRow({
+          id: "assistant-retry",
+          role: "assistant",
+          turnId: turnRetry,
+        }),
+        makeActivityCycleMessageRow({ id: "user-2", role: "user" }),
+        makeActivityCycleMessageRow({ id: "assistant-2", role: "assistant", turnId: turnTwo }),
+        makeActivityCycleMessageRow({ id: "user-3", role: "user" }),
+      ],
+      activityTurnIds: new Set([turnOne, turnTwo, turnRetry]),
+      runningTurnId: null,
+    });
+
+    expect(cycles).toEqual([
+      { id: "message-cycle:user-1", startRowIndex: 0, activityTurnId: turnRetry },
+      { id: "message-cycle:user-2", startRowIndex: 3, activityTurnId: turnTwo },
+      { id: "message-cycle:user-3", startRowIndex: 5, activityTurnId: null },
+    ]);
+  });
+
+  it("lets the authoritative running turn own the latest cycle before its rows arrive", () => {
+    const cycles = deriveTimelineActivityCycles({
+      rows: [makeActivityCycleMessageRow({ id: "user-1", role: "user" })],
+      activityTurnIds: new Set([turnTwo]),
+      runningTurnId: turnTwo,
+    });
+
+    expect(cycles[0]?.activityTurnId).toBe(turnTwo);
+  });
+
+  it("keeps activity-only failed turns associated when their work row is hidden", () => {
+    const userRow = makeActivityCycleMessageRow({ id: "user-1", role: "user" });
+    const cycles = deriveTimelineActivityCycles({
+      rows: [userRow],
+      timelineEntries: [
+        {
+          id: userRow.id,
+          kind: "message",
+          createdAt: userRow.createdAt,
+          message: userRow.message,
+        },
+        {
+          id: "hidden-failed-task",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "hidden-failed-task",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId: turnOne,
+            label: "Failed worker",
+            tone: "error",
+            taskId: "task-1",
+            skipTranscript: true,
+            errorMessage: "Worker connection closed unexpectedly.",
+          },
+        },
+      ],
+      activityTurnIds: new Set([turnOne]),
+      runningTurnId: null,
+    });
+
+    expect(cycles[0]?.activityTurnId).toBe(turnOne);
+  });
+
+  it("uses hysteresis for adjacent boundaries and resolves fast jumps directly", () => {
+    const cycles = [
+      { id: "cycle-1", startRowIndex: 0, activityTurnId: turnOne },
+      { id: "cycle-2", startRowIndex: 1, activityTurnId: turnTwo },
+      { id: "cycle-3", startRowIndex: 2, activityTurnId: null },
+    ];
+    const positions = [0, 100, 200];
+    const resolveAt = (scroll: number, currentCycleId: string) =>
+      resolveActiveTimelineActivityCycle({
+        cycles,
+        state: { scroll, positionAtIndex: (index) => positions[index] },
+        currentCycleId,
+      });
+
+    expect(resolveAt(88, "cycle-1")?.id).toBe("cycle-1");
+    expect(resolveAt(100, "cycle-1")?.id).toBe("cycle-2");
+    expect(resolveAt(80, "cycle-2")?.id).toBe("cycle-2");
+    expect(resolveAt(75, "cycle-2")?.id).toBe("cycle-1");
+    expect(resolveAt(188, "cycle-1")?.id).toBe("cycle-3");
+    expect(resolveAt(188, "cycle-1")?.activityTurnId).toBeNull();
+  });
+
+  it("activates the running cycle at the anchored live offset and releases it when scrolling up", () => {
+    const cycles = [
+      { id: "cycle-1", startRowIndex: 0, activityTurnId: turnOne },
+      { id: "cycle-2", startRowIndex: 1, activityTurnId: turnTwo },
+    ];
+    const positions = [0, 116];
+    const resolveAt = (scroll: number, currentCycleId: string) =>
+      resolveActiveTimelineActivityCycle({
+        cycles,
+        state: { scroll, positionAtIndex: (index) => positions[index] },
+        currentCycleId,
+        leadingCycleId: "cycle-2",
+      });
+
+    expect(resolveAt(100, "cycle-1")?.id).toBe("cycle-2");
+    expect(resolveAt(60, "cycle-2")?.id).toBe("cycle-1");
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {

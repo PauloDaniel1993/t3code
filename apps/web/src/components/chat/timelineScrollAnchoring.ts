@@ -11,6 +11,19 @@ export type TimelineScrollMode = "following-end" | "anchoring-new-turn" | "free-
 export const WORKFLOW_CARD_EXPANDED_MAX_HEIGHT_PX = 320;
 export const WORKFLOW_CARD_EXPANDED_MIN_USABLE_HEIGHT_PX = 120;
 export const WORKFLOW_CARD_EXPANDED_VIEWPORT_SHARE = 0.45;
+export const WORKFLOW_CARD_COMPOSER_HEIGHT_MULTIPLIER = 2;
+
+/**
+ * The bottom activity surface may grow to at most two composer heights. An
+ * undefined result lets the card use its viewport-based fallback until the
+ * composer has a reliable measurement.
+ */
+export function resolveWorkflowCardMaxHeight(composerHeight: number): number | undefined {
+  if (!Number.isFinite(composerHeight) || composerHeight <= 0) {
+    return undefined;
+  }
+  return Math.round(composerHeight * WORKFLOW_CARD_COMPOSER_HEIGHT_MULTIPLIER);
+}
 
 /**
  * Resolve the max-height (px) for the workflow card's expanded content given
