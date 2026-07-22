@@ -604,7 +604,6 @@ export function makeOpenCodeAdapter(
     const fileSystem = yield* FileSystem.FileSystem;
     const openCodeRuntime = yield* OpenCodeRuntime;
     const crypto = yield* Crypto.Crypto;
-    const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const sameDirectory = (left: string, right: string) =>
       isSameOpenCodeDirectory(fileSystem, path, left, right);
