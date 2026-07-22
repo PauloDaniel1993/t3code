@@ -2183,6 +2183,159 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("keeps background task lifecycle events on their completed originating turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "task.started" ||
+            event.type === "task.progress" ||
+            event.type === "task.completed",
+        ),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Delegate a background review",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-background-task",
+        uuid: "result-before-background-task",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "background-task",
+        description: "Review in the background",
+        session_id: "sdk-session-background-task",
+        uuid: "background-task-started",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "background-task",
+        description: "Reviewing",
+        usage: { total_tokens: 20, tool_uses: 1, duration_ms: 100 },
+        session_id: "sdk-session-background-task",
+        uuid: "background-task-progress",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "background-task",
+        status: "completed",
+        summary: "Review finished.",
+        usage: { total_tokens: 40, tool_uses: 2, duration_ms: 200 },
+        session_id: "sdk-session-background-task",
+        uuid: "background-task-completed",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.map((event) => String(event.turnId)),
+        [String(turn.turnId), String(turn.turnId), String(turn.turnId)],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("persists failed task errors and links a matching retry", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started" || event.type === "task.completed"),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-failed-attempt",
+        description: "Review the adapter",
+        subagent_type: "code-reviewer",
+        task_type: "agent",
+        prompt: "Review the adapter for regressions.",
+        session_id: "sdk-session-task-retry",
+        uuid: "task-failed-attempt-start",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-failed-attempt",
+        status: "failed",
+        output_file: "task-failed.txt",
+        summary: "Worker connection closed unexpectedly.",
+        session_id: "sdk-session-task-retry",
+        uuid: "task-failed-attempt-complete",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-retry-attempt",
+        description: "Review the adapter",
+        subagent_type: "code-reviewer",
+        task_type: "agent",
+        prompt: "Review the adapter for regressions.",
+        session_id: "sdk-session-task-retry",
+        uuid: "task-retry-attempt-start",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[0]?.payload), {
+        taskId: "task-failed-attempt",
+        description: "Review the adapter",
+        taskType: "agent",
+        subagentType: "code-reviewer",
+        prompt: "Review the adapter for regressions.",
+      });
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[1]?.payload), {
+        taskId: "task-failed-attempt",
+        status: "failed",
+        outputFile: "task-failed.txt",
+        summary: "Worker connection closed unexpectedly.",
+        error: "Worker connection closed unexpectedly.",
+      });
+      assert.deepEqual(payloadWithStringTaskId(runtimeEvents[2]?.payload), {
+        taskId: "task-retry-attempt",
+        retryOfTaskId: "task-failed-attempt",
+        description: "Review the adapter",
+        taskType: "agent",
+        subagentType: "code-reviewer",
+        prompt: "Review the adapter for regressions.",
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps Claude tool progress with typed task correlation and parent identity", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
