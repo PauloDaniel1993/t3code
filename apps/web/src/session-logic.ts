@@ -76,7 +76,9 @@ export interface WorkLogEntry {
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   taskId?: string;
+  retryOfTaskId?: string;
   toolUseId?: string;
+  initialDescription?: string;
   description?: string;
   taskType?: string;
   subagentType?: string;
@@ -85,6 +87,7 @@ export interface WorkLogEntry {
   usage?: TaskUsageSnapshot;
   progressSummary?: string;
   resultSummary?: string;
+  errorMessage?: string;
   outputFile?: string;
   skipTranscript?: boolean;
   lastToolName?: string;
@@ -709,7 +712,9 @@ interface TaskLifecycleAccumulator {
   displayActivity: OrchestrationThreadActivity;
   hasTranscriptActivity: boolean;
   terminalStatus?: Extract<WorkLogToolLifecycleStatus, "completed" | "failed" | "stopped">;
+  retryOfTaskId?: string;
   toolUseId?: string;
+  initialDescription?: string;
   description?: string;
   taskType?: string;
   subagentType?: string;
@@ -718,6 +723,7 @@ interface TaskLifecycleAccumulator {
   usage?: TaskUsageSnapshot;
   progressSummary?: string;
   resultSummary?: string;
+  errorMessage?: string;
   outputFile?: string;
   skipTranscript?: boolean;
   lastToolName?: string;
@@ -784,6 +790,8 @@ function mergeTaskLifecyclePayload(
   payload: Record<string, unknown> | null,
 ): void {
   if (activity.kind === "task.started") {
+    assignTaskString(accumulator, "retryOfTaskId", payload?.retryOfTaskId);
+    assignTaskString(accumulator, "initialDescription", payload?.description ?? payload?.detail);
     assignTaskString(accumulator, "description", payload?.description ?? payload?.detail);
     assignTaskString(accumulator, "taskType", payload?.taskType);
     assignTaskString(accumulator, "toolUseId", payload?.toolUseId);
@@ -815,7 +823,15 @@ function mergeTaskLifecyclePayload(
   assignTaskString(accumulator, "toolUseId", payload?.toolUseId);
   assignTaskRawString(accumulator, "outputFile", payload?.outputFile);
   assignTaskBoolean(accumulator, "skipTranscript", payload?.skipTranscript);
-  assignTaskString(accumulator, "resultSummary", payload?.summary ?? payload?.detail);
+  const completionSummary = asTrimmedString(payload?.summary ?? payload?.detail);
+  const errorMessage =
+    status === "failed" ? (asTrimmedString(payload?.error) ?? completionSummary) : null;
+  if (errorMessage !== null) {
+    accumulator.errorMessage = errorMessage;
+  }
+  if (completionSummary !== null && completionSummary !== errorMessage) {
+    accumulator.resultSummary = completionSummary;
+  }
   assignLatestTaskUsage(accumulator, payload?.usage);
 }
 
@@ -888,6 +904,7 @@ function normalizeTaskUsageMetric(value: unknown): number | null {
 function toDerivedTaskLifecycle(accumulator: TaskLifecycleAccumulator): DerivedTaskLifecycle {
   const status = accumulator.terminalStatus ?? "inProgress";
   const label =
+    accumulator.errorMessage ??
     accumulator.resultSummary ??
     accumulator.progressSummary ??
     accumulator.description ??
@@ -896,6 +913,7 @@ function toDerivedTaskLifecycle(accumulator: TaskLifecycleAccumulator): DerivedT
     accumulator.description && accumulator.description !== label
       ? accumulator.description
       : undefined;
+  const usage = withTaskLifecycleDuration(accumulator, status);
   const entry: WorkLogEntry = {
     id: accumulator.firstActivity.id,
     createdAt: accumulator.firstActivity.createdAt,
@@ -910,20 +928,27 @@ function toDerivedTaskLifecycle(accumulator: TaskLifecycleAccumulator): DerivedT
     taskId: accumulator.taskId,
     toolLifecycleStatus: status,
     sourceActivityKind: accumulator.displayActivity.kind,
+    ...(accumulator.retryOfTaskId !== undefined
+      ? { retryOfTaskId: accumulator.retryOfTaskId }
+      : {}),
     ...(detail !== undefined ? { detail } : {}),
     ...(accumulator.toolUseId !== undefined ? { toolUseId: accumulator.toolUseId } : {}),
     ...(accumulator.description !== undefined ? { description: accumulator.description } : {}),
+    ...(accumulator.initialDescription !== undefined
+      ? { initialDescription: accumulator.initialDescription }
+      : {}),
     ...(accumulator.taskType !== undefined ? { taskType: accumulator.taskType } : {}),
     ...(accumulator.subagentType !== undefined ? { subagentType: accumulator.subagentType } : {}),
     ...(accumulator.workflowName !== undefined ? { workflowName: accumulator.workflowName } : {}),
     ...(accumulator.prompt !== undefined ? { prompt: accumulator.prompt } : {}),
-    ...(accumulator.usage !== undefined ? { usage: accumulator.usage } : {}),
+    ...(usage !== undefined ? { usage } : {}),
     ...(accumulator.progressSummary !== undefined
       ? { progressSummary: accumulator.progressSummary }
       : {}),
     ...(accumulator.resultSummary !== undefined
       ? { resultSummary: accumulator.resultSummary }
       : {}),
+    ...(accumulator.errorMessage !== undefined ? { errorMessage: accumulator.errorMessage } : {}),
     ...(accumulator.outputFile !== undefined ? { outputFile: accumulator.outputFile } : {}),
     ...(accumulator.skipTranscript !== undefined
       ? { skipTranscript: accumulator.skipTranscript }
@@ -937,6 +962,30 @@ function toDerivedTaskLifecycle(accumulator: TaskLifecycleAccumulator): DerivedT
     displayActivity: accumulator.displayActivity,
     hasTranscriptActivity: accumulator.hasTranscriptActivity,
     entry,
+  };
+}
+
+function withTaskLifecycleDuration(
+  accumulator: TaskLifecycleAccumulator,
+  status: WorkLogToolLifecycleStatus,
+): TaskUsageSnapshot | undefined {
+  if (accumulator.usage?.durationMs !== undefined) {
+    return accumulator.usage;
+  }
+  const startedAt = Date.parse(accumulator.firstActivity.createdAt);
+  const updatedAt = Date.parse(accumulator.latestActivity.createdAt);
+  const hasElapsedEvents = accumulator.firstActivity.id !== accumulator.latestActivity.id;
+  if (
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(updatedAt) ||
+    updatedAt < startedAt ||
+    (!hasElapsedEvents && status === "inProgress")
+  ) {
+    return accumulator.usage;
+  }
+  return {
+    ...accumulator.usage,
+    durationMs: Math.round(updatedAt - startedAt),
   };
 }
 

@@ -1,7 +1,12 @@
 import { EventId, TurnId, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { MAX_RECENT_WORKFLOW_TOOLS, deriveWorkflowActivityModel } from "./workflow-activity";
+import {
+  MAX_RECENT_WORKFLOW_TOOLS,
+  deriveVisibleWorkflowActivityModel,
+  deriveWorkflowActivityModel,
+  deriveWorkflowActivityModels,
+} from "./workflow-activity";
 
 let nextActivityId = 0;
 
@@ -27,6 +32,36 @@ function makeActivity(overrides: {
 }
 
 describe("deriveWorkflowActivityModel", () => {
+  it("derives a stable model for every meaningful turn in one history pass", () => {
+    const models = deriveWorkflowActivityModels([
+      makeActivity({
+        id: "turn-one-task",
+        turnId: "turn-one",
+        sequence: 1,
+        kind: "task.started",
+        payload: { taskId: "worker-one", description: "First exchange" },
+      }),
+      makeActivity({
+        id: "turn-two-task",
+        turnId: "turn-two",
+        sequence: 2,
+        kind: "task.started",
+        payload: { taskId: "worker-two", description: "Second exchange" },
+      }),
+      makeActivity({
+        id: "turn-without-workflow",
+        turnId: "turn-empty",
+        sequence: 3,
+        kind: "item.completed",
+        payload: { itemType: "assistantMessage" },
+      }),
+    ]);
+
+    expect([...models.keys()]).toEqual(["turn-one", "turn-two"]);
+    expect(models.get(TurnId.make("turn-one"))?.workers[0]?.taskId).toBe("worker-one");
+    expect(models.get(TurnId.make("turn-two"))?.workers[0]?.taskId).toBe("worker-two");
+  });
+
   it("is strictly scoped to the requested turn and never inherits an older plan", () => {
     const model = deriveWorkflowActivityModel(
       [
@@ -92,6 +127,72 @@ describe("deriveWorkflowActivityModel", () => {
     ).toBeNull();
     expect(deriveWorkflowActivityModel([], TurnId.make("turn-current"))).toBeNull();
     expect(deriveWorkflowActivityModel([], null)).toBeNull();
+  });
+
+  it("restores the latest persisted worker run after reopening a settled final-only turn", () => {
+    const activities = [
+      makeActivity({
+        id: "persisted-turn-complete",
+        turnId: "turn-agent-run",
+        sequence: 1,
+        createdAt: "2026-07-19T00:00:00.000Z",
+        kind: "turn.completed",
+      }),
+      makeActivity({
+        id: "persisted-agent-start",
+        turnId: null,
+        sequence: 2,
+        createdAt: "2026-07-19T00:00:01.000Z",
+        kind: "task.started",
+        payload: {
+          taskId: "persisted-agent",
+          description: "Review the implementation",
+          subagentType: "code-reviewer",
+        },
+      }),
+      makeActivity({
+        id: "persisted-agent-complete",
+        turnId: null,
+        sequence: 3,
+        createdAt: "2026-07-19T00:00:04.000Z",
+        kind: "task.completed",
+        payload: {
+          taskId: "persisted-agent",
+          status: "completed",
+          summary: "The implementation is sound.",
+          usage: { totalTokens: 320, toolUses: 3, durationMs: 4_000 },
+        },
+      }),
+      makeActivity({
+        id: "latest-final-only",
+        turnId: "turn-final-only",
+        sequence: 4,
+        createdAt: "2026-07-19T00:00:05.000Z",
+        kind: "item.completed",
+        payload: { itemType: "assistantMessage" },
+      }),
+    ];
+
+    expect(
+      deriveVisibleWorkflowActivityModel(activities, TurnId.make("turn-final-only"), {
+        restorePreviousRun: false,
+      }),
+    ).toBeNull();
+
+    const restored = deriveVisibleWorkflowActivityModel(
+      activities,
+      TurnId.make("turn-final-only"),
+      { restorePreviousRun: true },
+    );
+    expect(restored?.turnId).toBe("turn-agent-run");
+    expect(restored?.workers).toMatchObject([
+      {
+        taskId: "persisted-agent",
+        status: "completed",
+        resultSummary: "The implementation is sound.",
+        usage: { totalTokens: 320, toolUses: 3, durationMs: 4_000 },
+      },
+    ]);
   });
 
   it("associates at the first lifecycle event using the first active step and stable indices", () => {
@@ -311,6 +412,82 @@ describe("deriveWorkflowActivityModel", () => {
     expect(model?.workers[0]?.usage).not.toHaveProperty("totalTokens");
     expect(model?.workers[0]?.usage).not.toHaveProperty("toolUses");
     expect(model?.totalUsage).toEqual({ totalTokens: 5, toolUses: 2, durationMs: 30 });
+  });
+
+  it("preserves failed attempts with errors and links persisted retries", () => {
+    const model = deriveWorkflowActivityModel(
+      [
+        makeActivity({
+          id: "task-old-start",
+          sequence: 1,
+          createdAt: "2026-07-19T00:00:00.000Z",
+          kind: "task.started",
+          payload: {
+            taskId: "task-old",
+            description: "Review the adapter",
+            subagentType: "code-reviewer",
+            prompt: "Review the adapter for regressions.",
+          },
+        }),
+        makeActivity({
+          id: "task-old-failed",
+          sequence: 2,
+          createdAt: "2026-07-19T00:00:05.000Z",
+          kind: "task.completed",
+          payload: {
+            taskId: "task-old",
+            status: "failed",
+            summary: "Worker process exited",
+            error: "Connection to the worker was lost.",
+            usage: { totalTokens: 120 },
+          },
+        }),
+        makeActivity({
+          id: "task-new-start",
+          sequence: 3,
+          createdAt: "2026-07-19T00:00:06.000Z",
+          kind: "task.started",
+          payload: {
+            taskId: "task-new",
+            description: "Review the adapter",
+            subagentType: "code-reviewer",
+            prompt: "Review the adapter for regressions.",
+          },
+        }),
+        makeActivity({
+          id: "task-new-complete",
+          sequence: 4,
+          createdAt: "2026-07-19T00:00:10.000Z",
+          kind: "task.completed",
+          payload: {
+            taskId: "task-new",
+            status: "completed",
+            summary: "No regressions found.",
+            usage: { totalTokens: 80 },
+          },
+        }),
+      ],
+      TurnId.make("turn-current"),
+    );
+
+    expect(model?.workers).toMatchObject([
+      {
+        taskId: "task-old",
+        status: "failed",
+        errorMessage: "Connection to the worker was lost.",
+        resultSummary: "Worker process exited",
+        retriedByTaskId: "task-new",
+        usage: { totalTokens: 120, durationMs: 5_000 },
+      },
+      {
+        taskId: "task-new",
+        status: "completed",
+        retryOfTaskId: "task-old",
+        resultSummary: "No regressions found.",
+        usage: { totalTokens: 80, durationMs: 4_000 },
+      },
+    ]);
+    expect(model?.totalUsage).toEqual({ totalTokens: 200, durationMs: 9_000 });
   });
 
   it("keeps worker progress separate from explicitly displayable turn reasoning", () => {
