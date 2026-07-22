@@ -15,7 +15,8 @@ The current canonical task payload retains only a subset of those fields. `tool_
 
 **Goals:**
 
-- Implement the approved Option F layout as a pinned card in the main conversation area, above the message timeline and outside the scrolling message flow, reflecting the latest turn's activity.
+- Implement the approved Option F layout as a turn-scoped card shown in one bottom activity surface directly above the composer; select its turn from the timeline's current message cycle and keep a response-local launcher after Close.
+- Let users independently close, collapse, or expand every turn's activity surface without changing another turn's state.
 - Show step progress and inline worker expansion within the same container.
 - Toggle a selected step closed when clicked again; switch worker content when a different step is clicked.
 - Show cumulative worker token usage, tool count, duration, last tool, status, and output/result summary when present.
@@ -27,7 +28,7 @@ The current canonical task payload retains only a subset of those fields. `tool_
 
 - Do not expose hidden/raw chain-of-thought. The UI only displays summaries or reasoning text explicitly delivered by the provider runtime.
 - Do not invent token counts, tool counts, durations, reasoning, or task-to-step relationships when metadata is unavailable.
-- Do not require a separate right-panel surface in the first iteration; the card lives in the main conversation area and the timeline keeps its current rows.
+- Do not require a separate right-panel surface in the first iteration; current and historical activity share one bottom surface in the main conversation area.
 - Do not recursively render arbitrary nested subagent hierarchies in the first iteration.
 
 ## Decisions
@@ -54,12 +55,28 @@ The current canonical task payload retains only a subset of those fields. `tool_
    - Panel total tokens/tool uses/duration derive from the latest snapshot of each unique task.
    - Rationale: summing progress snapshots would inflate totals.
 
-5. **Use one expandable phase container.**
+5. **Use one expandable phase container per turn.**
    - The progress strip and worker list share one rounded container.
    - `selectedStepId === clickedStepId` clears selection; otherwise selection switches.
-   - Worker expansion state is local UI state and resets when the active turn/thread changes.
+   - Step selection remains local to the card instance and cannot leak to another turn.
 
-6. **Respect transcript visibility metadata.**
+6. **Retain activity by exchange and select the bottom surface from scroll context.**
+   - Derive one workflow activity model for every turn with meaningful persisted activity.
+   - Render one bottom-anchored card directly above the composer for the message cycle selected by the timeline.
+   - While the timeline is at the live end, prefer the running turn; manual scrolling selects historical turns in either direction without a close/reopen step.
+   - Keep only the compact reopen launcher beside a terminal assistant response when that turn's bottom surface is closed.
+   - Hide the bottom surface when the selected cycle has no meaningful activity.
+   - Historical cards reconstruct from persisted thread activity after reload or reconnect.
+   - Rationale: users need to revisit and compare multiple subagent/workflow runs in a single thread.
+
+7. **Model card visibility as three independent states.**
+   - `expanded` shows the full workflow details.
+   - `collapsed` keeps the compact summary card visible.
+   - `closed` removes the summary container but retains a small, accessible Activity launcher for that exchange; closing never deletes history.
+   - Store historical view state in a `turnId`-keyed map owned above virtualized rows so unmounting a row does not reset another card or create accordion behavior.
+   - Every turn defaults collapsed when no explicit session state exists.
+
+8. **Respect transcript visibility metadata.**
    - `skipTranscript` tasks remain available in the workflow activity card's worker model but are omitted from inline transcript task cards.
    - Rationale: this matches the SDK’s ambient/housekeeping task semantics.
 
@@ -71,14 +88,16 @@ The current canonical task payload retains only a subset of those fields. `tool_
   **Mitigation:** make every metric optional and omit separators/labels for absent values.
 - **[Risk]** Reasoning deltas may be absent, empty, or provider-filtered.  
   **Mitigation:** render the disclosure only when non-empty displayable content exists; use task progress summaries as progress feedback, not as raw reasoning.
-- **[Risk]** The pinned card may crowd the main conversation area.  
-  **Mitigation:** compact rows, collapsed worker details, bounded recent-tool list, and one expanded step at a time.
+- **[Risk]** The bottom card may cover conversation content or collide with the composer and scroll controls.
+  **Mitigation:** measure the card, include it with the composer in the timeline's bottom inset, place scroll-to-end above both surfaces, and bound expanded content with internal scrolling.
+- **[Risk]** Several expanded historical cards can increase virtualized row heights and rendering work.
+  **Mitigation:** keep detail content unmounted in collapsed/closed states, bound worker/tool regions, and keep independent view state above the virtualized rows.
 
 ## Migration Plan
 
 1. Extend contracts additively and update adapter/ingestion mapping.
 2. Add pure client derivation for workflow steps, worker association, cumulative usage, and compact tools.
-3. Add the Option F component as a pinned card in the main conversation area.
+3. Add the Option F component as a bottom-anchored card above the composer in the main conversation area.
 4. Add focused tests and browser verification.
 
 Rollback is limited to removing the new panel and leaving additive canonical fields unused.
