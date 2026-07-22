@@ -73,10 +73,12 @@ import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
+  deriveTimelineActivityCycles,
   deriveMessagesTimelineRows,
   deriveTaskCardMetricParts,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveActiveTimelineActivityCycle,
   resolveTaskCardExpansionA11y,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -110,6 +112,8 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
+import type { WorkflowActivityModel } from "../../workflow-activity";
+import { WorkflowActivityCard, type WorkflowActivityCardViewState } from "../WorkflowActivityCard";
 
 import {
   buildInlineTerminalContextText,
@@ -147,6 +151,9 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
+  workflowActivityModelsByTurnId: ReadonlyMap<TurnId, WorkflowActivityModel>;
+  workflowActivityViewStateByTurnId: ReadonlyMap<TurnId, WorkflowActivityCardViewState>;
+  onWorkflowActivityViewStateChange: (turnId: TurnId, state: WorkflowActivityCardViewState) => void;
 }
 
 interface TimelineRowActivityState {
@@ -162,6 +169,24 @@ const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = <div className="h-10 sm:h-12" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+const EMPTY_WORKFLOW_ACTIVITY_MODELS: ReadonlyMap<TurnId, WorkflowActivityModel> = new Map();
+const EMPTY_WORKFLOW_ACTIVITY_VIEW_STATES: ReadonlyMap<TurnId, WorkflowActivityCardViewState> =
+  new Map();
+const NOOP_WORKFLOW_ACTIVITY_VIEW_STATE_CHANGE = () => undefined;
+const NOOP_ACTIVE_WORKFLOW_TURN_CHANGE = () => undefined;
+
+export function updateWorkflowActivityViewState(
+  current: ReadonlyMap<TurnId, WorkflowActivityCardViewState>,
+  turnId: TurnId,
+  nextState: WorkflowActivityCardViewState,
+): ReadonlyMap<TurnId, WorkflowActivityCardViewState> {
+  if (current.get(turnId) === nextState) {
+    return current;
+  }
+  const next = new Map(current);
+  next.set(turnId, nextState);
+  return next;
+}
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -175,6 +200,14 @@ interface MessagesTimelineProps {
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   latestTurn: TimelineLatestTurn | null;
   runningTurnId: TurnId | null;
+  workflowActivityModelsByTurnId?: ReadonlyMap<TurnId, WorkflowActivityModel> | undefined;
+  workflowActivityViewStateByTurnId?:
+    | ReadonlyMap<TurnId, WorkflowActivityCardViewState>
+    | undefined;
+  onWorkflowActivityViewStateChange?:
+    | ((turnId: TurnId, state: WorkflowActivityCardViewState) => void)
+    | undefined;
+  onActiveWorkflowTurnIdChange?: ((turnId: TurnId | null) => void) | undefined;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -210,6 +243,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timelineEntries,
   latestTurn,
   runningTurnId,
+  workflowActivityModelsByTurnId = EMPTY_WORKFLOW_ACTIVITY_MODELS,
+  workflowActivityViewStateByTurnId = EMPTY_WORKFLOW_ACTIVITY_VIEW_STATES,
+  onWorkflowActivityViewStateChange = NOOP_WORKFLOW_ACTIVITY_VIEW_STATE_CHANGE,
+  onActiveWorkflowTurnIdChange = NOOP_ACTIVE_WORKFLOW_TURN_CHANGE,
   turnDiffSummaryByAssistantMessageId,
   routeThreadKey,
   onOpenTurnDiff,
@@ -339,6 +376,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const workflowActivityCycles = useMemo(
+    () =>
+      deriveTimelineActivityCycles({
+        rows,
+        timelineEntries,
+        activityTurnIds: new Set(workflowActivityModelsByTurnId.keys()),
+        runningTurnId,
+      }),
+    [rows, runningTurnId, timelineEntries, workflowActivityModelsByTurnId],
+  );
+  const activeWorkflowCycleIdRef = useRef<string | null>(null);
+  const activeWorkflowTurnIdRef = useRef<TurnId | null | undefined>(undefined);
+  const runningWorkflowCycle =
+    runningTurnId === null
+      ? null
+      : (workflowActivityCycles.findLast((cycle) => cycle.activityTurnId === runningTurnId) ??
+        null);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
@@ -376,6 +430,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (isAtEnd !== undefined) {
       onIsAtEndChange(isAtEnd);
     }
+    if (state) {
+      const activeCycle =
+        isAtEnd === true && runningWorkflowCycle !== null
+          ? runningWorkflowCycle
+          : resolveActiveTimelineActivityCycle({
+              cycles: workflowActivityCycles,
+              state,
+              currentCycleId: activeWorkflowCycleIdRef.current,
+              leadingCycleId: runningWorkflowCycle?.id ?? null,
+            });
+      activeWorkflowCycleIdRef.current = activeCycle?.id ?? null;
+      const nextTurnId = activeCycle?.activityTurnId ?? null;
+      if (activeWorkflowTurnIdRef.current !== nextTurnId) {
+        activeWorkflowTurnIdRef.current = nextTurnId;
+        onActiveWorkflowTurnIdChange(nextTurnId);
+      }
+    }
     if (!state || minimapItems.length === 0) {
       return;
     }
@@ -398,7 +469,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
       strip.dataset.inView = inView ? "true" : "false";
     }
-  }, [listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
+  }, [
+    listRef,
+    minimapItems,
+    minimapStripMap,
+    onActiveWorkflowTurnIdChange,
+    onIsAtEndChange,
+    runningWorkflowCycle,
+    workflowActivityCycles,
+  ]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(handleScroll);
@@ -446,6 +525,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      workflowActivityModelsByTurnId,
+      workflowActivityViewStateByTurnId,
+      onWorkflowActivityViewStateChange,
     }),
     [
       timestampFormat,
@@ -461,6 +543,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      workflowActivityModelsByTurnId,
+      workflowActivityViewStateByTurnId,
+      onWorkflowActivityViewStateChange,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -500,7 +585,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
-        <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
+        <div
+          ref={setTimelineViewportElement}
+          className="relative h-full min-h-0"
+          onWheelCapture={onManualNavigation}
+          onTouchMoveCapture={onManualNavigation}
+          onPointerDownCapture={onManualNavigation}
+        >
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
@@ -1053,9 +1144,28 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const turnId = row.message.turnId ?? null;
+  const workflowActivityModel =
+    row.showAssistantMeta && turnId !== null
+      ? ctx.workflowActivityModelsByTurnId.get(turnId)
+      : undefined;
+  const workflowActivityViewState =
+    workflowActivityModel === undefined
+      ? undefined
+      : ctx.workflowActivityViewStateByTurnId.get(workflowActivityModel.turnId);
 
   return (
     <>
+      {workflowActivityModel && workflowActivityViewState === "closed" ? (
+        <WorkflowActivityCard
+          model={workflowActivityModel}
+          placement="inline"
+          viewState="closed"
+          onViewStateChange={(state) =>
+            ctx.onWorkflowActivityViewStateChange(workflowActivityModel.turnId, state)
+          }
+        />
+      ) : null}
       <div className="relative min-w-0 px-1 py-0.5">
         <ChatMarkdown
           text={messageText}

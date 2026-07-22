@@ -1,4 +1,5 @@
 import { TurnId } from "@t3tools/contracts";
+import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -9,7 +10,7 @@ import type {
   WorkflowRecentTool,
 } from "../workflow-activity";
 import {
-  WorkflowActivityCard,
+  WorkflowActivityCard as WorkflowActivityCardComponent,
   deriveUsageMetricSegments,
   deriveWorkflowCardTitle,
   deriveWorkflowSelectionGroups,
@@ -19,6 +20,12 @@ import {
   resolveSelectedWorkflowGroup,
   resolveTurnScopedSelectedStepId,
 } from "./WorkflowActivityCard";
+
+// Detail-focused rendering tests initialize the outer disclosure open. Tests
+// for the production default use WorkflowActivityCardComponent directly.
+function WorkflowActivityCard(props: ComponentProps<typeof WorkflowActivityCardComponent>) {
+  return <WorkflowActivityCardComponent defaultOpen {...props} />;
+}
 
 const TURN_ID = TurnId.make("turn-1");
 
@@ -236,6 +243,70 @@ describe("WorkflowActivityCard rendering", () => {
     expect(markup).toBe("");
   });
 
+  it("supports closed, collapsed, and expanded activity states", () => {
+    const model = makeModel({
+      workers: [makeWorker({ description: "Background investigation" })],
+      totalUsage: { totalTokens: 1_500, toolUses: 2 },
+    });
+
+    const collapsedMarkup = renderToStaticMarkup(<WorkflowActivityCardComponent model={model} />);
+    expect(collapsedMarkup).toContain('data-workflow-activity-state="collapsed"');
+    expect(collapsedMarkup).toContain('data-slot="workflow-activity-toggle"');
+    expect(collapsedMarkup).toContain('data-slot="workflow-activity-close"');
+    expect(collapsedMarkup).toContain('aria-expanded="false"');
+    expect(collapsedMarkup).toContain(">Open</span>");
+    expect(collapsedMarkup).not.toContain('data-slot="workflow-activity-details"');
+    expect(collapsedMarkup).toContain("1.5k tokens");
+    expect(collapsedMarkup).toContain("2 tools");
+
+    const expandedMarkup = renderToStaticMarkup(
+      <WorkflowActivityCardComponent model={model} defaultOpen />,
+    );
+    expect(expandedMarkup).toContain('data-workflow-activity-state="expanded"');
+    expect(expandedMarkup).toContain('aria-expanded="true"');
+    expect(expandedMarkup).toContain(">Collapse</span>");
+    expect(expandedMarkup).toMatch(/data-slot="workflow-activity-details">/);
+
+    const closedMarkup = renderToStaticMarkup(
+      <WorkflowActivityCardComponent model={model} defaultViewState="closed" />,
+    );
+    expect(closedMarkup).toContain('data-workflow-activity-state="closed"');
+    expect(closedMarkup).toContain('data-slot="workflow-activity-launcher"');
+    expect(closedMarkup).toContain('aria-label="Open task activity for this response"');
+    expect(closedMarkup).not.toContain('data-slot="workflow-activity-toggle"');
+    expect(closedMarkup).not.toContain('data-slot="workflow-activity-details"');
+  });
+
+  it("uses inline spacing and a viewport-bounded detail region in timeline placement", () => {
+    const markup = renderToStaticMarkup(
+      <WorkflowActivityCardComponent
+        model={makeModel({ workers: [makeWorker({ description: "Historical worker" })] })}
+        placement="inline"
+        defaultViewState="expanded"
+      />,
+    );
+
+    expect(markup).toContain('data-workflow-activity-placement="inline"');
+    expect(markup).toContain('data-workflow-activity-turn-id="turn-1"');
+    expect(markup).toContain("max-height:min(26rem, 55vh)");
+    expect(markup).toContain("Historical worker");
+  });
+
+  it("caps the entire pinned surface and scrolls overflowing activity internally", () => {
+    const markup = renderToStaticMarkup(
+      <WorkflowActivityCardComponent
+        model={makeModel({ workers: [makeWorker({ description: "Tall worker" })] })}
+        defaultViewState="expanded"
+        pinnedMaxHeight={280}
+      />,
+    );
+
+    expect(markup).toContain("max-height:268px");
+    expect(markup).toContain("overflow-y-auto");
+    expect(markup).toContain("overscroll-contain");
+    expect(markup).toContain("max-height:none");
+  });
+
   it("renders plan steps in order with counter, segmented strip, and collapsed selection", () => {
     const markup = renderToStaticMarkup(<WorkflowActivityCard model={makePlanModel()} />);
 
@@ -317,7 +388,7 @@ describe("WorkflowActivityCard rendering", () => {
     expect(markup).not.toContain("<img src=x");
   });
 
-  it("renders result and output values only when present", () => {
+  it("keeps complete results in collapsed disclosures by default", () => {
     const markup = renderToStaticMarkup(
       <WorkflowActivityCard
         model={makeModel({
@@ -333,8 +404,10 @@ describe("WorkflowActivityCard rendering", () => {
         })}
       />,
     );
-    expect(markup).toContain("Result:");
-    expect(markup).toContain("Found 3 issues");
+    expect(markup).toContain('data-slot="workflow-worker-result-toggle"');
+    expect(markup).toContain(">Result</span>");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("Found 3 issues");
     expect(markup).toContain("Output:");
     expect(markup).toContain("/tmp/review-output.md");
 
@@ -343,8 +416,66 @@ describe("WorkflowActivityCard rendering", () => {
         model={makeModel({ workers: [makeWorker({ description: "Plain worker" })] })}
       />,
     );
-    expect(bare).not.toContain("Result:");
+    expect(bare).not.toContain('data-slot="workflow-worker-result-toggle"');
     expect(bare).not.toContain("Output:");
+  });
+
+  it("keeps completed progress visible before the collapsed result", () => {
+    const markup = renderToStaticMarkup(
+      <WorkflowActivityCard
+        model={makeModel({
+          workers: [
+            makeWorker({
+              description: "Finished worker",
+              status: "completed",
+              progressSummary: "Read the relevant source files.",
+              resultSummary: "Produced the final report.",
+            }),
+          ],
+        })}
+      />,
+    );
+
+    const progressToggleIndex = markup.indexOf('data-slot="workflow-worker-progress-toggle"');
+    const resultToggleIndex = markup.indexOf('data-slot="workflow-worker-result-toggle"');
+    expect(progressToggleIndex).toBeGreaterThan(-1);
+    expect(resultToggleIndex).toBeGreaterThan(progressToggleIndex);
+    expect(markup).not.toContain("Read the relevant source files.");
+    expect(markup).not.toContain("Produced the final report.");
+  });
+
+  it("renders task errors and both sides of a retry relationship", () => {
+    const markup = renderToStaticMarkup(
+      <WorkflowActivityCard
+        model={makeModel({
+          workers: [
+            makeWorker({
+              id: "task-old",
+              taskId: "task-old",
+              status: "failed",
+              errorMessage: "Worker connection closed unexpectedly.",
+              retriedByTaskId: "task-new",
+            }),
+            makeWorker({
+              id: "task-new",
+              taskId: "task-new",
+              status: "completed",
+              retryOfTaskId: "task-old",
+              resultSummary: "Retry completed successfully.",
+            }),
+          ],
+        })}
+      />,
+    );
+
+    expect(markup).toContain("Error:");
+    expect(markup).toContain("Worker connection closed unexpectedly.");
+    expect(markup).toContain("Retried by");
+    expect(markup).toContain("agent task-new");
+    expect(markup).toContain("Retry of");
+    expect(markup).toContain("agent task-old");
+    expect(markup).toContain('data-slot="workflow-worker-result-toggle"');
+    expect(markup).not.toContain("Retry completed successfully.");
   });
 
   it("collapses progress disclosures by default and omits them without a summary", () => {
@@ -355,6 +486,7 @@ describe("WorkflowActivityCard rendering", () => {
         })}
       />,
     );
+    expect(withProgress).toContain('data-slot="workflow-worker-progress-toggle"');
     expect(withProgress).toContain(">Progress</span>");
     expect(withProgress).toContain('aria-expanded="false"');
     expect(withProgress).not.toContain("Halfway there");
@@ -468,6 +600,8 @@ describe("WorkflowActivityCard rendering", () => {
     );
     expect(markup).toContain("max-height:");
     expect(markup).toContain("overflow-y-auto");
+    expect(markup).toContain('data-slot="workflow-worker-list"');
+    expect(markup).toContain("overscroll-contain");
   });
 
   it("renders identical markup when an onHeightChange observer is attached", () => {
