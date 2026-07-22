@@ -517,6 +517,7 @@ export type TaskUsageSnapshot = typeof TaskUsageSnapshot.Type;
 
 const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
+  retryOfTaskId: Schema.optional(RuntimeTaskId),
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -545,6 +546,7 @@ const TaskCompletedPayload = Schema.Struct({
   outputFile: Schema.optional(Schema.String),
   skipTranscript: Schema.optional(Schema.Boolean),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
+  error: Schema.optional(TrimmedNonEmptyStringSchema),
   usage: Schema.optional(TaskUsageSnapshot),
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
