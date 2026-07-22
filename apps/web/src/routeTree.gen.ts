@@ -22,9 +22,9 @@ import { Route as SettingsDiagnosticsRouteImport } from './routes/settings.diagn
 import { Route as SettingsConnectionsRouteImport } from './routes/settings.connections'
 import { Route as SettingsBetaRouteImport } from './routes/settings.beta'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
-import { Route as ConnectCallbackRouteImport } from './routes/connect_.callback'
 import { Route as SettingsAppearanceRouteImport } from './routes/settings.appearance'
 import { Route as DevWorkflowActivityRouteImport } from './routes/dev.workflow-activity'
+import { Route as ConnectCallbackRouteImport } from './routes/connect_.callback'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
 
@@ -92,11 +92,6 @@ const SettingsArchivedRoute = SettingsArchivedRouteImport.update({
   path: '/archived',
   getParentRoute: () => SettingsRoute,
 } as any)
-const ConnectCallbackRoute = ConnectCallbackRouteImport.update({
-  id: '/connect_/callback',
-  path: '/connect/callback',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const SettingsAppearanceRoute = SettingsAppearanceRouteImport.update({
   id: '/appearance',
   path: '/appearance',
@@ -105,6 +100,11 @@ const SettingsAppearanceRoute = SettingsAppearanceRouteImport.update({
 const DevWorkflowActivityRoute = DevWorkflowActivityRouteImport.update({
   id: '/dev/workflow-activity',
   path: '/dev/workflow-activity',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConnectCallbackRoute = ConnectCallbackRouteImport.update({
+  id: '/connect_/callback',
+  path: '/connect/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatDraftDraftIdRoute = ChatDraftDraftIdRouteImport.update({
@@ -341,13 +341,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsArchivedRouteImport
       parentRoute: typeof SettingsRoute
     }
-    '/connect_/callback': {
-      id: '/connect_/callback'
-      path: '/connect/callback'
-      fullPath: '/connect/callback'
-      preLoaderRoute: typeof ConnectCallbackRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/settings/appearance': {
       id: '/settings/appearance'
       path: '/appearance'
@@ -360,6 +353,13 @@ declare module '@tanstack/react-router' {
       path: '/dev/workflow-activity'
       fullPath: '/dev/workflow-activity'
       preLoaderRoute: typeof DevWorkflowActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/connect_/callback': {
+      id: '/connect_/callback'
+      path: '/connect/callback'
+      fullPath: '/connect/callback'
+      preLoaderRoute: typeof ConnectCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_chat/draft/$draftId': {
