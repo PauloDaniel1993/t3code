@@ -1,4 +1,4 @@
-import { EnvironmentId, MessageId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
 import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
@@ -219,6 +219,82 @@ function buildUserTimelineEntry(text: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("keeps workflow activity view state independent for every turn", async () => {
+    const { updateWorkflowActivityViewState } = await import("./MessagesTimeline");
+    const turnOne = TurnId.make("turn-one");
+    const turnTwo = TurnId.make("turn-two");
+
+    let states = new Map();
+    states = new Map(updateWorkflowActivityViewState(states, turnOne, "expanded"));
+    states = new Map(updateWorkflowActivityViewState(states, turnTwo, "expanded"));
+    states = new Map(updateWorkflowActivityViewState(states, turnOne, "closed"));
+
+    expect(states.get(turnOne)).toBe("closed");
+    expect(states.get(turnTwo)).toBe("expanded");
+  });
+
+  it("renders only a closed turn's inline launcher before its terminal response", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const makeAssistantEntry = (turnId: ReturnType<typeof TurnId.make>, index: number) => ({
+      id: `entry-assistant-${index}`,
+      kind: "message" as const,
+      createdAt: `2026-03-17T19:12:2${index}.000Z`,
+      message: {
+        id: MessageId.make(`message-assistant-${index}`),
+        role: "assistant" as const,
+        text: `Response ${index}`,
+        turnId,
+        createdAt: `2026-03-17T19:12:2${index}.000Z`,
+        updatedAt: `2026-03-17T19:12:2${index}.000Z`,
+        streaming: false,
+      } as import("../../types").ChatMessage,
+    });
+    const makeModel = (turnId: ReturnType<typeof TurnId.make>, index: number) => ({
+      turnId,
+      steps: [],
+      historicalSteps: [],
+      otherActivity: null,
+      workers: [
+        {
+          id: `worker-${index}`,
+          taskId: `worker-${index}`,
+          turnId,
+          startedAt: `2026-03-17T19:12:2${index}.000Z`,
+          updatedAt: `2026-03-17T19:12:2${index}.000Z`,
+          status: "completed" as const,
+          description: `Worker ${index}`,
+        },
+      ],
+      recentTools: [],
+    });
+    const turnOne = TurnId.make("turn-one");
+    const turnTwo = TurnId.make("turn-two");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[makeAssistantEntry(turnOne, 1), makeAssistantEntry(turnTwo, 2)]}
+        workflowActivityModelsByTurnId={
+          new Map([
+            [turnOne, makeModel(turnOne, 1)],
+            [turnTwo, makeModel(turnTwo, 2)],
+          ])
+        }
+        workflowActivityViewStateByTurnId={new Map([[turnOne, "closed"]])}
+      />,
+    );
+
+    expect(markup.match(/data-workflow-activity-placement="inline"/g)).toHaveLength(1);
+    expect(markup).toContain('data-workflow-activity-turn-id="turn-one"');
+    expect(markup).not.toContain('data-workflow-activity-turn-id="turn-two"');
+    expect(markup).toContain('data-workflow-activity-state="closed"');
+    expect(markup).toContain('data-slot="workflow-activity-launcher"');
+    expect(markup.indexOf('data-workflow-activity-turn-id="turn-one"')).toBeLessThan(
+      markup.indexOf("Response 1"),
+    );
+    expect(markup).not.toContain("Worker 1");
+    expect(markup).not.toContain("Worker 2");
+  });
+
   it("uses LegendList isNearEnd when deciding whether the live edge is visible", async () => {
     const {
       resolveTimelineIsAtEnd,

@@ -614,7 +614,9 @@ function readDomSnapshot(root: HTMLElement | null): FixtureDomSnapshot {
     : [];
   const minimap = root.querySelector<HTMLElement>("[data-testid='timeline-minimap']");
   const expandedButtons = workflowCard
-    ? [...workflowCard.querySelectorAll<HTMLButtonElement>("button[aria-expanded='true']")]
+    ? [...workflowCard.querySelectorAll<HTMLButtonElement>("button[aria-expanded='true']")].filter(
+        (button) => button.dataset.slot !== "workflow-activity-toggle",
+      )
     : [];
   const buttonHasLabel = (button: HTMLButtonElement, label: string) =>
     button.textContent?.trim().startsWith(label) ?? false;
@@ -955,6 +957,7 @@ export function WorkflowActivityBrowserFixture() {
       const candidates = card
         ? [...card.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")].filter(
             (button) => {
+              if (button.dataset.slot === "workflow-activity-toggle") return false;
               const label = button.textContent?.trim() ?? "";
               return !label.startsWith("Progress") && !label.startsWith("Reasoning");
             },
@@ -1497,6 +1500,7 @@ export function WorkflowActivityBrowserFixture() {
                 <WorkflowActivityCard
                   key={timelineOwnerKey}
                   model={workflowModel}
+                  defaultOpen
                   onHeightChange={handleCardHeightChange}
                 />
               ) : null}

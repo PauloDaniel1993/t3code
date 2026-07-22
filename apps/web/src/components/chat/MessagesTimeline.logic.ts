@@ -20,6 +20,194 @@ export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
 export const TIMELINE_CONTENT_MAX_WIDTH = 768;
 export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
+export const TIMELINE_ACTIVITY_ACTIVATION_OFFSET = 12;
+export const TIMELINE_ACTIVITY_CYCLE_HYSTERESIS = 12;
+export const TIMELINE_RUNNING_ACTIVITY_LEADING_ALLOWANCE = 20;
+
+export interface TimelineActivityCycle {
+  /** Stable cycle identity. A user message starts a new message cycle. */
+  readonly id: string;
+  /** Row whose top edge is compared with the viewport activation line. */
+  readonly startRowIndex: number;
+  /** Most recent turn in this cycle that has meaningful workflow activity. */
+  readonly activityTurnId: TurnId | null;
+}
+
+interface TimelineActivityPositionState {
+  readonly scroll?: number;
+  readonly positionAtIndex?: (index: number) => number | undefined;
+}
+
+function workflowTurnIdsForRow(row: MessagesTimelineRow): TurnId[] {
+  switch (row.kind) {
+    case "turn-fold":
+      return [row.turnId];
+    case "message":
+      return row.message.role === "assistant" && row.message.turnId !== null
+        ? [row.message.turnId]
+        : [];
+    case "work":
+      return row.groupedEntries.flatMap((entry) => (entry.turnId ? [entry.turnId] : []));
+    case "proposed-plan":
+      return row.proposedPlan.turnId === null ? [] : [row.proposedPlan.turnId];
+    case "work-toggle":
+    case "working":
+      return [];
+  }
+}
+
+/**
+ * Partition rendered rows into user-message cycles and select the newest
+ * activity-bearing canonical turn in each cycle. This deliberately does not
+ * merge multiple turn models: a retry/steer can leave more than one turn in a
+ * cycle, and the most recent meaningful one owns the sticky surface.
+ */
+export function deriveTimelineActivityCycles(input: {
+  readonly rows: ReadonlyArray<MessagesTimelineRow>;
+  readonly timelineEntries?: ReadonlyArray<TimelineEntry>;
+  readonly activityTurnIds: ReadonlySet<TurnId>;
+  readonly runningTurnId: TurnId | null;
+}): TimelineActivityCycle[] {
+  const activityTurnIdByCycleId = new Map<string, TurnId>();
+  let sourceCycleId = "message-cycle:initial";
+  for (const entry of input.timelineEntries ?? []) {
+    if (entry.kind === "message" && entry.message.role === "user") {
+      sourceCycleId = `message-cycle:${entry.message.id}`;
+      continue;
+    }
+    const turnId =
+      entry.kind === "message"
+        ? entry.message.role === "assistant"
+          ? entry.message.turnId
+          : null
+        : entry.kind === "work"
+          ? (entry.entry.turnId ?? null)
+          : entry.proposedPlan.turnId;
+    if (turnId !== null && input.activityTurnIds.has(turnId)) {
+      activityTurnIdByCycleId.set(sourceCycleId, turnId);
+    }
+  }
+
+  const cycles: Array<{
+    id: string;
+    startRowIndex: number;
+    activityTurnId: TurnId | null;
+  }> = [];
+  let currentCycle: (typeof cycles)[number] | null = null;
+
+  for (let rowIndex = 0; rowIndex < input.rows.length; rowIndex += 1) {
+    const row = input.rows[rowIndex];
+    if (!row) continue;
+
+    if (row.kind === "message" && row.message.role === "user") {
+      const id = `message-cycle:${row.message.id}`;
+      currentCycle = {
+        id,
+        startRowIndex: rowIndex,
+        activityTurnId: activityTurnIdByCycleId.get(id) ?? null,
+      };
+      cycles.push(currentCycle);
+      continue;
+    }
+
+    if (currentCycle === null) {
+      currentCycle = {
+        id: "message-cycle:initial",
+        startRowIndex: rowIndex,
+        activityTurnId: activityTurnIdByCycleId.get("message-cycle:initial") ?? null,
+      };
+      cycles.push(currentCycle);
+    }
+
+    if (!activityTurnIdByCycleId.has(currentCycle.id)) {
+      for (const turnId of workflowTurnIdsForRow(row)) {
+        if (!input.activityTurnIds.has(turnId)) continue;
+        currentCycle.activityTurnId = turnId;
+      }
+    }
+  }
+
+  const lastCycle = cycles.at(-1);
+  if (lastCycle && input.runningTurnId !== null && input.activityTurnIds.has(input.runningTurnId)) {
+    lastCycle.activityTurnId = input.runningTurnId;
+  }
+
+  return cycles;
+}
+
+/**
+ * Resolve the message cycle at a fixed line below the viewport top. Adjacent
+ * transitions use a small symmetric dead-band to avoid flicker around a user
+ * message boundary; non-adjacent jumps (minimap, keyboard, programmatic
+ * navigation, or a fast wheel gesture) resolve their destination directly.
+ */
+export function resolveActiveTimelineActivityCycle(input: {
+  readonly cycles: ReadonlyArray<TimelineActivityCycle>;
+  readonly state: TimelineActivityPositionState;
+  readonly currentCycleId: string | null;
+  readonly leadingCycleId?: string | null;
+  readonly activationOffset?: number;
+  readonly hysteresis?: number;
+  readonly leadingAllowance?: number;
+}): TimelineActivityCycle | null {
+  if (input.cycles.length === 0) return null;
+
+  const scroll = input.state.scroll;
+  const activationLine =
+    (typeof scroll === "number" && Number.isFinite(scroll) ? scroll : 0) +
+    (input.activationOffset ?? TIMELINE_ACTIVITY_ACTIVATION_OFFSET);
+  const cycleTops = input.cycles.map((cycle) => {
+    const top = input.state.positionAtIndex?.(cycle.startRowIndex);
+    return typeof top === "number" && Number.isFinite(top) ? top : null;
+  });
+  const leadingAllowance = Math.max(
+    0,
+    input.leadingAllowance ?? TIMELINE_RUNNING_ACTIVITY_LEADING_ALLOWANCE,
+  );
+  const cycleActivationTops = cycleTops.map((top, index) =>
+    top !== null && input.cycles[index]?.id === input.leadingCycleId ? top - leadingAllowance : top,
+  );
+
+  let candidateIndex = 0;
+  let foundMeasuredCycle = false;
+  let foundCycleAtOrAboveLine = false;
+  for (let index = 0; index < input.cycles.length; index += 1) {
+    const top = cycleActivationTops[index];
+    if (top == null) continue;
+    foundMeasuredCycle = true;
+    if (top <= activationLine) {
+      candidateIndex = index;
+      foundCycleAtOrAboveLine = true;
+    }
+    if (top > activationLine) break;
+  }
+
+  const currentIndex = input.cycles.findIndex((cycle) => cycle.id === input.currentCycleId);
+  if (!foundMeasuredCycle || !foundCycleAtOrAboveLine) {
+    return input.cycles[currentIndex >= 0 ? currentIndex : 0] ?? null;
+  }
+  if (currentIndex < 0 || candidateIndex === currentIndex) {
+    return input.cycles[candidateIndex] ?? null;
+  }
+  if (Math.abs(candidateIndex - currentIndex) > 1) {
+    return input.cycles[candidateIndex] ?? null;
+  }
+
+  const hysteresis = Math.max(0, input.hysteresis ?? TIMELINE_ACTIVITY_CYCLE_HYSTERESIS);
+  if (candidateIndex > currentIndex) {
+    const candidateTop = cycleActivationTops[candidateIndex];
+    if (candidateTop != null && candidateTop > activationLine - hysteresis) {
+      return input.cycles[currentIndex] ?? null;
+    }
+  } else {
+    const currentTop = cycleActivationTops[currentIndex];
+    if (currentTop != null && currentTop <= activationLine + hysteresis) {
+      return input.cycles[currentIndex] ?? null;
+    }
+  }
+
+  return input.cycles[candidateIndex] ?? null;
+}
 
 export interface TimelineEndState {
   readonly isAtEnd?: boolean;
