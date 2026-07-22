@@ -5,8 +5,9 @@ T3 Code currently flattens tool calls, subagent tasks, workflow progress, and pr
 ## What Changes
 
 - Add a T3-native workflow activity view based on the approved **Option F** design:
-  - A compact step progress panel with completed, active, and pending segments.
+  - A compact step progress panel with completed, active, and pending segments, anchored above the composer and switched to the activity associated with the timeline's current message cycle.
   - Clicking a step expands the **same panel** to show that step’s workers; clicking the open step again collapses it.
+  - Every turn keeps an independently controlled activity surface with closed, collapsed, and expanded states, so users can reopen and compare multiple historical runs in one thread.
   - Worker cards show lifecycle status, cumulative token total, tool count, elapsed time, last tool, and the latest displayable progress summary when supplied.
   - Provider-supplied reasoning summaries are collapsed by default and expand only on user action.
   - Recent tool calls remain compact rows below the worker cards.
@@ -31,6 +32,6 @@ T3 Code currently flattens tool calls, subagent tasks, workflow progress, and pr
 - Provider/runtime contract changes in `packages/contracts/src/providerRuntime.ts`.
 - Claude event mapping changes in `apps/server/src/provider/Layers/ClaudeAdapter.ts` and orchestration ingestion.
 - Web derivation changes in `apps/web/src/session-logic.ts` or a dedicated workflow-activity model.
-- Main-area UI changes: a new pinned workflow activity card component wired into `ChatView.tsx` above the message timeline.
+- Main-area UI changes: a reusable workflow activity card anchored above the composer, selected from the current timeline message cycle, plus a response-local launcher after Close through `MessagesTimeline.tsx`.
 - Timeline task-card updates in `MessagesTimeline.tsx`.
 - Contract, adapter, ingestion, derivation, rendering, interaction, and browser tests.
