@@ -1588,7 +1588,7 @@ describe("deriveWorkLogEntries", () => {
       tone: "error",
       description: "Inspecting the tests",
       progressSummary: "Compared the lifecycle cases",
-      resultSummary: "Found a lifecycle regression",
+      errorMessage: "Found a lifecycle regression",
       outputFile: "/tmp/stable-task.txt",
       usage: { durationMs: 55 },
       lastToolName: "Read",
@@ -1598,6 +1598,7 @@ describe("deriveWorkLogEntries", () => {
     });
     expect(completedEntry?.usage).not.toHaveProperty("totalTokens");
     expect(completedEntry?.usage).not.toHaveProperty("toolUses");
+    expect(completedEntry).not.toHaveProperty("resultSummary");
   });
 
   it("reduces interleaved task lifecycles by task id without losing start metadata", () => {
@@ -1730,6 +1731,7 @@ describe("deriveWorkLogEntries", () => {
         taskId: "task-start-only-id",
         toolUseId: "task-start-only-tool",
         description: "Review the implementation",
+        initialDescription: "Review the implementation",
         taskType: "agent",
         subagentType: "code-reviewer",
         workflowName: "ambient-work",
@@ -1859,7 +1861,7 @@ describe("deriveWorkLogEntries", () => {
       taskId: "terminal-task",
       taskType: "agent",
       description: "Late replay",
-      resultSummary: "Initial failure",
+      errorMessage: "Initial failure",
       outputFile: "/tmp/result.txt",
       usage: { toolUses: 3 },
       toolLifecycleStatus: "failed",
@@ -1867,6 +1869,7 @@ describe("deriveWorkLogEntries", () => {
       sourceActivityKind: "task.completed",
     });
     expect(entries[0]?.usage).not.toHaveProperty("totalTokens");
+    expect(entries[0]).not.toHaveProperty("resultSummary");
   });
 
   it("excludes panel-only tool progress and turn reasoning summary activities", () => {
