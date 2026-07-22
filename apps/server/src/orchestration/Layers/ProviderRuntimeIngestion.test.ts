@@ -3171,6 +3171,7 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-task-1"),
       payload: {
         taskId: "turn-task-1",
+        retryOfTaskId: "prior-task-attempt",
         description: "Review the implementation",
         taskType: "agent",
         toolUseId: "tool-task-1",
@@ -3227,12 +3228,30 @@ describe("ProviderRuntimeIngestion", () => {
         planMarkdown: "# Plan title",
       },
     });
+    harness.emit({
+      type: "task.completed",
+      eventId: asEventId("evt-task-failed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-task-1"),
+      payload: {
+        taskId: "failed-task-attempt",
+        status: "failed",
+        summary: "Worker stopped unexpectedly.",
+        error: "Connection to the worker was lost.",
+        usage: { totalTokens: 345, durationMs: 12_000 },
+      },
+    });
 
     const thread = await waitForThread(
       harness.readModel,
       (entry) =>
         entry.activities.some(
           (activity: ProviderRuntimeTestActivity) => activity.kind === "task.completed",
+        ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-failed",
         ) &&
         entry.proposedPlans.some(
           (proposedPlan: ProviderRuntimeTestProposedPlan) =>
@@ -3249,6 +3268,9 @@ describe("ProviderRuntimeIngestion", () => {
     const completed = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-completed",
     );
+    const failed = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-failed",
+    );
 
     const startedPayload =
       started?.payload && typeof started.payload === "object"
@@ -3262,11 +3284,16 @@ describe("ProviderRuntimeIngestion", () => {
       completed?.payload && typeof completed.payload === "object"
         ? (completed.payload as Record<string, unknown>)
         : undefined;
+    const failedPayload =
+      failed?.payload && typeof failed.payload === "object"
+        ? (failed.payload as Record<string, unknown>)
+        : undefined;
 
     expect(started?.kind).toBe("task.started");
     expect(started?.summary).toBe("agent task started");
     expect(startedPayload).toMatchObject({
       taskId: "turn-task-1",
+      retryOfTaskId: "prior-task-attempt",
       description: "Review the implementation",
       taskType: "agent",
       toolUseId: "tool-task-1",
@@ -3296,6 +3323,14 @@ describe("ProviderRuntimeIngestion", () => {
       summary: "<proposed_plan>\n# Plan title\n</proposed_plan>",
       detail: "<proposed_plan>\n# Plan title\n</proposed_plan>",
       usage: { totalTokens: 2345, toolUses: 9, durationMs: 10_111 },
+    });
+    expect(failed?.tone).toBe("error");
+    expect(failedPayload).toMatchObject({
+      taskId: "failed-task-attempt",
+      status: "failed",
+      summary: "Worker stopped unexpectedly.",
+      error: "Connection to the worker was lost.",
+      usage: { totalTokens: 345, durationMs: 12_000 },
     });
     expect(
       thread.proposedPlans.find(
