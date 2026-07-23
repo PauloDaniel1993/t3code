@@ -58,6 +58,43 @@ export const providerRuntimeEventsTotal = Metric.counter("t3_provider_runtime_ev
   description: "Total canonical provider runtime events processed.",
 });
 
+export const providerStartupRecoveryTotal = Metric.counter("t3_provider_startup_recovery_total", {
+  description:
+    "Aggregate provider startup recovery outcomes without thread, turn, prompt, or credential dimensions.",
+});
+
+export const providerIngestionQueueDepth = Metric.gauge("t3_provider_ingestion_queue_depth", {
+  description: "Current queued provider runtime events by provider and delivery class.",
+});
+
+export const providerIngestionOldestEventAge = Metric.timer(
+  "t3_provider_ingestion_oldest_event_age",
+  {
+    description: "Age of a provider runtime event when ingestion begins processing it.",
+  },
+);
+
+export const providerIngestionCoalescedTotal = Metric.counter(
+  "t3_provider_ingestion_coalesced_total",
+  {
+    description: "Provider runtime events merged or replaced before durable ingestion.",
+  },
+);
+
+export const providerIngestionBackpressureDuration = Metric.timer(
+  "t3_provider_ingestion_backpressure_duration",
+  {
+    description: "Time provider runtime ingestion enqueue waits for bounded lane capacity.",
+  },
+);
+
+export const providerIngestionTerminalLatency = Metric.timer(
+  "t3_provider_ingestion_terminal_latency",
+  {
+    description: "Time from terminal provider event creation until durable ingestion completes.",
+  },
+);
+
 export const gitCommandsTotal = Metric.counter("t3_git_commands_total", {
   description: "Total git commands executed by the server runtime.",
 });

@@ -25,11 +25,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
+import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -38,6 +39,19 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  PROVIDER_EVENT_FLOW_CONTROL,
+  classifyProviderEvent,
+  providerEventMergeKey,
+  providerEventReplacementKey,
+  stableReplaceableActivityId,
+  stableToolActivityId,
+} from "../ProviderEventFlowControl.ts";
+import { boundTerminalToolData } from "../../provider/TerminalToolData.ts";
+import {
+  makeProviderIngestionScheduler,
+  type ScheduledProviderInput,
+} from "../ProviderIngestionScheduler.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -116,8 +130,95 @@ type RuntimeIngestionInput =
       event: TurnStartRequestedDomainEvent;
     };
 
+const TERMINAL_RUNTIME_EVENT_TYPES: ReadonlySet<ProviderRuntimeEvent["type"]> = new Set([
+  "session.exited",
+  "turn.completed",
+  "turn.aborted",
+  "item.completed",
+  "runtime.error",
+]);
+
+function mergeRuntimeIngestionInput(
+  current: RuntimeIngestionInput,
+  incoming: RuntimeIngestionInput,
+): RuntimeIngestionInput | undefined {
+  if (current.source !== "runtime" || incoming.source !== "runtime") {
+    return undefined;
+  }
+  if (current.event.type === "content.delta" && incoming.event.type === "content.delta") {
+    const delta = current.event.payload.delta + incoming.event.payload.delta;
+    if (
+      Buffer.byteLength(delta, "utf8") > PROVIDER_EVENT_FLOW_CONTROL.mergedAssistantDeltaMaxBytes
+    ) {
+      return undefined;
+    }
+    return {
+      source: "runtime",
+      event: {
+        ...current.event,
+        payload: {
+          ...current.event.payload,
+          delta,
+        },
+      },
+    };
+  }
+  if (
+    current.event.type === "turn.proposed.delta" &&
+    incoming.event.type === "turn.proposed.delta"
+  ) {
+    const delta = current.event.payload.delta + incoming.event.payload.delta;
+    if (
+      Buffer.byteLength(delta, "utf8") > PROVIDER_EVENT_FLOW_CONTROL.mergedAssistantDeltaMaxBytes
+    ) {
+      return undefined;
+    }
+    return {
+      source: "runtime",
+      event: {
+        ...current.event,
+        payload: { delta },
+      },
+    };
+  }
+  return undefined;
+}
+
+function toScheduledInput(
+  input: RuntimeIngestionInput,
+): ScheduledProviderInput<RuntimeIngestionInput> {
+  if (input.source === "domain") {
+    return {
+      value: input,
+      laneKey: input.event.payload.threadId,
+      provider: "orchestration",
+      deliveryClass: "lossless",
+      terminal: false,
+      eventCreatedAtMs: Date.parse(input.event.occurredAt),
+    };
+  }
+
+  const deliveryClass = classifyProviderEvent(input.event);
+  const replacementKey = providerEventReplacementKey(input.event);
+  const mergeKey = providerEventMergeKey(input.event);
+  return {
+    value: input,
+    laneKey: input.event.threadId,
+    provider: input.event.provider,
+    deliveryClass,
+    ...(replacementKey === undefined ? {} : { replacementKey }),
+    ...(mergeKey === undefined ? {} : { mergeKey }),
+    terminal: TERMINAL_RUNTIME_EVENT_TYPES.has(input.event.type),
+    eventCreatedAtMs: Date.parse(input.event.createdAt),
+  };
+}
+
 function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
   return value === undefined ? undefined : TurnId.make(String(value));
+}
+
+function boundedTerminalToolData(data: unknown): unknown {
+  return boundTerminalToolData(data, PROVIDER_EVENT_FLOW_CONTROL.terminalToolDataMaxBytes);
 }
 
 function toApprovalRequestId(value: string | undefined): ApprovalRequestId | undefined {
@@ -574,7 +675,7 @@ export function runtimeEventToActivities(
     case "task.progress": {
       return [
         {
-          id: event.eventId,
+          id: stableReplaceableActivityId(event) ?? event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "task.progress",
@@ -610,7 +711,7 @@ export function runtimeEventToActivities(
     case "task.completed": {
       return [
         {
-          id: event.eventId,
+          id: stableReplaceableActivityId(event) ?? event.eventId,
           createdAt: event.createdAt,
           tone: event.payload.status === "failed" ? "error" : "info",
           kind: "task.completed",
@@ -651,7 +752,7 @@ export function runtimeEventToActivities(
     case "tool.progress": {
       return [
         {
-          id: event.eventId,
+          id: stableToolActivityId(event) ?? event.eventId,
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.progress",
@@ -706,7 +807,7 @@ export function runtimeEventToActivities(
 
       return [
         {
-          id: event.eventId,
+          id: stableReplaceableActivityId(event) ?? event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "context-window.updated",
@@ -724,17 +825,20 @@ export function runtimeEventToActivities(
       }
       return [
         {
-          id: event.eventId,
+          id: stableToolActivityId(event) ?? event.eventId,
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.updated",
           summary: event.payload.title ?? "Tool updated",
           payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
             itemType: event.payload.itemType,
             ...(event.itemId !== undefined ? { toolUseId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -748,17 +852,23 @@ export function runtimeEventToActivities(
       }
       return [
         {
-          id: event.eventId,
+          id: stableToolActivityId(event) ?? event.eventId,
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.completed",
           summary: event.payload.title ?? "Tool",
           payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
             itemType: event.payload.itemType,
             ...(event.itemId !== undefined ? { toolUseId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.payload.data !== undefined
+              ? { data: boundedTerminalToolData(event.payload.data) }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -772,13 +882,18 @@ export function runtimeEventToActivities(
       }
       return [
         {
-          id: event.eventId,
+          id: stableToolActivityId(event) ?? event.eventId,
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.started",
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
             itemType: event.payload.itemType,
+            ...(event.itemId !== undefined ? { toolUseId: event.itemId } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -800,6 +915,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -2020,18 +2136,46 @@ const make = Effect.gen(function* () {
       }
 
       const activities = runtimeEventToActivities(event, taskTitle);
+      const stableActivityId = stableReplaceableActivityId(event);
       yield* Effect.forEach(activities, (activity) =>
-        providerCommandId(event, "thread-activity-append").pipe(
-          Effect.flatMap((commandId) =>
-            orchestrationEngine.dispatch({
-              type: "thread.activity.append",
-              commandId,
-              threadId: thread.id,
-              activity,
-              createdAt: activity.createdAt,
-            }),
-          ),
-        ),
+        Effect.gen(function* () {
+          const isStableUpsert = stableActivityId === activity.id;
+          const existing = isStableUpsert
+            ? Option.getOrUndefined(
+                yield* projectionThreadActivityRepository.getByActivityId({
+                  threadId: thread.id,
+                  activityId: activity.id,
+                }),
+              )
+            : undefined;
+          const orderedActivity =
+            existing === undefined
+              ? activity
+              : {
+                  ...activity,
+                  createdAt: existing.createdAt,
+                  ...(existing.sequence === undefined ? {} : { sequence: existing.sequence }),
+                };
+          const commandId = yield* providerCommandId(
+            event,
+            isStableUpsert ? "thread-activity-upsert" : "thread-activity-append",
+          );
+          yield* isStableUpsert
+            ? orchestrationEngine.dispatch({
+                type: "thread.activity.upsert",
+                commandId,
+                threadId: thread.id,
+                activity: orderedActivity,
+                createdAt: orderedActivity.createdAt,
+              })
+            : orchestrationEngine.dispatch({
+                type: "thread.activity.append",
+                commandId,
+                threadId: thread.id,
+                activity: orderedActivity,
+                createdAt: orderedActivity.createdAt,
+              });
+        }),
       ).pipe(Effect.asVoid);
     });
 
@@ -2055,13 +2199,23 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const scheduler = yield* makeProviderIngestionScheduler(
+    {
+      perLaneCapacity: PROVIDER_EVENT_FLOW_CONTROL.perThreadQueueCapacity,
+      reservedLosslessCapacity: PROVIDER_EVENT_FLOW_CONTROL.reservedLosslessCapacity,
+      merge: mergeRuntimeIngestionInput,
+    },
+    processInputSafely,
+  );
 
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
+      // A lossless event may intentionally backpressure this provider stream
+      // while its destination lane is full. Bounded upstream provider queues
+      // cap memory during that stall while preserving global event order.
       yield* Effect.forkScoped(
         Stream.runForEach(providerService.streamEvents, (event) =>
-          worker.enqueue({ source: "runtime", event }),
+          scheduler.enqueue(toScheduledInput({ source: "runtime", event })),
         ),
       );
       yield* Effect.forkScoped(
@@ -2069,18 +2223,21 @@ const make = Effect.gen(function* () {
           if (event.type !== "thread.turn-start-requested") {
             return Effect.void;
           }
-          return worker.enqueue({ source: "domain", event });
+          return scheduler.enqueue(toScheduledInput({ source: "domain", event }));
         }),
       );
     });
 
   return {
     start,
-    drain: worker.drain,
+    drain: scheduler.drain,
   } satisfies ProviderRuntimeIngestionShape;
 });
 
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(ProjectionThreadActivityRepositoryLive),
+);

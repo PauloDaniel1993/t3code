@@ -1,3 +1,4 @@
+// oxlint-disable t3code/no-manual-effect-runtime-in-tests -- Pure projector replay cases intentionally bridge Effect through promises.
 import {
   CommandId,
   EventId,
@@ -9,6 +10,7 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
+import { stableLegacyToolActivityId } from "./LegacyToolActivityIdentity.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
 function makeEvent(input: {
@@ -100,6 +102,163 @@ describe("orchestration projector", () => {
         checkpoints: [],
         session: null,
       },
+    ]);
+  });
+
+  it("collapses replayed compacted legacy tool envelopes by verified stable identity", async () => {
+    const now = "2026-07-23T10:00:00.000Z";
+    const threadId = ThreadId.make("thread-compacted-replay");
+    const turnId = "turn-compacted-replay";
+    const stableActivityId = stableLegacyToolActivityId(threadId, turnId, "tool-compacted");
+    let model = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: "cmd-create-compacted-replay",
+          payload: {
+            threadId,
+            projectId: "project-compacted-replay",
+            title: "Compacted replay",
+            modelSelection: {
+              provider: ProviderDriverKind.make("kimi"),
+              model: "kimi-for-coding",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+
+    for (const [index, status] of ["in_progress", "completed", "in_progress"].entries()) {
+      model = await Effect.runPromise(
+        projectEvent(
+          model,
+          makeEvent({
+            sequence: index + 2,
+            type: "thread.activity-appended",
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: `cmd-compacted-replay-${index}`,
+            payload: {
+              threadId,
+              activity: {
+                id: `legacy-activity-${index}`,
+                tone: "tool",
+                kind: "tool.updated",
+                summary: "Tool update",
+                payload: {
+                  toolUseId: "tool-compacted",
+                  status,
+                  compaction: {
+                    version: 1,
+                    stableActivityId,
+                  },
+                },
+                turnId,
+                createdAt: now,
+              },
+            },
+          }),
+        ),
+      );
+    }
+
+    expect(model.threads[0]?.activities).toHaveLength(1);
+    expect(model.threads[0]?.activities[0]).toMatchObject({
+      id: stableActivityId,
+      sequence: 3,
+      payload: {
+        toolUseId: "tool-compacted",
+        status: "completed",
+      },
+    });
+  });
+
+  it("keeps a terminal stable activity when a stale non-terminal upsert arrives later", async () => {
+    const now = "2026-07-23T10:00:00.000Z";
+    const threadId = ThreadId.make("thread-terminal-upsert");
+    const activityId = EventId.make("tool-activity-terminal");
+    let model = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: "cmd-create-terminal-upsert",
+          payload: {
+            threadId,
+            projectId: "project-terminal-upsert",
+            title: "Terminal upsert",
+            modelSelection: {
+              provider: ProviderDriverKind.make("kimi"),
+              model: "kimi-default",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+
+    for (const [index, activity] of [
+      {
+        kind: "tool.completed",
+        summary: "Tool completed",
+        payload: { toolUseId: "tool-1", status: "completed" },
+      },
+      {
+        kind: "tool.updated",
+        summary: "Stale progress",
+        payload: { toolUseId: "tool-1", status: "inProgress" },
+      },
+    ].entries()) {
+      model = await Effect.runPromise(
+        projectEvent(
+          model,
+          makeEvent({
+            sequence: index + 2,
+            type: "thread.activity-upserted",
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: `cmd-terminal-upsert-${index}`,
+            payload: {
+              threadId,
+              activity: {
+                id: activityId,
+                tone: "tool",
+                ...activity,
+                turnId: "turn-1",
+                createdAt: now,
+              },
+            },
+          }),
+        ),
+      );
+    }
+
+    expect(model.threads[0]?.activities).toEqual([
+      expect.objectContaining({
+        id: activityId,
+        kind: "tool.completed",
+        payload: expect.objectContaining({ status: "completed" }),
+      }),
     ]);
   });
 

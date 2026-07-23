@@ -145,15 +145,14 @@ type TestThreadInput = OrchestrationThreadStreamItem | Error;
 
 function testSession(
   client: WsRpcProtocolClient,
-  options?: { readonly completionMarker?: boolean },
+  options?: { readonly completionMarker?: boolean; readonly activityUpserts?: boolean },
 ): RpcSession.RpcSession {
   return {
     client,
-    initialConfig: Effect.succeed(
-      options?.completionMarker === true
-        ? ({ threadResumeCompletionMarker: true } as never)
-        : ({} as never),
-    ),
+    initialConfig: Effect.succeed({
+      ...(options?.completionMarker === true ? { threadResumeCompletionMarker: true } : {}),
+      ...(options?.activityUpserts === true ? { threadActivityUpserts: true } : {}),
+    } as never),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
@@ -175,6 +174,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly cached?: OrchestrationThread;
   readonly httpSnapshot?: Option.Option<OrchestrationThreadDetailSnapshot>;
   readonly completionMarker?: boolean;
+  readonly activityUpserts?: boolean;
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
@@ -184,6 +184,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const loaderCalls = yield* Ref.make(0);
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
   const lastRequestCompletionMarker = yield* Ref.make<boolean | undefined>(undefined);
+  const lastActivityUpserts = yield* Ref.make<boolean | undefined>(undefined);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThreadDetailSnapshot>>([]);
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
@@ -200,11 +201,13 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     [ORCHESTRATION_WS_METHODS.subscribeThread]: (input: {
       readonly afterSequence?: number;
       readonly requestCompletionMarker?: boolean;
+      readonly activityUpserts?: boolean;
     }) =>
       Stream.unwrap(
         Ref.updateAndGet(subscriptionCount, (count) => count + 1).pipe(
           Effect.andThen(Ref.set(lastSubscribeAfterSequence, input.afterSequence)),
           Effect.andThen(Ref.set(lastRequestCompletionMarker, input.requestCompletionMarker)),
+          Effect.andThen(Ref.set(lastActivityUpserts, input.activityUpserts)),
           Effect.as(streamFrom(inputs)),
         ),
       ),
@@ -213,7 +216,12 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     Option.some(
       testSession(
         client,
-        options?.completionMarker === true ? { completionMarker: true } : undefined,
+        options?.completionMarker === true || options?.activityUpserts === true
+          ? {
+              ...(options?.completionMarker === true ? { completionMarker: true } : {}),
+              ...(options?.activityUpserts === true ? { activityUpserts: true } : {}),
+            }
+          : undefined,
       ),
     ),
   );
@@ -286,6 +294,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     loaderCalls,
     lastSubscribeAfterSequence,
     lastRequestCompletionMarker,
+    lastActivityUpserts,
     supervisorState,
     supervisorSession,
     savedThreads,
@@ -296,7 +305,12 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       Option.some(
         testSession(
           client,
-          options?.completionMarker === true ? { completionMarker: true } : undefined,
+          options?.completionMarker === true || options?.activityUpserts === true
+            ? {
+                ...(options?.completionMarker === true ? { completionMarker: true } : {}),
+                ...(options?.activityUpserts === true ? { activityUpserts: true } : {}),
+              }
+            : undefined,
         ),
       ),
     ),
@@ -744,6 +758,27 @@ describe("EnvironmentThreads", () => {
         (value) => value.status === "live" && Option.isSome(value.data),
       );
       expect(Option.getOrThrow(live.data).title).toBe("Caught-up title");
+    }),
+  );
+
+  it.effect("opts into activity upserts only when the server advertises support", () =>
+    Effect.gen(function* () {
+      const supported = yield* makeHarness({
+        cached: BASE_THREAD,
+        activityUpserts: true,
+      });
+      yield* awaitThreadState(
+        supported.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(yield* Ref.get(supported.lastActivityUpserts)).toBe(true);
+
+      const legacy = yield* makeHarness({ cached: BASE_THREAD });
+      yield* awaitThreadState(
+        legacy.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(yield* Ref.get(legacy.lastActivityUpserts)).toBeUndefined();
     }),
   );
 

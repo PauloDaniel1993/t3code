@@ -248,6 +248,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           Effect.map((config) => config.threadResumeCompletionMarker === true),
           Effect.orElseSucceed(() => false),
         );
+        const supportsActivityUpserts = yield* session.initialConfig.pipe(
+          Effect.map((config) => config.threadActivityUpserts === true),
+          Effect.orElseSucceed(() => false),
+        );
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
@@ -288,6 +292,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           threadId,
           ...(canResume ? { afterSequence: sequence } : {}),
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
+          ...(supportsActivityUpserts ? { activityUpserts: true as const } : {}),
         };
       }),
       {
