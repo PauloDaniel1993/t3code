@@ -1,16 +1,17 @@
 # T3 Code
 
-T3 Code is a minimal web GUI for coding agents (currently Codex, Claude, Cursor, and OpenCode, more coming soon).
+T3 Code is a minimal web GUI for coding agents (currently Codex, Claude, Cursor, Kimi, and OpenCode, more coming soon).
 
 ## Installation
 
 > [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, and OpenCode.
+> T3 Code currently supports Codex, Claude, Cursor, Kimi, and OpenCode.
 > Install and authenticate at least one provider before use:
 >
 > - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
 > - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
 > - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `cursor-agent login`
+> - Kimi: install the current [Kimi Code CLI](https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html) and run `kimi login`
 > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 
 ### Run without installing
@@ -57,7 +58,7 @@ There's no public docs site yet, checkout the miscellaneous markdown files in [d
 - [Remote access](./docs/user/remote-access.md)
 - [Keeping T3 Code in sync](./docs/user/server-updates.md)
 - [Architecture overview](./docs/architecture/overview.md)
-- [Provider guides](./docs/providers/codex.md)
+- Provider guides: [Codex](./docs/providers/codex.md), [Claude](./docs/providers/claude.md), [Kimi](./docs/providers/kimi.md)
 - [Operations](./docs/operations/ci.md)
 - [Reference](./docs/reference/encyclopedia.md)
 
