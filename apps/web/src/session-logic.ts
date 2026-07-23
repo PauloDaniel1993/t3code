@@ -52,6 +52,12 @@ export const PROVIDER_OPTIONS: Array<{
     available: true,
     pickerSidebarBadge: "new",
   },
+  {
+    value: ProviderDriverKind.make("kimi"),
+    label: "Kimi",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
 ];
 
 export type WorkLogToolLifecycleStatus =
@@ -1656,7 +1662,8 @@ export function compareActivitiesByOrder(
     return -1;
   }
 
-  const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
+  const createdAtComparison =
+    left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0;
   if (createdAtComparison !== 0) {
     return createdAtComparison;
   }
@@ -1667,7 +1674,7 @@ export function compareActivitiesByOrder(
     return lifecycleRankComparison;
   }
 
-  return left.id.localeCompare(right.id);
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 
 function compareActivityLifecycleRank(kind: string): number {
