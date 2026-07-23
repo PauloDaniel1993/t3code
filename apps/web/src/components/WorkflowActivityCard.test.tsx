@@ -148,6 +148,34 @@ describe("deriveWorkflowSelectionGroups", () => {
     expect(groups).toHaveLength(3);
     expect(groups.every((group) => group.id !== "turn-1:other-activity")).toBe(true);
   });
+
+  it("surfaces unassociated workers on the active step", () => {
+    const model = makePlanModel();
+    const worker = makeWorker({ id: "task-free", taskId: "task-free" });
+    model.otherActivity = {
+      id: "turn-1:other-activity",
+      label: "Other activity",
+      workers: [worker],
+    };
+
+    const groups = deriveWorkflowSelectionGroups(model);
+
+    expect(groups.find((group) => group.id === "turn-1:step:1")?.workers).toContain(worker);
+    expect(groups.some((group) => group.id === "turn-1:other-activity")).toBe(true);
+  });
+
+  it("keeps unassociated workers separate when no plan step is active", () => {
+    const model = makePlanModel();
+    model.steps = model.steps.map((step) => ({ ...step, status: "completed" }));
+    model.otherActivity = {
+      id: "turn-1:other-activity",
+      label: "Other activity",
+      workers: [makeWorker({ id: "task-free", taskId: "task-free" })],
+    };
+
+    const groups = deriveWorkflowSelectionGroups(model);
+    expect(groups.at(-1)?.id).toBe("turn-1:other-activity");
+  });
 });
 
 describe("workflow step selection", () => {
@@ -254,7 +282,7 @@ describe("WorkflowActivityCard rendering", () => {
     expect(collapsedMarkup).toContain('data-slot="workflow-activity-toggle"');
     expect(collapsedMarkup).toContain('data-slot="workflow-activity-close"');
     expect(collapsedMarkup).toContain('aria-expanded="false"');
-    expect(collapsedMarkup).toContain(">Open</span>");
+    expect(collapsedMarkup).toContain('aria-label="Expand task activity"');
     expect(collapsedMarkup).not.toContain('data-slot="workflow-activity-details"');
     expect(collapsedMarkup).toContain("1.5k tokens");
     expect(collapsedMarkup).toContain("2 tools");
@@ -264,7 +292,7 @@ describe("WorkflowActivityCard rendering", () => {
     );
     expect(expandedMarkup).toContain('data-workflow-activity-state="expanded"');
     expect(expandedMarkup).toContain('aria-expanded="true"');
-    expect(expandedMarkup).toContain(">Collapse</span>");
+    expect(expandedMarkup).toContain('aria-label="Collapse task activity"');
     expect(expandedMarkup).toMatch(/data-slot="workflow-activity-details">/);
 
     const closedMarkup = renderToStaticMarkup(
