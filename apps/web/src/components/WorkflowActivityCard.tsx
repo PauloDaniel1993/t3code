@@ -4,6 +4,8 @@ import {
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
   FileSearchIcon,
   GlobeIcon,
   HistoryIcon,
@@ -26,6 +28,8 @@ import type {
 } from "../workflow-activity";
 import { resolveWorkflowCardExpandedMaxHeight } from "./chat/timelineScrollAnchoring";
 import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for focused tests)
@@ -52,13 +56,19 @@ export interface WorkflowMetricSegment {
 export function deriveWorkflowSelectionGroups(
   model: WorkflowActivityModel,
 ): WorkflowActivitySelectionGroup[] {
+  const activeStep = model.steps.find((step) => step.status === "inProgress");
+  const unassociatedWorkers = model.otherActivity?.workers ?? [];
+  const attachUnassociatedToActiveStep = activeStep !== undefined && unassociatedWorkers.length > 0;
   const groups: WorkflowActivitySelectionGroup[] = [];
   for (const step of model.steps) {
     groups.push({
       id: step.id,
       label: step.label,
       status: step.status,
-      workers: step.workers,
+      workers:
+        attachUnassociatedToActiveStep && step.id === activeStep.id
+          ? [...step.workers, ...unassociatedWorkers]
+          : step.workers,
     });
   }
   for (const step of model.historicalSteps) {
@@ -701,24 +711,32 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
                 ))}
               </p>
             ) : null}
-            <button
-              type="button"
-              aria-expanded={activityOpen}
-              aria-controls={activityOpen ? activityRegionId : undefined}
-              onClick={() => setViewState(activityOpen ? "collapsed" : "expanded")}
-              className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-border/70 bg-background/55 px-2 py-1 text-[11px] font-medium text-foreground/75 transition-colors hover:bg-accent/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
-              data-slot="workflow-activity-toggle"
-            >
-              <span>{activityOpen ? "Collapse" : "Open"}</span>
-              <ChevronDownIcon
-                className={cn(
-                  "size-3.5 opacity-70 transition-transform duration-200",
-                  activityOpen && "rotate-180",
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="outline"
+                    className="!size-[22px]"
+                    aria-label={`${activityOpen ? "Collapse" : "Expand"} ${accessibleTitle}`}
+                    aria-expanded={activityOpen}
+                    aria-controls={activityOpen ? activityRegionId : undefined}
+                    onClick={() => setViewState(activityOpen ? "collapsed" : "expanded")}
+                    data-slot="workflow-activity-toggle"
+                  />
+                }
+              >
+                {activityOpen ? (
+                  <ChevronsDownUpIcon className="size-3" />
+                ) : (
+                  <ChevronsUpDownIcon className="size-3" />
                 )}
-                aria-hidden
-              />
-              <span className="sr-only"> {title.toLowerCase()} details</span>
-            </button>
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                {activityOpen ? "Collapse" : "Expand"} {accessibleTitle}
+              </TooltipPopup>
+            </Tooltip>
             <button
               type="button"
               aria-label={`Close ${accessibleTitle}`}
@@ -799,31 +817,36 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
                           aria-hidden
                         />
                       </button>
+                      {isSelected ? (
+                        <div
+                          id={workerRegionId}
+                          className="ms-5 mt-0.5 border-s border-border/60 pb-1 ps-2"
+                        >
+                          <div
+                            className="space-y-1.5 overflow-y-auto overscroll-contain pe-0.5"
+                            style={{ maxHeight: expandedMaxHeight }}
+                            data-slot="workflow-worker-list"
+                          >
+                            {group.workers.length > 0 ? (
+                              group.workers.map((worker) => (
+                                <WorkflowWorkerCard
+                                  key={worker.id}
+                                  worker={worker}
+                                  idPrefix={idPrefix}
+                                />
+                              ))
+                            ) : (
+                              <p className="px-0.5 py-1 text-xs text-muted-foreground/60">
+                                No workers for this step yet.
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
                     </li>
                   );
                 })}
               </ul>
-            ) : null}
-
-            {/* Inline worker region — expands below a separator inside the same container */}
-            {hasPlan && selectedGroup ? (
-              <div id={workerRegionId} className="mt-1.5 border-t border-border/60 pt-1.5">
-                <div
-                  className="space-y-1.5 overflow-y-auto overscroll-contain pe-0.5"
-                  style={{ maxHeight: expandedMaxHeight }}
-                  data-slot="workflow-worker-list"
-                >
-                  {selectedGroup.workers.length > 0 ? (
-                    selectedGroup.workers.map((worker) => (
-                      <WorkflowWorkerCard key={worker.id} worker={worker} idPrefix={idPrefix} />
-                    ))
-                  ) : (
-                    <p className="px-0.5 py-1 text-xs text-muted-foreground/60">
-                      No workers for this step yet.
-                    </p>
-                  )}
-                </div>
-              </div>
             ) : null}
 
             {/* Plan-less layout: workers listed directly under the Activity heading */}
