@@ -34,7 +34,18 @@ function providerDisplayLabel(provider: {
   if (provider.displayName) return provider.displayName;
   if (provider.driver === "codex") return "Codex";
   if (provider.driver === "claudeAgent") return "Claude";
+  if (provider.driver === "kimi") return "Kimi";
   return provider.instanceId;
+}
+
+function fallbackProviderIdentity(instanceId: string): {
+  readonly providerDriver: string;
+  readonly providerLabel: string;
+} {
+  if (instanceId === "kimi") {
+    return { providerDriver: "kimi", providerLabel: "Kimi" };
+  }
+  return { providerDriver: instanceId, providerLabel: instanceId };
 }
 
 function normalizeSelectionOptions(
@@ -101,14 +112,16 @@ export function buildModelOptions(
         selection: normalizeSelectionOptions(fallbackModelSelection, existing.capabilities),
       });
     } else {
-      const providerLabel = fallbackModelSelection.instanceId;
+      const { providerDriver, providerLabel } = fallbackProviderIdentity(
+        fallbackModelSelection.instanceId,
+      );
       options.set(key, {
         key,
         label: fallbackModelSelection.model,
         subtitle: providerLabel,
         providerKey: fallbackModelSelection.instanceId,
         providerLabel,
-        providerDriver: fallbackModelSelection.instanceId,
+        providerDriver,
         isDefault: false,
         capabilities: null,
         selection: fallbackModelSelection,

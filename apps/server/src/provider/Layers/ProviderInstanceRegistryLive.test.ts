@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * Multi-instance validation slices for `ProviderInstanceRegistryLive`.
  *
@@ -10,7 +11,7 @@
  *
  *  2. **Many drivers, one registry** — the "all drivers slice" describe
  *     block below configures one instance of every shipped driver
- *     (`codex`, `claudeAgent`, `cursor`, `grok`, `opencode`) in a single
+ *     (`codex`, `claudeAgent`, `cursor`, `grok`, `kimi`, `opencode`) in a single
  *     `ProviderInstanceConfigMap` and asserts the registry boots them all
  *     without cross-contamination. This proves the driver SPI is uniform
  *     across every provider — any driver plugs into the registry through
@@ -18,17 +19,19 @@
  *
  * Every instance in these tests is configured with `enabled: false` so the
  * provider-status checks short-circuit to pending/disabled snapshots
- * without trying to spawn real `codex` / `claude` / `agent` / `grok` / `opencode`
+ * without trying to spawn real `codex` / `claude` / `agent` / `grok` / `kimi` / `opencode`
  * binaries. That keeps the assertions focused on registry routing
  * behaviour rather than the runtime details of each provider.
  */
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "node:path";
 import {
   type ClaudeSettings,
   type CodexSettings,
   type CursorSettings,
   type GrokSettings,
+  type KimiSettings,
   type OpenCodeSettings,
   ProviderDriverKind,
   type ProviderInstanceConfigMap,
@@ -47,6 +50,7 @@ import { ClaudeDriver } from "../Drivers/ClaudeDriver.ts";
 import { CodexDriver } from "../Drivers/CodexDriver.ts";
 import { CursorDriver } from "../Drivers/CursorDriver.ts";
 import { GrokDriver } from "../Drivers/GrokDriver.ts";
+import { KimiDriver } from "../Drivers/KimiDriver.ts";
 import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
@@ -120,6 +124,14 @@ const makeCursorConfig = (overrides: Partial<CursorSettings>): CursorSettings =>
 const makeGrokConfig = (overrides: Partial<GrokSettings>): GrokSettings => ({
   enabled: false,
   binaryPath: "grok",
+  customModels: [],
+  ...overrides,
+});
+
+const makeKimiConfig = (overrides: Partial<KimiSettings>): KimiSettings => ({
+  enabled: false,
+  binaryPath: "kimi",
+  homePath: "",
   customModels: [],
   ...overrides,
 });
@@ -208,14 +220,16 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       expect(personalSnapshot.driver).toBe(codexDriverKind);
       expect(personalSnapshot.enabled).toBe(false);
       expect(personalSnapshot.continuation?.groupKey).toBe(
-        "codex:home:/home/julius/.codex_personal",
+        `codex:home:${NodePath.resolve("/home/julius/.codex_personal")}`,
       );
 
       const workSnapshot = yield* work!.snapshot.getSnapshot;
       expect(workSnapshot.instanceId).toBe(workId);
       expect(workSnapshot.driver).toBe(codexDriverKind);
       expect(workSnapshot.enabled).toBe(false);
-      expect(workSnapshot.continuation?.groupKey).toBe("codex:home:/home/julius/.codex");
+      expect(workSnapshot.continuation?.groupKey).toBe(
+        `codex:home:${NodePath.resolve("/home/julius/.codex")}`,
+      );
 
       // Nothing goes to the unavailable bucket — both drivers are registered.
       const unavailable = yield* registry.listUnavailable;
@@ -294,12 +308,14 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       const claudeId = ProviderInstanceId.make("claude_default");
       const cursorId = ProviderInstanceId.make("cursor_default");
       const grokId = ProviderInstanceId.make("grok_default");
+      const kimiId = ProviderInstanceId.make("kimi_default");
       const openCodeId = ProviderInstanceId.make("opencode_default");
 
       const codexDriverKind = ProviderDriverKind.make("codex");
       const claudeDriverKind = ProviderDriverKind.make("claudeAgent");
       const cursorDriverKind = ProviderDriverKind.make("cursor");
       const grokDriverKind = ProviderDriverKind.make("grok");
+      const kimiDriverKind = ProviderDriverKind.make("kimi");
       const openCodeDriverKind = ProviderDriverKind.make("opencode");
 
       const configMap: ProviderInstanceConfigMap = {
@@ -330,6 +346,12 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
           enabled: false,
           config: makeGrokConfig({}),
         },
+        [kimiId]: {
+          driver: kimiDriverKind,
+          displayName: "Kimi Work",
+          enabled: false,
+          config: makeKimiConfig({ homePath: "/home/julius/.kimi-work" }),
+        },
         [openCodeId]: {
           driver: openCodeDriverKind,
           displayName: "OpenCode",
@@ -339,7 +361,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       };
 
       const { registry } = yield* makeProviderInstanceRegistry({
-        drivers: [CodexDriver, ClaudeDriver, CursorDriver, GrokDriver, OpenCodeDriver],
+        drivers: [CodexDriver, ClaudeDriver, CursorDriver, GrokDriver, KimiDriver, OpenCodeDriver],
         configMap,
       });
 
@@ -349,9 +371,9 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(unavailable).toEqual([]);
 
       const instances = yield* registry.listInstances;
-      expect(instances).toHaveLength(5);
+      expect(instances).toHaveLength(6);
       expect(instances.map((instance) => instance.instanceId).toSorted()).toEqual(
-        [codexId, claudeId, cursorId, grokId, openCodeId].toSorted(),
+        [codexId, claudeId, cursorId, grokId, kimiId, openCodeId].toSorted(),
       );
 
       // Instance lookup by id resolves each instance to its own bundle —
@@ -361,16 +383,19 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       const claude = yield* registry.getInstance(claudeId);
       const cursor = yield* registry.getInstance(cursorId);
       const grok = yield* registry.getInstance(grokId);
+      const kimi = yield* registry.getInstance(kimiId);
       const openCode = yield* registry.getInstance(openCodeId);
       expect(codex?.driverKind).toBe(codexDriverKind);
       expect(claude?.driverKind).toBe(claudeDriverKind);
       expect(cursor?.driverKind).toBe(cursorDriverKind);
       expect(grok?.driverKind).toBe(grokDriverKind);
+      expect(kimi?.driverKind).toBe(kimiDriverKind);
       expect(openCode?.driverKind).toBe(openCodeDriverKind);
       expect(codex?.displayName).toBe("Codex");
       expect(claude?.displayName).toBe("Claude");
       expect(cursor?.displayName).toBe("Cursor");
       expect(grok?.displayName).toBe("Grok");
+      expect(kimi?.displayName).toBe("Kimi Work");
       expect(openCode?.displayName).toBe("OpenCode");
 
       // Every instance owns its own set of closures — no sharing across
@@ -383,6 +408,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         claude!.adapter,
         cursor!.adapter,
         grok!.adapter,
+        kimi!.adapter,
         openCode!.adapter,
       ];
       expect(new Set(adapters).size).toBe(adapters.length);
@@ -391,6 +417,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         claude!.textGeneration,
         cursor!.textGeneration,
         grok!.textGeneration,
+        kimi!.textGeneration,
         openCode!.textGeneration,
       ];
       expect(new Set(textGenerations).size).toBe(textGenerations.length);
@@ -399,6 +426,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         claude!.snapshot,
         cursor!.snapshot,
         grok!.snapshot,
+        kimi!.snapshot,
         openCode!.snapshot,
       ];
       expect(new Set(snapshots).size).toBe(snapshots.length);
@@ -413,13 +441,17 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(codexSnapshot.instanceId).toBe(codexId);
       expect(codexSnapshot.driver).toBe(codexDriverKind);
       expect(codexSnapshot.enabled).toBe(false);
-      expect(codexSnapshot.continuation?.groupKey).toBe("codex:home:/home/julius/.codex");
+      expect(codexSnapshot.continuation?.groupKey).toBe(
+        `codex:home:${NodePath.resolve("/home/julius/.codex")}`,
+      );
 
       const claudeSnapshot = yield* claude!.snapshot.getSnapshot;
       expect(claudeSnapshot.instanceId).toBe(claudeId);
       expect(claudeSnapshot.driver).toBe(claudeDriverKind);
       expect(claudeSnapshot.enabled).toBe(false);
-      expect(claudeSnapshot.continuation?.groupKey).toBe("claude:home:/home/julius/.claude-work");
+      expect(claudeSnapshot.continuation?.groupKey).toBe(
+        `claude:home:${NodePath.resolve("/home/julius/.claude-work")}`,
+      );
 
       const cursorSnapshot = yield* cursor!.snapshot.getSnapshot;
       expect(cursorSnapshot.instanceId).toBe(cursorId);
@@ -434,6 +466,13 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(grokSnapshot.driver).toBe(grokDriverKind);
       expect(grokSnapshot.enabled).toBe(false);
       expect(grokSnapshot.continuation?.groupKey).toBe(`${grokDriverKind}:instance:${grokId}`);
+
+      const kimiSnapshot = yield* kimi!.snapshot.getSnapshot;
+      expect(kimiSnapshot.instanceId).toBe(kimiId);
+      expect(kimiSnapshot.driver).toBe(kimiDriverKind);
+      expect(kimiSnapshot.enabled).toBe(false);
+      expect(kimiSnapshot.models.map((model) => model.slug)).toEqual(["kimi-default"]);
+      expect(kimiSnapshot.continuation?.groupKey).toBe(`${kimiDriverKind}:instance:${kimiId}`);
 
       const openCodeSnapshot = yield* openCode!.snapshot.getSnapshot;
       expect(openCodeSnapshot.instanceId).toBe(openCodeId);

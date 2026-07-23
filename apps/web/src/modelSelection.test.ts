@@ -155,6 +155,40 @@ describe("instance-scoped model selection", () => {
     );
   });
 
+  it("keeps Kimi default and discovered models available to text generation", () => {
+    const kimiInstanceId = ProviderInstanceId.make("kimi");
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("kimi"),
+        instanceId: kimiInstanceId,
+        models: ["kimi-default", "kimi-k2-discovered"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [kimiInstanceId]: {
+          driver: ProviderDriverKind.make("kimi"),
+          config: { customModels: [] },
+        },
+      },
+      textGenerationModelSelection: {
+        instanceId: kimiInstanceId,
+        model: "kimi-default",
+      },
+    };
+    const kimi = deriveProviderInstanceEntries(providers)[0]!;
+
+    expect(getAppModelOptionsForInstance(settings, kimi).map((option) => option.slug)).toEqual([
+      "kimi-default",
+      "kimi-k2-discovered",
+    ]);
+    expect(resolveAppModelSelectionState(settings, providers)).toMatchObject({
+      instanceId: kimiInstanceId,
+      model: "kimi-default",
+    });
+  });
+
   it("does not inject an unknown selected slug into the stock instance list", () => {
     const providers = [
       provider({
