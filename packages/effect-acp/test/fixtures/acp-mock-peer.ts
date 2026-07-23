@@ -16,6 +16,14 @@ if (process.env.ACP_MOCK_EXIT_IMMEDIATELY_CODE !== undefined) {
 }
 
 const sessionId = "mock-session-1";
+const promptStderrBytes = Number(process.env.ACP_MOCK_PROMPT_STDERR_BYTES ?? "0");
+
+const writePromptDiagnostics =
+  Number.isFinite(promptStderrBytes) && promptStderrBytes > 0
+    ? Effect.callback<void>((resume) => {
+        process.stderr.write("x".repeat(promptStderrBytes), () => resume(Effect.void));
+      })
+    : Effect.void;
 
 const program = Effect.gen(function* () {
   const agent = yield* AcpAgent.AcpAgent;
@@ -56,6 +64,7 @@ const program = Effect.gen(function* () {
 
   yield* agent.handlePrompt(() =>
     Effect.gen(function* () {
+      yield* writePromptDiagnostics;
       yield* agent.client.requestPermission({
         sessionId,
         options: [
