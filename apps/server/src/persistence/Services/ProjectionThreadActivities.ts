@@ -17,6 +17,7 @@ import {
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
@@ -38,6 +39,12 @@ export const ListProjectionThreadActivitiesInput = Schema.Struct({
 });
 export type ListProjectionThreadActivitiesInput = typeof ListProjectionThreadActivitiesInput.Type;
 
+export const GetProjectionThreadActivityInput = Schema.Struct({
+  threadId: ThreadId,
+  activityId: EventId,
+});
+export type GetProjectionThreadActivityInput = typeof GetProjectionThreadActivityInput.Type;
+
 export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -58,6 +65,14 @@ export interface ProjectionThreadActivityRepositoryShape {
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
+   * Replace a stable logical activity while retaining its first sequence and
+   * creation timestamp so live updates do not move the timeline row.
+   */
+  readonly upsertPreservingOrder: (
+    row: ProjectionThreadActivity,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
    * List projected thread activity rows for a thread.
    *
    * Returned in ascending runtime sequence order (or creation order when
@@ -66,6 +81,10 @@ export interface ProjectionThreadActivityRepositoryShape {
   readonly listByThreadId: (
     input: ListProjectionThreadActivitiesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  readonly getByActivityId: (
+    input: GetProjectionThreadActivityInput,
+  ) => Effect.Effect<Option.Option<ProjectionThreadActivity>, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread activity rows by thread.

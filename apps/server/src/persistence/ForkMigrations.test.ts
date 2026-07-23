@@ -4,6 +4,8 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import ForkMigration0001 from "./ForkMigrations/001_AttachmentCleanupQueue.ts";
+import ForkMigration0002 from "./ForkMigrations/002_ProjectionThreadSessionRecovery.ts";
+import ForkMigration0003 from "./ForkMigrations/003_DatabaseCompactionJournal.ts";
 import { reconcileBaseMigrationLedger, runForkMigrations } from "./ForkMigrations.ts";
 import { runMigrations } from "./Migrations.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
@@ -27,6 +29,16 @@ const readMigrationState = Effect.gen(function* () {
     FROM sqlite_master
     WHERE type = 'index' AND name = 'idx_attachment_cleanup_queue_pending'
   `;
+  const recoveryColumns = yield* sql<{ readonly name: string }>`
+    SELECT name
+    FROM pragma_table_info('projection_thread_sessions')
+    WHERE name = 'recovery_json'
+  `;
+  const compactionJournalTables = yield* sql<{ readonly name: string }>`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'database_compaction_journal'
+  `;
   const baseLedger = yield* sql<{
     readonly migration_id: number;
     readonly name: string;
@@ -46,8 +58,10 @@ const readMigrationState = Effect.gen(function* () {
   return {
     cleanupQueueIndexes,
     cleanupQueueTables,
+    compactionJournalTables,
     baseLedger,
     forkLedger,
+    recoveryColumns,
   };
 });
 
@@ -56,26 +70,38 @@ const assertForkMigrationApplied = (state: Effect.Success<typeof readMigrationSt
   assert.deepStrictEqual(state.cleanupQueueIndexes, [
     { name: "idx_attachment_cleanup_queue_pending" },
   ]);
+  assert.deepStrictEqual(state.recoveryColumns, [{ name: "recovery_json" }]);
+  assert.deepStrictEqual(state.compactionJournalTables, [
+    { name: "database_compaction_journal" },
+  ]);
   assert.deepStrictEqual(state.forkLedger, [
     {
       migration_id: 1,
       name: "AttachmentCleanupQueue",
     },
+    {
+      migration_id: 2,
+      name: "ProjectionThreadSessionRecovery",
+    },
+    {
+      migration_id: 3,
+      name: "DatabaseCompactionJournal",
+    },
   ]);
 };
 
-const assertBaseLedgerEndsAt32 = (state: Effect.Success<typeof readMigrationState>) => {
-  assert.equal(state.baseLedger.length, 32);
+const assertBaseLedgerEndsAt34 = (state: Effect.Success<typeof readMigrationState>) => {
+  assert.equal(state.baseLedger.length, 34);
   assert.deepStrictEqual(state.baseLedger.at(-1), {
-    migration_id: 32,
-    name: "AuthPairingProofKeyThumbprint",
+    migration_id: 34,
+    name: "ProjectionThreadsSnoozed",
   });
 };
 
 const seedLegacyAttachmentCleanupMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  yield* runMigrations();
+  yield* runMigrations({ toMigrationInclusive: 32 });
   yield* ForkMigration0001;
   yield* sql`
     INSERT INTO attachment_cleanup_queue (
@@ -97,6 +123,55 @@ const seedLegacyAttachmentCleanupMigration = Effect.gen(function* () {
   `;
 });
 
+const seedLegacyRecoveryAndCompactionMigrations = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  yield* runMigrations({ toMigrationInclusive: 32 });
+  yield* runForkMigrations({ toMigrationInclusive: 1 });
+  yield* ForkMigration0002;
+  yield* ForkMigration0003;
+  yield* sql`
+    INSERT INTO effect_sql_migrations (migration_id, name)
+    VALUES
+      (33, 'ProjectionThreadSessionRecovery'),
+      (34, 'DatabaseCompactionJournal')
+  `;
+  yield* sql`
+    INSERT INTO database_compaction_journal (
+      journal_id,
+      safety_watermark,
+      phase,
+      event_batch_cursor,
+      projection_batch_cursor,
+      eligible_event_count,
+      processed_event_count,
+      skipped_event_count,
+      eligible_projection_count,
+      processed_projection_count,
+      skipped_projection_count,
+      logical_bytes_reclaimed,
+      started_at,
+      updated_at
+    )
+    VALUES (
+      'legacy-journal',
+      10,
+      'running',
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      '2026-07-23T00:00:00.000Z',
+      '2026-07-23T00:00:01.000Z'
+    )
+  `;
+});
+
 const freshLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
 freshLayer("ForkMigrations (fresh database)", (it) => {
@@ -105,10 +180,14 @@ freshLayer("ForkMigrations (fresh database)", (it) => {
       const executed = yield* runStartupMigrations;
       const state = yield* readMigrationState;
 
-      assert.equal(executed.baseMigrations.length, 32);
-      assert.deepStrictEqual(executed.baseMigrations.at(-1), [32, "AuthPairingProofKeyThumbprint"]);
-      assert.deepStrictEqual(executed.forkMigrations, [[1, "AttachmentCleanupQueue"]]);
-      assertBaseLedgerEndsAt32(state);
+      assert.equal(executed.baseMigrations.length, 34);
+      assert.deepStrictEqual(executed.baseMigrations.at(-1), [34, "ProjectionThreadsSnoozed"]);
+      assert.deepStrictEqual(executed.forkMigrations, [
+        [1, "AttachmentCleanupQueue"],
+        [2, "ProjectionThreadSessionRecovery"],
+        [3, "DatabaseCompactionJournal"],
+      ]);
+      assertBaseLedgerEndsAt34(state);
       assertForkMigrationApplied(state);
     }),
   );
@@ -117,7 +196,7 @@ freshLayer("ForkMigrations (fresh database)", (it) => {
 const baseOnlyLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
 baseOnlyLayer("ForkMigrations (existing base-only database)", (it) => {
-  it.effect("adds the fork ledger to a database that never ran the attachment branch", () =>
+  it.effect("adds the fork ledger to a database that never ran fork migrations", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
@@ -133,8 +212,12 @@ baseOnlyLayer("ForkMigrations (existing base-only database)", (it) => {
       const state = yield* readMigrationState;
 
       assert.deepStrictEqual(executed.baseMigrations, []);
-      assert.deepStrictEqual(executed.forkMigrations, [[1, "AttachmentCleanupQueue"]]);
-      assertBaseLedgerEndsAt32(state);
+      assert.deepStrictEqual(executed.forkMigrations, [
+        [1, "AttachmentCleanupQueue"],
+        [2, "ProjectionThreadSessionRecovery"],
+        [3, "DatabaseCompactionJournal"],
+      ]);
+      assertBaseLedgerEndsAt34(state);
       assertForkMigrationApplied(state);
     }),
   );
@@ -153,7 +236,7 @@ legacyLayer("ForkMigrations (legacy base-ledger entry)", (it) => {
         yield* runStartupMigrations;
 
         const state = yield* readMigrationState;
-        assertBaseLedgerEndsAt32(state);
+        assertBaseLedgerEndsAt34(state);
         assertForkMigrationApplied(state);
 
         const preservedRows = yield* sql<{ readonly threadId: string }>`
@@ -165,28 +248,43 @@ legacyLayer("ForkMigrations (legacy base-ledger entry)", (it) => {
   );
 });
 
-const futureBaseLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const legacyRecoveryLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-futureBaseLayer("ForkMigrations (future upstream base migration)", (it) => {
-  it.effect("leaves base migration 33 untouched when its name differs", () =>
+legacyRecoveryLayer("ForkMigrations (legacy recovery and compaction rows)", (it) => {
+  it.effect("moves legacy base rows into the fork ledger without replacing their schema", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations();
-      yield* sql`
-        INSERT INTO effect_sql_migrations (migration_id, name)
-        VALUES (33, 'HypotheticalUpstreamMigration')
-      `;
+      yield* seedLegacyRecoveryAndCompactionMigrations;
+      yield* runStartupMigrations;
 
+      const state = yield* readMigrationState;
+      assertBaseLedgerEndsAt34(state);
+      assertForkMigrationApplied(state);
+      const journals = yield* sql<{ readonly phase: string }>`
+        SELECT phase
+        FROM database_compaction_journal
+        WHERE journal_id = 'legacy-journal'
+      `;
+      assert.deepStrictEqual(journals, [{ phase: "running" }]);
+    }),
+  );
+});
+
+const upstreamBaseLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+
+upstreamBaseLayer("ForkMigrations (upstream base migrations)", (it) => {
+  it.effect("leaves upstream base migrations 33 and 34 untouched", () =>
+    Effect.gen(function* () {
       yield* runStartupMigrations;
 
       const state = yield* readMigrationState;
       assertForkMigrationApplied(state);
-      assert.equal(state.baseLedger.length, 33);
-      assert.deepStrictEqual(state.baseLedger.at(-1), {
-        migration_id: 33,
-        name: "HypotheticalUpstreamMigration",
-      });
+      assertBaseLedgerEndsAt34(state);
+      assert.deepStrictEqual(state.baseLedger.slice(-2), [
+        { migration_id: 33, name: "ProjectionThreadsSettled" },
+        { migration_id: 34, name: "ProjectionThreadsSnoozed" },
+      ]);
     }),
   );
 });
@@ -204,7 +302,7 @@ restartLayer("ForkMigrations (restart reconciliation)", (it) => {
       const secondStartupState = yield* readMigrationState;
 
       assert.deepStrictEqual(secondStartupState, firstStartupState);
-      assertBaseLedgerEndsAt32(secondStartupState);
+      assertBaseLedgerEndsAt34(secondStartupState);
       assertForkMigrationApplied(secondStartupState);
     }),
   );

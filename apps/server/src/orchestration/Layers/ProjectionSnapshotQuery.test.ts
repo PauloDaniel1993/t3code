@@ -1,4 +1,5 @@
 import {
+  ActivityHistoryCursor,
   CheckpointRef,
   EventId,
   MessageId,
@@ -11,6 +12,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -24,6 +26,7 @@ const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
+const encodeUnknownJson = Schema.encodeSync(Schema.UnknownFromJsonString);
 
 const projectionSnapshotLayer = it.layer(
   OrchestrationProjectionSnapshotQueryLive.pipe(
@@ -371,6 +374,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               createdAt: "2026-02-24T00:00:06.000Z",
             },
           ],
+          activityHistory: {
+            hasMoreBefore: false,
+            beforeCursor: null,
+          },
           checkpoints: [
             {
               turnId: asTurnId("turn-1"),
@@ -1336,6 +1343,314 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           createdAt: "2026-04-01T00:00:07.000Z",
         },
       ]);
+    }),
+  );
+
+  it.effect("bounds initial activity snapshots and pages equal-order history without gaps", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-history");
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-history',
+          'History Project',
+          '/tmp/project-history',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-04-02T00:00:00.000Z',
+          '2026-04-02T00:00:01.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          ${threadId},
+          'project-history',
+          'History Thread',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          0,
+          0,
+          0,
+          '2026-04-02T00:00:02.000Z',
+          '2026-04-02T00:00:03.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE activity_values(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1
+          FROM activity_values
+          WHERE value < 204
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          printf('activity-%03d', value),
+          ${threadId},
+          NULL,
+          'info',
+          'history.entry',
+          printf('Activity %03d', value),
+          json_object('value', value),
+          1,
+          '2026-04-02T00:00:04.000Z'
+        FROM activity_values
+      `;
+
+      const detail = yield* snapshotQuery.getThreadDetailById(threadId);
+      assert.equal(detail._tag, "Some");
+      if (detail._tag !== "Some") {
+        return;
+      }
+      assert.equal(detail.value.activities.length, 200);
+      assert.equal(detail.value.activities[0]?.id, "activity-005");
+      assert.equal(detail.value.activities[199]?.id, "activity-204");
+      assert.equal(detail.value.activityHistory?.hasMoreBefore, true);
+      const initialCursor = detail.value.activityHistory?.beforeCursor;
+      assert.equal(initialCursor !== null && initialCursor !== undefined, true);
+      if (initialCursor === null || initialCursor === undefined) {
+        return;
+      }
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES (
+          'activity-999',
+          ${threadId},
+          NULL,
+          'info',
+          'history.entry',
+          'Live tail',
+          '{}',
+          2,
+          '2026-04-02T00:00:05.000Z'
+        )
+      `;
+
+      const firstOlderPage = yield* snapshotQuery.getActivityHistory({
+        threadId,
+        before: initialCursor,
+        limit: 3,
+      });
+      assert.deepEqual(
+        firstOlderPage.activities.map((activity) => activity.id),
+        ["activity-002", "activity-003", "activity-004"],
+      );
+      assert.equal(firstOlderPage.pageInfo.hasMoreBefore, true);
+
+      const secondCursor = firstOlderPage.pageInfo.beforeCursor;
+      assert.equal(secondCursor !== null, true);
+      if (secondCursor === null) {
+        return;
+      }
+      const oldestPage = yield* snapshotQuery.getActivityHistory({
+        threadId,
+        before: secondCursor,
+        limit: 10,
+      });
+      assert.deepEqual(
+        oldestPage.activities.map((activity) => activity.id),
+        ["activity-000", "activity-001"],
+      );
+      assert.deepEqual(oldestPage.pageInfo, {
+        hasMoreBefore: false,
+        beforeCursor: null,
+      });
+
+      const malformed = yield* snapshotQuery
+        .getActivityHistory({
+          threadId,
+          before: ActivityHistoryCursor.make("not-a-valid-cursor"),
+          limit: 3,
+        })
+        .pipe(Effect.flip);
+      assert.equal(malformed._tag, "ActivityHistoryInvalidCursorError");
+
+      yield* sql`DELETE FROM projection_thread_activities WHERE activity_id = 'activity-005'`;
+      const stale = yield* snapshotQuery
+        .getActivityHistory({
+          threadId,
+          before: initialCursor,
+          limit: 3,
+        })
+        .pipe(Effect.flip);
+      assert.equal(stale._tag, "ActivityHistoryInvalidCursorError");
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`
+        WITH RECURSIVE activity_values(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1
+          FROM activity_values
+          WHERE value < 199
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary,
+          payload_json, sequence, created_at
+        )
+        SELECT
+          printf('sequenced-%03d', value), ${threadId}, NULL, 'info', 'history.entry',
+          printf('Sequenced %03d', value), '{}', 1, '2026-04-02T00:00:04.000Z'
+        FROM activity_values
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary,
+          payload_json, sequence, created_at
+        ) VALUES
+          ('null-sequence-0', ${threadId}, NULL, 'info', 'history.entry',
+           'Null sequence 0', '{}', NULL, '2026-04-01T00:00:00.000Z'),
+          ('null-sequence-1', ${threadId}, NULL, 'info', 'history.entry',
+           'Null sequence 1', '{}', NULL, '2026-04-01T00:00:01.000Z')
+      `;
+
+      const nullBranchDetail = yield* snapshotQuery.getThreadDetailById(threadId);
+      assert.equal(nullBranchDetail._tag, "Some");
+      if (nullBranchDetail._tag !== "Some") {
+        return;
+      }
+      const nullBranchCursor = nullBranchDetail.value.activityHistory?.beforeCursor;
+      assert.isNotNull(nullBranchCursor);
+      if (nullBranchCursor === null || nullBranchCursor === undefined) {
+        return;
+      }
+      const nullSequencePage = yield* snapshotQuery.getActivityHistory({
+        threadId,
+        before: nullBranchCursor,
+        limit: 10,
+      });
+      assert.deepEqual(
+        nullSequencePage.activities.map((activity) => activity.id),
+        ["null-sequence-0", "null-sequence-1"],
+      );
+      assert.deepEqual(nullSequencePage.pageInfo, {
+        hasMoreBefore: false,
+        beforeCursor: null,
+      });
+
+      yield* sql`
+        DELETE FROM projection_thread_activities
+        WHERE activity_id NOT IN ('null-sequence-0', 'null-sequence-1')
+      `;
+      const fullWindowDetail = yield* snapshotQuery.getThreadDetailById(threadId);
+      assert.equal(fullWindowDetail._tag, "Some");
+      if (fullWindowDetail._tag !== "Some") {
+        return;
+      }
+      assert.deepEqual(fullWindowDetail.value.activityHistory, {
+        hasMoreBefore: false,
+        beforeCursor: null,
+      });
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`
+        WITH RECURSIVE activity_values(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1
+          FROM activity_values
+          WHERE value < 20004
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          printf('large-activity-%05d', value),
+          ${threadId},
+          NULL,
+          'info',
+          'history.entry',
+          printf('Large activity %05d', value),
+          json_object('value', value, 'detail', printf('%01024d', value)),
+          1,
+          '2026-04-02T00:00:04.000Z'
+        FROM activity_values
+      `;
+
+      const largeDetail = yield* snapshotQuery.getThreadDetailById(threadId);
+      assert.equal(largeDetail._tag, "Some");
+      if (largeDetail._tag !== "Some") {
+        return;
+      }
+      assert.equal(largeDetail.value.activities.length, 200);
+      assert.equal(largeDetail.value.activities[0]?.id, "large-activity-19805");
+      assert.equal(largeDetail.value.activities[199]?.id, "large-activity-20004");
+      assert.equal(largeDetail.value.activityHistory?.hasMoreBefore, true);
+      assert.isBelow(
+        Buffer.byteLength(encodeUnknownJson(largeDetail.value.activities), "utf8"),
+        300_000,
+      );
     }),
   );
 

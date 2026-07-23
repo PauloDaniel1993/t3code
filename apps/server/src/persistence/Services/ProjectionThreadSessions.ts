@@ -9,6 +9,7 @@
 import {
   RuntimeMode,
   IsoDateTime,
+  OrchestrationSessionRecovery,
   OrchestrationSessionStatus,
   ProviderInstanceId,
   ThreadId,
@@ -29,6 +30,7 @@ export const ProjectionThreadSession = Schema.Struct({
   runtimeMode: RuntimeMode,
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),
+  recovery: Schema.NullOr(OrchestrationSessionRecovery),
   updatedAt: IsoDateTime,
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;
@@ -60,6 +62,17 @@ export interface ProjectionThreadSessionRepositoryShape {
   readonly getByThreadId: (
     input: GetProjectionThreadSessionInput,
   ) => Effect.Effect<Option.Option<ProjectionThreadSession>, ProjectionRepositoryError>;
+
+  /**
+   * Lists projected sessions that still advertise in-flight work.
+   *
+   * An active turn marker is included even if the status was partially
+   * projected to a non-running value before a crash.
+   */
+  readonly listActive: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadSession>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Delete projected thread-session state by thread id.

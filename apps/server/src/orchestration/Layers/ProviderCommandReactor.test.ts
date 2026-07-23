@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// oxlint-disable t3code/no-manual-effect-runtime-in-tests -- This legacy integration suite uses an async ManagedRuntime harness.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -432,10 +433,43 @@ describe("ProviderCommandReactor", () => {
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
+      reactor,
       stateDir,
       drain,
     };
   }
+
+  it("awaits a provider turn id when replaying a durable pending request", async () => {
+    const harness = await createHarness();
+    const messageId = asMessageId("message-pending-recovery");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-pending-recovery-source"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId,
+          role: "user",
+          text: "Resume this pending request",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await harness.drain();
+
+    const result = await Effect.runPromise(
+      harness.reactor.recoverPendingTurnStart({
+        threadId: ThreadId.make("thread-1"),
+        messageId,
+      }),
+    );
+
+    expect(result.turnId).toBe(asTurnId("turn-1"));
+    expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+  });
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
