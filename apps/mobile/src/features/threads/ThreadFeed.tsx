@@ -149,6 +149,10 @@ export interface ThreadFeedProps {
   readonly threadId: ThreadId;
   readonly workspaceRoot?: string | null;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
+  readonly hasOlderActivities: boolean;
+  readonly isLoadingOlderActivities: boolean;
+  readonly olderActivitiesError: string | null;
+  readonly onLoadOlderActivities: () => void;
   readonly contentPresentation: ThreadContentPresentation;
   readonly agentLabel: string;
   readonly latestTurn: ThreadFeedLatestTurn | null;
@@ -1630,6 +1634,57 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }),
     [shouldRestoreVisibleContentPosition],
   );
+  const listHeader = useMemo(
+    () => (
+      <View>
+        {usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />}
+        {props.hasOlderActivities || props.olderActivitiesError !== null ? (
+          <View className="items-center gap-2 py-3">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={
+                props.isLoadingOlderActivities
+                  ? "Loading older activity"
+                  : props.olderActivitiesError === null
+                    ? "Load older activity"
+                    : "Retry older activity"
+              }
+              accessibilityState={{
+                busy: props.isLoadingOlderActivities,
+                disabled: props.isLoadingOlderActivities,
+              }}
+              disabled={props.isLoadingOlderActivities}
+              onPress={props.onLoadOlderActivities}
+              className="min-h-10 flex-row items-center justify-center gap-2 rounded-full border border-border bg-card px-4 py-2"
+            >
+              {props.isLoadingOlderActivities ? <ActivityIndicator size="small" /> : null}
+              <Text className="font-t3-medium text-sm text-foreground">
+                {props.olderActivitiesError === null
+                  ? "Load older activity"
+                  : "Retry older activity"}
+              </Text>
+            </Pressable>
+            {props.olderActivitiesError !== null ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                className="px-6 text-center text-xs text-danger"
+              >
+                {props.olderActivitiesError}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    ),
+    [
+      props.hasOlderActivities,
+      props.isLoadingOlderActivities,
+      props.olderActivitiesError,
+      props.onLoadOlderActivities,
+      topContentInset,
+      usesNativeAutomaticInsets,
+    ],
+  );
 
   const onCopyWorkRow = useCallback((rowId: string, value: string) => {
     copyTextWithHaptic(value, {
@@ -1892,9 +1947,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             initialScrollAtEnd
             onScroll={handleScroll}
             scrollEventThrottle={16}
-            ListHeaderComponent={
-              usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />
-            }
+            ListHeaderComponent={listHeader}
             contentContainerStyle={{
               paddingTop: 12,
               paddingHorizontal: contentHorizontalPadding,
@@ -1903,7 +1956,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         </View>
         {props.feed.length === 0 &&
         props.activeWorkStartedAt === null &&
-        props.contentPresentation.kind === "ready" ? (
+        props.contentPresentation.kind === "ready" &&
+        !props.hasOlderActivities &&
+        props.olderActivitiesError === null ? (
           <View pointerEvents="none" style={StyleSheet.absoluteFill}>
             <ThreadFeedPlaceholder
               title="No conversation yet"

@@ -877,7 +877,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         threadId: ctx.threadId,
                         turnId: notificationTurnId,
                         toolCall: event.toolCall,
-                        rawPayload: event.rawPayload,
                       }),
                     );
                     return;
