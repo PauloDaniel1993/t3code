@@ -75,6 +75,7 @@ export function shouldPublishAgentAwarenessEvent(event: OrchestrationEvent): boo
       // the authoritative starting/running state instead.
       return false;
     case "thread.proposed-plan-upserted":
+    case "thread.activity-upserted":
     case "thread.runtime-mode-set":
     case "thread.interaction-mode-set":
       return false;

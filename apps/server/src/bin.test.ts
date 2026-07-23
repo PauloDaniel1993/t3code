@@ -3,6 +3,7 @@ import * as NodeHttp from "node:http";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -41,6 +42,9 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { environmentAuthenticatedAuthLayer } from "./auth/http.ts";
+import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import { databasePhysicalMaintenancePaths } from "./persistence/DatabasePhysicalMaintenance.ts";
+import { DatabaseMaintenanceActiveWorkError } from "./cli/maintenance.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 class ProjectCliHttpApi extends HttpApi.make("environment").add(EnvironmentOrchestrationHttpApi) {}
@@ -130,6 +134,13 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
         ),
       ),
       Layer.provideMerge(makeProjectPersistenceLayer(config)),
+      Layer.provideMerge(
+        Layer.succeed(ServerRuntimeStartup.ServerRuntimeStartup, {
+          awaitCommandReady: Effect.void,
+          markHttpListening: Effect.void,
+          enqueueCommand: (effect) => effect,
+        }),
+      ),
       Layer.provideMerge(
         NodeHttpServer.layer(NodeHttp.createServer, {
           host: "127.0.0.1",
@@ -581,6 +592,100 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
         assert.fail(`Expected UnrecognizedOption, got ${String(optionError?._tag)}`);
       }
       assert.equal(optionError.option, "--dev-url");
+    }),
+  );
+
+  it.effect("estimates and schedules database maintenance for the next restart", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-cli-maintenance-test-"),
+      );
+
+      const estimate = yield* captureStdout(
+        runCli(["maintenance", "estimate", "--base-dir", baseDir]),
+      );
+      assert.include(estimate.output, "Safety watermark:");
+
+      const compact = yield* captureStdout(
+        runCli(["maintenance", "compact", "--base-dir", baseDir]),
+      );
+      assert.include(compact.output, "Restart T3 Code");
+
+      const config = yield* makeCliTestServerConfig(baseDir);
+      assert.isTrue(NodeFS.existsSync(databasePhysicalMaintenancePaths(config.dbPath).requestPath));
+    }),
+  );
+
+  it.effect("refuses maintenance while provider work is active", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-cli-maintenance-active-test-"),
+      );
+      yield* runCliWithRuntime(["maintenance", "estimate", "--base-dir", baseDir]);
+      const config = yield* makeCliTestServerConfig(baseDir);
+      const database = new NodeSqlite.DatabaseSync(config.dbPath);
+      database
+        .prepare(
+          `
+            INSERT INTO provider_session_runtime (
+              thread_id, provider_name, provider_instance_id, adapter_key, runtime_mode,
+              status, last_seen_at, resume_cursor_json, runtime_payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          "thread-active-maintenance",
+          "kimi",
+          "kimi",
+          "kimi",
+          "full-access",
+          "running",
+          "2026-07-23T10:00:00.000Z",
+          null,
+          null,
+        );
+      database.close();
+
+      const error = yield* runCliWithRuntime([
+        "maintenance",
+        "compact",
+        "--base-dir",
+        baseDir,
+      ]).pipe(Effect.flip);
+      assert.instanceOf(error, DatabaseMaintenanceActiveWorkError);
+      assert.deepStrictEqual(error.blockers, ["provider-work-active"]);
+      assert.isFalse(
+        NodeFS.existsSync(databasePhysicalMaintenancePaths(config.dbPath).requestPath),
+      );
+    }),
+  );
+
+  it.effect("refuses mutating maintenance while the persisted server process is active", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-cli-maintenance-live-server-test-"),
+      );
+      const config = yield* makeCliTestServerConfig(baseDir);
+      yield* persistServerRuntimeState({
+        path: config.serverRuntimeStatePath,
+        state: yield* makePersistedServerRuntimeState({
+          config,
+          port: 45_678,
+        }),
+      });
+
+      const error = yield* runCliWithRuntime([
+        "maintenance",
+        "compact",
+        "--base-dir",
+        baseDir,
+      ]).pipe(Effect.flip);
+      assert.instanceOf(error, DatabaseMaintenanceActiveWorkError);
+      assert.deepStrictEqual(error.blockers, ["server-process-active"]);
+      assert.isFalse(
+        NodeFS.existsSync(databasePhysicalMaintenancePaths(config.dbPath).requestPath),
+      );
     }),
   );
 });

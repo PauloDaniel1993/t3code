@@ -27,7 +27,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { ProviderAdapterRequestError, ProviderValidationError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -35,6 +35,7 @@ import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
+  PendingTurnStartRecoveryError,
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
@@ -42,6 +43,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 type ProviderIntentEvent = Extract<
@@ -1002,6 +1004,71 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const recoverPendingTurnStart: ProviderCommandReactorShape["recoverPendingTurnStart"] = Effect.fn(
+    "recoverPendingTurnStart",
+  )(function* (input) {
+    const thread = yield* resolveThread(input.threadId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PendingTurnStartRecoveryError({
+            code: "provider-send-failed",
+            message: "Failed to read the pending thread during startup recovery.",
+            cause,
+          }),
+      ),
+    );
+    if (!thread) {
+      return yield* new PendingTurnStartRecoveryError({
+        code: "thread-missing",
+        message: `Thread '${input.threadId}' was not found during pending-turn recovery.`,
+      });
+    }
+    const message = thread.messages.find((entry) => entry.id === input.messageId);
+    if (!message || message.role !== "user") {
+      return yield* new PendingTurnStartRecoveryError({
+        code: "message-missing",
+        message: `User message '${input.messageId}' was not found during pending-turn recovery.`,
+        providerInstanceId: thread.modelSelection.instanceId,
+      });
+    }
+
+    const normalizedInput = toNonEmptyProviderInput(message.text);
+    const attachments = message.attachments ?? [];
+    const sendTurnInput = {
+      threadId: input.threadId,
+      ...(normalizedInput ? { input: normalizedInput } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
+      modelSelection: thread.modelSelection,
+      interactionMode: thread.interactionMode,
+    } as const;
+    const sendWithPersistedResume = providerService.sendTurn(sendTurnInput);
+    const startFreshThenSend = buildSendTurnRequestForThread({
+      threadId: input.threadId,
+      messageText: message.text,
+      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      modelSelection: thread.modelSelection,
+      interactionMode: thread.interactionMode,
+      createdAt: message.createdAt,
+    }).pipe(Effect.flatMap(providerService.sendTurn));
+
+    return yield* sendWithPersistedResume.pipe(
+      Effect.catchIf(
+        (cause) =>
+          isProviderValidationError(cause) && cause.issue.includes("no persisted provider binding"),
+        () => startFreshThenSend,
+      ),
+      Effect.mapError(
+        (cause) =>
+          new PendingTurnStartRecoveryError({
+            code: "provider-send-failed",
+            message: "The provider could not resume and deliver the pending turn.",
+            providerInstanceId: thread.modelSelection.instanceId,
+            cause,
+          }),
+      ),
+    );
+  });
+
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (
     event: ProviderIntentEvent,
   ) {
@@ -1082,6 +1149,7 @@ const make = Effect.gen(function* () {
   return {
     start,
     drain: worker.drain,
+    recoverPendingTurnStart,
   } satisfies ProviderCommandReactorShape;
 });
 

@@ -772,6 +772,130 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.activity-upserted", () => {
+    it("uses the durable original sequence when the stable row is outside the loaded window", () => {
+      const result = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 90,
+        eventId: EventId.make("event-tool-historical-upsert"),
+        occurredAt: "2026-04-01T11:05:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.activity-upserted",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("tool-activity-outside-window"),
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "Historical tool completed",
+            payload: { toolUseId: "tool-historical", status: "completed" },
+            turnId: TurnId.make("turn-1"),
+            sequence: 4,
+            createdAt: "2026-04-01T10:00:00.000Z",
+          },
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.activities[0]?.sequence).toBe(4);
+      }
+    });
+
+    it("replaces a stable activity in place while preserving its original order", () => {
+      const activityId = EventId.make("tool-activity-stable");
+      const first = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 20,
+        eventId: EventId.make("event-tool-started"),
+        occurredAt: "2026-04-01T11:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.activity-upserted",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: activityId,
+            tone: "tool",
+            kind: "tool.started",
+            summary: "Running tests",
+            payload: { toolUseId: "tool-1", status: "inProgress" },
+            turnId: TurnId.make("turn-1"),
+            createdAt: "2026-04-01T11:00:00.000Z",
+          },
+        },
+      });
+
+      expect(first.kind).toBe("updated");
+      if (first.kind !== "updated") {
+        return;
+      }
+
+      const final = applyThreadDetailEvent(first.thread, {
+        ...baseEventFields,
+        sequence: 48,
+        eventId: EventId.make("event-tool-completed"),
+        occurredAt: "2026-04-01T11:05:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.activity-upserted",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: activityId,
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "Tests failed",
+            payload: { toolUseId: "tool-1", status: "failed", detail: "exit 1" },
+            turnId: TurnId.make("turn-1"),
+            createdAt: "2026-04-01T11:05:00.000Z",
+          },
+        },
+      });
+
+      expect(final.kind).toBe("updated");
+      if (final.kind === "updated") {
+        expect(final.thread.activities).toEqual([
+          expect.objectContaining({
+            id: activityId,
+            kind: "tool.completed",
+            sequence: 20,
+            createdAt: "2026-04-01T11:00:00.000Z",
+            payload: {
+              toolUseId: "tool-1",
+              status: "failed",
+              detail: "exit 1",
+            },
+          }),
+        ]);
+
+        const stale = applyThreadDetailEvent(final.thread, {
+          ...baseEventFields,
+          sequence: 49,
+          eventId: EventId.make("event-tool-stale"),
+          occurredAt: "2026-04-01T11:05:01.000Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.activity-upserted",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            activity: {
+              id: activityId,
+              tone: "tool",
+              kind: "tool.updated",
+              summary: "Stale progress",
+              payload: { toolUseId: "tool-1", status: "inProgress" },
+              turnId: TurnId.make("turn-1"),
+              createdAt: "2026-04-01T11:05:01.000Z",
+            },
+          },
+        });
+        expect(stale.kind).toBe("unchanged");
+      }
+    });
+  });
+
   describe("thread.turn-diff-completed", () => {
     it("adds a checkpoint and updates latestTurn", () => {
       const result = applyThreadDetailEvent(baseThread, {

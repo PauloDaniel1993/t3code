@@ -774,6 +774,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.activity.upsert": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.activity-upserted",
+        payload: {
+          threadId: command.threadId,
+          activity: command.activity,
+        },
+      };
+    }
+
     default: {
       command satisfies never;
       const fallback = command as never as { type: string };

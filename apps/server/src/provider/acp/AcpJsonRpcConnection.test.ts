@@ -65,6 +65,58 @@ describe("AcpSessionRuntime", () => {
     );
   });
 
+  it.effect(
+    "uses session/resume and gates Kimi MCP transports from initialize capabilities",
+    () => {
+      const requestEvents: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+      return Effect.gen(function* () {
+        const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+        const started = yield* runtime.start();
+
+        expect(started.sessionId).toBe("kimi-resume-session");
+        expect(started.initializeResult.agentCapabilities).toMatchObject({
+          mcpCapabilities: { http: true, sse: false },
+          promptCapabilities: { image: true, embeddedContext: false },
+          sessionCapabilities: { resume: {} },
+        });
+        const resumed = requestEvents.find(
+          (event) => event.method === "session/resume" && event.status === "started",
+        );
+        expect(resumed?.payload).toMatchObject({
+          sessionId: "kimi-resume-session",
+          mcpServers: [{ type: "http", name: "t3-http" }],
+        });
+        expect(requestEvents.some((event) => event.method === "session/load")).toBe(false);
+      }).pipe(
+        Effect.provide(
+          AcpSessionRuntime.layer({
+            spawn: {
+              command: mockAgentCommand,
+              args: mockAgentArgs,
+              env: { T3_ACP_KIMI_FIXTURE: "1" },
+            },
+            cwd: process.cwd(),
+            resumeSessionId: "kimi-resume-session",
+            resumeMethod: "resume",
+            gateMcpServersByCapabilities: true,
+            mcpServers: [
+              { type: "http", name: "t3-http", url: "http://127.0.0.1/http", headers: [] },
+              { type: "sse", name: "t3-sse", url: "http://127.0.0.1/sse", headers: [] },
+            ],
+            clientInfo: { name: "t3-kimi-test", version: "0.0.0" },
+            authMethodId: "login",
+            requestLogger: (event) =>
+              Effect.sync(() => {
+                requestEvents.push(event);
+              }),
+          }),
+        ),
+        Effect.scoped,
+        Effect.provide(NodeServices.layer),
+      );
+    },
+  );
+
   it.effect("starts a session, prompts, and emits normalized events against the mock agent", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;

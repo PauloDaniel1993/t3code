@@ -2,6 +2,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 
@@ -66,6 +67,34 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
       `,
   });
 
+  const tryInsertReceiptRow = SqlSchema.findAll({
+    Request: OrchestrationCommandReceipt,
+    Result: Schema.Struct({ commandId: OrchestrationCommandReceipt.fields.commandId }),
+    execute: (receipt) =>
+      sql`
+        INSERT INTO orchestration_command_receipts (
+          command_id,
+          aggregate_kind,
+          aggregate_id,
+          accepted_at,
+          result_sequence,
+          status,
+          error
+        )
+        VALUES (
+          ${receipt.commandId},
+          ${receipt.aggregateKind},
+          ${receipt.aggregateId},
+          ${receipt.acceptedAt},
+          ${receipt.resultSequence},
+          ${receipt.status},
+          ${receipt.error}
+        )
+        ON CONFLICT (command_id) DO NOTHING
+        RETURNING command_id AS "commandId"
+      `,
+  });
+
   const upsert: OrchestrationCommandReceiptRepositoryShape["upsert"] = (receipt) =>
     upsertReceiptRow(receipt).pipe(
       Effect.mapError(toPersistenceSqlError("OrchestrationCommandReceiptRepository.upsert:query")),
@@ -78,8 +107,17 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
       ),
     );
 
+  const tryInsert: OrchestrationCommandReceiptRepositoryShape["tryInsert"] = (receipt) =>
+    tryInsertReceiptRow(receipt).pipe(
+      Effect.map((rows) => rows.length === 1),
+      Effect.mapError(
+        toPersistenceSqlError("OrchestrationCommandReceiptRepository.tryInsert:query"),
+      ),
+    );
+
   return {
     upsert,
+    tryInsert,
     getByCommandId,
   } satisfies OrchestrationCommandReceiptRepositoryShape;
 });

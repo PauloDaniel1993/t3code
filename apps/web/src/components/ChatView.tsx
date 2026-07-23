@@ -16,7 +16,6 @@ import {
   type TurnId,
   type UploadChatAttachment,
   type KeybindingCommand,
-  OrchestrationThreadActivity,
   ProviderInteractionMode,
   ProviderDriverKind,
   RuntimeMode,
@@ -119,6 +118,7 @@ import {
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
+import { useActivityHistory } from "../hooks/useActivityHistory";
 import { isCommandPaletteOpen } from "../commandPaletteContext";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -275,7 +275,6 @@ import { useAssetUrls } from "../assets/assetUrls";
 
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
-const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_WORKFLOW_ACTIVITY_VIEW_STATES: ReadonlyMap<TurnId, WorkflowActivityCardViewState> =
@@ -1410,6 +1409,7 @@ function ChatViewContent(props: ChatViewProps) {
   // depend on which route is mounted.
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const activityHistory = useActivityHistory(activeThread ?? null);
   const threadError = isServerThread
     ? (localServerError ?? serverThread?.session?.lastError ?? null)
     : localDraftError;
@@ -1896,7 +1896,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
-  const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
+  const threadActivities = activityHistory.activities;
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
@@ -5521,6 +5521,10 @@ function ChatViewContent(props: ChatViewProps) {
                 onIsAtEndChange={onIsAtEndChange}
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
                 hideEmptyPlaceholder={isDraftHeroState}
+                hasOlderActivities={activityHistory.hasMoreBefore}
+                isLoadingOlderActivities={activityHistory.isLoading}
+                olderActivitiesError={activityHistory.error}
+                onLoadOlderActivities={activityHistory.loadOlder}
               />
 
               {/* Activity stays directly above the composer without resizing the

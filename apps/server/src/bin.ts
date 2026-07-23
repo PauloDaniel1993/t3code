@@ -12,6 +12,7 @@ import { connectCommand } from "./cli/connect.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { sharedServerCommandFlags } from "./cli/config.ts";
 import { projectCommand } from "./cli/project.ts";
+import { maintenanceCommand } from "./cli/maintenance.ts";
 import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
@@ -47,6 +48,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       serveCommand,
       authCommand,
       projectCommand,
+      maintenanceCommand,
       cloudEnabled ? connectCommand : connectUnavailableCommand,
     ]),
   );
