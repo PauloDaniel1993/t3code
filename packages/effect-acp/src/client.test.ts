@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -184,6 +185,54 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
           hello: "world",
         },
       });
+    }),
+  );
+
+  it.effect("drains child stderr so large diagnostics cannot block a prompt", () =>
+    Effect.gen(function* () {
+      const handle = yield* makeHandle({ ACP_MOCK_PROMPT_STDERR_BYTES: String(1024 * 1024) });
+      const scope = yield* Scope.make();
+      const context = yield* Layer.buildWithScope(AcpClient.layerChildProcess(handle), scope);
+
+      const result = yield* Effect.gen(function* () {
+        const acp = yield* AcpClient.AcpClient;
+        yield* acp.handleRequestPermission(() =>
+          Effect.succeed({ outcome: { outcome: "selected", optionId: "allow" } }),
+        );
+        yield* acp.handleElicitation(() =>
+          Effect.succeed({ action: { action: "accept", content: { approved: true } } }),
+        );
+        yield* acp.handleExtRequest(
+          "x/typed_request",
+          Schema.Struct({ message: Schema.String }),
+          (payload) => Effect.succeed({ ok: true, echoedMessage: payload.message }),
+        );
+        yield* acp.handleExtNotification(
+          "x/typed_notification",
+          Schema.Struct({ count: Schema.Number }),
+          () => Effect.void,
+        );
+        yield* acp.agent.initialize({
+          protocolVersion: 1,
+          clientCapabilities: {},
+          clientInfo: { name: "effect-acp-stderr-test", version: "0.0.0" },
+        });
+        yield* acp.agent.authenticate({ methodId: "cursor_login" });
+        const session = yield* acp.agent.createSession({ cwd: process.cwd(), mcpServers: [] });
+        return yield* acp.agent.prompt({
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "exercise stderr backpressure" }],
+        });
+      }).pipe(
+        Effect.provide(context),
+        Effect.ensuring(Scope.close(scope, Exit.void)),
+        Effect.timeoutOption("5 seconds"),
+      );
+
+      assert.isTrue(Option.isSome(result), "prompt stalled after the child stderr pipe filled");
+      if (Option.isSome(result)) {
+        assert.equal(result.value.stopReason, "end_turn");
+      }
     }),
   );
 
