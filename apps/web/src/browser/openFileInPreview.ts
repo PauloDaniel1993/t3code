@@ -31,10 +31,55 @@ export class BrowserPreviewUnavailableError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class BrowserFileAssetUrlError extends Data.TaggedError("BrowserFileAssetUrlError")<{
+  readonly message: string;
+}> {}
+
+export class BrowserFileExternalOpenError extends Data.TaggedError("BrowserFileExternalOpenError")<{
+  readonly message: string;
+}> {}
+
 export type OpenPreviewMutation<E = unknown> = (input: {
   readonly environmentId: EnvironmentId;
   readonly input: PreviewOpenInput;
 }) => Promise<AtomCommandResult<PreviewSessionSnapshot, E>>;
+
+type CreateAssetUrlMutation<E> = (input: {
+  readonly environmentId: EnvironmentId;
+  readonly input: { readonly resource: AssetResource };
+}) => Promise<AtomCommandResult<AssetCreateUrlResult, E>>;
+
+async function createWorkspaceFileAssetUrl<E>(input: {
+  readonly threadRef: ScopedThreadRef;
+  readonly filePath: string;
+  readonly httpBaseUrl: string;
+  readonly createAssetUrl: CreateAssetUrlMutation<E>;
+}): Promise<AtomCommandResult<string, E | BrowserFileAssetUrlError>> {
+  const assetResult = await input.createAssetUrl({
+    environmentId: input.threadRef.environmentId,
+    input: {
+      resource: {
+        _tag: "workspace-file",
+        threadId: input.threadRef.threadId,
+        path: input.filePath,
+      },
+    },
+  });
+  if (assetResult._tag === "Failure") {
+    return AsyncResult.failure(assetResult.cause);
+  }
+  const assetUrl = resolveAssetUrl(input.httpBaseUrl, assetResult.value.relativeUrl);
+  if (assetUrl === null) {
+    return AsyncResult.failure(
+      Cause.fail(
+        new BrowserFileAssetUrlError({
+          message: "The environment returned an invalid asset URL.",
+        }),
+      ),
+    );
+  }
+  return AsyncResult.success(assetUrl);
+}
 
 export async function openUrlInPreview<E>(input: {
   readonly threadRef: ScopedThreadRef;
@@ -56,12 +101,14 @@ export async function openFileInPreview<AssetError, PreviewError>(input: {
   readonly threadRef: ScopedThreadRef;
   readonly filePath: string;
   readonly httpBaseUrl: string;
-  readonly createAssetUrl: (input: {
-    readonly environmentId: EnvironmentId;
-    readonly input: { readonly resource: AssetResource };
-  }) => Promise<AtomCommandResult<AssetCreateUrlResult, AssetError>>;
+  readonly createAssetUrl: CreateAssetUrlMutation<AssetError>;
   readonly openPreview: OpenPreviewMutation<PreviewError>;
-}): Promise<AtomCommandResult<void, AssetError | PreviewError | BrowserPreviewUnavailableError>> {
+}): Promise<
+  AtomCommandResult<
+    void,
+    AssetError | PreviewError | BrowserFileAssetUrlError | BrowserPreviewUnavailableError
+  >
+> {
   if (!isPreviewSupportedInRuntime()) {
     return AsyncResult.failure(
       Cause.fail(
@@ -71,28 +118,45 @@ export async function openFileInPreview<AssetError, PreviewError>(input: {
       ),
     );
   }
-  const assetResult = await input.createAssetUrl({
-    environmentId: input.threadRef.environmentId,
-    input: {
-      resource: {
-        _tag: "workspace-file",
-        threadId: input.threadRef.threadId,
-        path: input.filePath,
-      },
-    },
+  const assetUrlResult = await createWorkspaceFileAssetUrl({
+    threadRef: input.threadRef,
+    filePath: input.filePath,
+    httpBaseUrl: input.httpBaseUrl,
+    createAssetUrl: input.createAssetUrl,
   });
-  if (assetResult._tag === "Failure") {
-    return AsyncResult.failure(assetResult.cause);
-  }
-  const assetUrl = resolveAssetUrl(input.httpBaseUrl, assetResult.value.relativeUrl);
-  if (assetUrl === null) {
-    return AsyncResult.failure(
-      Cause.die(new Error("The environment returned an invalid asset URL.")),
-    );
+  if (assetUrlResult._tag === "Failure") {
+    return AsyncResult.failure(assetUrlResult.cause);
   }
   return openUrlInPreview({
     threadRef: input.threadRef,
-    url: assetUrl,
+    url: assetUrlResult.value,
     openPreview: input.openPreview,
   });
+}
+
+export async function openFileOutsideT3<AssetError>(input: {
+  readonly threadRef: ScopedThreadRef;
+  readonly filePath: string;
+  readonly httpBaseUrl: string;
+  readonly createAssetUrl: CreateAssetUrlMutation<AssetError>;
+  readonly openExternal: (url: string) => Promise<void>;
+}): Promise<
+  AtomCommandResult<void, AssetError | BrowserFileAssetUrlError | BrowserFileExternalOpenError>
+> {
+  const assetUrlResult = await createWorkspaceFileAssetUrl(input);
+  if (assetUrlResult._tag === "Failure") {
+    return AsyncResult.failure(assetUrlResult.cause);
+  }
+  try {
+    await input.openExternal(assetUrlResult.value);
+    return AsyncResult.success(undefined);
+  } catch {
+    return AsyncResult.failure(
+      Cause.fail(
+        new BrowserFileExternalOpenError({
+          message: "The file could not be opened outside T3 Code.",
+        }),
+      ),
+    );
+  }
 }
