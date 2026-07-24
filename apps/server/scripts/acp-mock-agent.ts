@@ -18,6 +18,11 @@ const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
+const emitKimiElicitation = process.env.T3_ACP_EMIT_KIMI_ELICITATION === "1";
+const emitKimiPermissionQuestion = process.env.T3_ACP_EMIT_KIMI_PERMISSION_QUESTION === "1";
+const emitMalformedSessionUpdate = process.env.T3_ACP_EMIT_MALFORMED_SESSION_UPDATE === "1";
+const omitKimiResumeConfigOptions = process.env.T3_ACP_OMIT_KIMI_RESUME_CONFIG_OPTIONS === "1";
+const kimiFixture = process.env.T3_ACP_KIMI_FIXTURE === "1";
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
 const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
@@ -36,10 +41,12 @@ const emitStaleXAiPromptCompleteBeforeSecondHang =
 const emitOverlappingXAiPromptCompleteOutOfOrder =
   process.env.T3_ACP_EMIT_OVERLAPPING_XAI_PROMPT_COMPLETE_OUT_OF_ORDER === "1";
 const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
+const failAuthenticate = process.env.T3_ACP_FAIL_AUTHENTICATE === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
+const promptStderrBytes = Number(process.env.T3_ACP_PROMPT_STDERR_BYTES ?? "0");
 const permissionOptionIds = {
   allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
   allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
@@ -302,12 +309,28 @@ const program = Effect.gen(function* () {
         request.clientCapabilities?._meta?.parameterizedModelPicker === true;
       return {
         protocolVersion: 1,
-        agentCapabilities: { loadSession: true },
+        agentCapabilities: kimiFixture
+          ? {
+              loadSession: true,
+              mcpCapabilities: { http: true, sse: false },
+              promptCapabilities: { image: true, embeddedContext: false },
+              sessionCapabilities: { resume: {} },
+            }
+          : { loadSession: true },
+        ...(kimiFixture
+          ? {
+              authMethods: [
+                { id: "login", name: "Kimi membership login", description: "Stored CLI OAuth" },
+              ],
+            }
+          : {}),
       };
     }),
   );
 
-  yield* agent.handleAuthenticate(() => Effect.succeed({}));
+  yield* agent.handleAuthenticate(() =>
+    failAuthenticate ? Effect.fail(AcpError.AcpRequestError.authRequired()) : Effect.succeed({}),
+  );
 
   yield* agent.handleCreateSession(() =>
     Effect.succeed({
@@ -377,6 +400,14 @@ const program = Effect.gen(function* () {
         models: modelState(),
         configOptions: configOptions(),
       };
+    }),
+  );
+
+  yield* agent.handleResumeSession(() =>
+    Effect.succeed({
+      modes: modeState(),
+      models: modelState(),
+      ...(omitKimiResumeConfigOptions ? {} : { configOptions: configOptions() }),
     }),
   );
 
@@ -457,12 +488,28 @@ const program = Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
       promptCount += 1;
 
+      if (Number.isFinite(promptStderrBytes) && promptStderrBytes > 0) {
+        yield* Effect.callback<void>((resume) => {
+          process.stderr.write("x".repeat(promptStderrBytes), () => resume(Effect.void));
+        });
+      }
+
       if (Number.isFinite(promptDelayMs) && promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);
       }
 
       if (failPrompt) {
         return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
+      }
+
+      if (emitMalformedSessionUpdate) {
+        writeJsonRpcNotification("session/update", {
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: 42 },
+          },
+        });
       }
 
       if (emitStaleXAiPromptCompleteBeforeSecondHang && promptCount === 1) {
@@ -660,15 +707,17 @@ const program = Effect.gen(function* () {
           sessionId: requestedSessionId,
           toolCall: {
             toolCallId,
-            title: "`cat server/package.json`",
-            kind: "execute",
+            title: kimiFixture ? "Bash" : "`cat server/package.json`",
+            ...(kimiFixture ? {} : { kind: "execute" as const }),
             status: "pending",
             content: [
               {
                 type: "content",
                 content: {
                   type: "text",
-                  text: "Not in allowlist: cat server/package.json",
+                  text: kimiFixture
+                    ? "Requesting approval to Running: cat server/package.json"
+                    : "Not in allowlist: cat server/package.json",
                 },
               },
             ],
@@ -683,6 +732,13 @@ const program = Effect.gen(function* () {
             { optionId: permissionOptionIds.rejectOnce, name: "Reject", kind: "reject_once" },
           ],
         });
+
+        if (
+          permission.outcome.outcome === "selected" &&
+          !Object.values(permissionOptionIds).includes(permission.outcome.optionId)
+        ) {
+          throw new Error(`Unknown permission option selected: ${permission.outcome.optionId}`);
+        }
 
         const cancelled =
           cancelledSessions.delete(requestedSessionId) ||
@@ -771,6 +827,63 @@ const program = Effect.gen(function* () {
         });
 
         return { stopReason: "end_turn" };
+      }
+
+      if (emitKimiElicitation) {
+        const result = yield* agent.client.elicit({
+          mode: "form",
+          sessionId: requestedSessionId,
+          message: "Which scope should Kimi use?",
+          requestedSchema: {
+            type: "object",
+            title: "Kimi question",
+            required: ["scope"],
+            properties: {
+              scope: {
+                type: "string",
+                title: "Scope",
+                description: "Choose where Kimi should work.",
+                oneOf: [
+                  { const: "workspace", title: "Workspace" },
+                  { const: "session", title: "Session" },
+                ],
+              },
+            },
+          },
+        });
+        if (result.action.action !== "accept") {
+          return { stopReason: "cancelled" };
+        }
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitKimiPermissionQuestion) {
+        const result = yield* agent.client.requestPermission({
+          sessionId: requestedSessionId,
+          toolCall: {
+            toolCallId: "kimi-question-1",
+            title: "AskUserQuestion",
+            status: "pending",
+            content: [
+              {
+                type: "content",
+                content: { type: "text", text: "Which scope should Kimi use?" },
+              },
+            ],
+          },
+          options: [
+            { optionId: "scope-workspace", name: "Workspace", kind: "allow_once" },
+            { optionId: "scope-session", name: "Session", kind: "allow_once" },
+            { optionId: "scope-skip", name: "Skip", kind: "reject_once" },
+          ],
+        });
+        if (
+          result.outcome.outcome === "selected" &&
+          !["scope-workspace", "scope-session", "scope-skip"].includes(result.outcome.optionId)
+        ) {
+          throw new Error(`Unknown Kimi question option selected: ${result.outcome.optionId}`);
+        }
+        return { stopReason: result.outcome.outcome === "cancelled" ? "cancelled" : "end_turn" };
       }
 
       if (emitXAiAskUserQuestion) {

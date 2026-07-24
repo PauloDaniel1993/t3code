@@ -10,11 +10,16 @@ import * as Schema from "effect/Schema";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
+  compactedLegacyToolActivityId,
+  isTerminalToolActivity,
+} from "./LegacyToolActivityIdentity.ts";
+import {
   MessageSentPayloadSchema,
   ProjectCreatedPayload,
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
+  ThreadActivityUpsertedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDeletedPayload,
@@ -731,7 +736,67 @@ export function projectEvent(
             return nextBase;
           }
 
-          const activity = { ...payload.activity, sequence: event.sequence };
+          const existing = thread.activities.find((entry) => {
+            const stableId =
+              compactedLegacyToolActivityId(payload.threadId, payload.activity) ??
+              payload.activity.id;
+            return entry.id === stableId;
+          });
+          const incomingActivity = {
+            ...payload.activity,
+            id:
+              compactedLegacyToolActivityId(payload.threadId, payload.activity) ??
+              payload.activity.id,
+            sequence: event.sequence,
+          };
+          const activity =
+            existing &&
+            isTerminalToolActivity(existing) &&
+            !isTerminalToolActivity(incomingActivity)
+              ? existing
+              : incomingActivity;
+          const activities = [
+            ...thread.activities.filter((entry) => entry.id !== activity.id),
+            activity,
+          ]
+            .toSorted(compareThreadActivities)
+            .slice(-500);
+
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              activities,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.activity-upserted":
+      return decodeForEvent(
+        ThreadActivityUpsertedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+
+          const existing = thread.activities.find((entry) => entry.id === payload.activity.id);
+          const incomingActivity = {
+            ...payload.activity,
+            createdAt: existing?.createdAt ?? payload.activity.createdAt,
+            sequence: existing?.sequence ?? event.sequence,
+          };
+          const activity =
+            existing &&
+            isTerminalToolActivity(existing) &&
+            !isTerminalToolActivity(incomingActivity)
+              ? existing
+              : incomingActivity;
           const activities = [
             ...thread.activities.filter((entry) => entry.id !== activity.id),
             activity,

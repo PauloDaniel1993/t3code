@@ -49,6 +49,8 @@ import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
+  OrchestrationGetActivityHistoryError,
+  OrchestrationGetActivityHistoryInput,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetSnapshotError,
@@ -631,6 +633,15 @@ export const WsOrchestrationGetFullThreadDiffRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationGetActivityHistoryRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getActivityHistory,
+  {
+    payload: OrchestrationGetActivityHistoryInput,
+    success: OrchestrationRpcSchemas.getActivityHistory.output,
+    error: Schema.Union([OrchestrationGetActivityHistoryError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationReplayEventsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.replayEvents, {
   payload: OrchestrationReplayEventsInput,
   success: OrchestrationRpcSchemas.replayEvents.output,
@@ -765,6 +776,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
+  WsOrchestrationGetActivityHistoryRpc,
   WsOrchestrationReplayEventsRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
   WsOrchestrationSubscribeShellRpc,

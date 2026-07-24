@@ -17,6 +17,7 @@ import {
 } from "../auth/http.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+import * as ServerRuntimeStartup from "../serverRuntimeStartup.ts";
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -24,6 +25,10 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
+    const awaitRecoveredState = startup.awaitCommandReady.pipe(
+      Effect.catch((cause) => failEnvironmentInternal("orchestration_snapshot_failed", cause)),
+    );
 
     return handlers
       .handle(
@@ -31,6 +36,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.snapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          yield* awaitRecoveredState;
           return yield* projectionSnapshotQuery
             .getSnapshot()
             .pipe(
@@ -45,6 +51,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.shellSnapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          yield* awaitRecoveredState;
           return yield* projectionSnapshotQuery
             .getShellSnapshot()
             .pipe(
@@ -59,6 +66,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.threadSnapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          yield* awaitRecoveredState;
           const snapshot = yield* projectionSnapshotQuery
             .getThreadDetailSnapshot(args.params.threadId)
             .pipe(
@@ -80,12 +88,14 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           const normalized = yield* normalizeDispatchCommand(args.payload).pipe(
             Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
           );
-          return yield* orchestrationEngine
-            .dispatch(
-              normalized.command,
-              normalized.attachmentStage
-                ? { attachmentStage: normalized.attachmentStage }
-                : undefined,
+          return yield* startup
+            .enqueueCommand(
+              orchestrationEngine.dispatch(
+                normalized.command,
+                normalized.attachmentStage
+                  ? { attachmentStage: normalized.attachmentStage }
+                  : undefined,
+              ),
             )
             .pipe(
               Effect.ensuring(normalized.attachmentStage?.abortIfUnclaimed ?? Effect.void),

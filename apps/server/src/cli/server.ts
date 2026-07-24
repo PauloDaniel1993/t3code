@@ -3,6 +3,7 @@ import { Command, GlobalFlag } from "effect/unstable/cli";
 
 import { ServerConfig, type StartupPresentation } from "../config.ts";
 import { runServer } from "../server.ts";
+import { runPreOpenDatabaseMaintenance } from "../persistence/DatabasePhysicalMaintenance.ts";
 import { type CliServerFlags, resolveServerConfig, sharedServerCommandFlags } from "./config.ts";
 
 export const runServerCommand = (
@@ -15,6 +16,19 @@ export const runServerCommand = (
   Effect.gen(function* () {
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveServerConfig(flags, logLevel, options);
+    const maintenance = yield* Effect.sync(() => runPreOpenDatabaseMaintenance(config.dbPath));
+    if (maintenance._tag === "installed") {
+      yield* Effect.logInfo("Installed validated compact database before startup", {
+        beforeBytes: maintenance.replacement.beforeBytes,
+        afterBytes: maintenance.replacement.afterBytes,
+      });
+    } else if (maintenance._tag === "failure") {
+      yield* Effect.logWarning("Database maintenance was deferred before startup", {
+        code: maintenance.code,
+        requiredBytes: maintenance.requiredBytes,
+        availableBytes: maintenance.availableBytes,
+      });
+    }
     return yield* runServer.pipe(Effect.provideService(ServerConfig, config));
   });
 

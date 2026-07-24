@@ -94,6 +94,17 @@ export class ProviderSessionRuntimeRepository extends Context.Service<
     >;
 
     /**
+     * List only bindings that can represent in-flight provider work.
+     *
+     * Startup recovery uses this bounded query instead of scanning every
+     * historical runtime binding.
+     */
+    readonly listActive: () => Effect.Effect<
+      ReadonlyArray<ProviderSessionRuntime>,
+      ProviderSessionRuntimeRepositoryError
+    >;
+
+    /**
      * Delete provider runtime state by canonical thread id.
      */
     readonly deleteByThreadId: (
@@ -226,6 +237,27 @@ export const make = Effect.gen(function* () {
       `,
   });
 
+  const listActiveRuntimeRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProviderSessionRuntimeRawDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          provider_name AS "providerName",
+          provider_instance_id AS "providerInstanceId",
+          adapter_key AS "adapterKey",
+          runtime_mode AS "runtimeMode",
+          status,
+          last_seen_at AS "lastSeenAt",
+          resume_cursor_json AS "resumeCursor",
+          runtime_payload_json AS "runtimePayload"
+        FROM provider_session_runtime
+        WHERE status IN ('starting', 'running')
+        ORDER BY last_seen_at ASC, thread_id ASC
+      `,
+  });
+
   const deleteRuntimeByThreadId = SqlSchema.void({
     Request: DeleteRuntimeRequestSchema,
     execute: ({ threadId }) =>
@@ -273,6 +305,35 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const decodeRuntimeRows = (
+    rows: ReadonlyArray<Schema.Schema.Type<typeof ProviderSessionRuntimeRawDbRowSchema>>,
+    operation: "list" | "listActive",
+  ) =>
+    // Skip rows that no longer decode (e.g. written by an older build)
+    // instead of failing the whole list — one stale row must not disable
+    // every consumer that enumerates sessions, such as the reaper.
+    Effect.forEach(rows, (row) =>
+      decodeRuntimeRow(row).pipe(
+        Effect.map(Option.some),
+        Effect.catch((cause) =>
+          Effect.logWarning("provider.session.runtime.row-skipped", {
+            threadId: row.threadId,
+            error: PersistenceDecodeError.fromSchemaError(
+              `ProviderSessionRuntimeRepository.${operation}:decodeRows`,
+              cause,
+              { threadId: row.threadId },
+            ).message,
+          }).pipe(Effect.as(Option.none<ProviderSessionRuntime>())),
+        ),
+      ),
+    ).pipe(
+      Effect.map((decoded) =>
+        Arr.filterMap(decoded, (row) =>
+          Option.isSome(row) ? Result.succeed(row.value) : Result.failVoid,
+        ),
+      ),
+    );
+
   const list: ProviderSessionRuntimeRepository["Service"]["list"] = () =>
     listRuntimeRows(undefined).pipe(
       Effect.mapError(
@@ -281,31 +342,18 @@ export const make = Effect.gen(function* () {
           "ProviderSessionRuntimeRepository.list:decodeRows",
         ),
       ),
-      Effect.flatMap((rows) =>
-        // Skip rows that no longer decode (e.g. written by an older build)
-        // instead of failing the whole list — one stale row must not disable
-        // every consumer that enumerates sessions, such as the reaper.
-        Effect.forEach(rows, (row) =>
-          decodeRuntimeRow(row).pipe(
-            Effect.map(Option.some),
-            Effect.catch((cause) =>
-              Effect.logWarning("provider.session.runtime.row-skipped", {
-                threadId: row.threadId,
-                error: PersistenceDecodeError.fromSchemaError(
-                  "ProviderSessionRuntimeRepository.list:decodeRows",
-                  cause,
-                  { threadId: row.threadId },
-                ).message,
-              }).pipe(Effect.as(Option.none<ProviderSessionRuntime>())),
-            ),
-          ),
+      Effect.flatMap((rows) => decodeRuntimeRows(rows, "list")),
+    );
+
+  const listActive: ProviderSessionRuntimeRepository["Service"]["listActive"] = () =>
+    listActiveRuntimeRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProviderSessionRuntimeRepository.listActive:query",
+          "ProviderSessionRuntimeRepository.listActive:decodeRows",
         ),
       ),
-      Effect.map((decoded) =>
-        Arr.filterMap(decoded, (row) =>
-          Option.isSome(row) ? Result.succeed(row.value) : Result.failVoid,
-        ),
-      ),
+      Effect.flatMap((rows) => decodeRuntimeRows(rows, "listActive")),
     );
 
   const deleteByThreadId: ProviderSessionRuntimeRepository["Service"]["deleteByThreadId"] = (
@@ -326,6 +374,7 @@ export const make = Effect.gen(function* () {
     upsert,
     getByThreadId,
     list,
+    listActive,
     deleteByThreadId,
   } satisfies ProviderSessionRuntimeRepository["Service"];
 });

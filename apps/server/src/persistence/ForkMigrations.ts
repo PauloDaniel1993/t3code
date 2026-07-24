@@ -19,10 +19,16 @@ import * as Migrator from "effect/unstable/sql/Migrator";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import ForkMigration0001 from "./ForkMigrations/001_AttachmentCleanupQueue.ts";
+import ForkMigration0002 from "./ForkMigrations/002_ProjectionThreadSessionRecovery.ts";
+import ForkMigration0003 from "./ForkMigrations/003_DatabaseCompactionJournal.ts";
 
 export const FORK_MIGRATIONS_TABLE = "fork_sql_migrations";
 
-export const forkMigrationEntries = [[1, "AttachmentCleanupQueue", ForkMigration0001]] as const;
+export const forkMigrationEntries = [
+  [1, "AttachmentCleanupQueue", ForkMigration0001],
+  [2, "ProjectionThreadSessionRecovery", ForkMigration0002],
+  [3, "DatabaseCompactionJournal", ForkMigration0003],
+] as const;
 
 export const makeForkMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
@@ -40,11 +46,11 @@ export interface RunForkMigrationsOptions {
 }
 
 /**
- * Remove only the legacy fork-owned base-ledger row.
+ * Remove only legacy fork-owned base-ledger rows.
  *
- * Matching both id and name preserves a future upstream migration that uses id
- * 33 for a different migration. The table is intentionally kept; only the
- * stale row is removed before the base migrator reads its latest id.
+ * Matching both id and name preserves upstream migrations that reuse the same
+ * ids. The table is intentionally kept; only stale fork rows are removed
+ * before the base migrator reads its latest id.
  */
 export const reconcileBaseMigrationLedger = Effect.fn("reconcileBaseMigrationLedger")(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -57,14 +63,24 @@ export const reconcileBaseMigrationLedger = Effect.fn("reconcileBaseMigrationLed
     return;
   }
 
-  const removed = yield* sql<{ readonly migration_id: number }>`
+  const removed = yield* sql<{
+    readonly migration_id: number;
+    readonly name: string;
+  }>`
       DELETE FROM effect_sql_migrations
-      WHERE migration_id = 33 AND name = 'AttachmentCleanupQueue'
-      RETURNING migration_id
+      WHERE
+        (migration_id = 33 AND name IN (
+          'AttachmentCleanupQueue',
+          'ProjectionThreadSessionRecovery'
+        ))
+        OR (migration_id = 34 AND name = 'DatabaseCompactionJournal')
+      RETURNING migration_id, name
     `;
   if (removed.length > 0) {
-    yield* Effect.log("Removed legacy attachment cleanup migration from the base ledger").pipe(
-      Effect.annotateLogs({ migrationId: "33" }),
+    yield* Effect.log("Removed legacy fork migrations from the base ledger").pipe(
+      Effect.annotateLogs({
+        migrations: removed.map(({ migration_id, name }) => `${migration_id}_${name}`),
+      }),
     );
   }
 });

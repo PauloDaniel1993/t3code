@@ -15,6 +15,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import { ProviderSessionStartupRecoveryError } from "./provider/Services/ProviderSessionStartupRecovery.ts";
 
 it("uses the canonical Codex default for auto-bootstrapped model selection", () => {
   assert.deepStrictEqual(ServerRuntimeStartup.getAutoBootstrapDefaultModelSelection(), {
@@ -45,6 +46,35 @@ it.effect("enqueueCommand waits for readiness and then drains queued work", () =
   ),
 );
 
+it.effect("concurrent snapshot and command attempts stay blocked through recovery", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const commandGate = yield* ServerRuntimeStartup.makeCommandGate;
+      const snapshotReads = yield* Ref.make(0);
+      const commandRuns = yield* Ref.make(0);
+
+      const snapshotFiber = yield* commandGate.awaitCommandReady.pipe(
+        Effect.andThen(Ref.updateAndGet(snapshotReads, (count) => count + 1)),
+        Effect.forkScoped,
+      );
+      const commandFiber = yield* commandGate
+        .enqueueCommand(Ref.updateAndGet(commandRuns, (count) => count + 1))
+        .pipe(Effect.forkScoped);
+
+      yield* Effect.yieldNow;
+      assert.equal(yield* Ref.get(snapshotReads), 0);
+      assert.equal(yield* Ref.get(commandRuns), 0);
+
+      yield* commandGate.signalCommandReady;
+
+      assert.equal(yield* Fiber.join(snapshotFiber), 1);
+      assert.equal(yield* Fiber.join(commandFiber), 1);
+      assert.equal(yield* Ref.get(snapshotReads), 1);
+      assert.equal(yield* Ref.get(commandRuns), 1);
+    }),
+  ),
+);
+
 it.effect("enqueueCommand fails queued work when readiness fails", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -68,6 +98,22 @@ it.effect("enqueueCommand fails queued work when readiness fails", () =>
       assert.equal(error.message, "Server runtime startup failed before command readiness.");
     }),
   ),
+);
+
+it.effect("provider recovery failure degrades without aborting startup readiness work", () =>
+  Effect.gen(function* () {
+    const continued = yield* Ref.make(false);
+    yield* ServerRuntimeStartup.runProviderSessionRecoveryDegraded(
+      Effect.fail(
+        new ProviderSessionStartupRecoveryError({
+          operation: "list-active",
+          cause: new Error("corrupt recovery row"),
+        }),
+      ),
+    );
+    yield* Ref.set(continued, true);
+    assert.isTrue(yield* Ref.get(continued));
+  }),
 );
 
 it.effect("launchStartupHeartbeat does not block the caller while counts are loading", () =>
@@ -97,6 +143,7 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+          getActivityHistory: () => Effect.die("unused"),
         }),
         Effect.provideService(AnalyticsService.AnalyticsService, {
           record: () => Effect.void,
@@ -160,6 +207,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getThreadShellById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshot: () => Effect.die("unused"),
+        getActivityHistory: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
         readEvents: () => Stream.empty,
@@ -204,6 +252,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         getThreadShellById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshot: () => Effect.die("unused"),
+        getActivityHistory: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
         readEvents: () => Stream.empty,
@@ -254,6 +303,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         getThreadShellById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshot: () => Effect.die("unused"),
+        getActivityHistory: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
         readEvents: () => Stream.empty,

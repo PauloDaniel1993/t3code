@@ -33,6 +33,25 @@ const ProjectionTurnByIdDbRowSchema = ProjectionTurnById.mapFields(
   }),
 );
 
+const ProjectionTurnByIdRawDbRowSchema = Schema.Struct({
+  threadId: Schema.String,
+  turnId: Schema.Unknown,
+  pendingMessageId: Schema.Unknown,
+  sourceProposedPlanThreadId: Schema.Unknown,
+  sourceProposedPlanId: Schema.Unknown,
+  assistantMessageId: Schema.Unknown,
+  state: Schema.Unknown,
+  requestedAt: Schema.Unknown,
+  startedAt: Schema.Unknown,
+  completedAt: Schema.Unknown,
+  checkpointTurnCount: Schema.Unknown,
+  checkpointRef: Schema.Unknown,
+  checkpointStatus: Schema.Unknown,
+  checkpointFiles: Schema.Unknown,
+});
+
+const decodeProjectionTurnByIdRow = Schema.decodeUnknownEffect(ProjectionTurnByIdDbRowSchema);
+
 function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
   return (cause: unknown) =>
     Schema.isSchemaError(cause)
@@ -169,6 +188,26 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       `,
   });
 
+  const listPendingProjectionTurns = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionPendingTurnStart,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          pending_message_id AS "messageId",
+          source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+          source_proposed_plan_id AS "sourceProposedPlanId",
+          requested_at AS "requestedAt"
+        FROM projection_turns
+        WHERE turn_id IS NULL
+          AND state = 'pending'
+          AND pending_message_id IS NOT NULL
+          AND checkpoint_turn_count IS NULL
+        ORDER BY requested_at ASC, thread_id ASC
+      `,
+  });
+
   const listProjectionTurnsByThread = SqlSchema.findAll({
     Request: ListProjectionTurnsByThreadInput,
     Result: ProjectionTurnDbRowSchema,
@@ -226,6 +265,33 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
         WHERE thread_id = ${threadId}
           AND turn_id = ${turnId}
         LIMIT 1
+      `,
+  });
+
+  const listRunningProjectionTurns = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionTurnByIdRawDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          pending_message_id AS "pendingMessageId",
+          source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+          source_proposed_plan_id AS "sourceProposedPlanId",
+          assistant_message_id AS "assistantMessageId",
+          state,
+          requested_at AS "requestedAt",
+          started_at AS "startedAt",
+          completed_at AS "completedAt",
+          checkpoint_turn_count AS "checkpointTurnCount",
+          checkpoint_ref AS "checkpointRef",
+          checkpoint_status AS "checkpointStatus",
+          checkpoint_files_json AS "checkpointFiles"
+        FROM projection_turns
+        WHERE turn_id IS NOT NULL
+          AND state = 'running'
+        ORDER BY requested_at ASC, thread_id ASC, turn_id ASC
       `,
   });
 
@@ -288,6 +354,13 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
         ),
       );
 
+  const listPendingTurnStarts: ProjectionTurnRepositoryShape["listPendingTurnStarts"] = () =>
+    listPendingProjectionTurns(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionTurnRepository.listPendingTurnStarts:query"),
+      ),
+    );
+
   const deletePendingTurnStartByThreadId: ProjectionTurnRepositoryShape["deletePendingTurnStartByThreadId"] =
     (input) =>
       clearPendingProjectionTurnsByThread(input).pipe(
@@ -324,6 +397,34 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       ),
     );
 
+  const listRunningTurns: ProjectionTurnRepositoryShape["listRunningTurns"] = () =>
+    listRunningProjectionTurns(undefined).pipe(
+      Effect.mapError(toPersistenceSqlError("ProjectionTurnRepository.listRunningTurns:query")),
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, (row) =>
+          decodeProjectionTurnByIdRow(row).pipe(
+            Effect.map(Option.some),
+            Effect.catch((cause) =>
+              Effect.logWarning("projection.turn.row-skipped", {
+                threadId: row.threadId,
+                turnId: row.turnId,
+                error: toPersistenceDecodeError(
+                  "ProjectionTurnRepository.listRunningTurns:decodeRows",
+                )(cause).message,
+              }).pipe(
+                Effect.as(Option.none<Schema.Schema.Type<typeof ProjectionTurnByIdDbRowSchema>>()),
+              ),
+            ),
+          ),
+        ),
+      ),
+      Effect.map((rows) =>
+        rows.flatMap((row) =>
+          Option.isSome(row) ? [row.value as Schema.Schema.Type<typeof ProjectionTurnById>] : [],
+        ),
+      ),
+    );
+
   const clearCheckpointTurnConflict: ProjectionTurnRepositoryShape["clearCheckpointTurnConflict"] =
     (input) =>
       clearCheckpointTurnConflictRow(input).pipe(
@@ -341,9 +442,11 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
     upsertByTurnId,
     replacePendingTurnStart,
     getPendingTurnStartByThreadId,
+    listPendingTurnStarts,
     deletePendingTurnStartByThreadId,
     listByThreadId,
     getByTurnId,
+    listRunningTurns,
     clearCheckpointTurnConflict,
     deleteByThreadId,
   } satisfies ProjectionTurnRepositoryShape;

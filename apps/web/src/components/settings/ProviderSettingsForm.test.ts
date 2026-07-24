@@ -37,6 +37,33 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
+  it("registers Kimi with its executable and subscription home fields", () => {
+    const kimi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("kimi")];
+
+    expect(kimi).toMatchObject({
+      label: "Kimi",
+      badgeLabel: "Early Access",
+    });
+    expect(deriveProviderSettingsFields(kimi!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "homePath",
+    ]);
+    expect(deriveProviderSettingsFields(kimi!)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "binaryPath",
+          label: "Binary path",
+          placeholder: "kimi",
+        }),
+        expect.objectContaining({
+          key: "homePath",
+          label: "KIMI_CODE_HOME path",
+          placeholder: "~/.kimi-code",
+        }),
+      ]),
+    );
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();
