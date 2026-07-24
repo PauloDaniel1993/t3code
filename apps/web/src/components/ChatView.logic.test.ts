@@ -29,6 +29,7 @@ import {
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
   removeOptimisticUserMessage,
+  resolveThreadErrorBannerState,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   revokeUserMessagePreviewUrls,
@@ -710,6 +711,60 @@ describe("shouldWriteThreadErrorToCurrentServerThread", () => {
         targetThreadId: threadId,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveThreadErrorBannerState", () => {
+  it("hides the dismissed session error across rerenders", () => {
+    const visible = resolveThreadErrorBannerState({
+      threadKey: "environment-local:thread-1",
+      localError: null,
+      sessionError: "Provider work was interrupted.",
+      sessionUpdatedAt: now,
+      dismissedSessionErrorKey: null,
+    });
+
+    expect(visible.error).toBe("Provider work was interrupted.");
+    expect(visible.sessionErrorKey).not.toBeNull();
+    expect(
+      resolveThreadErrorBannerState({
+        threadKey: "environment-local:thread-1",
+        localError: null,
+        sessionError: "Provider work was interrupted.",
+        sessionUpdatedAt: now,
+        dismissedSessionErrorKey: visible.sessionErrorKey,
+      }).error,
+    ).toBeNull();
+  });
+
+  it("shows a new session error instance and never hides a client-local error", () => {
+    const dismissed = resolveThreadErrorBannerState({
+      threadKey: "environment-local:thread-1",
+      localError: null,
+      sessionError: "Provider work was interrupted.",
+      sessionUpdatedAt: now,
+      dismissedSessionErrorKey: null,
+    }).sessionErrorKey;
+    const nextUpdatedAt = "2026-03-29T00:01:00.000Z";
+
+    expect(
+      resolveThreadErrorBannerState({
+        threadKey: "environment-local:thread-1",
+        localError: null,
+        sessionError: "Provider work was interrupted.",
+        sessionUpdatedAt: nextUpdatedAt,
+        dismissedSessionErrorKey: dismissed,
+      }).error,
+    ).toBe("Provider work was interrupted.");
+    expect(
+      resolveThreadErrorBannerState({
+        threadKey: "environment-local:thread-1",
+        localError: "Failed to send message.",
+        sessionError: "Provider work was interrupted.",
+        sessionUpdatedAt: now,
+        dismissedSessionErrorKey: dismissed,
+      }),
+    ).toEqual({ error: "Failed to send message.", sessionErrorKey: null });
   });
 });
 

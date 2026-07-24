@@ -111,6 +111,34 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
+export function resolveThreadErrorBannerState(input: {
+  threadKey: string;
+  localError: string | null;
+  sessionError: string | null;
+  sessionUpdatedAt: string | null;
+  dismissedSessionErrorKey: string | null;
+}): {
+  error: string | null;
+  sessionErrorKey: string | null;
+} {
+  if (input.localError !== null) {
+    return { error: input.localError, sessionErrorKey: null };
+  }
+  if (!input.sessionError) {
+    return { error: null, sessionErrorKey: null };
+  }
+
+  const sessionErrorKey = JSON.stringify([
+    input.threadKey,
+    input.sessionUpdatedAt,
+    input.sessionError,
+  ]);
+  return {
+    error: sessionErrorKey === input.dismissedSessionErrorKey ? null : input.sessionError,
+    sessionErrorKey,
+  };
+}
+
 export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
   threadId: ThreadId;
   turnId?: TurnId;
