@@ -69,6 +69,7 @@ import {
   type AcpSessionModeState,
   parsePermissionRequest,
 } from "../acp/AcpRuntimeModel.ts";
+import { captureKimiAcpLogCheckpoint, readKimiAcpFailureSince } from "../acp/KimiAcpDiagnostics.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import { applyKimiAcpModelSelection, makeKimiAcpRuntime } from "../acp/KimiAcpSupport.ts";
 import { findKimiModelConfigOption, type KimiModelStateShape } from "../KimiModelState.ts";
@@ -126,6 +127,7 @@ interface PendingUserInput {
 
 interface KimiSessionContext {
   readonly threadId: ThreadId;
+  readonly acpSessionId: string;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntime.AcpSessionRuntime["Service"];
@@ -1024,6 +1026,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
 
           ctx = {
             threadId: input.threadId,
+            acpSessionId: started.sessionId,
             session,
             scope: sessionScope,
             acp,
@@ -1247,6 +1250,13 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
               turnId,
               payload: { model: resolvedModel },
             });
+            const kimiLogCheckpoint = yield* captureKimiAcpLogCheckpoint({
+              sessionId: ctx.acpSessionId,
+              ...(options?.environment ? { environment: options.environment } : {}),
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            );
 
             const cancelledResponse = {
               stopReason: "cancelled",
@@ -1279,6 +1289,12 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
             );
 
             if (Exit.isFailure(promptExit)) {
+              const loggedFailure = yield* readKimiAcpFailureSince(kimiLogCheckpoint).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+              );
+              const errorMessage =
+                loggedFailure?.message ??
+                "Kimi could not complete the turn because its ACP session failed.";
               const failedAt = yield* nowIso;
               ctx.activeTurnId = undefined;
               const { activeTurnId: _activeTurnId, ...failedSession } = ctx.session;
@@ -1286,6 +1302,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                 ...failedSession,
                 status: "error",
                 updatedAt: failedAt,
+                lastError: errorMessage,
               };
               ctx.interruptedTurnIds.delete(turnId);
               yield* offerRuntimeEvent({
@@ -1296,7 +1313,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                 turnId,
                 payload: {
                   state: "failed",
-                  errorMessage: "Kimi could not complete the turn because its ACP session failed.",
+                  errorMessage,
                 },
               });
               return yield* Effect.failCause(promptExit.cause);
@@ -1307,6 +1324,43 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                 mapAcpToAdapterError(PROVIDER, input.threadId, "session/drain", error),
               ),
             );
+            const loggedFailure =
+              result.stopReason === "cancelled"
+                ? undefined
+                : yield* readKimiAcpFailureSince(kimiLogCheckpoint).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  );
+            if (loggedFailure) {
+              const failedAt = yield* nowIso;
+              ctx.activeTurnId = undefined;
+              const { activeTurnId: _activeTurnId, ...failedSession } = ctx.session;
+              ctx.session = {
+                ...failedSession,
+                status: "error",
+                updatedAt: failedAt,
+                lastError: loggedFailure.message,
+              };
+              ctx.interruptedTurnIds.delete(turnId);
+              yield* offerRuntimeEvent({
+                type: "turn.completed",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                payload: {
+                  state: "failed",
+                  stopReason: result.stopReason ?? null,
+                  errorMessage: loggedFailure.message,
+                },
+              });
+              return {
+                threadId: input.threadId,
+                turnId,
+                ...(ctx.session.resumeCursor !== undefined
+                  ? { resumeCursor: ctx.session.resumeCursor }
+                  : {}),
+              };
+            }
 
             ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
             ctx.activeTurnId = undefined;
