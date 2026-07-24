@@ -1282,4 +1282,27 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("aria-controls");
     expect(markup).not.toContain('tabindex="0"');
   });
+
+  it("renders accessible older-activity loading and keeps the visible scroll anchor", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[]}
+        hasOlderActivities
+        isLoadingOlderActivities
+        olderActivitiesError={null}
+        onLoadOlderActivities={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Load older activity");
+    expect(markup).toContain("Loading older activity.");
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('aria-disabled="true"');
+    expect(markup).not.toMatch(/<button[^>]*\sdisabled(?:=|\s|>)/);
+    expect(markup).toContain('data-maintain-visible-content-position="object"');
+    expect(markup).toContain('data-maintain-visible-content-position-data="true"');
+    expect(markup).toContain('data-maintain-visible-content-position-size="false"');
+  });
 });

@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -254,6 +255,7 @@ describe("OrchestrationEngine", () => {
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
           searchThreads: () => Effect.succeed({ matches: [] }),
+          getActivityHistory: () => Effect.die("unused"),
         }),
       ),
       Layer.provide(
@@ -347,6 +349,189 @@ describe("OrchestrationEngine", () => {
     const readModelB = await system.readModel();
     expect(readModelB).toEqual(readModelA);
     await system.dispose();
+  });
+
+  it("upserts stable tool activities without growing projection rows or changing original order", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const projectId = asProjectId("project-activity-upsert");
+    const threadId = ThreadId.make("thread-activity-upsert");
+    const activityId = EventId.make("tool-activity-stable");
+
+    try {
+      await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-activity-upsert-create"),
+          projectId,
+          title: "Activity Upsert Project",
+          workspaceRoot: "/tmp/project-activity-upsert",
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          createdAt,
+        }),
+      );
+      await system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-activity-upsert-create"),
+          threadId,
+          projectId,
+          title: "Activity Upsert Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+
+      const first = await system.run(
+        engine.dispatch({
+          type: "thread.activity.upsert",
+          commandId: CommandId.make("cmd-tool-activity-0"),
+          threadId,
+          activity: {
+            id: activityId,
+            tone: "tool",
+            kind: "tool.started",
+            summary: "Tool started",
+            payload: { toolUseId: "tool-1", status: "inProgress", detail: "progress-0" },
+            turnId: asTurnId("turn-activity-upsert"),
+            createdAt,
+          },
+          createdAt,
+        }),
+      );
+
+      let finalResult = first;
+      for (let index = 1; index < 100; index += 1) {
+        const occurredAt = DateTime.formatIso(
+          DateTime.add(DateTime.makeUnsafe(createdAt), { seconds: index }),
+        );
+        finalResult = await system.run(
+          engine.dispatch({
+            type: "thread.activity.upsert",
+            commandId: CommandId.make(`cmd-tool-activity-${index}`),
+            threadId,
+            activity: {
+              id: activityId,
+              tone: "tool",
+              kind: index === 99 ? "tool.completed" : "tool.updated",
+              summary: index === 99 ? "Tool completed" : "Tool updated",
+              payload: {
+                toolUseId: "tool-1",
+                status: index === 99 ? "completed" : "inProgress",
+                detail: `progress-${index}`,
+              },
+              turnId: asTurnId("turn-activity-upsert"),
+              createdAt: occurredAt,
+            },
+            createdAt: occurredAt,
+          }),
+        );
+      }
+
+      const retriedFinal = await system.run(
+        engine.dispatch({
+          type: "thread.activity.upsert",
+          commandId: CommandId.make("cmd-tool-activity-99"),
+          threadId,
+          activity: {
+            id: activityId,
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "Tool completed",
+            payload: {
+              toolUseId: "tool-1",
+              status: "completed",
+              detail: "progress-99",
+            },
+            turnId: asTurnId("turn-activity-upsert"),
+            createdAt: DateTime.formatIso(
+              DateTime.add(DateTime.makeUnsafe(createdAt), { seconds: 99 }),
+            ),
+          },
+          createdAt: DateTime.formatIso(
+            DateTime.add(DateTime.makeUnsafe(createdAt), { seconds: 99 }),
+          ),
+        }),
+      );
+      expect(retriedFinal.sequence).toBe(finalResult.sequence);
+
+      await system.run(
+        engine.dispatch({
+          type: "thread.activity.upsert",
+          commandId: CommandId.make("cmd-tool-activity-stale-after-terminal"),
+          threadId,
+          activity: {
+            id: activityId,
+            tone: "tool",
+            kind: "tool.updated",
+            summary: "Stale tool progress",
+            payload: {
+              toolUseId: "tool-1",
+              status: "inProgress",
+              detail: "stale-progress",
+            },
+            turnId: asTurnId("turn-activity-upsert"),
+            createdAt: DateTime.formatIso(
+              DateTime.add(DateTime.makeUnsafe(createdAt), { seconds: 100 }),
+            ),
+          },
+          createdAt: DateTime.formatIso(
+            DateTime.add(DateTime.makeUnsafe(createdAt), { seconds: 100 }),
+          ),
+        }),
+      );
+
+      await system.run(
+        engine.dispatch({
+          type: "thread.activity.upsert",
+          commandId: CommandId.make("cmd-tool-activity-distinct"),
+          threadId,
+          activity: {
+            id: EventId.make("tool-activity-distinct"),
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "Second tool completed",
+            payload: { toolUseId: "tool-2", status: "completed" },
+            turnId: asTurnId("turn-activity-upsert"),
+            createdAt: DateTime.formatIso(
+              DateTime.add(DateTime.makeUnsafe(createdAt), { seconds: 101 }),
+            ),
+          },
+          createdAt: DateTime.formatIso(
+            DateTime.add(DateTime.makeUnsafe(createdAt), { seconds: 101 }),
+          ),
+        }),
+      );
+
+      const thread = (await system.readModel()).threads.find((entry) => entry.id === threadId);
+      expect(thread?.activities).toHaveLength(2);
+      expect(thread?.activities[0]).toMatchObject({
+        id: activityId,
+        kind: "tool.completed",
+        sequence: first.sequence,
+        createdAt,
+        payload: {
+          toolUseId: "tool-1",
+          status: "completed",
+          detail: "progress-99",
+        },
+      });
+      expect(JSON.stringify(thread?.activities[0]?.payload).length).toBeLessThan(200);
+      expect(thread?.activities[1]?.id).toBe("tool-activity-distinct");
+    } finally {
+      await system.dispose();
+    }
   });
 
   it("archives and unarchives threads through orchestration commands", async () => {

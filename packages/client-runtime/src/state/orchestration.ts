@@ -22,6 +22,11 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       staleTimeMs: 30_000,
       idleTtlMs: 60_000,
     }),
+    activityHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:activity-history",
+      tag: ORCHESTRATION_WS_METHODS.getActivityHistory,
+      staleTimeMs: Number.POSITIVE_INFINITY,
+    }),
     archivedShellSnapshot: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:archived-shell-snapshot",
       tag: ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,

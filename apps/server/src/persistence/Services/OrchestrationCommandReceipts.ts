@@ -52,6 +52,16 @@ export interface OrchestrationCommandReceiptRepositoryShape {
   ) => Effect.Effect<void, OrchestrationCommandReceiptRepositoryError>;
 
   /**
+   * Atomically inserts a receipt only when the command id is unclaimed.
+   *
+   * Returns true for the winning insert and false when a durable receipt
+   * already exists.
+   */
+  readonly tryInsert: (
+    receipt: OrchestrationCommandReceipt,
+  ) => Effect.Effect<boolean, OrchestrationCommandReceiptRepositoryError>;
+
+  /**
    * Read a command receipt by command id.
    */
   readonly getByCommandId: (
