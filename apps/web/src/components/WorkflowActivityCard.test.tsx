@@ -13,6 +13,7 @@ import {
   WorkflowActivityCard as WorkflowActivityCardComponent,
   deriveUsageMetricSegments,
   deriveWorkflowCardTitle,
+  deriveWorkflowEmptyWorkersMessage,
   deriveWorkflowSelectionGroups,
   deriveWorkflowStepCounter,
   deriveWorkerMetricSegments,
@@ -197,6 +198,17 @@ describe("workflow step selection", () => {
     expect(resolveTurnScopedSelectedStepId(selection, "turn-1")).toBe("turn-1:step:1");
     expect(resolveTurnScopedSelectedStepId(selection, "turn-2")).toBeNull();
     expect(resolveTurnScopedSelectedStepId(null, "turn-1")).toBeNull();
+  });
+});
+
+describe("deriveWorkflowEmptyWorkersMessage", () => {
+  it("uses settled copy for completed steps and provisional copy otherwise", () => {
+    expect(deriveWorkflowEmptyWorkersMessage("completed")).toBe(
+      "No workers were used for this step.",
+    );
+    expect(deriveWorkflowEmptyWorkersMessage("inProgress")).toBe("No workers for this step yet.");
+    expect(deriveWorkflowEmptyWorkersMessage("pending")).toBe("No workers for this step yet.");
+    expect(deriveWorkflowEmptyWorkersMessage(undefined)).toBe("No workers for this step yet.");
   });
 });
 
