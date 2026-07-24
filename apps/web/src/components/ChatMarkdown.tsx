@@ -66,8 +66,12 @@ import {
 } from "../markdown-clipboard";
 import { remarkNormalizeListItemIndentation } from "../markdown-list-indentation";
 import {
+  isMarkdownFileExternalOpenModifier,
   normalizeMarkdownLinkDestination,
+  rehypeRewriteMarkdownFileHrefs,
   resolveMarkdownFileLinkMeta,
+  resolvePreservedMarkdownFileHref,
+  rewriteMarkdownFileHrefForRendering,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
@@ -85,6 +89,7 @@ import { isPreviewSupportedInRuntime } from "../previewStateStore";
 import {
   isBrowserPreviewFile,
   openFileInPreview,
+  openFileOutsideT3,
   openUrlInPreview,
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
@@ -162,6 +167,7 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   attributes: {
     ...defaultSchema.attributes,
     "*": (defaultSchema.attributes?.["*"] ?? []).filter((attribute) => attribute !== "title"),
+    a: [...(defaultSchema.attributes?.a ?? []), "dataT3MarkdownFileHref"],
     code: [...(defaultSchema.attributes?.code ?? []), "dataCodeMeta"],
   },
   protocols: {
@@ -185,6 +191,7 @@ const CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS = [
 
 const CHAT_MARKDOWN_REHYPE_PLUGINS = [
   rehypeRaw,
+  rehypeRewriteMarkdownFileHrefs,
   [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
@@ -749,6 +756,7 @@ interface MarkdownFileLinkProps {
   threadRef?: ScopedThreadRef | undefined;
   onOpen: (targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
+  onOpenOutsideT3?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   className?: string | undefined;
 }
 
@@ -1017,6 +1025,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   threadRef,
   onOpen,
   onOpenInBrowser,
+  onOpenOutsideT3,
   className,
 }: MarkdownFileLinkProps) {
   const handleOpenInEditor = useCallback(() => {
@@ -1100,6 +1109,44 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     })();
   }, [onOpenInBrowser, targetPath]);
 
+  const handleOpenOutsideT3 = useCallback(() => {
+    if (!onOpenOutsideT3) {
+      return;
+    }
+    void (async () => {
+      try {
+        const result = await onOpenOutsideT3();
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
+          return;
+        }
+        reportMarkdownActionFailure(
+          { operation: "open-file-outside-t3", target: targetPath },
+          result.cause,
+        );
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file outside T3 Code",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      } catch (cause) {
+        reportMarkdownActionFailure(
+          { operation: "open-file-outside-t3", target: targetPath },
+          cause,
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file outside T3 Code",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      }
+    })();
+  }, [onOpenOutsideT3, targetPath]);
+
   const handleCopy = useCallback(
     (value: string, title: string) => {
       if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -1154,6 +1201,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             ...(onOpenInBrowser
               ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
               : []),
+            ...(onOpenOutsideT3
+              ? ([{ id: "open-outside-t3", label: "Open outside T3 Code" }] as const)
+              : []),
             { id: "copy-relative", label: "Copy relative path" },
             { id: "copy-full", label: "Copy full path" },
           ] as const,
@@ -1166,6 +1216,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }
         if (clicked === "open-in-browser") {
           handleOpenInBrowser();
+          return;
+        }
+        if (clicked === "open-outside-t3") {
+          handleOpenOutsideT3();
           return;
         }
         if (clicked === "copy-relative") {
@@ -1182,7 +1236,16 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         );
       }
     },
-    [displayPath, handleCopy, handleOpenInBrowser, handleOpenInEditor, onOpenInBrowser, targetPath],
+    [
+      displayPath,
+      handleCopy,
+      handleOpenInBrowser,
+      handleOpenInEditor,
+      handleOpenOutsideT3,
+      onOpenInBrowser,
+      onOpenOutsideT3,
+      targetPath,
+    ],
   );
 
   return (
@@ -1196,6 +1259,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
+              if (isMarkdownFileExternalOpenModifier(event) && onOpenOutsideT3) {
+                handleOpenOutsideT3();
+                return;
+              }
               if (onOpenInBrowser) {
                 handleOpenInBrowser();
                 return;
@@ -1237,6 +1304,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.threadRef === next.threadRef &&
     previous.onOpen === next.onOpen &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
+    previous.onOpenOutsideT3 === next.onOpenOutsideT3 &&
     previous.className === next.className
   );
 }
@@ -1286,7 +1354,7 @@ function ChatMarkdown({
     return buildFileLinkParentSuffixByPath(filePaths);
   }, [markdownFileLinkMetaByHref]);
   const markdownUrlTransform = useCallback((href: string) => {
-    return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
+    return rewriteMarkdownFileHrefForRendering(href) ?? defaultUrlTransform(href);
   }, []);
   // Re-emit highlighted content as markdown so copying out of the rendered
   // view keeps links, emphasis, lists, and code fences intact.
@@ -1339,6 +1407,35 @@ function ChatMarkdown({
     },
     [createAssetUrl, openPreview, preparedConnection, threadRef],
   );
+  const openMarkdownFileOutsideT3 = useCallback(
+    (path: string) => {
+      if (!threadRef || preparedConnection._tag === "None") {
+        return Promise.resolve(
+          AsyncResult.failure<void, BrowserPreviewUnavailableError>(
+            Cause.fail(
+              new BrowserPreviewUnavailableError({
+                message: "Environment is not connected.",
+              }),
+            ),
+          ),
+        );
+      }
+      return openFileOutsideT3({
+        threadRef,
+        filePath: path,
+        httpBaseUrl: preparedConnection.value.httpBaseUrl,
+        createAssetUrl,
+        openExternal: async (url) => {
+          const api = readLocalApi();
+          if (!api) {
+            throw new Error("Local API is unavailable.");
+          }
+          await api.shell.openExternal(url);
+        },
+      });
+    },
+    [createAssetUrl, preparedConnection, threadRef],
+  );
   const markdownComponents = useMemo<Components>(
     () => ({
       p({ node: _node, children, ...props }) {
@@ -1384,7 +1481,8 @@ function ChatMarkdown({
         );
       },
       a({ node, href, children, ...props }) {
-        const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
+        const preservedHref = resolvePreservedMarkdownFileHref(node, href);
+        const normalizedHref = preservedHref ? normalizeMarkdownLinkHrefKey(preservedHref) : "";
         const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
         if (!fileLinkMeta) {
           const faviconHost = resolveExternalWebLinkHost(href);
@@ -1465,6 +1563,7 @@ function ChatMarkdown({
             `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
           );
         }
+        const browserPreviewFilePath = fileLinkMeta.workspaceRelativePath;
 
         return (
           <MarkdownFileLink
@@ -1482,8 +1581,14 @@ function ChatMarkdown({
             onOpenInBrowser={
               threadRef &&
               isPreviewSupportedInRuntime() &&
+              browserPreviewFilePath &&
               isBrowserPreviewFile(fileLinkMeta.filePath)
-                ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
+                ? () => openMarkdownFileInPreview(browserPreviewFilePath)
+                : undefined
+            }
+            onOpenOutsideT3={
+              threadRef && browserPreviewFilePath && isBrowserPreviewFile(fileLinkMeta.filePath)
+                ? () => openMarkdownFileOutsideT3(browserPreviewFilePath)
                 : undefined
             }
             className={props.className}
@@ -1534,6 +1639,7 @@ function ChatMarkdown({
       openInPreferredEditor,
       openExternalLinkInPreview,
       openMarkdownFileInPreview,
+      openMarkdownFileOutsideT3,
       resolvedTheme,
       skills,
       text,
