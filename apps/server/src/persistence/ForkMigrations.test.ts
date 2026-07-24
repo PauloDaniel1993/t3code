@@ -71,9 +71,7 @@ const assertForkMigrationApplied = (state: Effect.Success<typeof readMigrationSt
     { name: "idx_attachment_cleanup_queue_pending" },
   ]);
   assert.deepStrictEqual(state.recoveryColumns, [{ name: "recovery_json" }]);
-  assert.deepStrictEqual(state.compactionJournalTables, [
-    { name: "database_compaction_journal" },
-  ]);
+  assert.deepStrictEqual(state.compactionJournalTables, [{ name: "database_compaction_journal" }]);
   assert.deepStrictEqual(state.forkLedger, [
     {
       migration_id: 1,

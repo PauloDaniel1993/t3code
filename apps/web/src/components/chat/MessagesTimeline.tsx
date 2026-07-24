@@ -604,8 +604,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             {isLoadingOlderActivities ? "Loading older activity." : ""}
           </span>
         </div>
+      ) : topFadeEnabled ? (
+        TIMELINE_LIST_FADE_HEADER
       ) : (
-        topFadeEnabled ? TIMELINE_LIST_FADE_HEADER : TIMELINE_LIST_HEADER
+        TIMELINE_LIST_HEADER
       ),
     [
       hasOlderActivities,

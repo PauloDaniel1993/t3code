@@ -51,7 +51,11 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
-import { PROVIDER_EVENT_FLOW_CONTROL, stableToolActivityId } from "../ProviderEventFlowControl.ts";
+import {
+  PROVIDER_EVENT_FLOW_CONTROL,
+  stableReplaceableActivityId,
+  stableToolActivityId,
+} from "../ProviderEventFlowControl.ts";
 import { makeAcpToolCallEvent } from "../../provider/acp/AcpCoreRuntimeEvents.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -1169,14 +1173,14 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
-    harness.emit({
+    const completedEvent: ProviderRuntimeEvent = {
       type: "item.completed",
       eventId: asEventId("evt-command-completed"),
       provider: ProviderDriverKind.make("cursor"),
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-command-completed"),
-      itemId: asItemId("item-command-completed"),
+      itemId: asRuntimeItemId("item-command-completed"),
       payload: {
         itemType: "command_execution",
         status: "completed",
@@ -1188,15 +1192,16 @@ describe("ProviderRuntimeIngestion", () => {
           command: "bun run lint",
         },
       },
-    });
+    };
+    const activityId = stableToolActivityId(completedEvent);
+    expect(activityId).toBeDefined();
+    harness.emit(completedEvent);
 
     const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-command-completed",
-      ),
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === activityId),
     );
     const activity = thread.activities.find(
-      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-command-completed",
+      (entry: ProviderRuntimeTestActivity) => entry.id === activityId,
     );
     const payload =
       activity?.payload && typeof activity.payload === "object"
@@ -1211,14 +1216,14 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
-    harness.emit({
+    const completedEvent: ProviderRuntimeEvent = {
       type: "item.completed",
       eventId: asEventId("evt-read-path-completed"),
       provider: ProviderDriverKind.make("cursor"),
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-read-path"),
-      itemId: asItemId("item-read-path"),
+      itemId: asRuntimeItemId("item-read-path"),
       payload: {
         itemType: "dynamic_tool_call",
         status: "completed",
@@ -1230,15 +1235,16 @@ describe("ProviderRuntimeIngestion", () => {
           locations: [{ path: "/tmp/app.ts" }],
         },
       },
-    });
+    };
+    const activityId = stableToolActivityId(completedEvent);
+    expect(activityId).toBeDefined();
+    harness.emit(completedEvent);
 
     const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-read-path-completed",
-      ),
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === activityId),
     );
     const activity = thread.activities.find(
-      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-read-path-completed",
+      (entry: ProviderRuntimeTestActivity) => entry.id === activityId,
     );
     const payload =
       activity?.payload && typeof activity.payload === "object"
@@ -2921,14 +2927,14 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
-    harness.emit({
+    const toolUpdatedEvent = {
       type: "item.updated",
       eventId: asEventId("evt-item-updated"),
       provider: ProviderDriverKind.make("codex"),
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-p1"),
-      itemId: asItemId("item-p1-tool"),
+      itemId: asRuntimeItemId("item-p1-tool"),
       payload: {
         itemType: "command_execution",
         status: "in_progress",
@@ -2936,7 +2942,10 @@ describe("ProviderRuntimeIngestion", () => {
         detail: "bun test",
         data: { pid: 123 },
       },
-    });
+    } satisfies LegacyProviderRuntimeEvent;
+    const toolActivityId = stableToolActivityId(toolUpdatedEvent as ProviderRuntimeEvent);
+    expect(toolActivityId).toBeDefined();
+    harness.emit(toolUpdatedEvent);
 
     harness.emit({
       type: "runtime.warning",
@@ -2995,7 +3004,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(Array.isArray(planPayload?.plan)).toBe(true);
 
     const toolUpdate = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-item-updated",
+      (activity: ProviderRuntimeTestActivity) => activity.id === toolActivityId,
     );
     const toolUpdatePayload =
       toolUpdate?.payload && typeof toolUpdate.payload === "object"
@@ -3556,7 +3565,7 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
-    harness.emit({
+    const progressEvent: ProviderRuntimeEvent = {
       type: "task.progress",
       eventId: asEventId("evt-swept-task-progress"),
       provider: ProviderDriverKind.make("claudeAgent"),
@@ -3564,15 +3573,18 @@ describe("ProviderRuntimeIngestion", () => {
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-swept-task"),
       payload: {
-        taskId: "swept-task-1",
+        taskId: RuntimeTaskId.make("swept-task-1"),
         description: "Watch round-3 CI and bots",
         summary: "Polling CI checks.",
       },
-    });
+    };
+    const progressActivityId = stableReplaceableActivityId(progressEvent);
+    expect(progressActivityId).toBeDefined();
+    harness.emit(progressEvent);
 
     await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-swept-task-progress",
+        (activity: ProviderRuntimeTestActivity) => activity.id === progressActivityId,
       ),
     );
 
@@ -3587,7 +3599,7 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {},
     });
 
-    harness.emit({
+    const completedEvent: ProviderRuntimeEvent = {
       type: "task.completed",
       eventId: asEventId("evt-swept-task-completed"),
       provider: ProviderDriverKind.make("claudeAgent"),
@@ -3595,20 +3607,25 @@ describe("ProviderRuntimeIngestion", () => {
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-swept-task"),
       payload: {
-        taskId: "swept-task-1",
+        taskId: RuntimeTaskId.make("swept-task-1"),
         status: "completed",
         summary: "CI is green.",
       },
-    });
+    };
+    const completedActivityId =
+      stableReplaceableActivityId(completedEvent) ?? completedEvent.eventId;
+    expect(completedActivityId).not.toBe(progressActivityId);
+    harness.emit(completedEvent);
 
     const thread = await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-swept-task-completed",
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === completedActivityId && activity.kind === "task.completed",
       ),
     );
 
     const completed = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-swept-task-completed",
+      (activity: ProviderRuntimeTestActivity) => activity.id === completedActivityId,
     );
     const completedPayload =
       completed?.payload && typeof completed.payload === "object"
