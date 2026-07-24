@@ -209,6 +209,40 @@ export function resolveActiveTimelineActivityCycle(input: {
   return input.cycles[candidateIndex] ?? null;
 }
 
+/**
+ * A sole workflow has no contextual alternative, so keep it selected until
+ * the user closes its card. With multiple workflows, keep the running one
+ * selected while the timeline is live-following. Overlay and inset
+ * measurements can temporarily make LegendList report that it is not at the
+ * end; those layout-only events must not switch the sticky workflow surface.
+ * A real navigation gesture restores position-based selection when there are
+ * multiple workflow-bearing cycles.
+ */
+export function resolveDisplayedTimelineActivityCycle(input: {
+  readonly cycles: ReadonlyArray<TimelineActivityCycle>;
+  readonly state: TimelineActivityPositionState;
+  readonly currentCycleId: string | null;
+  readonly runningCycle: TimelineActivityCycle | null;
+  readonly isAtEnd: boolean | undefined;
+  readonly userNavigated: boolean;
+}): TimelineActivityCycle | null {
+  const activityCycles = input.cycles.filter((cycle) => cycle.activityTurnId !== null);
+  if (activityCycles.length === 1) {
+    return activityCycles[0] ?? null;
+  }
+
+  if (input.runningCycle !== null && (input.isAtEnd === true || !input.userNavigated)) {
+    return input.runningCycle;
+  }
+
+  return resolveActiveTimelineActivityCycle({
+    cycles: input.cycles,
+    state: input.state,
+    currentCycleId: input.currentCycleId,
+    leadingCycleId: input.runningCycle?.id ?? null,
+  });
+}
+
 export interface TimelineEndState {
   readonly isAtEnd?: boolean;
   readonly isNearEnd?: boolean;

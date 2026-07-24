@@ -933,7 +933,8 @@ const activityOrder = Order.make<OrchestrationThreadActivity>((left, right) => {
     return -1;
   }
 
-  const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
+  const createdAtOrder =
+    left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0;
   if (createdAtOrder !== 0) {
     return createdAtOrder < 0 ? -1 : 1;
   }
@@ -942,7 +943,7 @@ const activityOrder = Order.make<OrchestrationThreadActivity>((left, right) => {
   if (lifecycleRankOrder !== 0) {
     return lifecycleRankOrder < 0 ? -1 : 1;
   }
-  const idOrder = left.id.localeCompare(right.id);
+  const idOrder = left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
   return idOrder === 0 ? 0 : idOrder < 0 ? -1 : 1;
 });
 

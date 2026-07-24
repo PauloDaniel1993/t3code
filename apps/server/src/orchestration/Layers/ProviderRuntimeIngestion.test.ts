@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// oxlint-disable t3code/no-manual-effect-runtime-in-tests -- This legacy integration suite uses an async ManagedRuntime harness.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -9,6 +10,8 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  RuntimeItemId,
+  RuntimeTaskId,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -48,6 +51,8 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { PROVIDER_EVENT_FLOW_CONTROL, stableToolActivityId } from "../ProviderEventFlowControl.ts";
+import { makeAcpToolCallEvent } from "../../provider/acp/AcpCoreRuntimeEvents.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -61,6 +66,7 @@ function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
+const asRuntimeItemId = (value: string): RuntimeItemId => RuntimeItemId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
@@ -1069,14 +1075,14 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
-    harness.emit({
+    const completedEvent: ProviderRuntimeEvent = {
       type: "item.completed",
       eventId: asEventId("evt-tool-completed-with-data"),
       provider: ProviderDriverKind.make("cursor"),
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-tool-completed"),
-      itemId: asItemId("item-tool-completed"),
+      itemId: asRuntimeItemId("item-tool-completed"),
       payload: {
         itemType: "dynamic_tool_call",
         status: "completed",
@@ -1089,15 +1095,16 @@ describe("ProviderRuntimeIngestion", () => {
           },
         },
       },
-    });
+    };
+    const activityId = stableToolActivityId(completedEvent);
+    expect(activityId).toBeDefined();
+    harness.emit(completedEvent);
 
     const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-tool-completed-with-data",
-      ),
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === activityId),
     );
     const activity = thread.activities.find(
-      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-tool-completed-with-data",
+      (entry: ProviderRuntimeTestActivity) => entry.id === activityId,
     );
     const payload =
       activity?.payload && typeof activity.payload === "object"
@@ -1119,6 +1126,43 @@ describe("ProviderRuntimeIngestion", () => {
     expect(data?.toolCallId).toBe("tool-read-1");
     expect(data?.kind).toBe("read");
     expect(rawOutput?.content).toBe('import * as Effect from "effect/Effect"\n');
+  });
+
+  it("preserves the shared ACP terminal-data shape through event creation and ingestion", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const completedEvent = makeAcpToolCallEvent({
+      stamp: {
+        eventId: asEventId("evt-acp-terminal-data"),
+        createdAt: now,
+      },
+      provider: ProviderDriverKind.make("kimi"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-acp-terminal-data"),
+      toolCall: {
+        toolCallId: "tool-acp-terminal-data",
+        kind: "execute",
+        status: "completed",
+        title: "Ran command",
+        data: {
+          rawOutput: { exitCode: 0, stdout: "ok" },
+        },
+      },
+    });
+
+    harness.emit(completedEvent);
+    await harness.drain();
+
+    const readModel = await harness.readModel();
+    const activity = readModel.threads
+      .find((thread) => thread.id === ThreadId.make("thread-1"))
+      ?.activities.find((entry) => entry.id === stableToolActivityId(completedEvent));
+    expect(activity?.payload).toMatchObject({
+      status: "completed",
+      data: {
+        rawOutput: { exitCode: 0, stdout: "ok" },
+      },
+    });
   });
 
   it("normalizes command execution activities to ran-command summaries", async () => {
@@ -3031,6 +3075,51 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("keeps one durable activity for repeated replaceable token and task progress", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    for (const [index, usedTokens] of [100, 200].entries()) {
+      harness.emit({
+        type: "thread.token-usage.updated",
+        eventId: asEventId(`evt-token-replace-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        payload: {
+          usage: { usedTokens },
+        },
+      });
+      harness.emit({
+        type: "task.progress",
+        eventId: asEventId(`evt-task-replace-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-task-replace"),
+        payload: {
+          taskId: "task-replace",
+          description: `Progress ${index}`,
+        },
+      });
+    }
+
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    const tokenActivities = thread?.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
+    );
+    const taskActivities = thread?.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "task.progress",
+    );
+    expect(tokenActivities).toHaveLength(1);
+    expect(tokenActivities?.[0]?.payload).toMatchObject({ usedTokens: 200 });
+    expect(taskActivities).toHaveLength(1);
+    expect(taskActivities?.[0]?.payload).toMatchObject({ description: "Progress 1" });
+  });
+
   it("projects Codex camelCase token usage payloads into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -3263,7 +3352,7 @@ describe("ProviderRuntimeIngestion", () => {
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-started",
     );
     const progress = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-progress",
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "task.progress",
     );
     const completed = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-completed",
@@ -3392,7 +3481,7 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     const progress = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-named-task-progress",
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "task.progress",
     );
     const completed = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-named-task-completed",
@@ -3533,7 +3622,7 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
-    harness.emit({
+    const enrichedEvent: ProviderRuntimeEvent = {
       type: "tool.progress",
       eventId: asEventId("evt-tool-progress-enriched"),
       provider: ProviderDriverKind.make("claudeAgent"),
@@ -3546,9 +3635,12 @@ describe("ProviderRuntimeIngestion", () => {
         toolName: "Read",
         summary: "Reading ProviderRuntimeIngestion.ts",
         elapsedSeconds: 0,
-        taskId: "task-review-1",
+        taskId: RuntimeTaskId.make("task-review-1"),
       },
-    });
+    };
+    const enrichedActivityId = stableToolActivityId(enrichedEvent);
+    expect(enrichedActivityId).toBeDefined();
+    harness.emit(enrichedEvent);
     harness.emit({
       type: "tool.progress",
       eventId: asEventId("evt-tool-progress-historical-summary"),
@@ -3564,12 +3656,10 @@ describe("ProviderRuntimeIngestion", () => {
     const thread = await waitForThread(
       harness.readModel,
       (entry) =>
-        entry.activities.some((activity) => activity.id === "evt-tool-progress-enriched") &&
+        entry.activities.some((activity) => activity.id === enrichedActivityId) &&
         entry.activities.some((activity) => activity.id === "evt-tool-progress-historical-summary"),
     );
-    const enriched = thread.activities.find(
-      (activity) => activity.id === "evt-tool-progress-enriched",
-    );
+    const enriched = thread.activities.find((activity) => activity.id === enrichedActivityId);
     const historical = thread.activities.find(
       (activity) => activity.id === "evt-tool-progress-historical-summary",
     );
@@ -3588,7 +3678,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(
       thread.activities.filter(
         (activity) =>
-          activity.id === "evt-tool-progress-enriched" ||
+          activity.id === enrichedActivityId ||
           activity.id === "evt-tool-progress-historical-summary",
       ),
     ).toHaveLength(2);
@@ -3599,7 +3689,7 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const turnId = asTurnId("turn-tool-lifecycle");
-    const itemId = asItemId("tool-lifecycle-1");
+    const itemId = asRuntimeItemId("tool-lifecycle-1");
 
     harness.emit({
       type: "tool.progress",
@@ -3615,7 +3705,7 @@ describe("ProviderRuntimeIngestion", () => {
         elapsedSeconds: 1,
       },
     });
-    harness.emit({
+    const updatedEvent: ProviderRuntimeEvent = {
       type: "item.updated",
       eventId: asEventId("evt-tool-lifecycle-updated"),
       provider: ProviderDriverKind.make("claudeAgent"),
@@ -3629,8 +3719,8 @@ describe("ProviderRuntimeIngestion", () => {
         title: "Bash",
         data: { toolName: "Bash", input: { command: "pnpm test" } },
       },
-    });
-    harness.emit({
+    };
+    const completedEvent: ProviderRuntimeEvent = {
       type: "item.completed",
       eventId: asEventId("evt-tool-lifecycle-completed"),
       provider: ProviderDriverKind.make("claudeAgent"),
@@ -3645,39 +3735,234 @@ describe("ProviderRuntimeIngestion", () => {
         detail: "Focused tests failed",
         data: { toolName: "Bash", result: "exit 1" },
       },
-    });
+    };
+    const activityId = stableToolActivityId(completedEvent);
+    expect(activityId).toBeDefined();
+    harness.emit(updatedEvent);
+    await harness.drain();
+    const initialActivity = (await harness.readModel()).threads
+      .find((entry) => entry.id === ThreadId.make("thread-1"))
+      ?.activities.find((activity) => activity.id === activityId);
+    expect(initialActivity?.sequence).toBeDefined();
+
+    harness.emit(completedEvent);
     await harness.drain();
 
     const thread = await waitForThread(harness.readModel, (entry) =>
-      [
-        "evt-tool-lifecycle-progress",
-        "evt-tool-lifecycle-updated",
-        "evt-tool-lifecycle-completed",
-      ].every((activityId) => entry.activities.some((activity) => activity.id === activityId)),
+      entry.activities.some((activity) => activity.id === activityId),
     );
-    const lifecycle = thread.activities.filter((activity) =>
-      activity.id.startsWith("evt-tool-lifecycle-"),
-    );
+    const lifecycle = thread.activities.filter((activity) => activity.id === activityId);
 
-    expect(lifecycle).toHaveLength(3);
+    expect(lifecycle).toHaveLength(1);
     expect(
       lifecycle.map((activity) =>
         activity.payload && typeof activity.payload === "object"
           ? (activity.payload as Record<string, unknown>).toolUseId
           : undefined,
       ),
-    ).toEqual([itemId, itemId, itemId]);
-    expect(lifecycle.map((activity) => activity.kind)).toEqual([
-      "tool.progress",
-      "tool.updated",
-      "tool.completed",
-    ]);
-    expect(lifecycle[1]?.payload).toMatchObject({ status: "inProgress" });
-    expect(lifecycle[2]?.payload).toMatchObject({
+    ).toEqual([itemId]);
+    expect(lifecycle.map((activity) => activity.kind)).toEqual(["tool.completed"]);
+    expect(lifecycle[0]?.createdAt).toBe(now);
+    expect(lifecycle[0]?.sequence).toBe(initialActivity?.sequence);
+    expect(lifecycle[0]?.payload).toMatchObject({
       status: "failed",
       detail: "Focused tests failed",
       data: { toolName: "Bash", result: "exit 1" },
     });
+  });
+
+  it("projects Kimi and Codex terminals fairly during a Kimi-style progress flood", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const kimiThreadId = asThreadId("thread-1");
+    const codexThreadId = asThreadId("thread-fair-codex");
+    const kimiTurnId = asTurnId("turn-fair-kimi");
+    const codexTurnId = asTurnId("turn-fair-codex");
+    const kimiItemId = asRuntimeItemId("tool-fair-kimi");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-fair-kimi"),
+        threadId: kimiThreadId,
+        session: {
+          threadId: kimiThreadId,
+          status: "ready",
+          providerName: "kimi",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: createdAt,
+          lastError: null,
+        },
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-fair-codex-create"),
+        threadId: codexThreadId,
+        projectId: asProjectId("project-1"),
+        title: "Fair Codex Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-fair-codex"),
+        threadId: codexThreadId,
+        session: {
+          threadId: codexThreadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: createdAt,
+          lastError: null,
+        },
+        createdAt,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("kimi"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: kimiThreadId,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: codexThreadId,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-fair-kimi-started"),
+      provider: ProviderDriverKind.make("kimi"),
+      threadId: kimiThreadId,
+      turnId: kimiTurnId,
+      createdAt,
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-fair-codex-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: codexThreadId,
+      turnId: codexTurnId,
+      createdAt,
+    });
+
+    for (let index = 0; index < 10_000; index += 1) {
+      harness.emit({
+        type: "item.updated",
+        eventId: asEventId(`evt-fair-kimi-progress-${index}`),
+        provider: ProviderDriverKind.make("kimi"),
+        threadId: kimiThreadId,
+        turnId: kimiTurnId,
+        itemId: kimiItemId,
+        createdAt,
+        payload: {
+          itemType: "command_execution",
+          status: "inProgress",
+          title: "Running Kimi tool",
+          detail: `progress-${index}`,
+          data: { cumulativeOutput: `latest-output-${index}` },
+        },
+      });
+      if (index === 5_000) {
+        harness.emit({
+          type: "turn.completed",
+          eventId: asEventId("evt-fair-codex-completed"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId: codexThreadId,
+          turnId: codexTurnId,
+          createdAt,
+          payload: { state: "completed" },
+        });
+      }
+    }
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-fair-kimi-tool-completed"),
+      provider: ProviderDriverKind.make("kimi"),
+      threadId: kimiThreadId,
+      turnId: kimiTurnId,
+      itemId: kimiItemId,
+      createdAt,
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Kimi tool completed",
+        detail: "final-output",
+        data: { result: "success" },
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-fair-kimi-completed"),
+      provider: ProviderDriverKind.make("kimi"),
+      threadId: kimiThreadId,
+      turnId: kimiTurnId,
+      createdAt,
+      payload: { state: "completed" },
+    });
+
+    const drainStartedAt = await Effect.runPromise(Clock.currentTimeMillis);
+    await harness.drain();
+    expect((await Effect.runPromise(Clock.currentTimeMillis)) - drainStartedAt).toBeLessThan(
+      10_000,
+    );
+
+    const snapshot = await harness.readModel();
+    const kimiThread = snapshot.threads.find((thread) => thread.id === kimiThreadId);
+    const codexThread = snapshot.threads.find((thread) => thread.id === codexThreadId);
+    const stableActivityId = stableToolActivityId({
+      type: "item.completed",
+      eventId: asEventId("evt-fair-kimi-tool-completed"),
+      provider: ProviderDriverKind.make("kimi"),
+      threadId: kimiThreadId,
+      turnId: kimiTurnId,
+      itemId: kimiItemId,
+      createdAt,
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Kimi tool completed",
+      },
+    });
+
+    expect(codexThread?.session).toMatchObject({ status: "ready", activeTurnId: null });
+    expect(kimiThread?.session).toMatchObject({ status: "ready", activeTurnId: null });
+    const stableToolRows =
+      kimiThread?.activities.filter((activity) => activity.id === stableActivityId) ?? [];
+    expect(stableToolRows).toEqual([
+      expect.objectContaining({
+        kind: "tool.completed",
+        payload: expect.objectContaining({
+          status: "completed",
+          detail: "final-output",
+          data: { result: "success" },
+        }),
+      }),
+    ]);
+    expect(stableToolRows).toHaveLength(1);
+    expect(
+      Buffer.byteLength(JSON.stringify(stableToolRows[0]?.payload), "utf8"),
+    ).toBeLessThanOrEqual(PROVIDER_EVENT_FLOW_CONTROL.terminalToolDataMaxBytes);
   });
 
   it("coalesces only displayable reasoning-summary deltas at turn completion", async () => {

@@ -11,6 +11,7 @@ import {
   formatTaskToolUseCount,
   normalizeCompactToolLabel,
   resolveActiveTimelineActivityCycle,
+  resolveDisplayedTimelineActivityCycle,
   resolveAssistantMessageCopyState,
   resolveTaskCardExpansionA11y,
   workEntryIsTranscriptVisible,
@@ -157,6 +158,60 @@ describe("timeline activity cycles", () => {
 
     expect(resolveAt(100, "cycle-1")?.id).toBe("cycle-2");
     expect(resolveAt(60, "cycle-2")?.id).toBe("cycle-1");
+  });
+
+  it("keeps a sole settled workflow selected instead of switching to an empty cycle", () => {
+    const cycles = [
+      { id: "cycle-1", startRowIndex: 0, activityTurnId: null },
+      { id: "cycle-2", startRowIndex: 1, activityTurnId: turnTwo },
+    ];
+    const state = {
+      scroll: 0,
+      positionAtIndex: (index: number) => [0, 500][index],
+    };
+
+    expect(
+      resolveDisplayedTimelineActivityCycle({
+        cycles,
+        state,
+        currentCycleId: "cycle-2",
+        runningCycle: null,
+        isAtEnd: false,
+        userNavigated: true,
+      })?.id,
+    ).toBe("cycle-2");
+  });
+
+  it("keeps a running workflow across layout shifts but allows contextual navigation", () => {
+    const cycles = [
+      { id: "cycle-1", startRowIndex: 0, activityTurnId: turnOne },
+      { id: "cycle-2", startRowIndex: 1, activityTurnId: turnTwo },
+    ];
+    const state = {
+      scroll: 0,
+      positionAtIndex: (index: number) => [0, 500][index],
+    };
+
+    expect(
+      resolveDisplayedTimelineActivityCycle({
+        cycles,
+        state,
+        currentCycleId: "cycle-2",
+        runningCycle: cycles[1]!,
+        isAtEnd: false,
+        userNavigated: false,
+      })?.id,
+    ).toBe("cycle-2");
+    expect(
+      resolveDisplayedTimelineActivityCycle({
+        cycles,
+        state,
+        currentCycleId: "cycle-2",
+        runningCycle: cycles[1]!,
+        isAtEnd: false,
+        userNavigated: true,
+      })?.id,
+    ).toBe("cycle-1");
   });
 });
 

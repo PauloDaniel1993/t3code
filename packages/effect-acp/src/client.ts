@@ -580,5 +580,16 @@ export const layerChildProcess = (
 ): Layer.Layer<AcpClient> => {
   const stdio = makeChildStdio(handle);
   const terminationError = makeTerminationError(handle);
-  return Layer.effect(AcpClient, make(stdio, options, terminationError));
+  return Layer.effect(
+    AcpClient,
+    Effect.gen(function* () {
+      // ACP reserves stdout for JSON-RPC, while agents may emit arbitrary
+      // diagnostics on stderr. Leaving the child stderr pipe unread applies
+      // OS-level backpressure once its buffer fills and can freeze a long
+      // prompt indefinitely. Drain it for the process lifetime without
+      // forwarding potentially sensitive provider diagnostics.
+      yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
+      return yield* make(stdio, options, terminationError);
+    }),
+  );
 };

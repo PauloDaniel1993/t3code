@@ -32,6 +32,7 @@ import {
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
+  OrchestrationGetActivityHistoryError,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
@@ -61,6 +62,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
+
 import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
@@ -120,6 +122,7 @@ import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
+const isOrchestrationGetSnapshotError = Schema.is(OrchestrationGetSnapshotError);
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -265,6 +268,7 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
       | "thread.message-sent"
       | "thread.proposed-plan-upserted"
       | "thread.activity-appended"
+      | "thread.activity-upserted"
       | "thread.turn-diff-completed"
       | "thread.reverted"
       | "thread.session-set";
@@ -274,10 +278,25 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
     event.type === "thread.message-sent" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.activity-appended" ||
+    event.type === "thread.activity-upserted" ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.reverted" ||
     event.type === "thread.session-set"
   );
+}
+
+function adaptThreadDetailEventForSubscriber(
+  event: OrchestrationEvent,
+  activityUpserts: boolean,
+): OrchestrationEvent {
+  if (activityUpserts || event.type !== "thread.activity-upserted") {
+    return event;
+  }
+  return {
+    ...event,
+    type: "thread.activity-appended",
+    payload: event.payload,
+  } as OrchestrationEvent;
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
@@ -293,6 +312,7 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [ORCHESTRATION_WS_METHODS.dispatchCommand, AuthOrchestrationOperateScope],
   [ORCHESTRATION_WS_METHODS.getTurnDiff, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.getFullThreadDiff, AuthOrchestrationReadScope],
+  [ORCHESTRATION_WS_METHODS.getActivityHistory, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.replayEvents, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.subscribeShell, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot, AuthOrchestrationReadScope],
@@ -429,6 +449,15 @@ const makeWsRpcLayer = (
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
+      const awaitRecoveredSnapshot = startup.awaitCommandReady.pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestrationGetSnapshotError({
+              message: "Startup recovery did not complete before snapshot synchronization.",
+              cause,
+            }),
+        ),
+      );
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
@@ -1105,6 +1134,7 @@ const makeWsRpcLayer = (
           settings,
           shellResumeCompletionMarker: true,
           threadResumeCompletionMarker: true,
+          threadActivityUpserts: true,
         };
       });
 
@@ -1209,6 +1239,33 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.getActivityHistory]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getActivityHistory,
+            projectionSnapshotQuery.getActivityHistory(input).pipe(
+              Effect.mapError((cause) => {
+                switch (cause._tag) {
+                  case "ActivityHistoryInvalidCursorError":
+                    return new OrchestrationGetActivityHistoryError({
+                      reason: "invalid-cursor",
+                      message: cause.message,
+                    });
+                  case "ActivityHistoryThreadNotFoundError":
+                    return new OrchestrationGetActivityHistoryError({
+                      reason: "thread-not-found",
+                      message: "The requested thread was not found.",
+                    });
+                  default:
+                    return new OrchestrationGetActivityHistoryError({
+                      reason: "query-failed",
+                      message: "Failed to load older thread activity.",
+                      cause,
+                    });
+                }
+              }),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.replayEvents]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.replayEvents,
@@ -1236,6 +1293,7 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
             Effect.gen(function* () {
+              yield* awaitRecoveredSnapshot;
               // Coalesce the live shell stream per aggregate over a small window
               // so bursts of high-frequency events (streaming message deltas,
               // activity appends) collapse into a single shell refetch and never
@@ -1342,16 +1400,18 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
-            projectionSnapshotQuery.getArchivedShellSnapshot().pipe(
+            awaitRecoveredSnapshot.pipe(
+              Effect.andThen(projectionSnapshotQuery.getArchivedShellSnapshot()),
               Effect.tapError((cause) =>
                 Effect.logError("orchestration archived shell snapshot load failed", { cause }),
               ),
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationGetSnapshotError({
-                    message: "Failed to load archived orchestration shell snapshot",
-                    cause,
-                  }),
+              Effect.mapError((cause) =>
+                isOrchestrationGetSnapshotError(cause)
+                  ? cause
+                  : new OrchestrationGetSnapshotError({
+                      message: "Failed to load archived orchestration shell snapshot",
+                      cause,
+                    }),
               ),
             ),
             { "rpc.aggregate": "orchestration" },
@@ -1360,6 +1420,7 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
+              yield* awaitRecoveredSnapshot;
               const isThisThreadDetailEvent = (event: OrchestrationEvent) =>
                 event.aggregateKind === "thread" &&
                 event.aggregateId === input.threadId &&
@@ -1369,7 +1430,7 @@ const makeWsRpcLayer = (
                 Stream.filter(isThisThreadDetailEvent),
                 Stream.map((event) => ({
                   kind: "event" as const,
-                  event,
+                  event: adaptThreadDetailEventForSubscriber(event, input.activityUpserts === true),
                 })),
               );
 
@@ -1404,7 +1465,13 @@ const makeWsRpcLayer = (
                   .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
                   .pipe(
                     Stream.filter(isThisThreadDetailEvent),
-                    Stream.map((event) => ({ kind: "event" as const, event })),
+                    Stream.map((event) => ({
+                      kind: "event" as const,
+                      event: adaptThreadDetailEventForSubscriber(
+                        event,
+                        input.activityUpserts === true,
+                      ),
+                    })),
                     Stream.mapError(
                       (cause) =>
                         new OrchestrationGetSnapshotError({

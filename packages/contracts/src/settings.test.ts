@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { ProviderInstanceId } from "./providerInstance.ts";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
+  KIMI_DEFAULT_MODEL,
+  KIMI_DEFAULT_MODEL_NAME,
+  PROVIDER_DISPLAY_NAMES,
+} from "./model.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsPatch,
   ClientSettingsSchema,
@@ -21,6 +28,7 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 
 const validTheme = (id = "custom-valid", name = "Valid") => ({
   id,
@@ -309,6 +317,12 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     // Legacy `providers` struct is still hydrated with its per-driver defaults
     // so existing call sites keep working through the migration.
     expect(decoded.providers.codex.enabled).toBe(true);
+    expect(decoded.providers.kimi).toEqual({
+      enabled: false,
+      binaryPath: "kimi",
+      homePath: "",
+      customModels: [],
+    });
   });
 
   it("decodes a multi-instance map mixing first-party and fork drivers", () => {
@@ -351,6 +365,80 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
         providerInstances: { "1bad": { driver: "codex" } },
       }),
     ).toThrow();
+  });
+});
+
+describe("ServerSettings Kimi provider", () => {
+  const kimiDriver = ProviderDriverKind.make("kimi");
+
+  it("exposes the synthetic default model identity and display metadata", () => {
+    expect(KIMI_DEFAULT_MODEL).toBe("kimi-default");
+    expect(KIMI_DEFAULT_MODEL_NAME).toBe("Kimi default");
+    expect(DEFAULT_MODEL_BY_PROVIDER[kimiDriver]).toBe(KIMI_DEFAULT_MODEL);
+    expect(DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[kimiDriver]).toBe(KIMI_DEFAULT_MODEL);
+    expect(PROVIDER_DISPLAY_NAMES[kimiDriver]).toBe("Kimi");
+  });
+
+  it("decodes, normalizes, and round-trips a Kimi settings patch", () => {
+    const decoded = decodeServerSettingsPatch({
+      providers: {
+        kimi: {
+          enabled: true,
+          binaryPath: "  /opt/homebrew/bin/kimi  ",
+          homePath: "  ~/.kimi-code-work  ",
+          customModels: ["kimi-k2-custom"],
+        },
+      },
+    });
+
+    expect(decoded.providers?.kimi).toEqual({
+      enabled: true,
+      binaryPath: "/opt/homebrew/bin/kimi",
+      homePath: "~/.kimi-code-work",
+      customModels: ["kimi-k2-custom"],
+    });
+    expect(decodeServerSettingsPatch(encodeServerSettingsPatch(decoded))).toEqual(decoded);
+  });
+
+  it("round-trips explicit Kimi instances without narrowing unknown drivers", () => {
+    const decoded = decodeServerSettings({
+      providers: {
+        kimi: {
+          enabled: true,
+          binaryPath: "kimi-preview",
+          homePath: "~/.kimi-code-preview",
+          customModels: ["kimi-preview-model"],
+        },
+      },
+      providerInstances: {
+        kimi_work: {
+          driver: "kimi",
+          displayName: "Kimi Work",
+          config: { homePath: "~/.kimi-code-work", customModels: ["kimi-work-model"] },
+        },
+        ollama_local: {
+          driver: "ollama",
+          config: { endpoint: "http://localhost:11434" },
+        },
+      },
+    });
+    const roundTripped = decodeServerSettings(encodeServerSettings(decoded));
+
+    expect(roundTripped.providers.kimi).toEqual({
+      enabled: true,
+      binaryPath: "kimi-preview",
+      homePath: "~/.kimi-code-preview",
+      customModels: ["kimi-preview-model"],
+    });
+    expect(roundTripped.providerInstances[ProviderInstanceId.make("kimi_work")]).toEqual({
+      driver: "kimi",
+      displayName: "Kimi Work",
+      config: { homePath: "~/.kimi-code-work", customModels: ["kimi-work-model"] },
+    });
+    expect(roundTripped.providerInstances[ProviderInstanceId.make("ollama_local")]).toEqual({
+      driver: "ollama",
+      config: { endpoint: "http://localhost:11434" },
+    });
   });
 });
 

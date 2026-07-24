@@ -1,3 +1,4 @@
+// oxlint-disable t3code/no-manual-effect-runtime-in-tests -- This integration suite explicitly owns an async reactor scope.
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -44,6 +45,7 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            recoverPendingTurnStart: () => Effect.die("not used"),
           }),
         ),
         Layer.provideMerge(
@@ -79,6 +81,7 @@ describe("OrchestrationReactor", () => {
     const reactor = await runtime!.runPromise(Effect.service(OrchestrationReactor));
     const scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
+    await Effect.runPromise(reactor.drain);
 
     expect(started).toEqual([
       "provider-runtime-ingestion",
