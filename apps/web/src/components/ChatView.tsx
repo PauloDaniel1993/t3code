@@ -274,6 +274,7 @@ import {
   readFileAsDataUrl,
   reconcileMountedTerminalThreadIds,
   removeOptimisticUserMessage,
+  resolveThreadErrorBannerState,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
@@ -1270,6 +1271,9 @@ function ChatViewContent(props: ChatViewProps) {
   const [localServerErrorsByThreadKey, setLocalServerErrorsByThreadKey] = useState<
     Record<string, LocalThreadErrorEntry>
   >({});
+  const [dismissedSessionThreadErrorKey, setDismissedSessionThreadErrorKey] = useState<
+    string | null
+  >(null);
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
@@ -1451,9 +1455,16 @@ function ChatViewContent(props: ChatViewProps) {
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const activityHistory = useActivityHistory(activeThread ?? null);
-  const threadError = isServerThread
-    ? (localServerError ?? serverThread?.session?.lastError ?? null)
-    : localDraftError;
+  const threadErrorBannerState = isServerThread
+    ? resolveThreadErrorBannerState({
+        threadKey: routeThreadKey,
+        localError: localServerError,
+        sessionError: serverThread.session?.lastError ?? null,
+        sessionUpdatedAt: serverThread.session?.updatedAt ?? null,
+        dismissedSessionErrorKey: dismissedSessionThreadErrorKey,
+      })
+    : { error: localDraftError, sessionErrorKey: null };
+  const threadError = threadErrorBannerState.error;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
@@ -5892,7 +5903,13 @@ function ChatViewContent(props: ChatViewProps) {
 
         <ThreadErrorBanner
           error={threadError}
-          onDismiss={() => setThreadError(activeThread.id, null)}
+          onDismiss={() => {
+            if (threadErrorBannerState.sessionErrorKey !== null) {
+              setDismissedSessionThreadErrorKey(threadErrorBannerState.sessionErrorKey);
+              return;
+            }
+            setThreadError(activeThread.id, null);
+          }}
         />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
