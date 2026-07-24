@@ -40,6 +40,7 @@ import {
 } from "./KimiAdapter.ts";
 
 const decodeKimiSettings = Schema.decodeSync(KimiSettings);
+const encodeUnknownJsonString = Schema.encodeSync(Schema.UnknownFromJsonString);
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 
@@ -98,12 +99,16 @@ function withMockKimi<A, E, R>(
 function withKimiAdapter<A, E, R>(
   wrapperPath: string,
   use: (adapter: KimiAdapterShape) => Effect.Effect<A, E, R>,
+  environment?: NodeJS.ProcessEnv,
 ) {
   return Effect.gen(function* () {
     const modelState = yield* makeKimiModelState([]);
     const adapter = yield* makeKimiAdapter(
       decodeKimiSettings({ enabled: true, binaryPath: wrapperPath }),
-      { modelState },
+      {
+        modelState,
+        ...(environment ? { environment } : {}),
+      },
     );
     return yield* use(adapter);
   }).pipe(
@@ -326,6 +331,87 @@ it.effect("maps Kimi session lifecycle without stderr backpressure and supports 
           yield* adapter.stopSession(threadId);
         }),
       ),
+  ),
+);
+
+it.effect("surfaces Kimi provider failures that ACP reports as successful turns", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(async () => {
+      const kimiHome = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "kimi-acp-home-"));
+      const sessionDir = NodePath.join(kimiHome, "sessions", "mock-workdir", "mock-session-1");
+      const logPath = NodePath.join(sessionDir, "logs", "kimi-code.log");
+      await NodeFSP.mkdir(NodePath.dirname(logPath), { recursive: true });
+      await NodeFSP.writeFile(
+        NodePath.join(kimiHome, "session_index.jsonl"),
+        `${encodeUnknownJsonString({ sessionId: "mock-session-1", sessionDir })}\n`,
+        "utf8",
+      );
+      await NodeFSP.writeFile(logPath, "Kimi session started\n", "utf8");
+      return { kimiHome, logPath };
+    }),
+    ({ kimiHome, logPath }) =>
+      withMockKimi(
+        {
+          T3_ACP_KIMI_FAILURE_LOG_PATH: logPath,
+          T3_ACP_KIMI_FAILURE_MESSAGE:
+            "403 You've reached your usage limit for this billing cycle.",
+        },
+        (wrapperPath) =>
+          withKimiAdapter(
+            wrapperPath,
+            (adapter) =>
+              Effect.gen(function* () {
+                const threadId = ThreadId.make("kimi-provider-failure-thread");
+                const completedEventFiber = yield* adapter.streamEvents.pipe(
+                  Stream.filter(
+                    (event) => event.threadId === threadId && event.type === "turn.completed",
+                  ),
+                  Stream.runHead,
+                  Effect.forkChild,
+                );
+
+                yield* adapter.startSession({
+                  threadId,
+                  provider: ProviderDriverKind.make("kimi"),
+                  cwd: process.cwd(),
+                  runtimeMode: "full-access",
+                });
+                const turn = yield* adapter.sendTurn({
+                  threadId,
+                  input: "hello",
+                  attachments: [],
+                });
+                const completedEvent = yield* Fiber.join(completedEventFiber);
+                const session = (yield* adapter.listSessions()).find(
+                  (candidate) => candidate.threadId === threadId,
+                );
+                const snapshot = yield* adapter.readThread(threadId);
+
+                assert.isTrue(Option.isSome(completedEvent));
+                if (
+                  Option.isSome(completedEvent) &&
+                  completedEvent.value.type === "turn.completed"
+                ) {
+                  assert.equal(completedEvent.value.turnId, turn.turnId);
+                  assert.equal(completedEvent.value.payload.state, "failed");
+                  assert.equal(
+                    completedEvent.value.payload.errorMessage,
+                    "403 You've reached your usage limit for this billing cycle.",
+                  );
+                }
+                assert.equal(session?.status, "error");
+                assert.equal(
+                  session?.lastError,
+                  "403 You've reached your usage limit for this billing cycle.",
+                );
+                assert.isUndefined(session?.activeTurnId);
+                assert.deepStrictEqual(snapshot.turns, []);
+                yield* adapter.stopSession(threadId);
+              }),
+            { ...process.env, KIMI_CODE_HOME: kimiHome },
+          ),
+      ),
+    ({ kimiHome }) => Effect.promise(() => NodeFSP.rm(kimiHome, { recursive: true, force: true })),
   ),
 );
 
