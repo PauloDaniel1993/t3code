@@ -1,10 +1,44 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  isMarkdownFileExternalOpenModifier,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
+  rewriteMarkdownFileHrefForRendering,
   rewriteMarkdownFileUriHref,
 } from "./markdown-links";
+
+describe("isMarkdownFileExternalOpenModifier", () => {
+  it("recognizes Ctrl+click and Cmd+click", () => {
+    expect(isMarkdownFileExternalOpenModifier({ ctrlKey: true, metaKey: false })).toBe(true);
+    expect(isMarkdownFileExternalOpenModifier({ ctrlKey: false, metaKey: true })).toBe(true);
+    expect(isMarkdownFileExternalOpenModifier({ ctrlKey: false, metaKey: false })).toBe(false);
+  });
+});
+
+describe("rewriteMarkdownFileHrefForRendering", () => {
+  it("wraps absolute windows paths in an allowed file URL for markdown rendering", () => {
+    expect(
+      rewriteMarkdownFileHrefForRendering(
+        "I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+      ),
+    ).toBe(
+      "file:///I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+    );
+  });
+
+  it("preserves file URLs so the markdown sanitizer can allow them", () => {
+    expect(
+      rewriteMarkdownFileHrefForRendering(
+        "file:///D:/Programme/t3code/apps/web/src/markdown-links.ts#L42",
+      ),
+    ).toBe("file:///D:/Programme/t3code/apps/web/src/markdown-links.ts#L42");
+  });
+
+  it("leaves non-file links to the default markdown URL transform", () => {
+    expect(rewriteMarkdownFileHrefForRendering("https://example.com/docs")).toBeNull();
+  });
+});
 
 describe("rewriteMarkdownFileUriHref", () => {
   it("rewrites file uri hrefs into direct path hrefs", () => {
@@ -104,6 +138,19 @@ describe("resolveMarkdownFileLinkTarget", () => {
   it("does not create a preview path for files outside the workspace", () => {
     expect(resolveMarkdownFileLinkMeta("/tmp/report.ts", "/repo/project")).toMatchObject({
       workspaceRelativePath: null,
+    });
+  });
+
+  it("creates a workspace-relative preview path for the generated PDF link", () => {
+    expect(
+      resolveMarkdownFileLinkMeta(
+        "I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+        "I:/projects/Personal/jobs",
+      ),
+    ).toMatchObject({
+      filePath:
+        "I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+      workspaceRelativePath: "output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
     });
   });
 
