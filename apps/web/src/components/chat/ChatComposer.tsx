@@ -12,16 +12,8 @@ import type {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-} from "@t3tools/contracts";
-import {
-  connectionStatusText,
-  type EnvironmentConnectionPresentation,
-} from "@t3tools/client-runtime/connection";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
