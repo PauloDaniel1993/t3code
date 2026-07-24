@@ -9,6 +9,7 @@ const RELATIVE_FILE_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d
 const RELATIVE_FILE_NAME_PATTERN = /^[A-Za-z0-9._-]+\.[A-Za-z0-9_-]+(?::\d+){0,2}$/;
 const POSITION_SUFFIX_PATTERN = /:\d+(?::\d+)?$/;
 const POSITION_ONLY_PATTERN = /^\d+(?::\d+)?$/;
+const PRESERVED_MARKDOWN_FILE_HREF_PROPERTY = "dataT3MarkdownFileHref";
 const POSIX_FILE_ROOT_PREFIXES = [
   "/Users/",
   "/home/",
@@ -30,6 +31,12 @@ export interface MarkdownFileLinkMeta {
   basename: string;
   line?: number;
   column?: number;
+}
+
+export function isMarkdownFileExternalOpenModifier(
+  event: Pick<MouseEvent, "ctrlKey" | "metaKey">,
+): boolean {
+  return event.ctrlKey || event.metaKey;
 }
 
 function safeDecode(value: string): string {
@@ -90,6 +97,70 @@ export function rewriteMarkdownFileUriHref(href: string | undefined): string | n
   const target = parseFileUrlHref(normalizedHref, { decodePath: false });
   if (!target) return null;
   return `${target.path}${target.hash}`;
+}
+
+export function rewriteMarkdownFileHrefForRendering(href: string): string | null {
+  const normalizedHref = normalizeMarkdownLinkDestination(href);
+  if (parseFileUrlHref(normalizedHref, { decodePath: false })) {
+    return normalizedHref;
+  }
+  if (!WINDOWS_DRIVE_PATH_PATTERN.test(normalizedHref)) {
+    return null;
+  }
+  return `file:///${normalizedHref.replaceAll("\\", "/")}`;
+}
+
+function rewriteMarkdownFileHrefsInTree(node: unknown): void {
+  if (!node || typeof node !== "object") return;
+
+  if (
+    "tagName" in node &&
+    node.tagName === "a" &&
+    "properties" in node &&
+    node.properties &&
+    typeof node.properties === "object" &&
+    "href" in node.properties &&
+    typeof node.properties.href === "string"
+  ) {
+    const properties: Record<string, unknown> = node.properties;
+    const rewrittenHref = rewriteMarkdownFileHrefForRendering(properties.href as string);
+    if (rewrittenHref) {
+      properties[PRESERVED_MARKDOWN_FILE_HREF_PROPERTY] = rewrittenHref;
+      properties.href = rewrittenHref;
+    }
+  }
+
+  if ("children" in node && Array.isArray(node.children)) {
+    for (const child of node.children) {
+      rewriteMarkdownFileHrefsInTree(child);
+    }
+  }
+}
+
+export function rehypeRewriteMarkdownFileHrefs() {
+  return (tree: unknown) => {
+    rewriteMarkdownFileHrefsInTree(tree);
+  };
+}
+
+export function resolvePreservedMarkdownFileHref(
+  node: unknown,
+  renderedHref: string | undefined,
+): string | undefined {
+  if (
+    node &&
+    typeof node === "object" &&
+    "properties" in node &&
+    node.properties &&
+    typeof node.properties === "object" &&
+    PRESERVED_MARKDOWN_FILE_HREF_PROPERTY in node.properties
+  ) {
+    const preservedHref = node.properties[PRESERVED_MARKDOWN_FILE_HREF_PROPERTY];
+    if (typeof preservedHref === "string") {
+      return preservedHref;
+    }
+  }
+  return renderedHref;
 }
 
 function looksLikePosixFilesystemPath(path: string): boolean {
