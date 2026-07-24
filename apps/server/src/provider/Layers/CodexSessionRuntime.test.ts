@@ -19,6 +19,7 @@ import {
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   openCodexThread,
+  readCodexNotificationRouteFields,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -36,6 +37,23 @@ describe("CodexSessionRuntimeIdentifierGenerationError", () => {
       error.message,
       "Failed to generate Codex App Server identifier for provider-event.",
     );
+  });
+});
+
+describe("readCodexNotificationRouteFields", () => {
+  it("preserves turn and item identity for MCP tool progress", () => {
+    const route = readCodexNotificationRouteFields({
+      method: "item/mcpToolCall/progress",
+      params: {
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-1",
+        itemId: "mcp-tool-1",
+        message: "Waiting for tool output",
+      },
+    });
+
+    NodeAssert.equal(route.turnId, "provider-turn-1");
+    NodeAssert.equal(route.itemId, "mcp-tool-1");
   });
 });
 

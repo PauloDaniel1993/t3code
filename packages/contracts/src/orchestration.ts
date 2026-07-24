@@ -27,6 +27,7 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
+  getActivityHistory: "orchestration.getActivityHistory",
   replayEvents: "orchestration.replayEvents",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
@@ -329,6 +330,40 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
+export const OrchestrationStartupRecoveryReason = Schema.Literals([
+  "unclean-shutdown",
+  "provider-session-missing",
+  "terminal-event-missing",
+]);
+export type OrchestrationStartupRecoveryReason = typeof OrchestrationStartupRecoveryReason.Type;
+
+export const PendingTurnRecoveryFailureCode = Schema.Literals([
+  "provider-disabled",
+  "provider-unavailable",
+  "provider-incompatible",
+  "resume-failed",
+  "start-failed",
+]);
+export type PendingTurnRecoveryFailureCode = typeof PendingTurnRecoveryFailureCode.Type;
+
+export const PendingTurnRecoveryFailure = Schema.Struct({
+  threadId: ThreadId,
+  turnId: Schema.optionalKey(TurnId),
+  providerInstanceId: ProviderInstanceId,
+  code: PendingTurnRecoveryFailureCode,
+  message: TrimmedNonEmptyString,
+  occurredAt: IsoDateTime,
+});
+export type PendingTurnRecoveryFailure = typeof PendingTurnRecoveryFailure.Type;
+
+export const OrchestrationSessionRecovery = Schema.Struct({
+  state: Schema.Literal("interrupted"),
+  reason: OrchestrationStartupRecoveryReason,
+  recoveredAt: IsoDateTime,
+  pendingTurnFailure: Schema.optionalKey(PendingTurnRecoveryFailure),
+});
+export type OrchestrationSessionRecovery = typeof OrchestrationSessionRecovery.Type;
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -337,6 +372,7 @@ export const OrchestrationSession = Schema.Struct({
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
+  recovery: Schema.optionalKey(OrchestrationSessionRecovery),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
@@ -383,6 +419,17 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const ActivityHistoryCursor = TrimmedNonEmptyString.pipe(
+  Schema.brand("ActivityHistoryCursor"),
+);
+export type ActivityHistoryCursor = typeof ActivityHistoryCursor.Type;
+
+export const OrchestrationActivityHistoryPageInfo = Schema.Struct({
+  hasMoreBefore: Schema.Boolean,
+  beforeCursor: Schema.NullOr(ActivityHistoryCursor),
+});
+export type OrchestrationActivityHistoryPageInfo = typeof OrchestrationActivityHistoryPageInfo.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -423,6 +470,7 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   activities: Schema.Array(OrchestrationThreadActivity),
+  activityHistory: Schema.optionalKey(OrchestrationActivityHistoryPageInfo),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
@@ -548,6 +596,11 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
    * snapshot or catch-up replay and before it begins emitting live events.
    */
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Opts into stable activity upsert events. Servers fall back to the legacy
+   * activity-appended event for subscribers that omit this capability.
+   */
+  activityUpserts: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
@@ -853,6 +906,15 @@ const ThreadActivityAppendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadActivityUpsertCommand = Schema.Struct({
+  type: Schema.Literal("thread.activity.upsert"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  activity: OrchestrationThreadActivity,
+  createdAt: IsoDateTime,
+});
+export type ThreadActivityUpsertCommand = typeof ThreadActivityUpsertCommand.Type;
+
 const ThreadRevertCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.revert.complete"),
   commandId: CommandId,
@@ -868,6 +930,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
+  ThreadActivityUpsertCommand,
   ThreadRevertCompleteCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
@@ -901,6 +964,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.activity-upserted",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1075,6 +1139,12 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+export const ThreadActivityUpsertedPayload = Schema.Struct({
+  threadId: ThreadId,
+  activity: OrchestrationThreadActivity,
+});
+export type ThreadActivityUpsertedPayload = typeof ThreadActivityUpsertedPayload.Type;
+
 export const OrchestrationEventMetadata = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
@@ -1207,6 +1277,11 @@ export const OrchestrationEvent = Schema.Union([
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
   }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.activity-upserted"),
+    payload: ThreadActivityUpsertedPayload,
+  }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;
 
@@ -1311,6 +1386,21 @@ export type OrchestrationGetFullThreadDiffInput = typeof OrchestrationGetFullThr
 export const OrchestrationGetFullThreadDiffResult = ThreadTurnDiff;
 export type OrchestrationGetFullThreadDiffResult = typeof OrchestrationGetFullThreadDiffResult.Type;
 
+export const OrchestrationGetActivityHistoryInput = Schema.Struct({
+  threadId: ThreadId,
+  before: ActivityHistoryCursor,
+  limit: Schema.optionalKey(PositiveInt),
+});
+export type OrchestrationGetActivityHistoryInput = typeof OrchestrationGetActivityHistoryInput.Type;
+
+export const OrchestrationGetActivityHistoryResult = Schema.Struct({
+  threadId: ThreadId,
+  activities: Schema.Array(OrchestrationThreadActivity),
+  pageInfo: OrchestrationActivityHistoryPageInfo,
+});
+export type OrchestrationGetActivityHistoryResult =
+  typeof OrchestrationGetActivityHistoryResult.Type;
+
 export const OrchestrationReplayEventsInput = Schema.Struct({
   fromSequenceExclusive: NonNegativeInt,
 });
@@ -1331,6 +1421,10 @@ export const OrchestrationRpcSchemas = {
   getFullThreadDiff: {
     input: OrchestrationGetFullThreadDiffInput,
     output: OrchestrationGetFullThreadDiffResult,
+  },
+  getActivityHistory: {
+    input: OrchestrationGetActivityHistoryInput,
+    output: OrchestrationGetActivityHistoryResult,
   },
   replayEvents: {
     input: OrchestrationReplayEventsInput,
@@ -1377,6 +1471,15 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedErrorClass<Orche
 export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass<OrchestrationGetFullThreadDiffError>()(
   "OrchestrationGetFullThreadDiffError",
   {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationGetActivityHistoryError extends Schema.TaggedErrorClass<OrchestrationGetActivityHistoryError>()(
+  "OrchestrationGetActivityHistoryError",
+  {
+    reason: Schema.Literals(["invalid-cursor", "thread-not-found", "query-failed"]),
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
   },

@@ -52,6 +52,10 @@ export interface ThreadDetailScreenProps {
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
+  readonly hasOlderActivities: boolean;
+  readonly isLoadingOlderActivities: boolean;
+  readonly olderActivitiesError: string | null;
+  readonly onLoadOlderActivities: () => void;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
@@ -408,6 +412,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             threadId={props.selectedThread.id}
             workspaceRoot={props.threadCwd}
             feed={props.selectedThreadFeed}
+            hasOlderActivities={props.hasOlderActivities}
+            isLoadingOlderActivities={props.isLoadingOlderActivities}
+            olderActivitiesError={props.olderActivitiesError}
+            onLoadOlderActivities={props.onLoadOlderActivities}
             contentPresentation={props.contentPresentation}
             agentLabel={agentLabel}
             latestTurn={props.selectedThread.latestTurn}

@@ -3721,6 +3721,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.auth.policy, "desktop-managed-local");
       assert.equal(response.shellResumeCompletionMarker, true);
       assert.equal(response.threadResumeCompletionMarker, true);
+      assert.equal(response.threadActivityUpserts, true);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -5773,6 +5774,66 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(items[0]?.kind, "snapshot");
       assert.equal(items[1]?.kind, "event");
       assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("falls back to activity-appended for subscribers without upsert capability", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const upsertEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-tool-upsert"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.activity-upserted",
+        payload: {
+          threadId: defaultThreadId,
+          activity: {
+            id: EventId.make("tool-activity-1"),
+            tone: "tool",
+            kind: "tool.updated",
+            summary: "Working",
+            payload: { toolUseId: "tool-1", status: "inProgress" },
+            turnId: null,
+            createdAt: "2026-01-01T00:00:01.000Z",
+          },
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.activity-upserted" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.gen(function* () {
+                yield* Effect.sleep("25 millis");
+                yield* PubSub.publish(liveEvents, upsertEvent);
+                return Option.some({ snapshotSequence: 1, thread });
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const streamedEvent = items[1]?.kind === "event" ? items[1].event : undefined;
+      assert.equal(streamedEvent?.type, "thread.activity-appended");
+      assert.equal(streamedEvent?.eventId, upsertEvent.eventId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 

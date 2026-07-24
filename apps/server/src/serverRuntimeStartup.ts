@@ -29,11 +29,13 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as OrchestrationReactor from "./orchestration/Services/OrchestrationReactor.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
+import { DatabaseMaintenanceRuntime } from "./persistence/Services/DatabaseMaintenanceRuntime.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
+import * as ProviderSessionStartupRecovery from "./provider/Services/ProviderSessionStartupRecovery.ts";
 import {
   formatHeadlessServeOutput,
   formatHostForUrl,
@@ -288,12 +290,28 @@ const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>)
     Effect.withSpan(`server.startup.${phase}`),
   );
 
+export const runProviderSessionRecoveryDegraded = (
+  recovery: ProviderSessionStartupRecovery.ProviderSessionStartupRecoveryShape["run"],
+) =>
+  runStartupPhase("provider-session-recovery", recovery).pipe(
+    Effect.catch((error) =>
+      Effect.logError("provider session startup recovery degraded", {
+        operation: error.operation,
+        cause: error.cause,
+      }),
+    ),
+    Effect.asVoid,
+  );
+
 export const make = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;
   const keybindings = yield* Keybindings.Keybindings;
   const orchestrationReactor = yield* OrchestrationReactor.OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper.ProviderSessionReaper;
+  const providerSessionStartupRecovery =
+    yield* ProviderSessionStartupRecovery.ProviderSessionStartupRecovery;
   const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
+  const databaseMaintenanceRuntime = yield* DatabaseMaintenanceRuntime;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const crypto = yield* Crypto.Crypto;
@@ -345,6 +363,11 @@ export const make = Effect.gen(function* () {
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
       }),
     );
+
+    yield* Effect.logDebug("startup phase: reconciling provider sessions");
+    yield* runProviderSessionRecoveryDegraded(providerSessionStartupRecovery.run);
+    yield* Effect.logDebug("startup phase: draining recovered projections");
+    yield* runStartupPhase("recovery-projections.drain", orchestrationReactor.drain);
 
     const welcomeBase = yield* resolveWelcomeBase;
     const environment = yield* serverEnvironment.getDescriptor;
@@ -443,6 +466,10 @@ export const make = Effect.gen(function* () {
             environment: yield* serverEnvironment.getDescriptor,
           },
         }),
+      );
+      yield* runStartupPhase(
+        "database-maintenance.finalize",
+        databaseMaintenanceRuntime.finalizeStartup,
       );
 
       yield* Effect.logDebug("startup phase: recording startup heartbeat");

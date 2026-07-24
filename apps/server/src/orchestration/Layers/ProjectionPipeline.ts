@@ -53,6 +53,7 @@ import {
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
+import { compactedLegacyToolActivityId } from "../LegacyToolActivityIdentity.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -652,6 +653,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.message-sent":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
+        case "thread.activity-upserted":
         case "thread.approval-response-requested":
         case "thread.user-input-response-requested": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -917,6 +919,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       switch (event.type) {
         case "thread.activity-appended":
           yield* projectionThreadActivityRepository.upsert({
+            activityId:
+              compactedLegacyToolActivityId(event.payload.threadId, event.payload.activity) ??
+              event.payload.activity.id,
+            threadId: event.payload.threadId,
+            turnId: event.payload.activity.turnId,
+            tone: event.payload.activity.tone,
+            kind: event.payload.activity.kind,
+            summary: event.payload.activity.summary,
+            payload: event.payload.activity.payload,
+            sequence: event.sequence,
+            createdAt: event.payload.activity.createdAt,
+          });
+          return;
+
+        case "thread.activity-upserted":
+          yield* projectionThreadActivityRepository.upsertPreservingOrder({
             activityId: event.payload.activity.id,
             threadId: event.payload.threadId,
             turnId: event.payload.activity.turnId,
@@ -975,6 +993,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         runtimeMode: event.payload.session.runtimeMode,
         activeTurnId: event.payload.session.activeTurnId,
         lastError: event.payload.session.lastError,
+        recovery: event.payload.session.recovery ?? null,
         updatedAt: event.payload.session.updatedAt,
       });
     });
@@ -995,6 +1014,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.session-set": {
+          if (event.payload.session.recovery?.pendingTurnFailure !== undefined) {
+            yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            });
+          }
           const turnId = event.payload.session.activeTurnId;
           if (turnId === null || event.payload.session.status !== "running") {
             // Leaving the "running" session status is the turn-end signal:

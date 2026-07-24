@@ -755,6 +755,10 @@ function ThreadRouteContent(
           connectionError={routeConnectionError}
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           selectedThreadFeed={composer.selectedThreadFeed}
+          hasOlderActivities={composer.activityHistory.hasMoreBefore}
+          isLoadingOlderActivities={composer.activityHistory.isLoading}
+          olderActivitiesError={composer.activityHistory.error}
+          onLoadOlderActivities={composer.activityHistory.loadOlder}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}

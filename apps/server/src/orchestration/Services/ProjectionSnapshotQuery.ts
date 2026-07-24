@@ -8,6 +8,8 @@
  */
 import type {
   CheckpointRef,
+  OrchestrationGetActivityHistoryInput,
+  OrchestrationGetActivityHistoryResult,
   OrchestrationCheckpointSummary,
   OrchestrationProject,
   OrchestrationProjectShell,
@@ -20,6 +22,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import type * as Option from "effect/Option";
 import type * as Effect from "effect/Effect";
 
@@ -50,6 +53,18 @@ export interface ProjectionFullThreadDiffContext {
   readonly latestCheckpointTurnCount: number;
   readonly toCheckpointRef: CheckpointRef | null;
 }
+
+export class ActivityHistoryInvalidCursorError extends Data.TaggedError(
+  "ActivityHistoryInvalidCursorError",
+)<{
+  readonly message: string;
+}> {}
+
+export class ActivityHistoryThreadNotFoundError extends Data.TaggedError(
+  "ActivityHistoryThreadNotFoundError",
+)<{
+  readonly threadId: ThreadId;
+}> {}
 
 /**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
@@ -168,6 +183,18 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailSnapshot: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;
+
+  /**
+   * Read the bounded page immediately before an opaque durable activity cursor.
+   */
+  readonly getActivityHistory: (
+    input: OrchestrationGetActivityHistoryInput,
+  ) => Effect.Effect<
+    OrchestrationGetActivityHistoryResult,
+    | ActivityHistoryInvalidCursorError
+    | ActivityHistoryThreadNotFoundError
+    | ProjectionRepositoryError
+  >;
 }
 
 /**

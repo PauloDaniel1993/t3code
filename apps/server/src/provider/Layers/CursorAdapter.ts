@@ -869,7 +869,6 @@ export function makeCursorAdapter(
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
                         toolCall: event.toolCall,
-                        rawPayload: event.rawPayload,
                       }),
                     );
                     return;

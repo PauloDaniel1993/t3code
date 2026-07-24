@@ -82,7 +82,7 @@ import {
   deriveTaskCardMetricParts,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
-  resolveActiveTimelineActivityCycle,
+  resolveDisplayedTimelineActivityCycle,
   resolveTaskCardExpansionA11y,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -230,6 +230,10 @@ interface MessagesTimelineProps {
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: () => void;
   hideEmptyPlaceholder?: boolean;
+  hasOlderActivities?: boolean;
+  isLoadingOlderActivities?: boolean;
+  olderActivitiesError?: string | null;
+  onLoadOlderActivities?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +272,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onIsAtEndChange,
   onManualNavigation,
   hideEmptyPlaceholder = false,
+  hasOlderActivities = false,
+  isLoadingOlderActivities = false,
+  olderActivitiesError = null,
+  onLoadOlderActivities,
 }: MessagesTimelineProps) {
   const diffIndicators = useClientSettings((settings) =>
     resolveDiffIndicators(resolveActiveAppearanceTheme(settings.appearance).diffMarkerStyle),
@@ -388,6 +396,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const activeWorkflowCycleIdRef = useRef<string | null>(null);
   const activeWorkflowTurnIdRef = useRef<TurnId | null | undefined>(undefined);
+  const workflowUserNavigatedRef = useRef(false);
   const runningWorkflowCycle =
     runningTurnId === null
       ? null
@@ -430,16 +439,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (isAtEnd !== undefined) {
       onIsAtEndChange(isAtEnd);
     }
+    if (isAtEnd === true) {
+      workflowUserNavigatedRef.current = false;
+    }
     if (state) {
-      const activeCycle =
-        isAtEnd === true && runningWorkflowCycle !== null
-          ? runningWorkflowCycle
-          : resolveActiveTimelineActivityCycle({
-              cycles: workflowActivityCycles,
-              state,
-              currentCycleId: activeWorkflowCycleIdRef.current,
-              leadingCycleId: runningWorkflowCycle?.id ?? null,
-            });
+      const activeCycle = resolveDisplayedTimelineActivityCycle({
+        cycles: workflowActivityCycles,
+        state,
+        currentCycleId: activeWorkflowCycleIdRef.current,
+        runningCycle: runningWorkflowCycle,
+        isAtEnd,
+        userNavigated: workflowUserNavigatedRef.current,
+      });
       activeWorkflowCycleIdRef.current = activeCycle?.id ?? null;
       const nextTurnId = activeCycle?.activityTurnId ?? null;
       if (activeWorkflowTurnIdRef.current !== nextTurnId) {
@@ -548,6 +559,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onWorkflowActivityViewStateChange,
     ],
   );
+
+  const handleManualTimelineNavigation = useCallback(() => {
+    workflowUserNavigatedRef.current = true;
+    onManualNavigation();
+  }, [onManualNavigation]);
   const activityState = useMemo<TimelineRowActivityState>(
     () => ({
       isWorking,
@@ -555,6 +571,42 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnInProgress,
     }),
     [activeTurnInProgress, isRevertingCheckpoint, isWorking],
+  );
+  const timelineListHeader = useMemo(
+    () =>
+      hasOlderActivities || olderActivitiesError !== null ? (
+        <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2 py-3 sm:py-4">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={onLoadOlderActivities === undefined}
+            aria-disabled={isLoadingOlderActivities || undefined}
+            onClick={isLoadingOlderActivities ? undefined : onLoadOlderActivities}
+            aria-describedby={olderActivitiesError === null ? undefined : "older-activities-error"}
+          >
+            {isLoadingOlderActivities ? (
+              <LoaderIcon className="mr-1.5 size-3.5 animate-spin" aria-hidden="true" />
+            ) : null}
+            {olderActivitiesError === null ? "Load older activity" : "Retry older activity"}
+          </Button>
+          {olderActivitiesError !== null ? (
+            <p
+              id="older-activities-error"
+              role="alert"
+              className="text-center text-xs text-destructive"
+            >
+              {olderActivitiesError}
+            </p>
+          ) : null}
+          <span className="sr-only" role="status" aria-live="polite">
+            {isLoadingOlderActivities ? "Loading older activity." : ""}
+          </span>
+        </div>
+      ) : (
+        TIMELINE_LIST_HEADER
+      ),
+    [hasOlderActivities, isLoadingOlderActivities, olderActivitiesError, onLoadOlderActivities],
   );
 
   // Stable renderItem — no closure deps. Row components read shared state
@@ -568,7 +620,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
-  if (rows.length === 0 && !isWorking) {
+  if (rows.length === 0 && !isWorking && !hasOlderActivities && olderActivitiesError === null) {
     if (hideEmptyPlaceholder) {
       return null;
     }
@@ -587,9 +639,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         <div
           ref={setTimelineViewportElement}
           className="relative h-full min-h-0"
-          onWheelCapture={onManualNavigation}
-          onTouchMoveCapture={onManualNavigation}
-          onPointerDownCapture={onManualNavigation}
+          onWheelCapture={handleManualTimelineNavigation}
+          onTouchMoveCapture={handleManualTimelineNavigation}
+          onPointerDownCapture={handleManualTimelineNavigation}
         >
           <LegendList<MessagesTimelineRow>
             ref={listRef}
@@ -619,7 +671,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             }}
             onScroll={handleScroll}
             className="scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5"
-            ListHeaderComponent={TIMELINE_LIST_HEADER}
+            ListHeaderComponent={timelineListHeader}
             ListFooterComponent={TIMELINE_LIST_FOOTER}
           />
           <TimelineMinimap
@@ -629,7 +681,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             hitStripWidth={minimapHitStripWidth}
             stripMap={minimapStripMap}
             onSelect={(item) => {
-              onManualNavigation();
+              handleManualTimelineNavigation();
               void listRef.current?.scrollToIndex({
                 index: item.rowIndex,
                 animated: true,

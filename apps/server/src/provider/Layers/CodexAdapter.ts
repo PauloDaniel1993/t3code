@@ -20,6 +20,7 @@ import {
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   ProviderApprovalDecision,
   ThreadId,
   ProviderSendTurnInput,
@@ -520,6 +521,37 @@ function mapToRuntimeEvents(
           class: "provider_error",
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
+      },
+    ];
+  }
+
+  if (event.method === "t3/task/started" || event.method === "t3/task/completed") {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const taskId = trimText(typeof payload?.taskId === "string" ? payload.taskId : undefined);
+    if (!taskId) return [];
+    const description = trimText(
+      typeof payload?.description === "string" ? payload.description : undefined,
+    );
+    const prompt = typeof payload?.prompt === "string" ? payload.prompt : undefined;
+    if (event.method === "t3/task/started") {
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "task.started",
+          payload: {
+            taskId: RuntimeTaskId.make(taskId),
+            taskType: "subagent",
+            ...(description ? { description } : {}),
+            ...(prompt !== undefined ? { prompt } : {}),
+          },
+        },
+      ];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "task.completed",
+        payload: { taskId: RuntimeTaskId.make(taskId), status: "completed" },
       },
     ];
   }

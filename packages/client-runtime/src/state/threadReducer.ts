@@ -13,6 +13,8 @@ import type {
   TurnId,
 } from "@t3tools/contracts";
 
+import { compareThreadActivities } from "./activityHistory.ts";
+
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
   | { readonly kind: "deleted" }
@@ -29,24 +31,34 @@ const checkpointOrder = O.mapInput(
     cp.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER,
 );
 
-const activityOrder = O.make<OrchestrationThreadActivity>((left, right) => {
-  if (left.sequence !== undefined && right.sequence !== undefined) {
-    if (left.sequence !== right.sequence) {
-      return left.sequence < right.sequence ? -1 : 1;
-    }
-  } else if (left.sequence !== undefined) {
-    return 1;
-  } else if (right.sequence !== undefined) {
-    return -1;
-  }
+const activityOrder = O.make<OrchestrationThreadActivity>(compareThreadActivities);
 
-  const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
-  if (createdAtOrder !== 0) {
-    return createdAtOrder < 0 ? -1 : 1;
+const TERMINAL_TOOL_STATUSES = new Set([
+  "completed",
+  "failed",
+  "error",
+  "cancelled",
+  "canceled",
+  "aborted",
+  "declined",
+  "interrupted",
+  "stopped",
+]);
+
+function isTerminalToolActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind === "tool.completed" || activity.kind === "tool.failed") {
+    return true;
   }
-  const idOrder = left.id.localeCompare(right.id);
-  return idOrder === 0 ? 0 : idOrder < 0 ? -1 : 1;
-});
+  if (!activity.kind.startsWith("tool.")) {
+    return false;
+  }
+  const payload = activity.payload;
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return false;
+  }
+  const status = "status" in payload ? payload.status : undefined;
+  return typeof status === "string" && TERMINAL_TOOL_STATUSES.has(status.toLowerCase());
+}
 
 /**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
@@ -470,7 +482,44 @@ export function applyThreadDetailEvent(
 
     // ── Activities ──────────────────────────────────────────────────
     case "thread.activity-appended": {
-      const activity = { ...event.payload.activity, sequence: event.sequence };
+      const incomingActivity = { ...event.payload.activity, sequence: event.sequence };
+      const existing = thread.activities.find((entry) => entry.id === incomingActivity.id);
+      if (
+        existing &&
+        isTerminalToolActivity(existing) &&
+        !isTerminalToolActivity(incomingActivity)
+      ) {
+        return { kind: "unchanged" };
+      }
+      const activity = incomingActivity;
+      const activities = pipe(
+        thread.activities,
+        Arr.filter((entry) => entry.id !== activity.id),
+        Arr.append(activity),
+        Arr.sort(activityOrder),
+      );
+
+      return {
+        kind: "updated",
+        thread: { ...thread, activities, updatedAt: event.occurredAt },
+      };
+    }
+
+    case "thread.activity-upserted": {
+      const existing = thread.activities.find((entry) => entry.id === event.payload.activity.id);
+      const incomingActivity = {
+        ...event.payload.activity,
+        createdAt: existing?.createdAt ?? event.payload.activity.createdAt,
+        sequence: existing?.sequence ?? event.payload.activity.sequence ?? event.sequence,
+      };
+      if (
+        existing &&
+        isTerminalToolActivity(existing) &&
+        !isTerminalToolActivity(incomingActivity)
+      ) {
+        return { kind: "unchanged" };
+      }
+      const activity = incomingActivity;
       const activities = pipe(
         thread.activities,
         Arr.filter((entry) => entry.id !== activity.id),

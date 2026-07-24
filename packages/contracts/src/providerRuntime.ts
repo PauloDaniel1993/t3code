@@ -411,6 +411,17 @@ export const ItemLifecyclePayload = Schema.Struct({
 });
 export type ItemLifecyclePayload = typeof ItemLifecyclePayload.Type;
 
+export const TerminalToolDataTruncationEnvelope = Schema.TaggedStruct(
+  "T3TerminalToolDataTruncated",
+  {
+    encoding: Schema.Literal("json"),
+    value: Schema.String,
+    truncated: Schema.Literal(true),
+    originalBytes: NonNegativeInt,
+  },
+);
+export type TerminalToolDataTruncationEnvelope = typeof TerminalToolDataTruncationEnvelope.Type;
+
 const ContentDeltaPayload = Schema.Struct({
   streamKind: RuntimeContentStreamKind,
   delta: Schema.String,
