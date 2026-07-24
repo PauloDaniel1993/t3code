@@ -3,6 +3,7 @@
 import * as NodeFS from "node:fs";
 
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -44,6 +45,9 @@ const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
 const failAuthenticate = process.env.T3_ACP_FAIL_AUTHENTICATE === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
+const kimiFailureLogPath = process.env.T3_ACP_KIMI_FAILURE_LOG_PATH;
+const kimiFailureMessage =
+  process.env.T3_ACP_KIMI_FAILURE_MESSAGE ?? "Mock Kimi provider request failed";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
 const promptStderrBytes = Number(process.env.T3_ACP_PROMPT_STDERR_BYTES ?? "0");
@@ -53,6 +57,7 @@ const permissionOptionIds = {
   rejectOnce: process.env.T3_ACP_REJECT_ONCE_OPTION_ID ?? "reject-once",
 };
 const sessionId = "mock-session-1";
+const encodeUnknownJsonString = Schema.encodeSync(Schema.UnknownFromJsonString);
 
 let currentModeId = "ask";
 let currentModelId = "default";
@@ -500,6 +505,22 @@ const program = Effect.gen(function* () {
 
       if (failPrompt) {
         return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
+      }
+
+      if (kimiFailureLogPath) {
+        const providerError = encodeUnknownJsonString({
+          code: "provider.api_error",
+          message: kimiFailureMessage,
+          name: "APIStatusError",
+          details: { statusCode: 403 },
+          retryable: false,
+        });
+        NodeFS.appendFileSync(
+          kimiFailureLogPath,
+          `2026-07-24 12:00:00.000 | WARNING | kimi_cli | acp: turn ended with failed reason  error=${encodeUnknownJsonString(providerError)}\n`,
+          "utf8",
+        );
+        return { stopReason: "end_turn" };
       }
 
       if (emitMalformedSessionUpdate) {
