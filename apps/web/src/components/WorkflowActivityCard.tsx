@@ -48,6 +48,14 @@ export interface WorkflowMetricSegment {
   readonly text: string;
 }
 
+export function deriveWorkflowEmptyWorkersMessage(
+  status: WorkflowPlanStepStatus | undefined,
+): string {
+  return status === "completed"
+    ? "No workers were used for this step."
+    : "No workers for this step yet.";
+}
+
 /**
  * Ordered selectable groups for the plan layout: current plan steps first,
  * then steps carried from an earlier plan snapshot, then the "Other activity"
@@ -837,7 +845,7 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
                               ))
                             ) : (
                               <p className="px-0.5 py-1 text-xs text-muted-foreground/60">
-                                No workers for this step yet.
+                                {deriveWorkflowEmptyWorkersMessage(group.status)}
                               </p>
                             )}
                           </div>
