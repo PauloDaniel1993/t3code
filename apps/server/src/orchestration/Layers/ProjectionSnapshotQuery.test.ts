@@ -289,6 +289,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          parentThreadId: null,
+          task: null,
+          taskSummary: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -431,6 +434,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          parentThreadId: null,
+          task: null,
+          taskSummary: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
