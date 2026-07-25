@@ -622,11 +622,12 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
       threadId: ThreadId,
       method: string,
       payload: unknown,
-      _source: "acp.jsonrpc" | "acp.kimi.extension",
+      source: "acp.jsonrpc" | "acp.kimi.extension" | "t3.observability",
     ) =>
       Effect.gen(function* () {
         if (!nativeEventLogger) return;
         const observedAt = yield* nowIso;
+        const ctx = sessions.get(threadId);
         yield* nativeEventLogger.write(
           {
             observedAt,
@@ -637,7 +638,19 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
               createdAt: observedAt,
               method,
               threadId,
+              source,
+              providerSessionId: ctx?.acpSessionId ?? null,
+              turnId: ctx?.activeTurnId ?? null,
               payload,
+            },
+            sessionContext: {
+              providerSessionId: ctx?.acpSessionId ?? null,
+              activeTurnId: ctx?.activeTurnId ?? null,
+              sessionStatus: ctx?.session.status ?? null,
+              pendingApprovalCount: ctx?.pendingApprovals.size ?? 0,
+              pendingUserInputCount: ctx?.pendingUserInputs.size ?? 0,
+              sendInFlight: sendsInFlight.has(threadId),
+              stopped: ctx?.stopped ?? null,
             },
           },
           threadId,
@@ -706,6 +719,12 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
     const stopSessionInternal = (ctx: KimiSessionContext) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
+        yield* logNative(
+          ctx.threadId,
+          "t3/session_stop_requested",
+          { exitKind: "graceful" },
+          "t3.observability",
+        ).pipe(Effect.ignore);
         ctx.stopped = true;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
@@ -713,6 +732,12 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
+        yield* logNative(
+          ctx.threadId,
+          "t3/session_stopped",
+          { exitKind: "graceful" },
+          "t3.observability",
+        ).pipe(Effect.ignore);
         sessions.delete(ctx.threadId);
         yield* offerRuntimeEvent({
           type: "session.exited",
@@ -931,6 +956,23 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                   if (input.runtimeMode === "full-access") {
                     const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
                     if (autoApprovedOptionId !== undefined) {
+                      const selectedOption = params.options.find(
+                        (option) => option.optionId === autoApprovedOptionId,
+                      );
+                      yield* logNative(
+                        input.threadId,
+                        "t3/session_permission_auto_approved",
+                        {
+                          requestMethod: "session/request_permission",
+                          sessionId: params.sessionId,
+                          toolCallId: params.toolCall.toolCallId,
+                          toolTitle: params.toolCall.title ?? null,
+                          optionId: autoApprovedOptionId,
+                          optionKind: selectedOption?.kind ?? null,
+                          optionCount: params.options.length,
+                        },
+                        "t3.observability",
+                      ).pipe(Effect.ignore);
                       return {
                         outcome: {
                           outcome: "selected" as const,

@@ -32,6 +32,7 @@ import { ServerConfig } from "../../config.ts";
 import { providerFileUri } from "../attachmentDelivery.ts";
 import { makeKimiModelState } from "../KimiModelState.ts";
 import type { KimiAdapterShape } from "../Services/KimiAdapter.ts";
+import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   isKimiStructuredUserInputPermission,
   kimiElicitationQuestions,
@@ -100,6 +101,7 @@ function withKimiAdapter<A, E, R>(
   wrapperPath: string,
   use: (adapter: KimiAdapterShape) => Effect.Effect<A, E, R>,
   environment?: NodeJS.ProcessEnv,
+  nativeEventLogger?: EventNdjsonLogger,
 ) {
   return Effect.gen(function* () {
     const modelState = yield* makeKimiModelState([]);
@@ -108,6 +110,7 @@ function withKimiAdapter<A, E, R>(
       {
         modelState,
         ...(environment ? { environment } : {}),
+        ...(nativeEventLogger ? { nativeEventLogger } : {}),
       },
     );
     return yield* use(adapter);
@@ -725,3 +728,111 @@ it.effect("routes Kimi permissions and structured questions through canonical re
     ),
   ),
 );
+
+it.effect("records correlated Kimi permission and session lifecycle diagnostics", () => {
+  const records: unknown[] = [];
+  const nativeEventLogger: EventNdjsonLogger = {
+    filePath: "memory://kimi-native-events",
+    write: (event) =>
+      Effect.sync(() => {
+        records.push(event);
+      }),
+    close: () => Effect.void,
+  };
+
+  return withMockKimi(
+    {
+      T3_ACP_EMIT_TOOL_CALLS: "1",
+      T3_ACP_ALLOW_ONCE_OPTION_ID: "kimi-allow-once",
+      T3_ACP_ALLOW_ALWAYS_OPTION_ID: "kimi-allow-session",
+      T3_ACP_REJECT_ONCE_OPTION_ID: "kimi-reject",
+    },
+    (wrapperPath) =>
+      withKimiAdapter(
+        wrapperPath,
+        (adapter) =>
+          Effect.gen(function* () {
+            const threadId = ThreadId.make("kimi-observability-thread");
+            yield* adapter.startSession({
+              threadId,
+              provider: ProviderDriverKind.make("kimi"),
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+            });
+            const turn = yield* adapter.sendTurn({
+              threadId,
+              input: "use a tool",
+              attachments: [],
+            });
+            yield* adapter.stopSession(threadId);
+
+            const nativeRecords = records.filter(
+              (
+                record,
+              ): record is {
+                readonly event: {
+                  readonly method: string;
+                  readonly providerSessionId: string | null;
+                  readonly turnId: TurnId | null;
+                  readonly payload: unknown;
+                };
+                readonly sessionContext: {
+                  readonly activeTurnId: TurnId | null;
+                  readonly sendInFlight: boolean;
+                  readonly stopped: boolean | null;
+                };
+              } =>
+                typeof record === "object" &&
+                record !== null &&
+                "event" in record &&
+                typeof record.event === "object" &&
+                record.event !== null &&
+                "method" in record.event &&
+                typeof record.event.method === "string" &&
+                "sessionContext" in record &&
+                typeof record.sessionContext === "object" &&
+                record.sessionContext !== null,
+            );
+
+            const permissionRequest = nativeRecords.find(
+              (record) => record.event.method === "session/request_permission",
+            );
+            assert.equal(permissionRequest?.event.providerSessionId, "mock-session-1");
+            assert.equal(permissionRequest?.event.turnId, turn.turnId);
+            assert.equal(permissionRequest?.sessionContext.activeTurnId, turn.turnId);
+            assert.isTrue(permissionRequest?.sessionContext.sendInFlight);
+
+            const autoApproval = nativeRecords.find(
+              (record) => record.event.method === "t3/session_permission_auto_approved",
+            );
+            assert.deepStrictEqual(autoApproval?.event.payload, {
+              requestMethod: "session/request_permission",
+              sessionId: "mock-session-1",
+              toolCallId: "tool-call-1",
+              toolTitle: "Bash",
+              optionId: "kimi-allow-session",
+              optionKind: "allow_always",
+              optionCount: 3,
+            });
+            assert.notInclude(
+              encodeUnknownJsonString(autoApproval?.event.payload),
+              "cat server/package.json",
+            );
+
+            const stopRequested = nativeRecords.find(
+              (record) => record.event.method === "t3/session_stop_requested",
+            );
+            assert.isNull(stopRequested?.sessionContext.activeTurnId);
+            assert.isFalse(stopRequested?.sessionContext.sendInFlight);
+            assert.isFalse(stopRequested?.sessionContext.stopped);
+
+            const stopped = nativeRecords.find(
+              (record) => record.event.method === "t3/session_stopped",
+            );
+            assert.isTrue(stopped?.sessionContext.stopped);
+          }),
+        undefined,
+        nativeEventLogger,
+      ),
+  );
+});
