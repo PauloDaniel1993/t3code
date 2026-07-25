@@ -29,6 +29,8 @@ const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLET
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
+const hangFirstPromptUntilCancel = process.env.T3_ACP_HANG_FIRST_PROMPT_UNTIL_CANCEL === "1";
+const cancelSettleDelayMs = Number(process.env.T3_ACP_CANCEL_SETTLE_DELAY_MS ?? "0");
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
 const omitXAiPromptCompleteStopReason =
   process.env.T3_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON === "1";
@@ -67,6 +69,7 @@ let currentContext = "272k";
 let currentFast = false;
 let promptCount = 0;
 let overlappingFirstPromptId: string | undefined;
+let firstPromptWaitingForCancel = false;
 const cancelledSessions = new Set<string>();
 
 function promptIdFromRequestMeta(
@@ -492,6 +495,31 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
       promptCount += 1;
+
+      if (hangFirstPromptUntilCancel && promptCount > 1 && firstPromptWaitingForCancel) {
+        return yield* AcpError.AcpRequestError.invalidRequest(
+          "Cannot launch a new turn while another turn is active",
+        );
+      }
+
+      if (hangFirstPromptUntilCancel && promptCount === 1) {
+        firstPromptWaitingForCancel = true;
+        return yield* Effect.gen(function* () {
+          while (!cancelledSessions.has(requestedSessionId)) {
+            yield* Effect.sleep("10 millis");
+          }
+          if (Number.isFinite(cancelSettleDelayMs) && cancelSettleDelayMs > 0) {
+            yield* Effect.sleep(`${cancelSettleDelayMs} millis`);
+          }
+          return { stopReason: "cancelled" as const };
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              firstPromptWaitingForCancel = false;
+            }),
+          ),
+        );
+      }
 
       if (Number.isFinite(promptStderrBytes) && promptStderrBytes > 0) {
         yield* Effect.callback<void>((resume) => {

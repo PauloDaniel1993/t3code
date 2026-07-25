@@ -213,6 +213,11 @@ export class AcpSessionRuntime extends Context.Service<
      */
     readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
     /**
+     * Sends `session/cancel` and waits for the active prompt request to settle.
+     * Use this before starting a replacement prompt for agents that reject overlap.
+     */
+    readonly cancelAndWait: Effect.Effect<void, EffectAcpErrors.AcpError>;
+    /**
      * Selects the active mode through the negotiated `mode` configuration option.
      * This is a no-op when the requested mode is already active.
      * @see https://agentclientprotocol.com/protocol/schema#session/set_config_option
@@ -847,6 +852,23 @@ export const make = (
             yield* acp.agent
               .cancel({ sessionId: started.sessionId })
               .pipe(Effect.ignore, Effect.forkIn(runtimeScope));
+            yield* toolProgressSemaphore.withPermits(1)(
+              Ref.modify(toolProgressCoalescerRef, (state) => {
+                const transition = flushAllAcpToolProgress(state);
+                return [transition.events, clearAcpToolProgress(transition.state)] as const;
+              }).pipe(Effect.flatMap(offerToolProgressEvents)),
+            );
+          }),
+        ),
+      ),
+      cancelAndWait: getStartedState.pipe(
+        Effect.flatMap((started) =>
+          Effect.gen(function* () {
+            const activePromptFiber = yield* Ref.get(activePromptFiberRef);
+            yield* acp.agent.cancel({ sessionId: started.sessionId });
+            if (Option.isSome(activePromptFiber)) {
+              yield* Fiber.await(activePromptFiber.value).pipe(Effect.asVoid);
+            }
             yield* toolProgressSemaphore.withPermits(1)(
               Ref.modify(toolProgressCoalescerRef, (state) => {
                 const transition = flushAllAcpToolProgress(state);
