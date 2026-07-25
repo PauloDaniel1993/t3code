@@ -7,7 +7,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview";
+export type McpCapability = "preview" | "tasks";
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;
@@ -24,8 +24,14 @@ export class McpInvocationContext extends Context.Service<
   McpInvocationScope
 >()("t3/mcp/McpInvocationContext") {}
 
+/**
+ * Preview capability guard. Stays narrow to `"preview"` because
+ * `PreviewAutomationUnavailableError` is part of the preview tool contract;
+ * other capabilities use {@link hasMcpCapability} and raise their own toolkit's
+ * error type.
+ */
 export const requireMcpCapability = Effect.fn("mcp.requireCapability")(function* (
-  capability: McpCapability,
+  capability: "preview",
 ) {
   const invocation = yield* McpInvocationContext;
   if (!invocation.capabilities.has(capability)) {
@@ -38,4 +44,15 @@ export const requireMcpCapability = Effect.fn("mcp.requireCapability")(function*
     });
   }
   return invocation;
+});
+
+/**
+ * Resolve the invocation scope, or `null` when it does not grant `capability`.
+ * Callers map the null case onto their own toolkit's failure schema.
+ */
+export const scopeWithCapability = Effect.fn("mcp.scopeWithCapability")(function* (
+  capability: McpCapability,
+) {
+  const invocation = yield* McpInvocationContext;
+  return invocation.capabilities.has(capability) ? invocation : null;
 });
