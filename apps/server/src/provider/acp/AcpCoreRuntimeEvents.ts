@@ -291,6 +291,38 @@ export function makeAcpAssistantItemEvent(input: {
   };
 }
 
+/**
+ * ACP `agent_thought_chunk` updates carry the agent's user-visible reasoning.
+ * They map to `reasoning_summary_text` because that is the stream kind the
+ * orchestration layer buffers into a `turn.reasoning.summary` activity;
+ * `reasoning_text` has no consumer today.
+ */
+export function makeAcpReasoningDeltaEvent(input: {
+  readonly stamp: AcpEventStamp;
+  readonly provider: ProviderDriverKind;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly text: string;
+  readonly rawPayload: unknown;
+}): ProviderRuntimeEvent {
+  return {
+    type: "content.delta",
+    ...input.stamp,
+    provider: input.provider,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    payload: {
+      streamKind: "reasoning_summary_text",
+      delta: input.text,
+    },
+    raw: {
+      source: "acp.jsonrpc",
+      method: "session/update",
+      payload: input.rawPayload,
+    },
+  };
+}
+
 export function makeAcpContentDeltaEvent(input: {
   readonly stamp: AcpEventStamp;
   readonly provider: ProviderDriverKind;

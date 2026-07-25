@@ -200,9 +200,11 @@ it.effect("maps supported Kimi attachments and rejects unadvertised images befor
     if (parts[0]?.type === "text") {
       assert.include(parts[0].text, "You may use Agent or AgentSwarm subagents.");
       assert.include(parts[0].text, "omit run_in_background");
-      assert.include(parts[0].text, "User request:\nInspect");
+      // The user's request stays in its own block, verbatim.
+      assert.notInclude(parts[0].text, "Inspect");
     }
-    assert.deepStrictEqual(parts.slice(1), [
+    assert.deepStrictEqual(parts[1], { type: "text", text: "Inspect" });
+    assert.deepStrictEqual(parts.slice(2), [
       {
         type: "resource_link",
         name: "notes.txt",
