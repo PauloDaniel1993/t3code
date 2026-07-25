@@ -22,6 +22,7 @@ import ForkMigration0001 from "./ForkMigrations/001_AttachmentCleanupQueue.ts";
 import ForkMigration0002 from "./ForkMigrations/002_ProjectionThreadSessionRecovery.ts";
 import ForkMigration0003 from "./ForkMigrations/003_DatabaseCompactionJournal.ts";
 import ForkMigration0004 from "./ForkMigrations/004_ProjectionThreadTasks.ts";
+import ForkMigration0005 from "./ForkMigrations/005_ProjectionThreadMessageSource.ts";
 
 export const FORK_MIGRATIONS_TABLE = "fork_sql_migrations";
 
@@ -30,6 +31,7 @@ export const forkMigrationEntries = [
   [2, "ProjectionThreadSessionRecovery", ForkMigration0002],
   [3, "DatabaseCompactionJournal", ForkMigration0003],
   [4, "ProjectionThreadTasks", ForkMigration0004],
+  [5, "ProjectionThreadMessageSource", ForkMigration0005],
 ] as const;
 
 export const makeForkMigrationLoader = (throughId?: number) =>
