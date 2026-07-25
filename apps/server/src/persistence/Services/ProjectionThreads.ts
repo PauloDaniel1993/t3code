@@ -14,6 +14,8 @@ import {
   ProviderInteractionMode,
   RuntimeMode,
   ThreadId,
+  ThreadTaskMetadata,
+  ThreadTaskSummary,
   TurnId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -45,6 +47,12 @@ export const ProjectionThread = Schema.Struct({
   pendingUserInputCount: NonNegativeInt,
   hasActionableProposedPlan: NonNegativeInt,
   deletedAt: Schema.NullOr(IsoDateTime),
+  /** Non-null on task threads — the thread that owns this one. */
+  parentThreadId: Schema.NullOr(ThreadId),
+  /** Task metadata for this thread when it is a task; null otherwise. */
+  task: Schema.NullOr(ThreadTaskMetadata),
+  /** Rollup over this thread's own tasks when it is a parent; null otherwise. */
+  taskSummary: Schema.NullOr(ThreadTaskSummary),
 });
 export type ProjectionThread = typeof ProjectionThread.Type;
 
@@ -62,6 +70,11 @@ export const ListProjectionThreadsByProjectInput = Schema.Struct({
   projectId: ProjectId,
 });
 export type ListProjectionThreadsByProjectInput = typeof ListProjectionThreadsByProjectInput.Type;
+
+export const ListProjectionThreadsByParentInput = Schema.Struct({
+  parentThreadId: ThreadId,
+});
+export type ListProjectionThreadsByParentInput = typeof ListProjectionThreadsByParentInput.Type;
 
 /**
  * ProjectionThreadRepositoryShape - Service API for projected thread records.
@@ -88,6 +101,15 @@ export interface ProjectionThreadRepositoryShape {
    */
   readonly listByProjectId: (
     input: ListProjectionThreadsByProjectInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThread>, ProjectionRepositoryError>;
+
+  /**
+   * List a parent thread's task threads, including soft-deleted rows so callers
+   * can enforce the lifetime cap. Resolves through the partial
+   * `parent_thread_id` index rather than scanning.
+   */
+  readonly listByParentThreadId: (
+    input: ListProjectionThreadsByParentInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThread>, ProjectionRepositoryError>;
 
   /**

@@ -287,11 +287,30 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+/**
+ * Who authored a projected message. Absent on rows persisted before the field
+ * existed — consumers derive `user`/`provider`/`system` from role in that case
+ * (see `resolveOrchestrationMessageSource` in the client runtime).
+ *
+ * `task-result` marks the synthetic message a finished thread task injects into
+ * its parent to wake it. It is a real user-role message so the normal turn-start
+ * path can send it, but it is not something the user typed, so clients render it
+ * as a task lifecycle row rather than a user bubble.
+ */
+export const OrchestrationMessageSource = Schema.Literals([
+  "user",
+  "provider",
+  "system",
+  "task-result",
+]);
+export type OrchestrationMessageSource = typeof OrchestrationMessageSource.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  source: Schema.optionalKey(OrchestrationMessageSource),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -450,9 +469,135 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+// ---------------------------------------------------------------------------
+// Thread tasks — a task is a full thread owned by a parent thread. Everything
+// here is prefixed `ThreadTask` to stay clear of the unrelated provider-native
+// "task" (subagent/workflow cards) already carried on `WorkLogEntry.taskId`.
+// ---------------------------------------------------------------------------
+
+/** Most tasks a parent may have in flight at once. */
+export const THREAD_TASK_MAX_RUNNING = 5;
+/** Most tasks a parent may create over its lifetime — the wake-up-loop backstop. */
+export const THREAD_TASK_MAX_TOTAL = 25;
+export const THREAD_TASK_MAX_SELECTED_MESSAGES = 100;
+export const THREAD_TASK_CONTEXT_MAX_CHARS = 60_000;
+export const THREAD_TASK_RESULT_SUMMARY_MAX_CHARS = 16_000;
+
+/**
+ * Deliberately coarse. Approval-pending, input-pending, and "working" chrome
+ * keep deriving from the task thread's own session and latest turn, so a task
+ * row reads exactly like an ordinary thread row. This status exists for the two
+ * facts derivation cannot supply: whether a result was already delivered
+ * (exactly-once) and whether a cancel is in flight.
+ */
+export const ThreadTaskStatus = Schema.Literals([
+  "queued",
+  "running",
+  "finished",
+  "failed",
+  "cancelled",
+]);
+export type ThreadTaskStatus = typeof ThreadTaskStatus.Type;
+
+export const ThreadTaskCreatedBy = Schema.Literals(["agent", "user"]);
+export type ThreadTaskCreatedBy = typeof ThreadTaskCreatedBy.Type;
+
+/**
+ * Which slice of the parent conversation the task starts from. Resolved against
+ * the parent transcript once, at creation, and materialized into the task's
+ * first user message — a task must not see parent messages written after it
+ * started.
+ */
+export const ThreadTaskContextSpec = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("full-thread") }),
+  Schema.Struct({
+    kind: Schema.Literal("selected-messages"),
+    messageIds: Schema.Array(MessageId).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(THREAD_TASK_MAX_SELECTED_MESSAGES),
+    ),
+  }),
+  Schema.Struct({ kind: Schema.Literal("none") }),
+]);
+export type ThreadTaskContextSpec = typeof ThreadTaskContextSpec.Type;
+
+export const ThreadTaskOutcome = Schema.Literals(["succeeded", "failed", "cancelled"]);
+export type ThreadTaskOutcome = typeof ThreadTaskOutcome.Type;
+
+export const ThreadTaskResult = Schema.Struct({
+  outcome: ThreadTaskOutcome,
+  /** Tail of the task's final assistant text, bounded by the summary cap. */
+  summary: Schema.String,
+  summaryTruncated: Schema.Boolean,
+  assistantMessageId: Schema.NullOr(MessageId),
+  completedAt: IsoDateTime,
+});
+export type ThreadTaskResult = typeof ThreadTaskResult.Type;
+
+export const ThreadTaskDeliveryState = Schema.Literals(["pending", "delivered", "skipped"]);
+export type ThreadTaskDeliveryState = typeof ThreadTaskDeliveryState.Type;
+
+export const ThreadTaskDeliverySkipReason = Schema.Literals([
+  "parent-missing",
+  "parent-deleted",
+  "parent-archived",
+  "task-archived",
+  "task-deleted",
+  "dispatch-failed",
+]);
+export type ThreadTaskDeliverySkipReason = typeof ThreadTaskDeliverySkipReason.Type;
+
+export const ThreadTaskDelivery = Schema.Struct({
+  state: ThreadTaskDeliveryState,
+  reason: Schema.optionalKey(ThreadTaskDeliverySkipReason),
+  /** The `task-result` message injected into the parent, when delivery succeeded. */
+  parentMessageId: Schema.optionalKey(MessageId),
+  updatedAt: IsoDateTime,
+});
+export type ThreadTaskDelivery = typeof ThreadTaskDelivery.Type;
+
+/** Projected onto the task thread itself. `null` on threads that are not tasks. */
+export const ThreadTaskMetadata = Schema.Struct({
+  parentThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  prompt: Schema.String,
+  context: ThreadTaskContextSpec,
+  contextTruncated: Schema.Boolean,
+  createdBy: ThreadTaskCreatedBy,
+  status: ThreadTaskStatus,
+  requestedAt: IsoDateTime,
+  startedAt: Schema.NullOr(IsoDateTime),
+  finishedAt: Schema.NullOr(IsoDateTime),
+  result: Schema.NullOr(ThreadTaskResult),
+  delivery: Schema.NullOr(ThreadTaskDelivery),
+});
+export type ThreadTaskMetadata = typeof ThreadTaskMetadata.Type;
+
+/** Projected onto the parent thread. `null` on threads that own no tasks. */
+export const ThreadTaskSummary = Schema.Struct({
+  total: NonNegativeInt,
+  running: NonNegativeInt,
+  latestResultAt: Schema.NullOr(IsoDateTime),
+  /** Drives the sidebar's unread-results dot, compared against the last visit. */
+  latestDeliveredAt: Schema.NullOr(IsoDateTime),
+});
+export type ThreadTaskSummary = typeof ThreadTaskSummary.Type;
+
+/**
+ * Optional rather than null-defaulted, matching how `snoozedUntil`/`snoozedAt`
+ * were added: payloads from pre-tasks servers still decode, and consumers treat
+ * absent and null identically ("not a task" / "owns no tasks").
+ */
+const ThreadTaskThreadFields = {
+  parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  task: Schema.optional(Schema.NullOr(ThreadTaskMetadata)),
+  taskSummary: Schema.optional(Schema.NullOr(ThreadTaskSummary)),
+} as const;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  ...ThreadTaskThreadFields,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -510,6 +655,7 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  ...ThreadTaskThreadFields,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -788,6 +934,9 @@ export const ThreadTurnStartCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
+    // Server-authored only: the client command variant has no `source`, so a
+    // client cannot forge a `task-result` message.
+    source: Schema.optionalKey(OrchestrationMessageSource),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -862,6 +1011,61 @@ const ThreadSessionStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Full task-create command. `createdBy` is server-authored: the MCP tool surface
+ * dispatches this shape with `agent`, and client dispatches decode through
+ * `ClientThreadTaskCreateCommand` (which has no `createdBy`) and default to
+ * `user`. A client therefore cannot claim a task came from the agent.
+ */
+const ThreadTaskCreateCommand = Schema.Struct({
+  type: Schema.Literal("thread.task.create"),
+  commandId: CommandId,
+  parentThreadId: ThreadId,
+  taskThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  prompt: TrimmedNonEmptyString,
+  context: ThreadTaskContextSpec,
+  modelSelection: Schema.optional(ModelSelection),
+  createdBy: ThreadTaskCreatedBy.pipe(Schema.withDecodingDefault(Effect.succeed("user" as const))),
+  createdAt: IsoDateTime,
+});
+export type ThreadTaskCreateCommand = typeof ThreadTaskCreateCommand.Type;
+
+const ClientThreadTaskCreateCommand = Schema.Struct({
+  type: Schema.Literal("thread.task.create"),
+  commandId: CommandId,
+  parentThreadId: ThreadId,
+  taskThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  prompt: TrimmedNonEmptyString,
+  context: ThreadTaskContextSpec,
+  modelSelection: Schema.optional(ModelSelection),
+  createdAt: IsoDateTime,
+});
+
+const ThreadTaskCancelCommand = Schema.Struct({
+  type: Schema.Literal("thread.task.cancel"),
+  commandId: CommandId,
+  parentThreadId: ThreadId,
+  taskThreadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+export type ThreadTaskCancelCommand = typeof ThreadTaskCancelCommand.Type;
+
+/**
+ * Re-deliver an already-recorded result to the parent. Client-dispatchable
+ * because the mini thread window offers it explicitly; automatic delivery
+ * happens once and is not re-armed by steering.
+ */
+const ThreadTaskRedeliverCommand = Schema.Struct({
+  type: Schema.Literal("thread.task.redeliver"),
+  commandId: CommandId,
+  parentThreadId: ThreadId,
+  taskThreadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+export type ThreadTaskRedeliverCommand = typeof ThreadTaskRedeliverCommand.Type;
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -883,6 +1087,9 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadTaskCreateCommand,
+  ThreadTaskCancelCommand,
+  ThreadTaskRedeliverCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -908,6 +1115,9 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ClientThreadTaskCreateCommand,
+  ThreadTaskCancelCommand,
+  ThreadTaskRedeliverCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -985,8 +1195,48 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadTaskStatusSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.task.status.set"),
+  commandId: CommandId,
+  parentThreadId: ThreadId,
+  taskThreadId: ThreadId,
+  status: ThreadTaskStatus,
+  createdAt: IsoDateTime,
+});
+export type ThreadTaskStatusSetCommand = typeof ThreadTaskStatusSetCommand.Type;
+
+/**
+ * Records the task's result with delivery still `pending`. Persisting the
+ * result before the parent wake-up is dispatched is what makes delivery
+ * exactly-once across a crash: replay sees the recorded result and retries only
+ * the delivery.
+ */
+const ThreadTaskFinishCommand = Schema.Struct({
+  type: Schema.Literal("thread.task.finish"),
+  commandId: CommandId,
+  parentThreadId: ThreadId,
+  taskThreadId: ThreadId,
+  status: ThreadTaskStatus,
+  result: ThreadTaskResult,
+  createdAt: IsoDateTime,
+});
+export type ThreadTaskFinishCommand = typeof ThreadTaskFinishCommand.Type;
+
+const ThreadTaskDeliverySetCommand = Schema.Struct({
+  type: Schema.Literal("thread.task.delivery.set"),
+  commandId: CommandId,
+  parentThreadId: ThreadId,
+  taskThreadId: ThreadId,
+  delivery: ThreadTaskDelivery,
+  createdAt: IsoDateTime,
+});
+export type ThreadTaskDeliverySetCommand = typeof ThreadTaskDeliverySetCommand.Type;
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
+  ThreadTaskStatusSetCommand,
+  ThreadTaskFinishCommand,
+  ThreadTaskDeliverySetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
@@ -1031,6 +1281,9 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-diff-completed",
   "thread.activity-appended",
   "thread.activity-upserted",
+  "thread.task-created",
+  "thread.task-updated",
+  "thread.task-finished",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1153,6 +1406,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  source: Schema.optionalKey(OrchestrationMessageSource),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -1239,6 +1493,43 @@ export const ThreadActivityUpsertedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 export type ThreadActivityUpsertedPayload = typeof ThreadActivityUpsertedPayload.Type;
+
+// Task events are emitted on the *task thread* aggregate, not the parent's.
+// The task thread's detail subscription is what the mini thread window streams,
+// so status and result must land there live. The parent surfaces the same
+// lifecycle through `task.created` / `task.finished` activity rows and through
+// its re-projected `taskSummary` on the shell stream.
+export const ThreadTaskCreatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  parentThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  prompt: Schema.String,
+  context: ThreadTaskContextSpec,
+  contextTruncated: Schema.Boolean,
+  createdBy: ThreadTaskCreatedBy,
+  status: ThreadTaskStatus,
+  requestedAt: IsoDateTime,
+});
+export type ThreadTaskCreatedPayload = typeof ThreadTaskCreatedPayload.Type;
+
+export const ThreadTaskUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  parentThreadId: ThreadId,
+  status: Schema.optionalKey(ThreadTaskStatus),
+  delivery: Schema.optionalKey(ThreadTaskDelivery),
+  updatedAt: IsoDateTime,
+});
+export type ThreadTaskUpdatedPayload = typeof ThreadTaskUpdatedPayload.Type;
+
+export const ThreadTaskFinishedPayload = Schema.Struct({
+  threadId: ThreadId,
+  parentThreadId: ThreadId,
+  status: ThreadTaskStatus,
+  result: ThreadTaskResult,
+  delivery: ThreadTaskDelivery,
+  finishedAt: IsoDateTime,
+});
+export type ThreadTaskFinishedPayload = typeof ThreadTaskFinishedPayload.Type;
 
 export const OrchestrationEventMetadata = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
@@ -1396,6 +1687,21 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-upserted"),
     payload: ThreadActivityUpsertedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.task-created"),
+    payload: ThreadTaskCreatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.task-updated"),
+    payload: ThreadTaskUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.task-finished"),
+    payload: ThreadTaskFinishedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;
