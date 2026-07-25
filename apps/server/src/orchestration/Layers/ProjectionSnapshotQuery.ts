@@ -7,6 +7,7 @@ import {
   MessageId,
   NonNegativeInt,
   OrchestrationCheckpointFile,
+  OrchestrationMessageSource,
   OrchestrationSessionRecovery,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
@@ -81,6 +82,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
+    source: Schema.NullOr(OrchestrationMessageSource),
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
   }),
 );
@@ -570,6 +572,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
+          source,
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
@@ -972,6 +975,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
+          source,
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
@@ -1340,6 +1344,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 threadMessages.push({
                   id: row.messageId,
                   role: row.role,
+                  ...(row.source !== null ? { source: row.source } : {}),
                   text: row.text,
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
@@ -2330,6 +2335,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           const message = {
             id: row.messageId,
             role: row.role,
+            ...(row.source !== null ? { source: row.source } : {}),
             text: row.text,
             turnId: row.turnId,
             streaming: row.isStreaming === 1,
