@@ -79,11 +79,11 @@
 
 ## 9. Web Timeline And Creation Dialog
 
-- [ ] 9.1 Map `task.created` and `task.finished` activities into work-log entries in `session-logic.ts` with task-specific chrome
-- [ ] 9.2 Render the agent-created and user-created task rows with title, context, and open-thread link
-- [ ] 9.3 Render the info-blue wake-up row, expandable to reveal the injected result text
-- [ ] 9.4 Suppress `source: "task-result"` messages from ordinary user-bubble rendering in `MessagesTimeline.logic.ts`
-- [ ] 9.5 Render the skipped-delivery variant that states the reason instead of claiming the thread resumed
+- [x] 9.1 Map `task.created` and `task.finished` activities into work-log entries in `session-logic.ts` with task-specific chrome
+- [x] 9.2 Render the agent-created and user-created task rows with title, context, and open-thread link
+- [x] 9.3 Render the info-blue wake-up row, expandable to reveal the injected result text
+- [x] 9.4 Suppress `source: "task-result"` messages from ordinary user-bubble rendering in `MessagesTimeline.logic.ts`
+- [x] 9.5 Render the skipped-delivery variant that states the reason instead of claiming the thread resumed
 - [ ] 9.6 Add the creation dialog with title, prompt, model override, and the Full thread / Selected messages / No context picker
 - [ ] 9.7 Add the newest-first checkbox message list with selection count, bound enforcement, and preserved input on rejection
 - [ ] 9.8 Add the `New task…` action to the active thread actions menu
