@@ -59,6 +59,10 @@
       "types": "./src/state/entities.ts",
       "default": "./src/state/entities.ts"
     },
+    "./state/thread-tasks": {
+      "types": "./src/state/threadTasks.ts",
+      "default": "./src/state/threadTasks.ts"
+    },
     "./state/filesystem": {
       "types": "./src/state/filesystem.ts",
       "default": "./src/state/filesystem.ts"

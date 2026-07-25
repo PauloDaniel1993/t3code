@@ -48,6 +48,9 @@ export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
+export type CreateThreadTaskInput = CommandInput<"thread.task.create">;
+export type CancelThreadTaskInput = CommandInput<"thread.task.cancel">;
+export type RedeliverThreadTaskInput = CommandInput<"thread.task.redeliver">;
 
 type DispatchTag = typeof ORCHESTRATION_WS_METHODS.dispatchCommand;
 type CommandEffect = Effect.Effect<
@@ -294,6 +297,42 @@ export const stopThreadSession: (input: StopThreadSessionInput) => CommandEffect
   return yield* dispatch({
     ...input,
     type: "thread.session.stop",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const createThreadTask: (input: CreateThreadTaskInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.createThreadTask",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.task.create",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const cancelThreadTask: (input: CancelThreadTaskInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.cancelThreadTask",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.task.cancel",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const redeliverThreadTask: (input: RedeliverThreadTaskInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.redeliverThreadTask",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.task.redeliver",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });
