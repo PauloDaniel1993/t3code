@@ -26,7 +26,15 @@ const processResult = (
 
 function makeProvider(github: Partial<GitHubCli.GitHubCli["Service"]>) {
   return GitHubSourceControlProvider.make.pipe(
-    Effect.provide(Layer.mock(GitHubCli.GitHubCli)(github)),
+    Effect.provide(
+      Layer.mock(GitHubCli.GitHubCli)({
+        // Default to one unscoped query so listing tests assert on `gh` args
+        // without restating repository resolution, which `GitHubCli.test.ts`
+        // covers directly.
+        pullRequestQueryRepositoryArgs: () => Effect.succeed([[]]),
+        ...github,
+      }),
+    ),
   );
 }
 

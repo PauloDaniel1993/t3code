@@ -18,6 +18,17 @@ const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
 
 const mockRun = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>();
 
+/**
+ * Answer the git-config probes as "nothing configured" so repository
+ * resolution collapses to one default-resolved `gh` query, and return `stdout`
+ * for that query. Repository scoping itself is covered separately below.
+ */
+const mockSingleGhQuery = (stdout: string) => {
+  mockRun.mockImplementation((input) =>
+    Effect.succeed(processOutput(input.command === "git" ? "" : stdout)),
+  );
+};
+
 const layer = GitHubCli.layer.pipe(
   Layer.provide(
     Layer.mock(VcsProcess.VcsProcess)({
@@ -159,34 +170,30 @@ describe("GitHubCli.layer", () => {
 
   it.effect("skips invalid entries when parsing pr lists", () =>
     Effect.gen(function* () {
-      mockRun.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            JSON.stringify([
-              {
-                number: 0,
-                title: "invalid",
-                url: "https://github.com/pingdotgg/codething-mvp/pull/0",
-                baseRefName: "main",
-                headRefName: "feature/invalid",
-              },
-              {
-                number: 43,
-                title: "  Valid PR  ",
-                url: " https://github.com/pingdotgg/codething-mvp/pull/43 ",
-                baseRefName: " main ",
-                headRefName: " feature/pr-list ",
-                headRepository: {
-                  nameWithOwner: "   ",
-                },
-                headRepositoryOwner: {
-                  login: "   ",
-                },
-              },
-            ]),
-          ),
-        ),
+      mockSingleGhQuery(
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.stringify([
+          {
+            number: 0,
+            title: "invalid",
+            url: "https://github.com/pingdotgg/codething-mvp/pull/0",
+            baseRefName: "main",
+            headRefName: "feature/invalid",
+          },
+          {
+            number: 43,
+            title: "  Valid PR  ",
+            url: " https://github.com/pingdotgg/codething-mvp/pull/43 ",
+            baseRefName: " main ",
+            headRefName: " feature/pr-list ",
+            headRepository: {
+              nameWithOwner: "   ",
+            },
+            headRepositoryOwner: {
+              login: "   ",
+            },
+          },
+        ]),
       );
 
       const gh = yield* GitHubCli.GitHubCli;
@@ -213,32 +220,28 @@ describe("GitHubCli.layer", () => {
     // {id, name} only. These entries must decode instead of being dropped,
     // with nameWithOwner rebuilt from the owner login.
     Effect.gen(function* () {
-      mockRun.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            JSON.stringify([
-              {
-                number: 2829,
-                title: "Codex turn mapping",
-                url: "https://github.com/pingdotgg/codething-mvp/pull/2829",
-                baseRefName: "main",
-                headRefName: "t3code/codex-turn-mapping",
-                state: "OPEN",
-                mergedAt: null,
-                isCrossRepository: false,
-                headRepository: {
-                  id: "R_kgDORLtfbQ",
-                  name: "codething-mvp",
-                },
-                headRepositoryOwner: {
-                  id: "MDEyOk9yZ2FuaXphdGlvbjg5MTkxNzI3",
-                  login: "pingdotgg",
-                },
-              },
-            ]),
-          ),
-        ),
+      mockSingleGhQuery(
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.stringify([
+          {
+            number: 2829,
+            title: "Codex turn mapping",
+            url: "https://github.com/pingdotgg/codething-mvp/pull/2829",
+            baseRefName: "main",
+            headRefName: "t3code/codex-turn-mapping",
+            state: "OPEN",
+            mergedAt: null,
+            isCrossRepository: false,
+            headRepository: {
+              id: "R_kgDORLtfbQ",
+              name: "codething-mvp",
+            },
+            headRepositoryOwner: {
+              id: "MDEyOk9yZ2FuaXphdGlvbjg5MTkxNzI3",
+              login: "pingdotgg",
+            },
+          },
+        ]),
       );
 
       const gh = yield* GitHubCli.GitHubCli;
@@ -371,6 +374,122 @@ describe("GitHubCli.layer", () => {
       assert.strictEqual(error.cwd, "/repo");
       assert.strictEqual(error.cause, cause);
       assert.equal(error.message.includes(cause.detail), false);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("resolvePullRequestQueryRepositoryArgs", () => {
+  it("honors a repository pinned with `gh repo set-default`", () => {
+    expect(
+      GitHubCli.resolvePullRequestQueryRepositoryArgs({
+        ghResolved: "owner/repo",
+        originRemoteUrl: "https://github.com/someone-else/repo.git",
+      }),
+    ).toEqual([[]]);
+  });
+
+  it("queries origin before gh's own resolution when nothing is pinned", () => {
+    // gh resolves a fork to its parent, so a bare query never sees a pull
+    // request opened on the fork itself.
+    expect(
+      GitHubCli.resolvePullRequestQueryRepositoryArgs({
+        ghResolved: null,
+        originRemoteUrl: "https://github.com/PauloDaniel1993/t3code.git",
+      }),
+    ).toEqual([["--repo", "PauloDaniel1993/t3code"], []]);
+  });
+
+  it("falls back to a single default query when origin is unusable", () => {
+    for (const originRemoteUrl of [null, "", "not-a-git-remote"]) {
+      expect(
+        GitHubCli.resolvePullRequestQueryRepositoryArgs({ ghResolved: null, originRemoteUrl }),
+      ).toEqual([[]]);
+    }
+  });
+});
+
+describe("mergePullRequestsByUrl", () => {
+  it("keeps the first result per url and preserves query order", () => {
+    const origin = { url: "https://github.com/fork/repo/pull/28", number: 28 };
+    const parent = { url: "https://github.com/upstream/repo/pull/28", number: 28 };
+    // Same number, different repositories: deduplicating by number would drop
+    // one of them.
+    expect(GitHubCli.mergePullRequestsByUrl([[origin], [parent]])).toEqual([origin, parent]);
+    expect(GitHubCli.mergePullRequestsByUrl([[origin], [origin]])).toEqual([origin]);
+    expect(GitHubCli.mergePullRequestsByUrl([[], []])).toEqual([]);
+  });
+});
+
+describe("listOpenPullRequests repository scoping", () => {
+  it.effect("queries origin and the default resolution, merging the results", () =>
+    Effect.gen(function* () {
+      const commands: Array<ReadonlyArray<string>> = [];
+      mockRun.mockImplementation((input) => {
+        commands.push(input.args);
+        if (input.command === "git") {
+          return Effect.succeed(
+            processOutput(
+              input.args.includes("remote.origin.url")
+                ? "https://github.com/fork/repo.git\n"
+                : "",
+            ),
+          );
+        }
+        const isOriginScoped = input.args.includes("--repo");
+        return Effect.succeed(
+          processOutput(
+            JSON.stringify([
+              {
+                number: isOriginScoped ? 28 : 99,
+                title: isOriginScoped ? "Fork PR" : "Upstream PR",
+                url: isOriginScoped
+                  ? "https://github.com/fork/repo/pull/28"
+                  : "https://github.com/upstream/repo/pull/99",
+                baseRefName: "dev",
+                headRefName: "feature",
+                state: "OPEN",
+              },
+            ]),
+          ),
+        );
+      });
+
+      const gh = yield* GitHubCli.GitHubCli;
+      const pullRequests = yield* gh.listOpenPullRequests({
+        cwd: "/repo",
+        headSelector: "feature",
+      });
+
+      expect(pullRequests.map((pr) => pr.number)).toEqual([28, 99]);
+      const ghCommands = commands.filter((args) => args[0] === "pr");
+      expect(ghCommands).toHaveLength(2);
+      expect(ghCommands[0]).toContain("--repo");
+      expect(ghCommands[0]).toContain("fork/repo");
+      expect(ghCommands[1]).not.toContain("--repo");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("issues a single query when a default repository is pinned", () =>
+    Effect.gen(function* () {
+      const commands: Array<ReadonlyArray<string>> = [];
+      mockRun.mockImplementation((input) => {
+        commands.push(input.args);
+        if (input.command === "git") {
+          return Effect.succeed(
+            processOutput(input.args.includes("remote.origin.gh-resolved") ? "fork/repo\n" : ""),
+          );
+        }
+        return Effect.succeed(processOutput("[]"));
+      });
+
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* gh.listOpenPullRequests({ cwd: "/repo", headSelector: "feature" });
+
+      const ghCommands = commands.filter((args) => args[0] === "pr");
+      expect(ghCommands).toHaveLength(1);
+      expect(ghCommands[0]).not.toContain("--repo");
+      // The origin remote is not read once a pin exists.
+      expect(commands.some((args) => args.includes("remote.origin.url"))).toBe(false);
     }).pipe(Effect.provide(layer)),
   );
 });
