@@ -11,6 +11,8 @@ import {
   type VcsError,
 } from "@t3tools/contracts";
 
+import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
+
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import {
   decodeGitHubPullRequestJson,
@@ -211,6 +213,17 @@ export class GitHubCli extends Context.Service<
       readonly limit?: number;
     }) => Effect.Effect<ReadonlyArray<GitHubPullRequestSummary>, GitHubCliError>;
 
+    /**
+     * Repository argument sets to run a pull-request query against, in priority
+     * order. Callers that build their own `gh pr list` invocation must run the
+     * query once per set and merge the results.
+     *
+     * @see resolvePullRequestQueryRepositoryArgs
+     */
+    readonly pullRequestQueryRepositoryArgs: (input: {
+      readonly cwd: string;
+    }) => Effect.Effect<ReadonlyArray<ReadonlyArray<string>>>;
+
     readonly getPullRequest: (input: {
       readonly cwd: string;
       readonly reference: string;
@@ -303,8 +316,75 @@ function deriveRepositoryCloneUrlsFromCreateOutput(
   };
 }
 
+/** Merge pull-request lists from several repositories, preserving query order. */
+export function mergePullRequestsByUrl<A extends { readonly url: string }>(
+  lists: ReadonlyArray<ReadonlyArray<A>>,
+): ReadonlyArray<A> {
+  const byUrl = new Map<string, A>();
+  for (const list of lists) {
+    for (const pullRequest of list) {
+      // Keyed by url, not number: a fork and its parent number pull requests
+      // independently, so `#28` can name two different pull requests.
+      if (!byUrl.has(pullRequest.url)) {
+        byUrl.set(pullRequest.url, pullRequest);
+      }
+    }
+  }
+  return Array.from(byUrl.values());
+}
+
+/**
+ * `gh` resolves a forked repository to its parent, so a bare `gh pr list` in a
+ * fork queries upstream and never sees a pull request opened on the fork
+ * itself.
+ *
+ * When the user has pinned a repository with `gh repo set-default` — which
+ * writes `remote.origin.gh-resolved` — that choice is authoritative and a
+ * single default-resolved query is enough. Otherwise query `origin` first and
+ * gh's own resolution second, so neither a fork-internal pull request nor a
+ * fork-to-parent pull request is missed.
+ */
+export function resolvePullRequestQueryRepositoryArgs(input: {
+  readonly ghResolved: string | null;
+  readonly originRemoteUrl: string | null;
+}): ReadonlyArray<ReadonlyArray<string>> {
+  if (input.ghResolved) {
+    return [[]];
+  }
+  const nameWithOwner = parseGitHubRepositoryNameWithOwnerFromRemoteUrl(input.originRemoteUrl);
+  return nameWithOwner ? [["--repo", nameWithOwner], []] : [[]];
+}
+
 export const make = Effect.gen(function* () {
   const process = yield* VcsProcess.VcsProcess;
+
+  const readGitConfig = (cwd: string, key: string) =>
+    process
+      .run({
+        operation: "GitHubCli.readGitConfig",
+        command: "git",
+        args: ["config", "--get", key],
+        cwd,
+        allowNonZeroExit: true,
+      })
+      .pipe(
+        Effect.map((result): string | null => result.stdout.trim() || null),
+        Effect.orElseSucceed(() => null),
+      );
+
+  // Not memoized: `GitManager` already caches pull-request lookups with a TTL,
+  // so these two local `git config` reads only run on a cache miss, and leaving
+  // them uncached means `gh repo set-default` takes effect without a restart.
+  const pullRequestQueryRepositoryArgs: GitHubCli["Service"]["pullRequestQueryRepositoryArgs"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const ghResolved = yield* readGitConfig(input.cwd, "remote.origin.gh-resolved");
+      const originRemoteUrl = ghResolved
+        ? null
+        : yield* readGitConfig(input.cwd, "remote.origin.url");
+      return resolvePullRequestQueryRepositoryArgs({ ghResolved, originRemoteUrl });
+    });
 
   const execute: GitHubCli["Service"]["execute"] = (input) =>
     process
@@ -319,44 +399,53 @@ export const make = Effect.gen(function* () {
 
   return GitHubCli.of({
     execute,
+    pullRequestQueryRepositoryArgs,
     listOpenPullRequests: (input) =>
-      execute({
-        cwd: input.cwd,
-        args: [
-          "pr",
-          "list",
-          "--head",
-          input.headSelector,
-          "--state",
-          "open",
-          "--limit",
-          String(input.limit ?? 1),
-          "--json",
-          "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
-        ],
-      }).pipe(
-        Effect.map((result) => result.stdout.trim()),
-        Effect.flatMap((raw) =>
-          raw.length === 0
-            ? Effect.succeed([])
-            : Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
-                Effect.flatMap((decoded) => {
-                  if (!Result.isSuccess(decoded)) {
-                    return Effect.fail(
-                      new GitHubPullRequestListDecodeError({
-                        command: "gh",
-                        cwd: input.cwd,
-                        cause: decoded.failure,
-                      }),
-                    );
-                  }
+      pullRequestQueryRepositoryArgs({ cwd: input.cwd }).pipe(
+        Effect.flatMap((repositoryArgSets) =>
+          Effect.forEach(repositoryArgSets, (repositoryArgs) =>
+            execute({
+              cwd: input.cwd,
+              args: [
+                "pr",
+                "list",
+                ...repositoryArgs,
+                "--head",
+                input.headSelector,
+                "--state",
+                "open",
+                "--limit",
+                String(input.limit ?? 1),
+                "--json",
+                "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+              ],
+            }).pipe(
+              Effect.map((result) => result.stdout.trim()),
+              Effect.flatMap((raw) =>
+                raw.length === 0
+                  ? Effect.succeed([])
+                  : Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
+                      Effect.flatMap((decoded) => {
+                        if (!Result.isSuccess(decoded)) {
+                          return Effect.fail(
+                            new GitHubPullRequestListDecodeError({
+                              command: "gh",
+                              cwd: input.cwd,
+                              cause: decoded.failure,
+                            }),
+                          );
+                        }
 
-                  return Effect.succeed(
-                    decoded.success.map(({ updatedAt: _updatedAt, ...summary }) => summary),
-                  );
-                }),
+                        return Effect.succeed(
+                          decoded.success.map(({ updatedAt: _updatedAt, ...summary }) => summary),
+                        );
+                      }),
+                    ),
               ),
+            ),
+          ),
         ),
+        Effect.map(mergePullRequestsByUrl),
       ),
     getPullRequest: (input) =>
       execute({

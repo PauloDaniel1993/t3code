@@ -517,6 +517,9 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
   return {
     service: {
       execute,
+      // A single default-resolved query: the stub's script matches on `gh`
+      // args, and repository scoping is covered in `GitHubCli.test.ts`.
+      pullRequestQueryRepositoryArgs: () => Effect.succeed([[]]),
       listOpenPullRequests: (input) =>
         execute({
           cwd: input.cwd,
