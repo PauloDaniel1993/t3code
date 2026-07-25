@@ -11,8 +11,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
+import * as References from "effect/References";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -142,6 +144,16 @@ describe("ProviderSessionReaper", () => {
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
   }) {
     const stoppedThreadIds = new Set<ThreadId>();
+    const logs: Array<{
+      readonly message: ReadonlyArray<unknown>;
+      readonly annotations: Readonly<Record<string, unknown>>;
+    }> = [];
+    const logger = Logger.make<unknown, void>(({ fiber, message }) => {
+      logs.push({
+        message: Array.isArray(message) ? message : [message],
+        annotations: fiber.getRef(References.CurrentLogAnnotations),
+      });
+    });
     const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(
       (request) =>
         (input.stopSessionImplementation
@@ -183,7 +195,7 @@ describe("ProviderSessionReaper", () => {
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(runtimeRepositoryLayer),
     );
-    const layer = makeProviderSessionReaperLive({
+    const reaperLayer = makeProviderSessionReaperLive({
       inactivityThresholdMs: 1_000,
       sweepIntervalMs: 60_000,
     }).pipe(
@@ -217,9 +229,13 @@ describe("ProviderSessionReaper", () => {
       ),
       Layer.provideMerge(NodeServices.layer),
     );
+    const logCaptureLayer = Layer.mergeAll(
+      Logger.layer([logger], { mergeWithExisting: false }),
+      Layer.succeed(References.MinimumLogLevel, "Debug"),
+    );
 
-    runtime = ManagedRuntime.make(layer);
-    return { stopSession, stoppedThreadIds };
+    runtime = ManagedRuntime.make(reaperLayer);
+    return { stopSession, stoppedThreadIds, logs, logCaptureLayer };
   }
 
   it("reaps stale persisted sessions without active turns", async () => {
@@ -263,12 +279,53 @@ describe("ProviderSessionReaper", () => {
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await Effect.runPromise(
+      reaper.start().pipe(Scope.provide(scope), Effect.provide(harness.logCaptureLayer)),
+    );
 
     await waitFor(() => harness.stopSession.mock.calls.length === 1);
 
     expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
     expect(harness.stoppedThreadIds.has(threadId)).toBe(true);
+
+    const candidateLog = harness.logs.find(
+      ({ message }) => message[0] === "provider.session.reaper.candidate",
+    );
+    expect(candidateLog?.annotations).toEqual(
+      expect.objectContaining({
+        decisionId: expect.stringContaining(`${threadId}:`),
+        threadId,
+        provider: "claudeAgent",
+        bindingStatus: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        inactivityThresholdMs: 1_000,
+      }),
+    );
+
+    const decisionLog = harness.logs.find(
+      ({ annotations, message }) =>
+        message[0] === "provider.session.reaper.decision" &&
+        annotations.decision === "stop_inactive_session",
+    );
+    expect(decisionLog?.annotations).toEqual(
+      expect.objectContaining({
+        threadId,
+        decision: "stop_inactive_session",
+        projectionFound: true,
+        sessionStatus: "ready",
+        activeTurnId: null,
+        sessionUpdatedAt: now,
+      }),
+    );
+
+    const reapedLog = harness.logs.find(({ message }) => message[0] === "provider.session.reaped");
+    expect(reapedLog?.annotations).toEqual(
+      expect.objectContaining({
+        threadId,
+        decision: "stop_inactive_session",
+        reason: "inactivity_threshold",
+      }),
+    );
   });
 
   it("skips stale sessions when the thread still has an active turn", async () => {

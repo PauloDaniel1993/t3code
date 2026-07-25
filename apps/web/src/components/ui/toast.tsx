@@ -29,6 +29,12 @@ import { cn } from "~/lib/utils";
 import { buttonVariants } from "~/components/ui/button";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import {
+  closeObservedToast,
+  createObservedToastManager,
+  toastLifecycleObserver,
+  type ToastManagerName,
+} from "~/observability/toastLifecycle";
 import { resolveThreadRouteTarget } from "~/threadRoutes";
 import {
   buildVisibleToastLayout,
@@ -74,8 +80,14 @@ export type ThreadToastData = {
     | "secondary";
 };
 
-const toastManager = Toast.createToastManager<ThreadToastData>();
-const anchoredToastManager = Toast.createToastManager<ThreadToastData>();
+const toastManager = createObservedToastManager(
+  Toast.createToastManager<ThreadToastData>(),
+  "viewport",
+);
+const anchoredToastManager = createObservedToastManager(
+  Toast.createToastManager<ThreadToastData>(),
+  "anchored",
+);
 type ToastId = ReturnType<typeof toastManager.add>;
 const threadToastVisibleTimeoutRemainingMs = new Map<ToastId, number>();
 
@@ -109,9 +121,11 @@ const toastCornerOrbClass = cn(
 
 function handleToastDismissClick(
   manager: typeof toastManager | typeof anchoredToastManager,
+  managerName: ToastManagerName,
   toastId: ToastId,
   onClose: (() => void) | undefined,
 ) {
+  toastLifecycleObserver.requestClose(managerName, toastId, "manual-dismiss");
   onClose?.();
   manager.close(toastId);
 }
@@ -476,7 +490,7 @@ function ThreadToastVisibleAutoDismiss({
       if (closed) return;
       closed = true;
       threadToastVisibleTimeoutRemainingMs.delete(toastId);
-      toastManager.close(toastId);
+      closeObservedToast(toastManager, "viewport", toastId, "visible-timeout");
     };
 
     const pause = () => {
@@ -545,6 +559,20 @@ function Toasts({ position }: { position: ToastPosition }) {
     shouldRenderThreadScopedToast(toast.data, activeThreadRef),
   );
   const visibleToastLayout = buildVisibleToastLayout(visibleToasts);
+
+  useEffect(() => {
+    for (const toast of toasts) {
+      const visible = shouldRenderThreadScopedToast(toast.data, activeThreadRef);
+      const scoped = toast.data?.threadRef != null || toast.data?.threadId != null;
+      toastLifecycleObserver.visibilityChanged(
+        "viewport",
+        toast.id,
+        visible,
+        visible ? (scoped ? "thread-scope-visible" : "unscoped-visible") : "thread-scope-filtered",
+        activeThreadRef,
+      );
+    }
+  }, [activeThreadRef, toasts]);
 
   useEffect(() => {
     const activeToastIds = new Set(toasts.map((toast) => toast.id));
@@ -666,7 +694,7 @@ function Toasts({ position }: { position: ToastPosition }) {
                   className={toastCornerOrbClass}
                   data-slot="toast-close"
                   onClick={() =>
-                    handleToastDismissClick(toastManager, toast.id, toast.data?.onClose)
+                    handleToastDismissClick(toastManager, "viewport", toast.id, toast.data?.onClose)
                   }
                   type="button"
                 >
@@ -713,89 +741,105 @@ function AnchoredToastProvider({ children, ...props }: Toast.Provider.Props) {
 function AnchoredToasts() {
   const { toasts } = Toast.useToastManager<ThreadToastData>();
   const activeThreadRef = useActiveThreadRefFromRoute();
+  const visibleToasts = toasts.filter((toast) =>
+    shouldRenderThreadScopedToast(toast.data, activeThreadRef),
+  );
+
+  useEffect(() => {
+    for (const toast of toasts) {
+      const visible = shouldRenderThreadScopedToast(toast.data, activeThreadRef);
+      const scoped = toast.data?.threadRef != null || toast.data?.threadId != null;
+      toastLifecycleObserver.visibilityChanged(
+        "anchored",
+        toast.id,
+        visible,
+        visible ? (scoped ? "thread-scope-visible" : "unscoped-visible") : "thread-scope-filtered",
+        activeThreadRef,
+      );
+    }
+  }, [activeThreadRef, toasts]);
 
   return (
     <Toast.Portal data-slot="toast-portal-anchored">
       <Toast.Viewport className="outline-none" data-slot="toast-viewport-anchored">
-        {toasts
-          .filter((toast) => shouldRenderThreadScopedToast(toast.data, activeThreadRef))
-          .map((toast) => {
-            const tooltipStyle = toast.data?.tooltipStyle ?? false;
-            const positionerProps = toast.positionerProps;
-            const bodyDescriptor = deriveToastBodyDescriptor(toast);
-            const { stackedActionLayout, inlineContentEndPad } = bodyDescriptor;
+        {visibleToasts.map((toast) => {
+          const tooltipStyle = toast.data?.tooltipStyle ?? false;
+          const positionerProps = toast.positionerProps;
+          const bodyDescriptor = deriveToastBodyDescriptor(toast);
+          const { stackedActionLayout, inlineContentEndPad } = bodyDescriptor;
 
-            if (!positionerProps?.anchor) {
-              return null;
-            }
+          if (!positionerProps?.anchor) {
+            return null;
+          }
 
-            return (
-              <Toast.Positioner
-                className="z-100 max-w-[min(--spacing(64),var(--available-width))]"
-                data-slot="toast-positioner"
-                key={toast.id}
-                sideOffset={positionerProps.sideOffset ?? 4}
+          return (
+            <Toast.Positioner
+              className="z-100 max-w-[min(--spacing(64),var(--available-width))]"
+              data-slot="toast-positioner"
+              key={toast.id}
+              sideOffset={positionerProps.sideOffset ?? 4}
+              toast={toast}
+            >
+              <Toast.Root
+                className={cn(
+                  "relative overflow-visible text-balance border bg-popover not-dark:bg-clip-padding text-popover-foreground text-xs transition-[scale,opacity] before:pointer-events-none before:absolute before:inset-0 before:shadow-[0_1px_--theme(--color-black/4%)] data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+                  tooltipStyle
+                    ? "rounded-md shadow-md/5 before:rounded-[calc(var(--radius-md)-1px)]"
+                    : "rounded-lg shadow-lg/5 before:rounded-[calc(var(--radius-lg)-1px)]",
+                )}
+                data-slot="toast-popup"
                 toast={toast}
               >
-                <Toast.Root
-                  className={cn(
-                    "relative overflow-visible text-balance border bg-popover not-dark:bg-clip-padding text-popover-foreground text-xs transition-[scale,opacity] before:pointer-events-none before:absolute before:inset-0 before:shadow-[0_1px_--theme(--color-black/4%)] data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
-                    tooltipStyle
-                      ? "rounded-md shadow-md/5 before:rounded-[calc(var(--radius-md)-1px)]"
-                      : "rounded-lg shadow-lg/5 before:rounded-[calc(var(--radius-lg)-1px)]",
-                  )}
-                  data-slot="toast-popup"
-                  toast={toast}
-                >
-                  {tooltipStyle ? (
-                    <Toast.Content className="pointer-events-auto px-2 py-1">
-                      <Toast.Title data-slot="toast-title" />
-                    </Toast.Content>
-                  ) : (
-                    <>
-                      <div className={toastCornerDismissClass}>
-                        <button
-                          aria-label="Dismiss notification"
-                          className={toastCornerOrbClass}
-                          data-slot="toast-close"
-                          onClick={() =>
-                            handleToastDismissClick(
-                              anchoredToastManager,
-                              toast.id,
-                              toast.data?.onClose,
-                            )
-                          }
-                          type="button"
-                        >
-                          <XIcon className="size-3" strokeWidth={2.25} />
-                        </button>
-                      </div>
-                      <Toast.Content
-                        className={cn(
-                          "pointer-events-auto min-h-0 overflow-y-visible pl-3.5 text-sm [overflow-x:clip]",
-                          stackedActionLayout
-                            ? "flex flex-col gap-2 py-2.5 pr-3.5"
-                            : cn(
-                                "py-3",
-                                "flex items-center justify-between gap-1.5",
-                                inlineContentEndPad,
-                              ),
-                        )}
+                {tooltipStyle ? (
+                  <Toast.Content className="pointer-events-auto px-2 py-1">
+                    <Toast.Title data-slot="toast-title" />
+                  </Toast.Content>
+                ) : (
+                  <>
+                    <div className={toastCornerDismissClass}>
+                      <button
+                        aria-label="Dismiss notification"
+                        className={toastCornerOrbClass}
+                        data-slot="toast-close"
+                        onClick={() =>
+                          handleToastDismissClick(
+                            anchoredToastManager,
+                            "anchored",
+                            toast.id,
+                            toast.data?.onClose,
+                          )
+                        }
+                        type="button"
                       >
-                        <ToastBodyContent
-                          {...bodyDescriptor}
-                          actionProps={toast.actionProps}
-                          toastData={toast.data}
-                          toastDescription={toast.description}
-                          toastType={toast.type}
-                        />
-                      </Toast.Content>
-                    </>
-                  )}
-                </Toast.Root>
-              </Toast.Positioner>
-            );
-          })}
+                        <XIcon className="size-3" strokeWidth={2.25} />
+                      </button>
+                    </div>
+                    <Toast.Content
+                      className={cn(
+                        "pointer-events-auto min-h-0 overflow-y-visible pl-3.5 text-sm [overflow-x:clip]",
+                        stackedActionLayout
+                          ? "flex flex-col gap-2 py-2.5 pr-3.5"
+                          : cn(
+                              "py-3",
+                              "flex items-center justify-between gap-1.5",
+                              inlineContentEndPad,
+                            ),
+                      )}
+                    >
+                      <ToastBodyContent
+                        {...bodyDescriptor}
+                        actionProps={toast.actionProps}
+                        toastData={toast.data}
+                        toastDescription={toast.description}
+                        toastType={toast.type}
+                      />
+                    </Toast.Content>
+                  </>
+                )}
+              </Toast.Root>
+            </Toast.Positioner>
+          );
+        })}
       </Toast.Viewport>
     </Toast.Portal>
   );
