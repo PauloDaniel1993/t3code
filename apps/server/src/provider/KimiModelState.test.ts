@@ -8,6 +8,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import {
   buildKimiModels,
   findKimiModelConfigOption,
+  isKimiModeConfigOption,
   makeKimiModelState,
 } from "./KimiModelState.ts";
 
@@ -55,7 +56,7 @@ describe("KimiModelState", () => {
     expect(models[0]?.name).toBe("Kimi default");
   });
 
-  it("normalizes provider-reported models, thinking, and mode options", () => {
+  it("normalizes provider-reported models and thinking options", () => {
     const models = buildKimiModels(["kimi-custom"], configOptions);
     expect(models.map((model) => model.slug)).toEqual([
       "kimi-default",
@@ -66,9 +67,20 @@ describe("KimiModelState", () => {
     expect(models[1]?.name).toBe("Kimi K2.5");
     expect(models[1]?.capabilities?.optionDescriptors).toEqual([
       expect.objectContaining({ id: "thinking", currentValue: "medium" }),
-      expect.objectContaining({ id: "mode", currentValue: "agent" }),
     ]);
     expect(findKimiModelConfigOption(configOptions)?.id).toBe("model");
+  });
+
+  it("never offers the execution mode as a selectable model option", () => {
+    // `mode` is Kimi's permission policy: `auto`/`yolo` make it approve tool
+    // calls internally, which would bypass the thread's approval prompts.
+    const descriptors = buildKimiModels(
+      [],
+      configOptions,
+    )[0]?.capabilities?.optionDescriptors;
+    expect(descriptors?.some((descriptor) => descriptor.id === "mode")).toBe(false);
+    expect(isKimiModeConfigOption(configOptions[2]!)).toBe(true);
+    expect(isKimiModeConfigOption(configOptions[1]!)).toBe(false);
   });
 
   it.effect("publishes instance-scoped model state changes", () =>

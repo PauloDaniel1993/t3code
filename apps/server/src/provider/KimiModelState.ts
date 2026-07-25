@@ -73,6 +73,21 @@ export function isKimiModelConfigOption(option: EffectAcpSchema.SessionConfigOpt
   return category === "model" || id === "model" || name === "model" || name === "models";
 }
 
+/**
+ * Kimi exposes its execution mode (`default` / `plan` / `auto` / `yolo`) as a
+ * session config option. That option is the provider's permission policy, not a
+ * model trait: `auto` and `yolo` make Kimi approve tool calls internally, so
+ * `session/request_permission` never reaches T3 Code. It is therefore owned by
+ * the thread's runtime and interaction mode and must never be offered as a
+ * user-selectable model option.
+ */
+export function isKimiModeConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
+  const id = normalizedOptionToken(option.id);
+  const name = normalizedOptionToken(option.name);
+  const category = normalizedOptionToken(option.category);
+  return category === "mode" || id === "mode" || name === "mode";
+}
+
 export function findKimiModelConfigOption(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
 ): EffectAcpSchema.SessionConfigOption | undefined {
@@ -86,7 +101,7 @@ function buildKimiOptionCapabilities(
 ): ModelCapabilities {
   const optionDescriptors: Array<ProviderOptionDescriptor> = [];
   for (const option of configOptions) {
-    if (isKimiModelConfigOption(option)) {
+    if (isKimiModelConfigOption(option) || isKimiModeConfigOption(option)) {
       continue;
     }
     if (option.type === "boolean") {

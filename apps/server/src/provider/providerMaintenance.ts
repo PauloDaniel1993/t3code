@@ -3,6 +3,7 @@ import {
   type ServerProvider,
   type ServerProviderVersionAdvisory,
 } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
@@ -41,6 +42,13 @@ export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
   readonly update: ProviderMaintenanceCommandAction | null;
+  /**
+   * Command shown for the user to run themselves when T3 Code cannot supervise
+   * the update. Surfaced as the advisory's copyable command while `canUpdate`
+   * stays false, so an installation T3 Code cannot update still tells the user
+   * how to update it.
+   */
+  readonly manualCommand?: string | null;
 }
 
 export interface ProviderMaintenanceCommandAction {
@@ -53,6 +61,8 @@ export interface ProviderMaintenanceCommandAction {
 export interface ProviderMaintenanceCapabilityResolutionOptions {
   readonly binaryPath?: string | null;
   readonly env?: NodeJS.ProcessEnv;
+  /** Host platform, so resolvers can reject updaters that no-op on a platform. */
+  readonly platform?: NodeJS.Platform;
   readonly resolvedCommandPath?: string | null;
   readonly realCommandPath?: string | null;
 }
@@ -100,6 +110,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateExecutable: string | null;
   readonly updateArgs: ReadonlyArray<string>;
   readonly updateLockKey: string | null;
+  readonly manualCommand?: string | null;
 }): ProviderMaintenanceCapabilities {
   const update =
     input.updateExecutable === null || input.updateLockKey === null
@@ -114,12 +125,14 @@ export function makeProviderMaintenanceCapabilities(input: {
     provider: input.provider,
     packageName: input.packageName,
     update,
+    manualCommand: input.manualCommand ?? null,
   };
 }
 
 export function makeManualOnlyProviderMaintenanceCapabilities(input: {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
+  readonly manualCommand?: string | null;
 }): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: input.provider,
@@ -127,6 +140,7 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
     updateExecutable: null,
     updateArgs: [],
     updateLockKey: null,
+    manualCommand: input.manualCommand ?? null,
   });
 }
 
@@ -349,9 +363,10 @@ export const resolveProviderMaintenanceCapabilitiesEffect = Effect.fn(
   resolver: ProviderMaintenanceCapabilitiesResolver,
   options?: Omit<ProviderMaintenanceCapabilityResolutionOptions, "realCommandPath">,
 ) {
+  const platform = options?.platform ?? (yield* HostProcessPlatform);
   const binaryPath = nonEmptyString(options?.binaryPath);
   if (!binaryPath) {
-    return resolver.resolve(options);
+    return resolver.resolve({ ...options, platform });
   }
 
   const env = options?.env ?? (yield* readCommandLookupEnv);
@@ -360,7 +375,7 @@ export const resolveProviderMaintenanceCapabilitiesEffect = Effect.fn(
       Effect.catchTag("CommandResolutionError", () => Effect.succeed(null)),
     )) ?? (hasPathSeparator(binaryPath) ? binaryPath : null);
   if (!resolvedCommandPath) {
-    return resolver.resolve(options);
+    return resolver.resolve({ ...options, env, platform });
   }
 
   const fileSystem = yield* FileSystem.FileSystem;
@@ -370,6 +385,7 @@ export const resolveProviderMaintenanceCapabilitiesEffect = Effect.fn(
   return resolver.resolve({
     ...options,
     env,
+    platform,
     resolvedCommandPath,
     realCommandPath,
   });
@@ -413,7 +429,7 @@ export function createProviderVersionAdvisory(input: {
     status: advisory.status,
     currentVersion: input.currentVersion,
     latestVersion,
-    updateCommand: capabilities.update?.command ?? null,
+    updateCommand: capabilities.update?.command ?? capabilities.manualCommand ?? null,
     canUpdate: capabilities.update !== null,
     checkedAt: input.checkedAt ?? null,
     message: advisory.message,

@@ -54,6 +54,18 @@ const configOptions = [
       { value: "high", name: "High" },
     ],
   },
+  {
+    id: "mode",
+    name: "Mode",
+    category: "mode",
+    type: "select",
+    currentValue: "default",
+    options: [
+      { value: "default", name: "Default" },
+      { value: "plan", name: "Plan" },
+      { value: "yolo", name: "YOLO" },
+    ],
+  },
 ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
 
 describe("buildKimiAcpSpawnInput", () => {
@@ -178,6 +190,22 @@ describe("applyKimiAcpModelSelection", () => {
         ["model", "kimi-k2-thinking"],
         ["thinking", "high"],
       ]);
+    }),
+  );
+
+  it.effect("ignores a mode selection so model options cannot relax approvals", () =>
+    Effect.gen(function* () {
+      const { calls, runtime } = makeRuntime();
+      yield* applyKimiAcpModelSelection({
+        runtime,
+        model: "kimi-default",
+        selections: [
+          { id: "mode", value: "yolo" },
+          { id: "thinking", value: "high" },
+        ],
+        mapError: ({ cause }) => cause,
+      });
+      expect(calls).toEqual([["thinking", "high"]]);
     }),
   );
 
