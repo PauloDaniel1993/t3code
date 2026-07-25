@@ -1,5 +1,6 @@
 import {
   EventId,
+  MessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -21,6 +22,12 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
+import {
+  checkTaskCreateEligibility,
+  countParentTasks,
+  describeTaskContext,
+  materializeTaskPrompt,
+} from "./threadTasks.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -173,6 +180,26 @@ function withEventBase(
 }
 
 type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
+
+/**
+ * A planned event narrowed to one event type. `Omit` over the full union
+ * collapses the discriminant, which makes the result unassignable back to
+ * `OrchestrationEvent` when re-projected; narrowing first keeps the union
+ * members distinct.
+ */
+type PlannedEventOf<T extends OrchestrationEvent["type"]> = Omit<
+  Extract<OrchestrationEvent, { type: T }>,
+  "sequence"
+>;
+
+const newEventId = Effect.map(
+  Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4),
+  EventId.make,
+);
+const newMessageId = Effect.map(
+  Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4),
+  MessageId.make,
+);
 
 type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
@@ -792,6 +819,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "user",
           text: command.message.text,
           attachments: command.message.attachments,
+          ...(command.message.source !== undefined ? { source: command.message.source } : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -1223,6 +1251,399 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           activity: command.activity,
+        },
+      };
+    }
+
+    case "thread.task.create": {
+      const parent = readModel.threads.find((thread) => thread.id === command.parentThreadId);
+      const counts = countParentTasks(readModel.threads, command.parentThreadId);
+      const rejection = checkTaskCreateEligibility({
+        parent,
+        parentThreadId: command.parentThreadId,
+        counts,
+        context: command.context,
+      });
+      if (rejection !== null || parent === undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: rejection?.detail ?? `Parent thread '${command.parentThreadId}' does not exist.`,
+        });
+      }
+      yield* requireThreadAbsent({
+        readModel,
+        command,
+        threadId: command.taskThreadId,
+      });
+
+      const materialized = materializeTaskPrompt({
+        parentMessages: parent.messages,
+        context: command.context,
+        prompt: command.prompt,
+        parentTitle: parent.title,
+      });
+
+      // The task inherits the parent's execution surface: same project, branch,
+      // worktree, runtime mode, and interaction mode. A read-only parent
+      // therefore cannot spawn a write-capable task.
+      const threadCreatedEvent: PlannedEventOf<"thread.created"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.taskThreadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.created",
+        payload: {
+          threadId: command.taskThreadId,
+          projectId: parent.projectId,
+          title: command.title,
+          modelSelection: command.modelSelection ?? parent.modelSelection,
+          runtimeMode: parent.runtimeMode,
+          interactionMode: parent.interactionMode,
+          branch: parent.branch,
+          worktreePath: parent.worktreePath,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+      const taskCreatedEvent: PlannedEventOf<"thread.task-created"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.taskThreadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        causationEventId: threadCreatedEvent.eventId,
+        type: "thread.task-created",
+        payload: {
+          threadId: command.taskThreadId,
+          parentThreadId: command.parentThreadId,
+          title: command.title,
+          prompt: command.prompt,
+          context: command.context,
+          contextTruncated: materialized.contextTruncated,
+          createdBy: command.createdBy,
+          status: "queued",
+          requestedAt: command.createdAt,
+        },
+      };
+      // The parent's own timeline row. Activities are how the parent surfaces
+      // lifecycle it does not own the aggregate for.
+      const parentActivityEvent: PlannedEventOf<"thread.activity-appended"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.parentThreadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        causationEventId: taskCreatedEvent.eventId,
+        type: "thread.activity-appended",
+        payload: {
+          threadId: command.parentThreadId,
+          activity: {
+            id: yield* newEventId,
+            tone: "info",
+            kind: "task.created",
+            summary:
+              command.createdBy === "agent"
+                ? `Agent created task · ${command.title}`
+                : `You created task · ${command.title}`,
+            payload: {
+              taskThreadId: command.taskThreadId,
+              parentThreadId: command.parentThreadId,
+              title: command.title,
+              createdBy: command.createdBy,
+              contextKind: command.context.kind,
+              contextLabel: describeTaskContext(command.context),
+            },
+            turnId: null,
+            createdAt: command.createdAt,
+          },
+        },
+      };
+
+      // Project the creation events before deciding the first turn so the turn
+      // start sees the task thread that it targets.
+      let nextReadModel = readModel;
+      let nextSequence = readModel.snapshotSequence;
+      const createEvents = [threadCreatedEvent, taskCreatedEvent, parentActivityEvent] as const;
+      for (const event of createEvents) {
+        nextSequence += 1;
+        nextReadModel = yield* projectEvent(nextReadModel, {
+          ...event,
+          sequence: nextSequence,
+        }).pipe(Effect.orDie);
+      }
+
+      const turnEvents = yield* decideCommandSequence({
+        readModel: nextReadModel,
+        commands: [
+          {
+            type: "thread.turn.start",
+            commandId: command.commandId,
+            threadId: command.taskThreadId,
+            message: {
+              messageId: yield* newMessageId,
+              role: "user",
+              text: materialized.text,
+              attachments: [],
+            },
+            ...(command.modelSelection !== undefined
+              ? { modelSelection: command.modelSelection }
+              : {}),
+            titleSeed: command.title,
+            runtimeMode: parent.runtimeMode,
+            interactionMode: parent.interactionMode,
+            createdAt: command.createdAt,
+          },
+        ],
+      });
+
+      return [...createEvents, ...turnEvents];
+    }
+
+    case "thread.task.cancel": {
+      const taskThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.taskThreadId,
+      });
+      const task = taskThread.task;
+      if (task == null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.taskThreadId}' is not a task.`,
+        });
+      }
+      if (task.parentThreadId !== command.parentThreadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Task '${command.taskThreadId}' is not owned by thread '${command.parentThreadId}'.`,
+        });
+      }
+      // Already settled: accept as a no-op rather than erroring, so a racing
+      // cancel from the mini window or an agent tool does not surface a failure
+      // for work that simply finished first.
+      if (task.status !== "queued" && task.status !== "running") {
+        return [];
+      }
+      const interruptEvents =
+        taskThread.latestTurn?.state === "running"
+          ? yield* decideCommandSequence({
+              readModel,
+              commands: [
+                {
+                  type: "thread.turn.interrupt",
+                  commandId: command.commandId,
+                  threadId: command.taskThreadId,
+                  createdAt: command.createdAt,
+                },
+              ],
+            })
+          : [];
+      return [
+        ...interruptEvents,
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.taskThreadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.task-updated",
+          payload: {
+            threadId: command.taskThreadId,
+            parentThreadId: command.parentThreadId,
+            status: "cancelled",
+            updatedAt: command.createdAt,
+          },
+        },
+      ];
+    }
+
+    case "thread.task.status.set": {
+      const taskThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.taskThreadId,
+      });
+      if (taskThread.task == null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.taskThreadId}' is not a task.`,
+        });
+      }
+      if (taskThread.task.status === command.status) {
+        return [];
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.taskThreadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.task-updated",
+        payload: {
+          threadId: command.taskThreadId,
+          parentThreadId: command.parentThreadId,
+          status: command.status,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.task.finish": {
+      const taskThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.taskThreadId,
+      });
+      const task = taskThread.task;
+      if (task == null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.taskThreadId}' is not a task.`,
+        });
+      }
+      // Exactly-once: a task that already carries a result is disarmed. Replay
+      // and a racing reactor tick both land here and become no-ops.
+      if (task.result !== null) {
+        return [];
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.taskThreadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.task-finished",
+        payload: {
+          threadId: command.taskThreadId,
+          parentThreadId: command.parentThreadId,
+          status: command.status,
+          result: command.result,
+          // Delivery starts pending on purpose: the result is durable before
+          // the parent wake-up is attempted, so a crash in between retries the
+          // delivery instead of losing or duplicating the result.
+          delivery: { state: "pending", updatedAt: command.createdAt },
+          finishedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.task.delivery.set": {
+      const taskThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.taskThreadId,
+      });
+      const task = taskThread.task;
+      if (task == null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.taskThreadId}' is not a task.`,
+        });
+      }
+      const events: Array<Omit<OrchestrationEvent, "sequence">> = [
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.taskThreadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.task-updated",
+          payload: {
+            threadId: command.taskThreadId,
+            parentThreadId: command.parentThreadId,
+            delivery: command.delivery,
+            updatedAt: command.createdAt,
+          },
+        },
+      ];
+      // The parent's wake-up row. Emitted on settled delivery only — a pending
+      // delivery has nothing to tell the user yet.
+      if (command.delivery.state !== "pending" && task.result !== null) {
+        const delivered = command.delivery.state === "delivered";
+        events.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.parentThreadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: command.parentThreadId,
+            activity: {
+              id: yield* newEventId,
+              tone: delivered ? "info" : "error",
+              kind: "task.finished",
+              summary: delivered
+                ? `Task finished · ${task.title}`
+                : `Task finished · ${task.title} — results not delivered`,
+              payload: {
+                taskThreadId: command.taskThreadId,
+                parentThreadId: command.parentThreadId,
+                title: task.title,
+                outcome: task.result.outcome,
+                summary: task.result.summary,
+                summaryTruncated: task.result.summaryTruncated,
+                deliveryState: command.delivery.state,
+                ...(command.delivery.reason !== undefined
+                  ? { deliverySkipReason: command.delivery.reason }
+                  : {}),
+                ...(command.delivery.parentMessageId !== undefined
+                  ? { parentMessageId: command.delivery.parentMessageId }
+                  : {}),
+              },
+              turnId: null,
+              createdAt: command.createdAt,
+            },
+          },
+        });
+      }
+      return events;
+    }
+
+    case "thread.task.redeliver": {
+      // Re-delivery is a reactor concern: the decider only records the intent by
+      // resetting delivery to pending, which re-arms the delivery step without
+      // touching the recorded result.
+      const taskThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.taskThreadId,
+      });
+      const task = taskThread.task;
+      if (task == null || task.result === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Task '${command.taskThreadId}' has no recorded result to deliver.`,
+        });
+      }
+      if (task.parentThreadId !== command.parentThreadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Task '${command.taskThreadId}' is not owned by thread '${command.parentThreadId}'.`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.taskThreadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.task-updated",
+        payload: {
+          threadId: command.taskThreadId,
+          parentThreadId: command.parentThreadId,
+          delivery: { state: "pending", updatedAt: command.createdAt },
+          updatedAt: command.createdAt,
         },
       };
     }

@@ -22,6 +22,9 @@ import {
   ThreadActivityUpsertedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
+  ThreadTaskCreatedPayload,
+  ThreadTaskFinishedPayload,
+  ThreadTaskUpdatedPayload,
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
@@ -813,6 +816,79 @@ export function projectEvent(
             threads: updateThread(nextBase.threads, payload.threadId, {
               activities,
               updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.task-created":
+      return decodeForEvent(ThreadTaskCreatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            parentThreadId: payload.parentThreadId,
+            task: {
+              parentThreadId: payload.parentThreadId,
+              title: payload.title,
+              prompt: payload.prompt,
+              context: payload.context,
+              contextTruncated: payload.contextTruncated,
+              createdBy: payload.createdBy,
+              status: payload.status,
+              requestedAt: payload.requestedAt,
+              startedAt: null,
+              finishedAt: null,
+              result: null,
+              delivery: null,
+            },
+            updatedAt: payload.requestedAt,
+          }),
+        })),
+      );
+
+    case "thread.task-updated":
+      return decodeForEvent(ThreadTaskUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          const previous = thread?.task;
+          if (previous == null) {
+            return nextBase;
+          }
+          const status = payload.status ?? previous.status;
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              task: {
+                ...previous,
+                status,
+                startedAt: previous.startedAt ?? (status === "running" ? payload.updatedAt : null),
+                ...(payload.delivery === undefined ? {} : { delivery: payload.delivery }),
+              },
+              updatedAt: payload.updatedAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.task-finished":
+      return decodeForEvent(ThreadTaskFinishedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          const previous = thread?.task;
+          if (previous == null) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              task: {
+                ...previous,
+                status: payload.status,
+                finishedAt: payload.finishedAt,
+                result: payload.result,
+                delivery: payload.delivery,
+              },
+              updatedAt: payload.finishedAt,
             }),
           };
         }),

@@ -50,6 +50,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server understands regenerateTitle on thread.meta.update. Absent on
       older servers, so clients hide the action instead of sending it. */
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
+  /** Server understands thread.task.* commands and projects parentThreadId /
+      task metadata. Absent on pre-tasks servers, so clients hide every task
+      affordance rather than dispatching commands the server will reject. */
+  threadTasks: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */
