@@ -31,6 +31,7 @@ import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import {
   makeManualOnlyProviderMaintenanceCapabilities,
   makePackageManagedProviderMaintenanceResolver,
+  makeProviderMaintenanceCapabilities,
   resolveProviderMaintenanceCapabilitiesEffect,
   normalizeCommandPath,
   type ProviderMaintenanceCapabilitiesResolver,
@@ -45,13 +46,53 @@ import { makeKimiEnvironment } from "./KimiHome.ts";
 const decodeKimiSettings = Schema.decodeSync(KimiSettings);
 const DRIVER_KIND = ProviderDriverKind.make("kimi");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+/**
+ * The native installer places the executable in `~/.kimi-code/bin`, alongside
+ * the `.bak` copy `kimi upgrade` leaves behind when it replaces itself.
+ */
+function isKimiNativeCommandPath(path: string): boolean {
+  return normalizeCommandPath(path).includes("/.kimi-code/bin/");
+}
+
+/**
+ * `kimi upgrade` refuses to self-update a native Windows install. It reports
+ * success anyway:
+ *
+ *     Detected install source: native (windows). Auto-update is not supported
+ *     on this platform.
+ *     To update manually, run: irm https://code.kimi.com/kimi-code/install.ps1 | iex
+ *
+ * An exit code of 0 with an unchanged version is indistinguishable from a
+ * no-op update, so offering the action there just loops the user back to
+ * "Update now". Show the vendor's install script instead.
+ */
+const KIMI_WINDOWS_MANUAL_UPDATE_COMMAND = "irm https://code.kimi.com/kimi-code/install.ps1 | iex";
+
+/**
+ * WinGet installs the CLI as a portable package and exposes it through a
+ * symlink in its `Links` directory, so either path identifies the same
+ * winget-managed install. `winget upgrade` supervises non-interactively and is
+ * the only updater that rewrites the package WinGet actually owns.
+ */
+const KIMI_WINGET_PACKAGE_ID = "MoonshotAI.KimiCodeCLI";
+
+function isKimiWingetCommandPath(path: string): boolean {
+  const normalized = normalizeCommandPath(path);
+  return normalized.includes("/winget/packages/") || normalized.includes("/winget/links/");
+}
+
 const PACKAGE_MANAGED_KIMI = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
   npmPackageName: "@moonshot-ai/kimi-code",
   homebrewFormula: null,
-  // Native and custom installs remain manual-only until `kimi upgrade` can
-  // be supervised non-interactively on every supported platform.
-  nativeUpdate: null,
+  // On macOS and Linux `kimi upgrade` self-updates without prompting, so it
+  // supervises exactly like `claude update` and `opencode upgrade`.
+  nativeUpdate: {
+    executable: "kimi",
+    args: ["upgrade"],
+    lockKey: "kimi-native",
+    isCommandPath: isKimiNativeCommandPath,
+  },
 });
 
 function isKnownPackageManagedKimiPath(path: string): boolean {
@@ -70,9 +111,44 @@ export const KIMI_MAINTENANCE_RESOLVER: ProviderMaintenanceCapabilitiesResolver 
     const resolvedPaths = [options?.resolvedCommandPath, options?.realCommandPath].filter(
       (path): path is string => typeof path === "string" && path.length > 0,
     );
+    const isNativeInstall = resolvedPaths.some((path) => isKimiNativeCommandPath(path));
+
+    if (isNativeInstall && options?.platform === "win32") {
+      return makeManualOnlyProviderMaintenanceCapabilities({
+        provider: DRIVER_KIND,
+        packageName: "@moonshot-ai/kimi-code",
+        manualCommand: KIMI_WINDOWS_MANUAL_UPDATE_COMMAND,
+      });
+    }
+
+    // Checked after the native branch: when a WinGet shim resolves into
+    // `~/.kimi-code/bin`, the real executable is the native install and WinGet
+    // does not own it.
+    if (!isNativeInstall && resolvedPaths.some((path) => isKimiWingetCommandPath(path))) {
+      return makeProviderMaintenanceCapabilities({
+        provider: DRIVER_KIND,
+        packageName: "@moonshot-ai/kimi-code",
+        updateExecutable: "winget",
+        updateArgs: [
+          "upgrade",
+          "--id",
+          KIMI_WINGET_PACKAGE_ID,
+          "--silent",
+          "--accept-package-agreements",
+          "--accept-source-agreements",
+          "--disable-interactivity",
+        ],
+        updateLockKey: "winget",
+      });
+    }
+
+    // An unrecognized location gets no update action: `npm install -g` would
+    // write somewhere other than the executable actually in use. Package-manager,
+    // native-installer, and WinGet locations are all recognized.
     if (
       resolvedPaths.length > 0 &&
-      !resolvedPaths.some((path) => isKnownPackageManagedKimiPath(path))
+      !resolvedPaths.some((path) => isKnownPackageManagedKimiPath(path)) &&
+      !isNativeInstall
     ) {
       return makeManualOnlyProviderMaintenanceCapabilities({
         provider: DRIVER_KIND,
