@@ -192,6 +192,13 @@ type PlannedEventOf<T extends OrchestrationEvent["type"]> = Omit<
   "sequence"
 >;
 
+/** A parent's non-deleted task threads, in creation order. */
+function liveTaskThreadsOf(readModel: OrchestrationReadModel, parentThreadId: string) {
+  return readModel.threads.filter(
+    (thread) => thread.parentThreadId === parentThreadId && thread.deletedAt === null,
+  );
+}
+
 const newEventId = Effect.map(
   Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4),
   EventId.make,
@@ -411,6 +418,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // Deleting a parent deletes its tasks: a task has no meaning without the
+      // thread that owns it, and leaving them behind would strand rows the
+      // sidebar can no longer nest.
+      const taskThreads = liveTaskThreadsOf(readModel, command.threadId);
+      if (taskThreads.length > 0) {
+        return yield* decideCommandSequence({
+          readModel,
+          commands: [
+            ...taskThreads.map(
+              (task): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
+                type: "thread.delete",
+                commandId: command.commandId,
+                threadId: task.id,
+              }),
+            ),
+            { type: "thread.delete", commandId: command.commandId, threadId: command.threadId },
+          ],
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -433,7 +459,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // Archiving is "put this away", so in-flight tasks stop — unlike settle
+      // and snooze, which leave them running because the parent is still live.
+      // Blocking the archive instead would be a modal dead end; cancelling is
+      // recoverable.
       const occurredAt = yield* nowIso;
+      const tasksToArchive = liveTaskThreadsOf(readModel, command.threadId).filter(
+        (task) => task.archivedAt === null,
+      );
+      const openTasks = tasksToArchive.filter(
+        (task) => task.task?.status === "queued" || task.task?.status === "running",
+      );
+      // Tasks first, then the parent: the recursive parent archive re-enters
+      // this case with no un-archived tasks left, so the expansion terminates.
+      if (tasksToArchive.length > 0) {
+        return yield* decideCommandSequence({
+          readModel,
+          commands: [
+            ...openTasks.map(
+              (task): Extract<OrchestrationCommand, { type: "thread.task.cancel" }> => ({
+                type: "thread.task.cancel",
+                commandId: command.commandId,
+                parentThreadId: command.threadId,
+                taskThreadId: task.id,
+                createdAt: occurredAt,
+              }),
+            ),
+            ...tasksToArchive.map(
+              (task): Extract<OrchestrationCommand, { type: "thread.archive" }> => ({
+                type: "thread.archive",
+                commandId: command.commandId,
+                threadId: task.id,
+              }),
+            ),
+            { type: "thread.archive", commandId: command.commandId, threadId: command.threadId },
+          ],
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -456,6 +518,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // Task threads come back with the parent. Cancelled tasks stay cancelled:
+      // un-archiving restores visibility, it does not restart work.
+      const archivedTasks = liveTaskThreadsOf(readModel, command.threadId).filter(
+        (task) => task.archivedAt !== null,
+      );
+      // Tasks first for the same termination reason as archive above.
+      if (archivedTasks.length > 0) {
+        return yield* decideCommandSequence({
+          readModel,
+          commands: [
+            ...archivedTasks.map(
+              (task): Extract<OrchestrationCommand, { type: "thread.unarchive" }> => ({
+                type: "thread.unarchive",
+                commandId: command.commandId,
+                threadId: task.id,
+              }),
+            ),
+            { type: "thread.unarchive", commandId: command.commandId, threadId: command.threadId },
+          ],
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
