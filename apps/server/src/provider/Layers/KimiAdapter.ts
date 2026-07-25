@@ -59,6 +59,7 @@ import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
   makeAcpPlanUpdatedEvent,
+  makeAcpReasoningDeltaEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
@@ -80,8 +81,18 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const PROVIDER = ProviderDriverKind.make("kimi");
 const KIMI_RESUME_VERSION = 1 as const;
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
-const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
-const ACP_APPROVAL_MODE_ALIASES = ["ask"];
+// "default" leads so Kimi's literal `default` mode wins before the fuzzy pass
+// can match "agent" inside another mode's description (its `auto` mode reads
+// "Fully autonomous — agent decides everything without asking").
+const ACP_IMPLEMENT_MODE_ALIASES = ["default", "code", "agent", "chat", "implement"];
+const ACP_APPROVAL_MODE_ALIASES = ["ask", "default"];
+/**
+ * Modes that hand approval authority to the agent. T3 Code keeps approvals on
+ * the client so every tool call is recorded and can be denied, so these are
+ * never selected — not even for `full-access`, which auto-approves in the
+ * `session/request_permission` handler instead.
+ */
+const ACP_AGENT_AUTONOMOUS_MODE_ALIASES = ["yolo", "auto", "bypass", "danger"];
 const KIMI_ACP_SUBAGENT_SUPERVISION_GUIDANCE = `<t3-subagent-supervision>
 You may use Agent or AgentSwarm subagents. In this ACP client, autonomous background-agent replies are not visible to the user. If the current request depends on a subagent result, omit run_in_background so it runs in the foreground; independent foreground Agent calls or one AgentSwarm may run concurrently. Receive and synthesize all required delegated results before ending this turn. First report any completed background-task notifications or results already present in session context before doing unrelated status work. After tool use, always finish with a user-facing response.
 </t3-subagent-supervision>`;
@@ -299,6 +310,16 @@ function isPlanMode(mode: AcpSessionMode): boolean {
   return findModeByAliases([mode], ACP_PLAN_MODE_ALIASES) !== undefined;
 }
 
+function isAgentAutonomousMode(mode: AcpSessionMode): boolean {
+  const id = mode.id.toLowerCase();
+  const name = mode.name.toLowerCase();
+  return ACP_AGENT_AUTONOMOUS_MODE_ALIASES.some((alias) => id === alias || name === alias);
+}
+
+function isSupervisedImplementMode(mode: AcpSessionMode): boolean {
+  return !isPlanMode(mode) && !isAgentAutonomousMode(mode);
+}
+
 function resolveRequestedModeId(input: {
   readonly interactionMode: ProviderInteractionMode | undefined;
   readonly runtimeMode: RuntimeMode;
@@ -313,19 +334,21 @@ function resolveRequestedModeId(input: {
     return findModeByAliases(modeState.availableModes, ACP_PLAN_MODE_ALIASES)?.id;
   }
 
+  const supervisedModes = modeState.availableModes.filter(isSupervisedImplementMode);
+
   if (input.runtimeMode === "approval-required") {
     return (
-      findModeByAliases(modeState.availableModes, ACP_APPROVAL_MODE_ALIASES)?.id ??
-      findModeByAliases(modeState.availableModes, ACP_IMPLEMENT_MODE_ALIASES)?.id ??
-      modeState.availableModes.find((mode) => !isPlanMode(mode))?.id ??
+      findModeByAliases(supervisedModes, ACP_APPROVAL_MODE_ALIASES)?.id ??
+      findModeByAliases(supervisedModes, ACP_IMPLEMENT_MODE_ALIASES)?.id ??
+      supervisedModes[0]?.id ??
       modeState.currentModeId
     );
   }
 
   return (
-    findModeByAliases(modeState.availableModes, ACP_IMPLEMENT_MODE_ALIASES)?.id ??
-    findModeByAliases(modeState.availableModes, ACP_APPROVAL_MODE_ALIASES)?.id ??
-    modeState.availableModes.find((mode) => !isPlanMode(mode))?.id ??
+    findModeByAliases(supervisedModes, ACP_IMPLEMENT_MODE_ALIASES)?.id ??
+    findModeByAliases(supervisedModes, ACP_APPROVAL_MODE_ALIASES)?.id ??
+    supervisedModes[0]?.id ??
     modeState.currentModeId
   );
 }
@@ -518,18 +541,16 @@ export function prepareKimiAcpPromptParts(input: {
     Effect.map((attachmentParts) => {
       const userText = input.text?.trim() || undefined;
       const hasUserContent = userText !== undefined || attachmentParts.length > 0;
+      if (!hasUserContent) {
+        return [];
+      }
+      // Kimi has no developer-instruction channel, so supervision guidance has
+      // to ride along with the prompt. Keep it in its own content block rather
+      // than concatenated into the user's text so the stored turn, and any
+      // replay of it, still contains the user's request verbatim.
       return [
-        ...(hasUserContent
-          ? [
-              {
-                type: "text" as const,
-                text:
-                  userText === undefined
-                    ? KIMI_ACP_SUBAGENT_SUPERVISION_GUIDANCE
-                    : `${KIMI_ACP_SUBAGENT_SUPERVISION_GUIDANCE}\n\nUser request:\n${userText}`,
-              },
-            ]
-          : []),
+        { type: "text" as const, text: KIMI_ACP_SUBAGENT_SUPERVISION_GUIDANCE },
+        ...(userText !== undefined ? [{ type: "text" as const, text: userText }] : []),
         ...attachmentParts,
       ];
     }),
@@ -1104,7 +1125,8 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                 if (
                   ctx.activeTurnId === undefined &&
                   event._tag !== "EventStreamBarrier" &&
-                  event._tag !== "ModeChanged"
+                  event._tag !== "ModeChanged" &&
+                  event._tag !== "ConfigOptionsChanged"
                 ) {
                   if ("rawPayload" in event) {
                     yield* logNative(
@@ -1121,6 +1143,39 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                     yield* Deferred.succeed(event.acknowledge, undefined);
                     return;
                   case "ModeChanged":
+                    return;
+                  case "ConfigOptionsChanged":
+                    // Kimi pushes this whenever its model, thinking level, or
+                    // mode changes — including from its own slash commands —
+                    // so the provider snapshot must follow the live session
+                    // instead of the options captured at session start.
+                    yield* logNative(
+                      ctx.threadId,
+                      "session/update",
+                      event.rawPayload,
+                      "acp.jsonrpc",
+                    );
+                    if (options?.modelState) {
+                      yield* options.modelState.publishConfigOptions(event.configOptions);
+                    }
+                    return;
+                  case "ReasoningDelta":
+                    yield* logNative(
+                      ctx.threadId,
+                      "session/update",
+                      event.rawPayload,
+                      "acp.jsonrpc",
+                    );
+                    yield* offerRuntimeEvent(
+                      makeAcpReasoningDeltaEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                        turnId: ctx.activeTurnId,
+                        text: event.text,
+                        rawPayload: event.rawPayload,
+                      }),
+                    );
                     return;
                   case "AssistantItemStarted":
                     yield* offerRuntimeEvent(

@@ -14,7 +14,11 @@ import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
-import { findKimiModelConfigOption, getKimiConfigOptionChoices } from "../KimiModelState.ts";
+import {
+  findKimiModelConfigOption,
+  getKimiConfigOptionChoices,
+  isKimiModeConfigOption,
+} from "../KimiModelState.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 
 const KIMI_AUTH_METHOD_ID = "login";
@@ -69,6 +73,9 @@ export const makeKimiAcpRuntime = (
         authMethodId: KIMI_AUTH_METHOD_ID,
         resumeMethod: "resume",
         gateMcpServersByCapabilities: true,
+        // Kimi Code CLI 0.29 returns no `modes` field; its execution mode lives
+        // in the `mode` configuration option instead.
+        deriveModeStateFromConfigOptions: true,
       }).pipe(
         Layer.provide(
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),
@@ -196,6 +203,13 @@ export function applyKimiAcpModelSelection<E>(input: {
         continue;
       }
       const option = configOptions.find((candidate) => candidate.id === selection.id);
+      // Kimi's `mode` option is its permission policy (default/plan/auto/yolo),
+      // not a model trait. It is owned by the thread's runtime and interaction
+      // mode, so a stored model-option selection must never move it — that
+      // would let a persisted "yolo" silently disable approval prompts.
+      if (option && isKimiModeConfigOption(option)) {
+        continue;
+      }
       if (!option || !configOptionAllowsValue(option, selection.value)) {
         return yield* Effect.fail(
           input.mapError({
