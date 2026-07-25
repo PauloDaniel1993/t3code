@@ -12,6 +12,8 @@ import {
 } from "./TextGenerationShared.ts";
 
 const KIMI_TEXT_GENERATION_TIMEOUT_MS = 180_000;
+/** Kimi's read-only mode: "Read-only planning; no tool execution." */
+const KIMI_READ_ONLY_MODE_ID = "plan";
 const isTextGenerationError = Schema.is(TextGenerationError);
 
 export interface KimiTextGenerationOptions {
@@ -46,6 +48,17 @@ export const makeKimiTextGeneration = Effect.fn("makeKimiTextGeneration")(functi
         clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
       }).pipe(Effect.provideService(Crypto.Crypto, crypto));
 
+      // Auxiliary generation is a single hidden prompt over text the caller
+      // already supplied; it must never run tools. Kimi's `plan` mode is
+      // read-only, and the deny-all handlers keep an unexpected request from
+      // failing as `methodNotFound` or stalling until the timeout.
+      yield* runtime.handleRequestPermission(() =>
+        Effect.succeed({ outcome: { outcome: "cancelled" as const } }),
+      );
+      yield* runtime.handleElicitation(() =>
+        Effect.succeed({ action: { action: "cancel" as const } }),
+      );
+
       yield* runtime.handleSessionUpdate((notification) => {
         const update = notification.update;
         if (update.sessionUpdate !== "agent_message_chunk") {
@@ -60,6 +73,7 @@ export const makeKimiTextGeneration = Effect.fn("makeKimiTextGeneration")(functi
 
       const promptResult = yield* Effect.gen(function* () {
         yield* runtime.start();
+        yield* Effect.ignore(runtime.setMode(KIMI_READ_ONLY_MODE_ID));
         yield* applyKimiAcpModelSelection({
           runtime,
           model: runOptions.modelSelection.model,

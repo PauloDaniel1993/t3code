@@ -24,11 +24,13 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { PROVIDER_EVENT_FLOW_CONTROL } from "../../orchestration/ProviderEventFlowControl.ts";
 import {
   collectSessionConfigOptionValues,
+  extractModeConfigId,
   extractModelConfigId,
   findSessionConfigOption,
   mergeToolCallState,
   parseSessionModeState,
   parseSessionUpdateEvent,
+  sessionModeStateFromConfigOptions,
   sessionUpdateIsReplay,
   waitForSessionLoadReplayIdle,
   type SessionLoadGate,
@@ -74,6 +76,11 @@ export interface AcpSessionRuntimeOptions {
   readonly resumeMethod?: "load" | "resume";
   readonly sessionLoadTimeout?: Duration.Input;
   readonly sessionLoadReplayIdleGap?: Duration.Input;
+  /**
+   * Derive the session mode state from the `mode` configuration option when the
+   * agent omits the stable `modes` field. Opt-in per provider.
+   */
+  readonly deriveModeStateFromConfigOptions?: boolean;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   readonly clientInfo: {
     readonly name: string;
@@ -107,6 +114,7 @@ export interface AcpSessionRuntimeStartResult {
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse;
   readonly modelConfigId: string | undefined;
+  readonly modeConfigId: string | undefined;
 }
 
 export class AcpSessionRuntime extends Context.Service<
@@ -447,6 +455,7 @@ export const make = (
         }
         yield* handleSessionUpdate({
           queue: eventQueue,
+          applyConfigOptions,
           modeStateRef,
           toolCallsRef,
           toolProgressCoalescerRef,
@@ -532,13 +541,29 @@ export const make = (
         });
       });
 
+    /**
+     * Config options are the source of truth for derived mode state, so a
+     * model switch that replaces the `mode` option — or an agent-initiated
+     * `config_option_update` — must not leave a stale `currentModeId` behind.
+     */
+    const applyConfigOptions = (
+      configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+    ): Effect.Effect<void> =>
+      Ref.set(configOptionsRef, configOptions).pipe(
+        Effect.andThen(
+          options.deriveModeStateFromConfigOptions
+            ? Ref.set(modeStateRef, sessionModeStateFromConfigOptions(configOptions))
+            : Effect.void,
+        ),
+      );
+
     const updateConfigOptions = (
       response:
         | EffectAcpSchema.SetSessionConfigOptionResponse
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse,
-    ): Effect.Effect<void> => Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(response));
+    ): Effect.Effect<void> => applyConfigOptions(sessionConfigOptionsFromSetup(response));
 
     const updateCurrentModeId = (modeId: string): Effect.Effect<void> =>
       Ref.update(modeStateRef, (current) =>
@@ -624,8 +649,19 @@ export const make = (
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse;
+      // `session/resume` is an optional capability. Agents that only advertise
+      // `loadSession` still resume correctly through `session/load`, so prefer
+      // the primitive the agent actually implements over the configured one.
+      const sessionCapabilities = initializeResult.agentCapabilities?.sessionCapabilities;
+      const resumeMethod =
+        options.resumeMethod === "resume" &&
+        sessionCapabilities?.resume == null &&
+        initializeResult.agentCapabilities?.loadSession === true
+          ? "load"
+          : options.resumeMethod;
+
       if (options.resumeSessionId) {
-        if (options.resumeMethod === "resume") {
+        if (resumeMethod === "resume") {
           const resumePayload = {
             sessionId: options.resumeSessionId,
             cwd: options.cwd,
@@ -727,7 +763,12 @@ export const make = (
         sessionSetupResult = created;
       }
 
-      yield* Ref.set(modeStateRef, parseSessionModeState(sessionSetupResult));
+      yield* Ref.set(
+        modeStateRef,
+        parseSessionModeState(sessionSetupResult, {
+          deriveFromConfigOptions: options.deriveModeStateFromConfigOptions === true,
+        }),
+      );
       yield* Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(sessionSetupResult));
 
       const nextState = {
@@ -735,6 +776,7 @@ export const make = (
         initializeResult,
         sessionSetupResult,
         modelConfigId: extractModelConfigId(sessionSetupResult),
+        modeConfigId: extractModeConfigId(sessionSetupResult),
       } satisfies AcpStartedState;
       return nextState;
     });
@@ -879,12 +921,14 @@ export const make = (
         ),
       ),
       setMode: (modeId) =>
-        Ref.get(modeStateRef).pipe(
-          Effect.flatMap((modeState) => {
+        Effect.all([Ref.get(modeStateRef), Ref.get(startStateRef)]).pipe(
+          Effect.flatMap(([modeState, startState]) => {
             if (modeState?.currentModeId === modeId) {
               return Effect.succeed({} satisfies EffectAcpSchema.SetSessionModeResponse);
             }
-            return setConfigOption("mode", modeId).pipe(
+            const modeConfigId =
+              (startState._tag === "Started" ? startState.result.modeConfigId : undefined) ?? "mode";
+            return setConfigOption(modeConfigId, modeId).pipe(
               Effect.tap(() => updateCurrentModeId(modeId)),
               Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
             );
@@ -950,6 +994,7 @@ function configOptionCurrentValueMatches(
 
 const handleSessionUpdate = ({
   queue,
+  applyConfigOptions,
   modeStateRef,
   toolCallsRef,
   toolProgressCoalescerRef,
@@ -960,6 +1005,9 @@ const handleSessionUpdate = ({
   params,
 }: {
   readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
+  readonly applyConfigOptions: (
+    configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  ) => Effect.Effect<void>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly toolProgressCoalescerRef: Ref.Ref<AcpToolProgressCoalescerState>;
@@ -977,6 +1025,11 @@ const handleSessionUpdate = ({
       );
     }
     for (const event of parsed.events) {
+      if (event._tag === "ConfigOptionsChanged") {
+        yield* applyConfigOptions(event.configOptions);
+        yield* Queue.offer(queue, event);
+        continue;
+      }
       if (event._tag === "ToolCallUpdated") {
         yield* closeActiveAssistantSegment({
           queue,

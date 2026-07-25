@@ -31,10 +31,68 @@ describe("KimiDriver", () => {
     expect(custom.packageName).toBe("@moonshot-ai/kimi-code");
     expect(custom.update).toBeNull();
 
-    const nativeOnPath = KIMI_MAINTENANCE_RESOLVER.resolve({
+    const unknownOnPath = KIMI_MAINTENANCE_RESOLVER.resolve({
       binaryPath: "kimi",
       resolvedCommandPath: "/usr/local/bin/kimi",
     });
-    expect(nativeOnPath.update).toBeNull();
+    expect(unknownOnPath.update).toBeNull();
+  });
+
+  it("updates a native macOS or Linux installation with `kimi upgrade`", () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      const native = KIMI_MAINTENANCE_RESOLVER.resolve({
+        binaryPath: "kimi",
+        platform,
+        resolvedCommandPath: "/home/user/.kimi-code/bin/kimi",
+      });
+      expect(native.update?.command).toBe("kimi upgrade");
+      expect(native.update?.lockKey).toBe("kimi-native");
+    }
+  });
+
+  it("shows the install script for a native Windows install instead of a no-op action", () => {
+    // `kimi upgrade` exits 0 on native Windows without upgrading, so a runnable
+    // action would just return the user to "Update now".
+    const native = KIMI_MAINTENANCE_RESOLVER.resolve({
+      binaryPath: "kimi",
+      platform: "win32",
+      resolvedCommandPath: "C:\\Users\\user\\.kimi-code\\bin\\kimi.exe",
+    });
+    expect(native.update).toBeNull();
+    expect(native.manualCommand).toBe("irm https://code.kimi.com/kimi-code/install.ps1 | iex");
+
+    // A shim resolving into the native install is still a native install.
+    const viaShim = KIMI_MAINTENANCE_RESOLVER.resolve({
+      binaryPath: "kimi",
+      platform: "win32",
+      resolvedCommandPath: "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Links\\kimi.exe",
+      realCommandPath: "C:\\Users\\user\\.kimi-code\\bin\\kimi.exe",
+    });
+    expect(viaShim.update).toBeNull();
+    expect(viaShim.manualCommand).toBe("irm https://code.kimi.com/kimi-code/install.ps1 | iex");
+  });
+
+  it("updates a WinGet-managed install with `winget upgrade`", () => {
+    const viaLinksShim = KIMI_MAINTENANCE_RESOLVER.resolve({
+      binaryPath: "kimi",
+      platform: "win32",
+      resolvedCommandPath: "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Links\\kimi.exe",
+      realCommandPath:
+        "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Packages\\MoonshotAI.KimiCodeCLI_Microsoft.Winget.Source_8wekyb3d8bbwe\\kimi.exe",
+    });
+    expect(viaLinksShim.update?.executable).toBe("winget");
+    expect(viaLinksShim.update?.args).toContain("MoonshotAI.KimiCodeCLI");
+    expect(viaLinksShim.update?.lockKey).toBe("winget");
+  });
+
+  it("still uses the package manager for a global install on Windows", () => {
+    const npmGlobal = KIMI_MAINTENANCE_RESOLVER.resolve({
+      binaryPath: "kimi",
+      platform: "win32",
+      resolvedCommandPath: "C:\\Users\\user\\AppData\\Roaming\\npm\\kimi.cmd",
+      realCommandPath:
+        "C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\@moonshot-ai\\kimi-code\\bin\\kimi.js",
+    });
+    expect(npmGlobal.update?.command).toBe("npm install -g @moonshot-ai/kimi-code@latest");
   });
 });

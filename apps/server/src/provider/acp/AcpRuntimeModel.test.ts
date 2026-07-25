@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import {
+  extractModeConfigId,
   extractModelConfigId,
   mergeToolCallState,
   parsePermissionRequest,
@@ -33,6 +34,68 @@ describe("AcpRuntimeModel", () => {
         { id: "code", name: "Code" },
       ],
     });
+  });
+
+  it("derives mode state from the mode config option when `modes` is absent", () => {
+    // Kimi Code CLI 0.29 returns only `sessionId` and `configOptions`, so
+    // without this fallback plan mode and runtime-mode mapping never engage.
+    const response = {
+      sessionId: "session-1",
+      configOptions: [
+        {
+          id: "mode",
+          name: "Mode",
+          category: "mode",
+          type: "select",
+          currentValue: "plan",
+          options: [
+            { value: "default", name: "Default", description: "Manual approvals" },
+            { value: "plan", name: "Plan" },
+          ],
+        },
+      ],
+    } satisfies EffectAcpSchema.NewSessionResponse;
+
+    expect(parseSessionModeState(response)).toBeUndefined();
+    expect(parseSessionModeState(response, { deriveFromConfigOptions: true })).toEqual({
+      currentModeId: "plan",
+      availableModes: [
+        { id: "default", name: "Default", description: "Manual approvals" },
+        { id: "plan", name: "Plan" },
+      ],
+    });
+    expect(extractModeConfigId(response)).toBe("mode");
+  });
+
+  it("parses agent thought chunks and agent-initiated config option updates", () => {
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "weighing options" },
+        },
+      } satisfies EffectAcpSchema.SessionNotification).events,
+    ).toEqual([
+      expect.objectContaining({ _tag: "ReasoningDelta", text: "weighing options" }),
+    ]);
+
+    const configOptions = [
+      {
+        id: "mode",
+        name: "Mode",
+        category: "mode",
+        type: "select",
+        currentValue: "default",
+        options: [{ value: "default", name: "Default" }],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "session-1",
+        update: { sessionUpdate: "config_option_update", configOptions },
+      } satisfies EffectAcpSchema.SessionNotification).events,
+    ).toEqual([expect.objectContaining({ _tag: "ConfigOptionsChanged", configOptions })]);
   });
 
   it("extracts the model config id from typed ACP config options", () => {
