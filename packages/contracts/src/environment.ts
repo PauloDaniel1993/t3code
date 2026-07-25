@@ -47,6 +47,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server understands thread.snooze / thread.unsnooze commands. Same
       version-skew contract as threadSettlement. */
   threadSnooze: Schema.optionalKey(Schema.Boolean),
+  /** Server understands thread.task.* commands and projects parentThreadId /
+      task metadata. Absent on pre-tasks servers, so clients hide every task
+      affordance rather than dispatching commands the server will reject. */
+  threadTasks: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */
