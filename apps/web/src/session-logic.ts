@@ -22,6 +22,7 @@ import type {
   ThreadSession,
   TurnDiffSummary,
 } from "./types";
+import { parseThreadTaskActivity, type ThreadTaskActivity } from "./threadTaskActivity";
 
 export type ProviderPickerKind = ProviderDriverKind;
 
@@ -101,6 +102,8 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  /** Parsed thread-task lifecycle payload, for `task.created` / `task.finished` rows. */
+  threadTask?: ThreadTaskActivity;
 }
 
 export interface DerivedTaskLifecycle {
@@ -1056,7 +1059,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       : null
     : extractToolDetail(payload, title ?? activity.summary);
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
+  const threadTask = parseThreadTaskActivity(activity);
   const entry: DerivedWorkLogEntry = {
+    ...(threadTask === null ? {} : { threadTask }),
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,
