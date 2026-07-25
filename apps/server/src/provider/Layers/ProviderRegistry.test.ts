@@ -27,6 +27,7 @@ import * as PlatformError from "effect/PlatformError";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { deepMerge } from "@t3tools/shared/Struct";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
@@ -65,6 +66,7 @@ process.env.T3CODE_CURSOR_ENABLED = "1";
 // ── Test helpers ────────────────────────────────────────────────────
 
 const encoder = new TextEncoder();
+const NonWindowsPlatform = Layer.succeed(HostProcessPlatform, "linux");
 
 const TestHttpClientLive = Layer.succeed(
   HttpClient.HttpClient,
@@ -143,12 +145,15 @@ function mockSpawnerLayer(
     code: number;
   },
 ) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const cmd = command as unknown as { args: ReadonlyArray<string> };
-      return Effect.succeed(mockHandle(handler(cmd.args)));
-    }),
+  return Layer.merge(
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const cmd = command as unknown as { args: ReadonlyArray<string> };
+        return Effect.succeed(mockHandle(handler(cmd.args)));
+      }),
+    ),
+    NonWindowsPlatform,
   );
 }
 
@@ -163,18 +168,21 @@ function recordingMockSpawnerLayer(
     readonly args: ReadonlyArray<string>;
     readonly env: NodeJS.ProcessEnv | undefined;
   }> = [];
-  const layer = Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const cmd = command as unknown as {
-        args: ReadonlyArray<string>;
-        options?: {
-          readonly env?: NodeJS.ProcessEnv;
+  const layer = Layer.merge(
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const cmd = command as unknown as {
+          args: ReadonlyArray<string>;
+          options?: {
+            readonly env?: NodeJS.ProcessEnv;
+          };
         };
-      };
-      commands.push({ args: cmd.args, env: cmd.options?.env });
-      return Effect.succeed(mockHandle(handler(cmd.args)));
-    }),
+        commands.push({ args: cmd.args, env: cmd.options?.env });
+        return Effect.succeed(mockHandle(handler(cmd.args)));
+      }),
+    ),
+    NonWindowsPlatform,
   );
   return { layer, commands };
 }
@@ -185,15 +193,18 @@ function mockCommandSpawnerLayer(
     args: ReadonlyArray<string>,
   ) => { stdout: string; stderr: string; code: number },
 ) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const cmd = command as unknown as {
-        command: string;
-        args: ReadonlyArray<string>;
-      };
-      return Effect.succeed(mockHandle(handler(cmd.command, cmd.args)));
-    }),
+  return Layer.merge(
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const cmd = command as unknown as {
+          command: string;
+          args: ReadonlyArray<string>;
+        };
+        return Effect.succeed(mockHandle(handler(cmd.command, cmd.args)));
+      }),
+    ),
+    NonWindowsPlatform,
   );
 }
 
@@ -1763,6 +1774,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 "codex",
                 "cursor",
                 "grok",
+                "kimi",
                 "opencode",
               ]);
               assert.strictEqual(cursorProvider?.enabled, false);
@@ -2126,7 +2138,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
       );
 
       it.effect("runs Claude status probes with the configured CLAUDE_CONFIG_DIR", () => {
-        const claudeConfigDir = "/tmp/t3code-claude-home";
+        const claudeConfigDir = process.cwd();
         const recorded = recordingMockSpawnerLayer((args) => {
           const joined = args.join(" ");
           if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
