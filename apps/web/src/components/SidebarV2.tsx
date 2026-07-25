@@ -37,6 +37,7 @@ import {
   Undo2Icon,
 } from "lucide-react";
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -160,6 +161,12 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./u
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
+import { SidebarTaskGroup } from "./SidebarTaskGroup";
+import { MiniThreadWindow } from "./MiniThreadWindow";
+import {
+  defaultTaskGroupExpanded,
+  hasUnreadTaskResults,
+} from "@t3tools/client-runtime/state/thread-tasks";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
 
@@ -1478,68 +1485,91 @@ export default function SidebarV2() {
   // merging, no optimistic holds. Archived threads remain hidden here —
   // archive keeps its original "remove from sidebar" meaning.
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
-  const { activeThreads, snoozedThreads, settledThreads, snoozeNow } = useMemo(() => {
-    const now = `${nowMinute}:00.000Z`;
-    // Snooze classification uses a REAL clock, not the quantized minute:
-    // wake times are second-precise and a woken thread must not linger on
-    // the shelf for the rest of the minute. snoozeWakeTick re-runs this
-    // memo exactly at the next wake boundary.
-    void snoozeWakeTick;
-    const preciseNow = new Date().toISOString();
-    const visible = threads.filter(
-      (thread) =>
-        thread.archivedAt === null &&
-        (scopedProjectKeys === null ||
-          scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
-    );
-    const active: EnvironmentThreadShell[] = [];
-    const snoozed: EnvironmentThreadShell[] = [];
-    const settled: EnvironmentThreadShell[] = [];
-    for (const thread of visible) {
-      // Threads on servers without the settlement capability (old server,
-      // or descriptor not loaded yet) never classify as settled: the user
-      // could neither un-settle nor pin them, so auto-settling them would
-      // strand rows in a tail with no working affordances.
-      const supportsSettlement =
-        serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSettlement === true;
-      const supportsSnooze =
-        serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true;
-      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const changeRequestState = changeRequestStateByKey.get(threadKey) ?? null;
-      // Snooze outranks settled classification: an explicitly snoozed thread
-      // belongs to the shelf even if it would also auto-settle (the shelf's
-      // wake time is a stronger statement about when it matters again).
-      if (supportsSnooze && effectiveSnoozed(thread, { now: preciseNow })) {
-        snoozed.push(thread);
-      } else if (
-        supportsSettlement &&
-        effectiveSettled(thread, { now, autoSettleAfterDays, changeRequestState })
-      ) {
-        settled.push(thread);
-      } else {
-        active.push(thread);
+  const { activeThreads, snoozedThreads, settledThreads, tasksByParent, snoozeNow } =
+    useMemo(() => {
+      const now = `${nowMinute}:00.000Z`;
+      // Snooze classification uses a REAL clock, not the quantized minute:
+      // wake times are second-precise and a woken thread must not linger on
+      // the shelf for the rest of the minute. snoozeWakeTick re-runs this
+      // memo exactly at the next wake boundary.
+      void snoozeWakeTick;
+      const preciseNow = new Date().toISOString();
+      const visible = threads.filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          (scopedProjectKeys === null ||
+            scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+      );
+      const active: EnvironmentThreadShell[] = [];
+      const snoozed: EnvironmentThreadShell[] = [];
+      const settled: EnvironmentThreadShell[] = [];
+      // Task threads never classify into the top-level lists or the snoozed /
+      // settled shelves: they render nested under their parent, in the parent's
+      // sort position, and a settled task stays inside its group.
+      const tasksByParent = new Map<string, EnvironmentThreadShell[]>();
+      for (const thread of visible) {
+        if (thread.parentThreadId == null) continue;
+        const groupKey = scopedThreadKey(
+          scopeThreadRef(thread.environmentId, thread.parentThreadId),
+        );
+        const existing = tasksByParent.get(groupKey);
+        if (existing === undefined) {
+          tasksByParent.set(groupKey, [thread]);
+        } else {
+          existing.push(thread);
+        }
       }
-    }
-    return {
-      activeThreads: sortThreadsForSidebarV2(active),
-      // Soonest wake first: "what comes back next" is the shelf's question.
-      snoozedThreads: snoozed.toSorted(
-        (left, right) =>
-          firstValidTimestampMs(left.snoozedUntil ?? null) -
-          firstValidTimestampMs(right.snoozedUntil ?? null),
-      ),
-      settledThreads: sortSettledThreadsForSidebarV2(settled),
-      snoozeNow: preciseNow,
-    };
-  }, [
-    autoSettleAfterDays,
-    changeRequestStateByKey,
-    nowMinute,
-    scopedProjectKeys,
-    serverConfigs,
-    snoozeWakeTick,
-    threads,
-  ]);
+      for (const group of tasksByParent.values()) {
+        group.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      }
+      for (const thread of visible) {
+        if (thread.parentThreadId != null) continue;
+        // Threads on servers without the settlement capability (old server,
+        // or descriptor not loaded yet) never classify as settled: the user
+        // could neither un-settle nor pin them, so auto-settling them would
+        // strand rows in a tail with no working affordances.
+        const supportsSettlement =
+          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSettlement ===
+          true;
+        const supportsSnooze =
+          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true;
+        const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        const changeRequestState = changeRequestStateByKey.get(threadKey) ?? null;
+        // Snooze outranks settled classification: an explicitly snoozed thread
+        // belongs to the shelf even if it would also auto-settle (the shelf's
+        // wake time is a stronger statement about when it matters again).
+        if (supportsSnooze && effectiveSnoozed(thread, { now: preciseNow })) {
+          snoozed.push(thread);
+        } else if (
+          supportsSettlement &&
+          effectiveSettled(thread, { now, autoSettleAfterDays, changeRequestState })
+        ) {
+          settled.push(thread);
+        } else {
+          active.push(thread);
+        }
+      }
+      return {
+        activeThreads: sortThreadsForSidebarV2(active),
+        // Soonest wake first: "what comes back next" is the shelf's question.
+        snoozedThreads: snoozed.toSorted(
+          (left, right) =>
+            firstValidTimestampMs(left.snoozedUntil ?? null) -
+            firstValidTimestampMs(right.snoozedUntil ?? null),
+        ),
+        settledThreads: sortSettledThreadsForSidebarV2(settled),
+        tasksByParent,
+        snoozeNow: preciseNow,
+      };
+    }, [
+      autoSettleAfterDays,
+      changeRequestStateByKey,
+      nowMinute,
+      scopedProjectKeys,
+      serverConfigs,
+      snoozeWakeTick,
+      threads,
+    ]);
 
   // Arm a timeout for the earliest upcoming wake so the shelf empties the
   // moment a snooze expires instead of on the next minute tick. Sorted
@@ -1713,6 +1743,109 @@ export default function SidebarV2() {
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
+
+  // --- Thread tasks -------------------------------------------------------
+  const [openTask, setOpenTask] = useState<{
+    key: string;
+    threadRef: ScopedThreadRef;
+    anchor: HTMLElement | null;
+  } | null>(null);
+  const openTaskKey = openTask?.key ?? null;
+  const [taskNowMs, setTaskNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = window.setInterval(() => setTaskNowMs(Date.now()), 5_000);
+    return () => window.clearInterval(interval);
+  }, []);
+  const taskGroupExpandedByThreadId = useUiStateStore((state) => state.taskGroupExpandedByThreadId);
+  const setTaskGroupExpanded = useUiStateStore((state) => state.setTaskGroupExpanded);
+  const threadLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
+  const createTaskMutation = useAtomCommand(threadEnvironment.createTask, { reportFailure: false });
+  const cancelTaskMutation = useAtomCommand(threadEnvironment.cancelTask, { reportFailure: false });
+  const redeliverTaskMutation = useAtomCommand(threadEnvironment.redeliverTask, {
+    reportFailure: false,
+  });
+  const startTurnMutation = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+
+  const isTaskGroupExpanded = useCallback(
+    (
+      threadKey: string,
+      parent: EnvironmentThreadShell,
+      tasks: ReadonlyArray<EnvironmentThreadShell>,
+    ) => {
+      const explicit = taskGroupExpandedByThreadId[threadKey];
+      if (explicit !== undefined) return explicit;
+      return defaultTaskGroupExpanded({
+        tasks,
+        hasUnreadResults: hasUnreadTaskResults({
+          taskSummary: parent.taskSummary,
+          lastVisitedAt: threadLastVisitedAtById[threadKey],
+        }),
+      });
+    },
+    [taskGroupExpandedByThreadId, threadLastVisitedAtById],
+  );
+
+  const handleOpenTask = useCallback(
+    (threadRef: ScopedThreadRef, anchor: HTMLElement | null) => {
+      const key = scopedThreadKey(threadRef);
+      if (isMobile) {
+        // No room for a floating card: go straight to the full task thread.
+        navigateToThread(threadRef);
+        return;
+      }
+      setOpenTask((current) => (current?.key === key ? null : { key, threadRef, anchor }));
+    },
+    [isMobile, navigateToThread],
+  );
+  const closeOpenTask = useCallback(() => setOpenTask(null), []);
+
+  const handleSteerTask = useCallback(
+    (threadRef: ScopedThreadRef, text: string) => {
+      void startTurnMutation({
+        environmentId: threadRef.environmentId,
+        input: {
+          threadId: threadRef.threadId,
+          message: { messageId: crypto.randomUUID(), role: "user", text, attachments: [] },
+        },
+      } as never);
+    },
+    [startTurnMutation],
+  );
+
+  const handleCancelTask = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      const parentThreadId = threads.find(
+        (thread) =>
+          thread.environmentId === threadRef.environmentId && thread.id === threadRef.threadId,
+      )?.parentThreadId;
+      if (parentThreadId == null) return;
+      void cancelTaskMutation({
+        environmentId: threadRef.environmentId,
+        input: { parentThreadId, taskThreadId: threadRef.threadId },
+      } as never);
+    },
+    [cancelTaskMutation, threads],
+  );
+
+  const handleRedeliverTask = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      const parentThreadId = threads.find(
+        (thread) =>
+          thread.environmentId === threadRef.environmentId && thread.id === threadRef.threadId,
+      )?.parentThreadId;
+      if (parentThreadId == null) return;
+      void redeliverTaskMutation({
+        environmentId: threadRef.environmentId,
+        input: { parentThreadId, taskThreadId: threadRef.threadId },
+      } as never);
+    },
+    [redeliverTaskMutation, threads],
+  );
+
+  const handleNewTask = useCallback((parentThreadKey: string) => {
+    setNewTaskParentKey(parentThreadKey);
+  }, []);
+  const [newTaskParentKey, setNewTaskParentKey] = useState<string | null>(null);
 
   const [renamingThreadKey, setRenamingThreadKey] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
@@ -2675,8 +2808,55 @@ export default function SidebarV2() {
                     />
                   );
                 };
+                // A parent row is followed inline by its task group, so the
+                // parent keeps its own sort position and tasks never enter the
+                // snoozed/settled shelves.
+                const renderThreadRowWithTasks = (
+                  thread: EnvironmentThreadShell,
+                  section: "active" | "snoozed" | "settled",
+                ): ReactNode => {
+                  const threadKey = scopedThreadKey(
+                    scopeThreadRef(thread.environmentId, thread.id),
+                  );
+                  const tasks = tasksByParent.get(threadKey);
+                  if (tasks === undefined || tasks.length === 0) {
+                    return renderThreadRow(thread, section);
+                  }
+                  return (
+                    <Fragment key={`${threadKey}:group`}>
+                      {renderThreadRow(thread, section)}
+                      <SidebarTaskGroup
+                        parentThreadKey={threadKey}
+                        tasks={tasks}
+                        expanded={isTaskGroupExpanded(threadKey, thread, tasks)}
+                        openTaskKey={openTaskKey}
+                        nowMs={taskNowMs}
+                        onOpenTask={handleOpenTask}
+                        onNewTask={handleNewTask}
+                        miniWindow={
+                          openTask === null ? null : (
+                            <MiniThreadWindow
+                              threadRef={openTask.threadRef}
+                              anchor={openTask.anchor}
+                              modelLabel={null}
+                              isMobile={isMobile}
+                              onClose={closeOpenTask}
+                              onOpenThread={(ref) => {
+                                closeOpenTask();
+                                navigateToThread(ref);
+                              }}
+                              onSteer={handleSteerTask}
+                              onCancelTask={handleCancelTask}
+                              onRedeliver={handleRedeliverTask}
+                            />
+                          )
+                        }
+                      />
+                    </Fragment>
+                  );
+                };
                 const items: ReactNode[] = activeThreads.map((thread) =>
-                  renderThreadRow(thread, "active"),
+                  renderThreadRowWithTasks(thread, "active"),
                 );
                 // Snoozed shelf: between the inbox and Settled — out of the
                 // way, never gone. The header always renders while anything
@@ -2708,7 +2888,7 @@ export default function SidebarV2() {
                     </li>,
                   );
                   for (const thread of visibleSnoozedThreads) {
-                    items.push(renderThreadRow(thread, "snoozed"));
+                    items.push(renderThreadRowWithTasks(thread, "snoozed"));
                   }
                 }
                 if (settledThreads.length > 0) {
@@ -2737,7 +2917,7 @@ export default function SidebarV2() {
                   );
                 }
                 for (const thread of renderedSettledThreads) {
-                  items.push(renderThreadRow(thread, "settled"));
+                  items.push(renderThreadRowWithTasks(thread, "settled"));
                 }
                 return items;
               })()}
