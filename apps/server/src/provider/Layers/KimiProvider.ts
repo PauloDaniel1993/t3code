@@ -37,7 +37,10 @@ import {
 const KIMI_PRESENTATION = {
   displayName: "Kimi",
   badgeLabel: "Early Access",
-  showInteractionModeToggle: false,
+  // Kimi exposes a native read-only plan mode ("Read-only planning; no tool
+  // execution") through its `mode` config option, so the plan/implement toggle
+  // maps onto a real capability.
+  showInteractionModeToggle: true,
 } as const;
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
@@ -113,10 +116,16 @@ const runKimiVersionCommand = (
     );
   });
 
+/**
+ * T3 Code needs to reattach to a native session across server restarts. Kimi
+ * offers two primitives for that — `session/resume` and `session/load` — and
+ * the ACP runtime picks whichever the CLI advertises, so either one is enough.
+ */
 export function isKimiAcpCompatible(probe: KimiAcpProbeResult): boolean {
   return (
     probe.initializeResult.protocolVersion === 1 &&
-    probe.agentCapabilities.sessionCapabilities?.resume != null
+    (probe.agentCapabilities.sessionCapabilities?.resume != null ||
+      probe.agentCapabilities.loadSession === true)
   );
 }
 

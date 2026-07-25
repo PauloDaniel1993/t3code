@@ -108,6 +108,16 @@ export type AcpParsedSessionEvent =
       readonly itemId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "ReasoningDelta";
+      readonly text: string;
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "ConfigOptionsChanged";
+      readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+      readonly rawPayload: unknown;
     };
 
 type AcpSessionSetupResponse =
@@ -129,6 +139,72 @@ export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): 
     }
   }
   return undefined;
+}
+
+/**
+ * Agents that expose their permission policy as a `mode` configuration option
+ * rather than the stable `modes` field (Kimi Code CLI 0.29 does exactly this)
+ * still need a mode state so runtime-mode and plan-mode mapping can work.
+ */
+export function extractModeConfigId(sessionResponse: AcpSessionSetupResponse): string | undefined {
+  return findModeConfigOption(sessionResponse.configOptions)?.id.trim();
+}
+
+function findModeConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): EffectAcpSchema.SessionConfigOption | undefined {
+  return configOptions?.find(
+    (option) =>
+      option.type === "select" &&
+      option.id.trim().length > 0 &&
+      (option.category === "mode" || option.id.trim().toLowerCase() === "mode"),
+  );
+}
+
+function flattenSessionConfigSelectEntries(
+  configOption: EffectAcpSchema.SessionConfigOption,
+): ReadonlyArray<{
+  readonly value: string;
+  readonly name: string;
+  readonly description?: string | null | undefined;
+}> {
+  if (configOption.type !== "select") {
+    return [];
+  }
+  return configOption.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options));
+}
+
+export function sessionModeStateFromConfigOptions(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): AcpSessionModeState | undefined {
+  const modeOption = findModeConfigOption(configOptions);
+  if (!modeOption) {
+    return undefined;
+  }
+  const availableModes: Array<AcpSessionMode> = [];
+  for (const entry of flattenSessionConfigSelectEntries(modeOption)) {
+    const id = entry.value.trim();
+    const name = entry.name.trim() || id;
+    if (!id) {
+      continue;
+    }
+    const description = entry.description?.trim() || undefined;
+    availableModes.push(
+      description !== undefined
+        ? ({ id, name, description } satisfies AcpSessionMode)
+        : ({ id, name } satisfies AcpSessionMode),
+    );
+  }
+  if (availableModes.length === 0) {
+    return undefined;
+  }
+  const currentValue =
+    typeof modeOption.currentValue === "string" ? modeOption.currentValue.trim() : "";
+  const currentModeId =
+    currentValue && availableModes.some((mode) => mode.id === currentValue)
+      ? currentValue
+      : availableModes[0]!.id;
+  return { currentModeId, availableModes };
 }
 
 export function findSessionConfigOption(
@@ -158,12 +234,23 @@ export function collectSessionConfigOptionValues(
 
 export function parseSessionModeState(
   sessionResponse: AcpSessionSetupResponse,
+  options?: {
+    /**
+     * Fall back to the `mode` configuration option when the agent does not
+     * return the stable `modes` field. Opt-in per provider so agents that do
+     * return `modes` keep their existing, authoritative mode state.
+     */
+    readonly deriveFromConfigOptions?: boolean;
+  },
 ): AcpSessionModeState | undefined {
+  const derived = options?.deriveFromConfigOptions
+    ? sessionModeStateFromConfigOptions(sessionResponse.configOptions)
+    : undefined;
   const modes = sessionResponse.modes;
-  if (!modes) return undefined;
+  if (!modes) return derived;
   const currentModeId = modes.currentModeId.trim();
   if (!currentModeId) {
-    return undefined;
+    return derived;
   }
   const availableModes: Array<AcpSessionMode> = [];
   for (const mode of modes.availableModes) {
@@ -180,7 +267,7 @@ export function parseSessionModeState(
     );
   }
   if (availableModes.length === 0) {
-    return undefined;
+    return derived;
   }
   return {
     currentModeId,
@@ -572,6 +659,24 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           rawPayload: params,
         });
       }
+      break;
+    }
+    case "agent_thought_chunk": {
+      if (upd.content.type === "text" && upd.content.text.length > 0) {
+        events.push({
+          _tag: "ReasoningDelta",
+          text: upd.content.text,
+          rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "config_option_update": {
+      events.push({
+        _tag: "ConfigOptionsChanged",
+        configOptions: upd.configOptions,
+        rawPayload: params,
+      });
       break;
     }
     default:

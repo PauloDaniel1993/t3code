@@ -94,10 +94,49 @@ For an npm installation, update with:
 npm install -g @moonshot-ai/kimi-code@latest
 ```
 
-Native installations may support `kimi upgrade`. T3 Code only offers an in-app update action when
-it can safely supervise the detected installation; otherwise, use the provider card's manual update
-instructions and refresh status afterward. T3-managed Kimi sessions disable background CLI updates
-so the executable cannot change during an active session.
+T3 Code offers an in-app update action when it recognizes the installation the `kimi` command
+actually resolves to:
+
+- a global npm, pnpm, bun, or vite-plus install, updated with that package manager
+- a native macOS or Linux install under `~/.kimi-code/bin`, updated with `kimi upgrade`
+- a WinGet install of `MoonshotAI.KimiCodeCLI`, updated with `winget upgrade`
+
+On Windows, `kimi upgrade` does not self-update a native install; it reports the install script to
+run instead. The provider card therefore shows that command rather than an update action:
+
+```powershell
+irm https://code.kimi.com/kimi-code/install.ps1 | iex
+```
+
+If `kimi` resolves somewhere else entirely, the card falls back to manual instructions — running
+`npm install -g` would write to a different location than the executable in use. Refresh provider
+status after updating manually.
+
+If you have more than one Kimi Code CLI installed, T3 Code follows the one your `PATH` resolves
+first, which may not be the newest. Compare them with `where.exe kimi` on Windows or
+`which -a kimi` elsewhere, and either remove the stale copy or set the provider's Binary path to the
+one you want.
+
+T3-managed Kimi sessions disable background CLI updates so the executable cannot change during an
+active session.
+
+## Modes And Approvals
+
+Kimi Code CLI exposes four execution modes — Default, Plan, Auto, and YOLO. T3 Code owns that
+setting; it is not a model option you pick in the composer.
+
+- The plan/implement toggle selects Kimi's native **Plan** mode, which is read-only and executes no
+  tools.
+- Implement work runs in **Default** mode, where Kimi asks before each tool action. T3 Code answers
+  those requests: it shows an approval prompt in approval-required threads, and auto-approves in
+  full-access threads so every tool call is still recorded in the thread.
+- T3 Code never selects **Auto** or **YOLO**. Those modes let Kimi approve its own tool calls
+  internally, so the actions would never reach T3 Code's approval prompts or activity log. If you
+  want that behaviour, use a full-access thread instead.
+
+Kimi's Thinking level (Low, High, Max) is a model option and stays in the composer's model
+controls. When you change the model, thinking level, or mode inside a Kimi session, T3 Code follows
+the CLI's live configuration rather than the values captured when the session started.
 
 ## Authentication and security boundaries
 
