@@ -321,6 +321,49 @@ describe("AcpSessionRuntime", () => {
     ),
   );
 
+  it.effect("waits for remote cancellation settlement before a replacement prompt", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+
+      const promptFiber = yield* runtime
+        .prompt({
+          prompt: [{ type: "text", text: "wait until cancelled" }],
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* Effect.sleep("100 millis");
+      yield* runtime.cancelAndWait;
+
+      const firstPromptResult = yield* Fiber.join(promptFiber);
+      expect(firstPromptResult).toMatchObject({ stopReason: "cancelled" });
+
+      const secondPromptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "replacement" }],
+      });
+      expect(secondPromptResult).toMatchObject({ stopReason: "end_turn" });
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: {
+              T3_ACP_HANG_FIRST_PROMPT_UNTIL_CANCEL: "1",
+              T3_ACP_CANCEL_SETTLE_DELAY_MS: "100",
+            },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      TestClock.withLive,
+    ),
+  );
+
   it.effect("segments assistant text around ACP tool calls", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;

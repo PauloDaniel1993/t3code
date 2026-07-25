@@ -123,6 +123,31 @@ function withKimiAdapter<A, E, R>(
   );
 }
 
+function waitForFileContent(
+  filePath: string,
+  attempts = 40,
+  expectedContent?: string,
+): Effect.Effect<string> {
+  const readAttempt = (remainingAttempts: number): Effect.Effect<string> =>
+    Effect.gen(function* () {
+      if (remainingAttempts <= 0) {
+        return yield* Effect.die(new Error(`Timed out waiting for file content at ${filePath}`));
+      }
+      const raw = yield* Effect.tryPromise(() => NodeFSP.readFile(filePath, "utf8")).pipe(
+        Effect.orElseSucceed(() => ""),
+      );
+      if (
+        raw.trim().length > 0 &&
+        (expectedContent === undefined || raw.includes(expectedContent))
+      ) {
+        return raw;
+      }
+      yield* Effect.sleep("25 millis");
+      return yield* readAttempt(remainingAttempts - 1);
+    });
+  return readAttempt(attempts);
+}
+
 async function writeStoredAttachment(
   attachmentsDir: string,
   attachment: ChatAttachment,
@@ -415,34 +440,80 @@ it.effect("surfaces Kimi provider failures that ACP reports as successful turns"
   ),
 );
 
-it.effect("rejects unsafe concurrent Kimi sends", () =>
-  withMockKimi({ T3_ACP_PROMPT_DELAY_MS: "50" }, (wrapperPath) =>
-    withKimiAdapter(wrapperPath, (adapter) =>
-      Effect.gen(function* () {
-        const threadId = ThreadId.make("kimi-serialized-send-thread");
-        yield* adapter.startSession({
-          threadId,
-          provider: ProviderDriverKind.make("kimi"),
-          cwd: process.cwd(),
-          runtimeMode: "full-access",
-        });
-        const firstFiber = yield* adapter
-          .sendTurn({ threadId, input: "first", attachments: [] })
-          .pipe(Effect.forkChild);
-        yield* Effect.yieldNow;
-        const secondError = yield* adapter
-          .sendTurn({ threadId, input: "second", attachments: [] })
-          .pipe(Effect.flip);
-        const first = yield* Fiber.join(firstFiber);
-        assert.equal(secondError._tag, "ProviderAdapterValidationError");
-        assert.match(secondError.message, /overlapping turns/);
-        const snapshot = yield* adapter.readThread(threadId);
-        assert.equal(snapshot.turns.length, 1);
-        assert.equal(snapshot.turns[0]?.id, first.turnId);
-        yield* adapter.stopSession(threadId);
-      }),
-    ),
-  ),
+it.effect("steers a running Kimi turn by cancelling it before the follow-up prompt", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "kimi-acp-steer-"))),
+    (tempDir) => {
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      return withMockKimi(
+        {
+          T3_ACP_HANG_FIRST_PROMPT_UNTIL_CANCEL: "1",
+          T3_ACP_CANCEL_SETTLE_DELAY_MS: "100",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        },
+        (wrapperPath) =>
+          withKimiAdapter(wrapperPath, (adapter) =>
+            Effect.gen(function* () {
+              const threadId = ThreadId.make("kimi-steer-thread");
+              const runtimeEvents: ProviderRuntimeEvent[] = [];
+              const firstTurnStarted = yield* Deferred.make<TurnId>();
+              const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+                Effect.sync(() => {
+                  runtimeEvents.push(event);
+                }).pipe(
+                  Effect.andThen(
+                    event.type === "turn.started" && event.turnId !== undefined
+                      ? Deferred.succeed(firstTurnStarted, event.turnId).pipe(Effect.asVoid)
+                      : Effect.void,
+                  ),
+                ),
+              ).pipe(Effect.forkChild);
+
+              yield* adapter.startSession({
+                threadId,
+                provider: ProviderDriverKind.make("kimi"),
+                cwd: process.cwd(),
+                runtimeMode: "full-access",
+              });
+              const firstFiber = yield* adapter
+                .sendTurn({ threadId, input: "first", attachments: [] })
+                .pipe(Effect.forkChild);
+              const firstTurnId = yield* Deferred.await(firstTurnStarted).pipe(
+                Effect.timeout("2 seconds"),
+              );
+              yield* waitForFileContent(requestLogPath, 80, '"method":"session/prompt"');
+              const second = yield* adapter
+                .sendTurn({ threadId, input: "second", attachments: [] })
+                .pipe(Effect.timeout("2 seconds"));
+              const first = yield* Fiber.join(firstFiber).pipe(Effect.timeout("2 seconds"));
+
+              assert.equal(first.turnId, firstTurnId);
+              assert.notEqual(second.turnId, firstTurnId);
+              const firstCompletedIndex = runtimeEvents.findIndex(
+                (event) =>
+                  event.type === "turn.completed" &&
+                  event.turnId === firstTurnId &&
+                  event.payload.state === "cancelled",
+              );
+              const secondStartedIndex = runtimeEvents.findIndex(
+                (event) => event.type === "turn.started" && event.turnId === second.turnId,
+              );
+              assert.isAtLeast(firstCompletedIndex, 0);
+              assert.isAbove(secondStartedIndex, firstCompletedIndex);
+
+              const snapshot = yield* adapter.readThread(threadId);
+              assert.deepStrictEqual(
+                snapshot.turns.map((turn) => turn.id),
+                [first.turnId, second.turnId],
+              );
+              yield* Fiber.interrupt(eventsFiber);
+              yield* adapter.stopSession(threadId);
+            }),
+          ),
+      );
+    },
+    (tempDir) => Effect.promise(() => NodeFSP.rm(tempDir, { recursive: true, force: true })),
+  ).pipe(TestClock.withLive),
 );
 
 it.effect("rejects an empty Kimi turn before mutating session lifecycle", () =>
