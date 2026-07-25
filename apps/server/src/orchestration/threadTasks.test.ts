@@ -7,7 +7,7 @@ import {
   MessageId,
   ThreadId,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import {
   boundTaskResultSummary,
@@ -24,7 +24,9 @@ import {
 const threadId = (value: string) => ThreadId.make(value);
 const messageId = (value: string) => MessageId.make(value);
 
-function message(overrides: Partial<OrchestrationMessage> & { id: string }): OrchestrationMessage {
+function message(
+  overrides: Omit<Partial<OrchestrationMessage>, "id"> & { id: string },
+): OrchestrationMessage {
   return {
     id: messageId(overrides.id),
     role: overrides.role ?? "user",
