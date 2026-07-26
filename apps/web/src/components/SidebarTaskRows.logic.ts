@@ -98,20 +98,24 @@ export function resolveTaskRowPresentation(task: ThreadTaskMetadata): TaskRowPre
 }
 
 /**
- * Elapsed label for a task row and the mini window status line: how long a
- * running task has been working, or how long ago a settled one finished.
+ * How long the task has been working, and — once it settles — how long it took.
+ *
+ * A settled task's label is frozen: it measures start to finish, not time since
+ * finishing. A number that keeps climbing after the work stopped reads as a
+ * still-running task.
  */
 export function formatTaskElapsedLabel(input: {
   readonly task: ThreadTaskMetadata;
   readonly nowMs: number;
 }): string {
-  const anchor =
-    input.task.status === "queued" || input.task.status === "running"
-      ? (input.task.startedAt ?? input.task.requestedAt)
-      : (input.task.finishedAt ?? input.task.requestedAt);
-  const anchorMs = Date.parse(anchor);
-  if (!Number.isFinite(anchorMs)) return "";
-  const elapsedMs = Math.max(0, input.nowMs - anchorMs);
+  const running = input.task.status === "queued" || input.task.status === "running";
+  const startedAtMs = Date.parse(input.task.startedAt ?? input.task.requestedAt);
+  if (!Number.isFinite(startedAtMs)) return "";
+  const endedAtMs = running
+    ? input.nowMs
+    : Date.parse(input.task.finishedAt ?? input.task.startedAt ?? input.task.requestedAt);
+  if (!Number.isFinite(endedAtMs)) return "";
+  const elapsedMs = Math.max(0, endedAtMs - startedAtMs);
   const seconds = Math.floor(elapsedMs / 1_000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -121,7 +125,7 @@ export function formatTaskElapsedLabel(input: {
   return `${Math.floor(hours / 24)}d`;
 }
 
-/** `Working · 3m` / `Done · 8m ago`, matching the approved mockup. */
+/** `Working · 3m` while it runs, `Done in 8m` once it has stopped. */
 export function formatTaskStatusLine(input: {
   readonly task: ThreadTaskMetadata;
   readonly nowMs: number;
@@ -133,11 +137,11 @@ export function formatTaskStatusLine(input: {
     case "running":
       return elapsed === "" ? "Working" : `Working · ${elapsed}`;
     case "failed":
-      return elapsed === "" ? "Failed" : `Failed · ${elapsed} ago`;
+      return elapsed === "" ? "Failed" : `Failed after ${elapsed}`;
     case "cancelled":
-      return elapsed === "" ? "Cancelled" : `Cancelled · ${elapsed} ago`;
+      return elapsed === "" ? "Cancelled" : `Cancelled after ${elapsed}`;
     case "finished":
-      return elapsed === "" ? "Done" : `Done · ${elapsed} ago`;
+      return elapsed === "" ? "Done" : `Done in ${elapsed}`;
   }
 }
 
