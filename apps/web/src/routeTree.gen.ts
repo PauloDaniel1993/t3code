@@ -24,6 +24,7 @@ import { Route as SettingsBetaRouteImport } from './routes/settings.beta'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
 import { Route as SettingsAppearanceRouteImport } from './routes/settings.appearance'
 import { Route as DevWorkflowActivityRouteImport } from './routes/dev.workflow-activity'
+import { Route as DevTimelineActivityScrollRouteImport } from './routes/dev.timeline-activity-scroll'
 import { Route as ConnectCallbackRouteImport } from './routes/connect_.callback'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
@@ -102,6 +103,12 @@ const DevWorkflowActivityRoute = DevWorkflowActivityRouteImport.update({
   path: '/dev/workflow-activity',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DevTimelineActivityScrollRoute =
+  DevTimelineActivityScrollRouteImport.update({
+    id: '/dev/timeline-activity-scroll',
+    path: '/dev/timeline-activity-scroll',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ConnectCallbackRoute = ConnectCallbackRouteImport.update({
   id: '/connect_/callback',
   path: '/connect/callback',
@@ -125,6 +132,7 @@ export interface FileRoutesByFullPath {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/connect/callback': typeof ConnectCallbackRoute
+  '/dev/timeline-activity-scroll': typeof DevTimelineActivityScrollRoute
   '/dev/workflow-activity': typeof DevWorkflowActivityRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -143,6 +151,7 @@ export interface FileRoutesByTo {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/connect/callback': typeof ConnectCallbackRoute
+  '/dev/timeline-activity-scroll': typeof DevTimelineActivityScrollRoute
   '/dev/workflow-activity': typeof DevWorkflowActivityRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -164,6 +173,7 @@ export interface FileRoutesById {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/connect_/callback': typeof ConnectCallbackRoute
+  '/dev/timeline-activity-scroll': typeof DevTimelineActivityScrollRoute
   '/dev/workflow-activity': typeof DevWorkflowActivityRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -186,6 +196,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/settings'
     | '/connect/callback'
+    | '/dev/timeline-activity-scroll'
     | '/dev/workflow-activity'
     | '/settings/appearance'
     | '/settings/archived'
@@ -204,6 +215,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/settings'
     | '/connect/callback'
+    | '/dev/timeline-activity-scroll'
     | '/dev/workflow-activity'
     | '/settings/appearance'
     | '/settings/archived'
@@ -224,6 +236,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/settings'
     | '/connect_/callback'
+    | '/dev/timeline-activity-scroll'
     | '/dev/workflow-activity'
     | '/settings/appearance'
     | '/settings/archived'
@@ -245,6 +258,7 @@ export interface RootRouteChildren {
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
   ConnectCallbackRoute: typeof ConnectCallbackRoute
+  DevTimelineActivityScrollRoute: typeof DevTimelineActivityScrollRoute
   DevWorkflowActivityRoute: typeof DevWorkflowActivityRoute
 }
 
@@ -355,6 +369,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DevWorkflowActivityRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/dev/timeline-activity-scroll': {
+      id: '/dev/timeline-activity-scroll'
+      path: '/dev/timeline-activity-scroll'
+      fullPath: '/dev/timeline-activity-scroll'
+      preLoaderRoute: typeof DevTimelineActivityScrollRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/connect_/callback': {
       id: '/connect_/callback'
       path: '/connect/callback'
@@ -427,6 +448,7 @@ const rootRouteChildren: RootRouteChildren = {
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,
   ConnectCallbackRoute: ConnectCallbackRoute,
+  DevTimelineActivityScrollRoute: DevTimelineActivityScrollRoute,
   DevWorkflowActivityRoute: DevWorkflowActivityRoute,
 }
 export const routeTree = rootRouteImport

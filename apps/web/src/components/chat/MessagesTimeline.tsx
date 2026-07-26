@@ -81,7 +81,10 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveDisplayedTimelineActivityCycle,
+  resolveStickyWorkflowActivityTurnId,
   resolveTaskCardExpansionA11y,
+  resolveTimelineEndFollowing,
+  resolveTimelineIsAtExactEnd,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapHeightStyle,
@@ -97,6 +100,7 @@ import {
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
+import { overlayConsumesWheel, resolveWheelDeltaPixels } from "./overlayWheelForwarding";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -183,6 +187,13 @@ const EMPTY_WORKFLOW_ACTIVITY_VIEW_STATES: ReadonlyMap<TurnId, WorkflowActivityC
   new Map();
 const NOOP_WORKFLOW_ACTIVITY_VIEW_STATE_CHANGE = () => undefined;
 const NOOP_ACTIVE_WORKFLOW_TURN_CHANGE = () => undefined;
+/**
+ * How long after a navigation gesture the list re-reads its extent to decide
+ * whether end-following should resume. Long enough to outlast a wheel burst's
+ * own scroll events, short enough that resting on the live edge resumes
+ * following before the next streamed row lands.
+ */
+const TIMELINE_END_FOLLOW_RECHECK_MS = 150;
 
 export function updateWorkflowActivityViewState(
   current: ReadonlyMap<TurnId, WorkflowActivityCardViewState>,
@@ -234,6 +245,11 @@ interface MessagesTimelineProps {
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
   contentInsetEndAdjustment: number;
+  /**
+   * Element wrapping both the list and the surfaces stacked on top of it. Wheel
+   * gestures landing on those overlays are forwarded to the list from here.
+   */
+  overlayWheelHost?: HTMLElement | null;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: () => void;
   /** Thread-tasks beta. Off hides the task lifecycle rows. */
@@ -279,6 +295,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onAnchorReady,
   onAnchorSizeChanged,
   contentInsetEndAdjustment,
+  overlayWheelHost = null,
   onIsAtEndChange,
   onManualNavigation,
   threadTasksEnabled = false,
@@ -411,6 +428,60 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const activeWorkflowCycleIdRef = useRef<string | null>(null);
   const activeWorkflowTurnIdRef = useRef<TurnId | null | undefined>(undefined);
   const workflowUserNavigatedRef = useRef(false);
+  const [followsEnd, setFollowsEnd] = useState(true);
+  const followsEndRef = useRef(true);
+  const followsEndRecheckFrameRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const updateFollowsEnd = useCallback(
+    (input: { manualNavigation: boolean; isAtExactEnd: boolean | undefined }) => {
+      const next = resolveTimelineEndFollowing({ current: followsEndRef.current, ...input });
+      if (next !== followsEndRef.current) {
+        followsEndRef.current = next;
+        setFollowsEnd(next);
+      }
+      if (!input.manualNavigation) {
+        return;
+      }
+      // A gesture that cannot move the list — wheeling down while already
+      // resting on the end — emits no scroll event, so nothing would ever
+      // re-arm following. Re-check once the gesture has settled; scroll events
+      // arriving in the meantime keep resetting the timer.
+      if (followsEndRecheckFrameRef.current !== null) {
+        clearTimeout(followsEndRecheckFrameRef.current);
+      }
+      followsEndRecheckFrameRef.current = setTimeout(() => {
+        followsEndRecheckFrameRef.current = null;
+        updateFollowsEnd({
+          manualNavigation: false,
+          isAtExactEnd: resolveTimelineIsAtExactEnd(listRef.current?.getState?.()),
+        });
+      }, TIMELINE_END_FOLLOW_RECHECK_MS);
+    },
+    [listRef],
+  );
+  useEffect(
+    () => () => {
+      if (followsEndRecheckFrameRef.current !== null) {
+        clearTimeout(followsEndRecheckFrameRef.current);
+      }
+    },
+    [],
+  );
+  // LegendList pushes the scroll offset down by any growth of the end inset
+  // while it considers the list near its end — so an activity card mounting or
+  // an approval card growing the composer would shove a reader who has only
+  // nudged up a notch back toward the live edge. Hold the inset the reader
+  // scrolled away from until they return to the end, where growing it is what
+  // keeps the last row clear of the overlays.
+  const [heldContentInsetEndAdjustment, setHeldContentInsetEndAdjustment] =
+    useState(contentInsetEndAdjustment);
+  useEffect(() => {
+    if (followsEnd) {
+      setHeldContentInsetEndAdjustment(contentInsetEndAdjustment);
+    }
+  }, [contentInsetEndAdjustment, followsEnd]);
+  const effectiveContentInsetEndAdjustment = followsEnd
+    ? contentInsetEndAdjustment
+    : heldContentInsetEndAdjustment;
   const runningWorkflowCycle =
     runningTurnId === null
       ? null
@@ -456,6 +527,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (isAtEnd === true) {
       workflowUserNavigatedRef.current = false;
     }
+    updateFollowsEnd({ manualNavigation: false, isAtExactEnd: resolveTimelineIsAtExactEnd(state) });
     if (state) {
       const activeCycle = resolveDisplayedTimelineActivityCycle({
         cycles: workflowActivityCycles,
@@ -466,7 +538,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         userNavigated: workflowUserNavigatedRef.current,
       });
       activeWorkflowCycleIdRef.current = activeCycle?.id ?? null;
-      const nextTurnId = activeCycle?.activityTurnId ?? null;
+      const nextTurnId = resolveStickyWorkflowActivityTurnId({
+        resolvedCycle: activeCycle,
+        currentTurnId: activeWorkflowTurnIdRef.current ?? null,
+        cycles: workflowActivityCycles,
+      });
       if (activeWorkflowTurnIdRef.current !== nextTurnId) {
         activeWorkflowTurnIdRef.current = nextTurnId;
         onActiveWorkflowTurnIdChange(nextTurnId);
@@ -501,6 +577,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onActiveWorkflowTurnIdChange,
     onIsAtEndChange,
     runningWorkflowCycle,
+    updateFollowsEnd,
     workflowActivityCycles,
   ]);
 
@@ -578,8 +655,44 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleManualTimelineNavigation = useCallback(() => {
     workflowUserNavigatedRef.current = true;
+    updateFollowsEnd({ manualNavigation: true, isAtExactEnd: undefined });
     onManualNavigation();
-  }, [onManualNavigation]);
+  }, [onManualNavigation, updateFollowsEnd]);
+
+  // The pinned activity card, approval cards, and the composer are stacked on
+  // top of the list rather than inside its scroller, so a wheel gesture over
+  // them reaches no scrollable ancestor and the transcript stays frozen under
+  // the cursor. Forward those gestures to the list.
+  useEffect(() => {
+    if (!overlayWheelHost) {
+      return;
+    }
+    let scrollNode: HTMLElement | null = null;
+    const onWheel = (event: WheelEvent) => {
+      scrollNode ??= listRef.current?.getScrollableNode?.() ?? null;
+      const target = event.target;
+      if (!scrollNode || !(target instanceof HTMLElement) || scrollNode.contains(target)) {
+        return;
+      }
+      const deltaPixels = resolveWheelDeltaPixels({
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        viewportHeight: scrollNode.clientHeight,
+      });
+      if (
+        deltaPixels === 0 ||
+        overlayConsumesWheel({ target, host: overlayWheelHost, deltaPixels })
+      ) {
+        return;
+      }
+      event.preventDefault();
+      handleManualTimelineNavigation();
+      scrollNode.scrollBy({ top: deltaPixels });
+    };
+
+    overlayWheelHost.addEventListener("wheel", onWheel, { passive: false });
+    return () => overlayWheelHost.removeEventListener("wheel", onWheel);
+  }, [handleManualTimelineNavigation, listRef, overlayWheelHost]);
   const activityState = useMemo<TimelineRowActivityState>(
     () => ({
       isWorking,
@@ -663,6 +776,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       <TimelineRowActivityCtx value={activityState}>
         <div
           ref={setTimelineViewportElement}
+          // Exposed so browser steps can tell a list that is following the live
+          // edge from one parked where the reader left it.
+          data-follows-end={followsEnd ? "true" : "false"}
           className="relative h-full min-h-0"
           onWheelCapture={handleManualTimelineNavigation}
           onTouchMoveCapture={handleManualTimelineNavigation}
@@ -677,9 +793,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             estimatedItemSize={90}
             initialScrollAtEnd
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-            contentInsetEndAdjustment={contentInsetEndAdjustment}
+            contentInsetEndAdjustment={effectiveContentInsetEndAdjustment}
             maintainScrollAtEnd={
-              anchoredEndSpace
+              anchoredEndSpace || !followsEnd
                 ? false
                 : {
                     animated: false,
