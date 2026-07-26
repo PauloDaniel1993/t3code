@@ -30,27 +30,83 @@ export const ThreadTaskToolModelSelection = Schema.Struct({
 });
 export type ThreadTaskToolModelSelection = typeof ThreadTaskToolModelSelection.Type;
 
+/**
+ * Tool parameters are plain strings, not `TrimmedNonEmptyString`.
+ *
+ * `TrimmedString` is a `decodeTo` transformation, and a tool's published JSON
+ * schema is generated from the *encoded* side — so every check and description
+ * layered on top of it is dropped, leaving the model a bare `{type: "string"}`
+ * with no bound and no explanation. Checks on a plain string survive, and the
+ * dispatched `thread.task.create` command re-validates with the trimmed schema
+ * anyway.
+ */
+const ToolText = (input: { readonly maxChars: number; readonly description: string }) =>
+  Schema.String.check(Schema.isNonEmpty({ description: input.description })).check(
+    Schema.isMaxLength(input.maxChars),
+  );
+
 export const TaskCreateToolInput = Schema.Struct({
-  title: TrimmedNonEmptyString.check(Schema.isMaxLength(THREAD_TASK_TITLE_MAX_CHARS)),
-  prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(THREAD_TASK_TOOL_PROMPT_MAX_CHARS)),
-  /**
-   * Which slice of this thread the task starts from. `selected-messages`
-   * requires `messageIds`.
-   */
-  context: ThreadTaskContextKind,
+  title: ToolText({
+    maxChars: THREAD_TASK_TITLE_MAX_CHARS,
+    description:
+      "Short label for the task, shown in the sidebar. Name the work, not the outcome — e.g. 'Audit provider handlers'.",
+  }),
+  prompt: ToolText({
+    maxChars: THREAD_TASK_TOOL_PROMPT_MAX_CHARS,
+    description:
+      "The complete, self-contained brief the task runs on. It executes in its own thread, so state everything it needs and what it should report back.",
+  }),
+  context: ThreadTaskContextKind.annotate({
+    description:
+      "Which slice of this thread the task starts from: 'full-thread' for the whole conversation, 'selected-messages' for only the ids in messageIds, 'none' for the prompt alone.",
+  }),
   messageIds: Schema.optional(
-    Schema.Array(MessageId).check(Schema.isMaxLength(THREAD_TASK_MAX_SELECTED_MESSAGES)),
-  ),
-  /** Defaults to this thread's own model when omitted. */
-  model: Schema.optional(ThreadTaskToolModelSelection),
+    Schema.Array(MessageId).check(
+      Schema.isMaxLength(THREAD_TASK_MAX_SELECTED_MESSAGES, {
+        description: `Message ids to carry over, required and non-empty when context is 'selected-messages' and ignored otherwise. At most ${THREAD_TASK_MAX_SELECTED_MESSAGES}.`,
+      }),
+    ),
+  ).annotate({
+    description: `Message ids to carry over, required and non-empty when context is 'selected-messages' and ignored otherwise. At most ${THREAD_TASK_MAX_SELECTED_MESSAGES}.`,
+  }),
+  model: Schema.optional(
+    ThreadTaskToolModelSelection.annotate({
+      description:
+        "Model for the task's own session. Defaults to this thread's model when omitted.",
+    }),
+  ).annotate({
+    description: "Model for the task's own session. Defaults to this thread's model when omitted.",
+  }),
 });
 export type TaskCreateToolInput = typeof TaskCreateToolInput.Type;
 
-export const TaskListToolInput = Schema.Struct({});
+/**
+ * The filter exists partly to keep the published schema a real object: an
+ * empty `Schema.Struct({})` degenerates to `{"anyOf":[{"type":"object"},
+ * {"type":"array"}]}`, which providers that demand a top-level object schema
+ * reject.
+ */
+export const TaskListToolInput = Schema.Struct({
+  status: Schema.optional(
+    ThreadTaskStatus.annotate({
+      description: "Return only tasks in this state. Omit to list every task this thread owns.",
+    }),
+  ).annotate({
+    description: "Return only tasks in this state. Omit to list every task this thread owns.",
+  }),
+});
 export type TaskListToolInput = typeof TaskListToolInput.Type;
 
 export const TaskCancelToolInput = Schema.Struct({
-  threadId: ThreadId,
+  // Plain string for the same reason as `ToolText`: a branded id is built on
+  // `TrimmedString`, whose transformation drops the description on the way to
+  // the published schema. The handler brands it back.
+  threadId: Schema.String.check(
+    Schema.isNonEmpty({
+      description:
+        "Thread id of the task to cancel, as returned by task_create or task_list. Must be a task this thread owns.",
+    }),
+  ),
 });
 export type TaskCancelToolInput = typeof TaskCancelToolInput.Type;
 
