@@ -2812,6 +2812,8 @@ export default function SidebarV2() {
                               onSteer={handleSteerTask}
                               onCancelTask={handleCancelTask}
                               onRedeliver={handleRedeliverTask}
+                              onKeepOpen={clearPeekTimer}
+                              onPeekLeave={handlePeekLeave}
                             />
                           )
                         }

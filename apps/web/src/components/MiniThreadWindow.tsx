@@ -1,9 +1,11 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { createPortal } from "react-dom";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { ArrowUpIcon, CheckIcon, ExternalLinkIcon, LoaderIcon, XIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -19,6 +21,10 @@ import {
   taskIsCancellable,
   taskIsRedeliverable,
 } from "./SidebarTaskRows.logic";
+
+// Placement has to land before paint or the card flashes at the previous
+// row-s coordinates; on the server there is no layout to measure.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
  * Peek at a task without navigating: status, chips, a live mini timeline, and a
@@ -38,14 +44,51 @@ export function MiniThreadWindow(props: {
   onSteer: (threadRef: ScopedThreadRef, text: string) => void;
   onCancelTask: (threadRef: ScopedThreadRef) => void;
   onRedeliver: (threadRef: ScopedThreadRef) => void;
+  /** Reaching for the card must not count as leaving the row that opened it. */
+  onKeepOpen: () => void;
+  onPeekLeave: () => void;
 }) {
-  const { anchor, isMobile, onCancelTask, onClose, onOpenThread, onRedeliver, onSteer, threadRef } =
-    props;
+  const {
+    anchor,
+    isMobile,
+    onCancelTask,
+    onClose,
+    onKeepOpen,
+    onOpenThread,
+    onPeekLeave,
+    onRedeliver,
+    onSteer,
+    threadRef,
+  } = props;
   const thread = useThread(threadRef);
   const shell = useThreadShell(threadRef);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState("");
+  const [placement, setPlacement] = useState<{ left: number; top: number } | undefined>(undefined);
   const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Anchored to the row the way the mockup does it: just outside the sidebar,
+  // aligned a little above the row so the caret lands on its centre, and
+  // clamped so a card near the bottom of a long list stays on screen.
+  useIsomorphicLayoutEffect(() => {
+    if (anchor === null) return;
+    const place = () => {
+      const rect = anchor.getBoundingClientRect();
+      const height = containerRef.current?.offsetHeight ?? 0;
+      setPlacement({
+        left: rect.right + 14,
+        top: Math.max(10, Math.min(rect.top - 8, window.innerHeight - height - 12)),
+      });
+    };
+    place();
+    // Capture phase: the sidebar scrolls, not the window.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [anchor]);
 
   // Keeps the elapsed label honest while the window stays open.
   useEffect(() => {
@@ -112,19 +155,26 @@ export function MiniThreadWindow(props: {
     .reverse()
     .find((message) => message.role === "assistant");
 
-  return (
+  const card = (
     <div
       ref={containerRef}
+      onMouseEnter={onKeepOpen}
+      onMouseLeave={onPeekLeave}
       role="dialog"
       aria-label={`Task: ${task.title}`}
       data-testid="mini-thread-window"
+      style={placement}
       className={cn(
-        "pointer-events-auto absolute top-0 left-full z-50 ml-2 w-[22rem] rounded-2xl",
+        // Fixed, not absolute: inside the sidebar-s scroll container an
+        // absolutely-positioned card 352px wide hangs off a ~264px sidebar and
+        // adds that overhang to the container-s scrollable area, so scrollbars
+        // appeared for as long as the card was open.
+        "pointer-events-auto fixed z-50 w-[22rem] rounded-2xl",
         "border border-border/60 bg-popover/95 shadow-xl backdrop-blur-md",
-        "animate-mini-thread-in",
+        placement === undefined ? "invisible" : "animate-mini-thread-in",
         // Caret tying the card to the row it belongs to, aimed at the row-s
         // vertical centre.
-        "before:absolute before:-left-[5px] before:top-[9px] before:size-[9px] before:rotate-45",
+        "before:absolute before:-left-[5px] before:top-[18px] before:size-[9px] before:rotate-45",
         "before:border-b before:border-l before:border-border/60 before:bg-popover/95 before:content-['']",
       )}
     >
@@ -271,6 +321,13 @@ export function MiniThreadWindow(props: {
       )}
     </div>
   );
+
+  // Portalled to the body, not just fixed: an ancestor of the sidebar rows
+  // establishes a containing block (a transform or backdrop-filter is enough),
+  // which makes a fixed card resolve against that ancestor instead of the
+  // viewport — mispositioning it and still stretching the sidebar's scroll
+  // area, which is what put scrollbars on screen for as long as it was open.
+  return typeof document === "undefined" ? card : createPortal(card, document.body);
 }
 
 const PREVIEW_MAX_CHARS = 400;
