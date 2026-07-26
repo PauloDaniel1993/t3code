@@ -39,6 +39,22 @@ const readMigrationState = Effect.gen(function* () {
     FROM sqlite_master
     WHERE type = 'table' AND name = 'database_compaction_journal'
   `;
+  const threadTaskColumns = yield* sql<{ readonly name: string }>`
+    SELECT name
+    FROM pragma_table_info('projection_threads')
+    WHERE name IN ('parent_thread_id', 'task_json', 'task_summary_json')
+    ORDER BY name ASC
+  `;
+  const threadTaskIndexes = yield* sql<{ readonly name: string }>`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'index' AND name = 'idx_projection_threads_parent_thread_id'
+  `;
+  const messageSourceColumns = yield* sql<{ readonly name: string }>`
+    SELECT name
+    FROM pragma_table_info('projection_thread_messages')
+    WHERE name = 'source'
+  `;
   const baseLedger = yield* sql<{
     readonly migration_id: number;
     readonly name: string;
@@ -59,6 +75,9 @@ const readMigrationState = Effect.gen(function* () {
     cleanupQueueIndexes,
     cleanupQueueTables,
     compactionJournalTables,
+    threadTaskColumns,
+    threadTaskIndexes,
+    messageSourceColumns,
     baseLedger,
     forkLedger,
     recoveryColumns,
@@ -72,6 +91,15 @@ const assertForkMigrationApplied = (state: Effect.Success<typeof readMigrationSt
   ]);
   assert.deepStrictEqual(state.recoveryColumns, [{ name: "recovery_json" }]);
   assert.deepStrictEqual(state.compactionJournalTables, [{ name: "database_compaction_journal" }]);
+  assert.deepStrictEqual(state.threadTaskColumns, [
+    { name: "parent_thread_id" },
+    { name: "task_json" },
+    { name: "task_summary_json" },
+  ]);
+  assert.deepStrictEqual(state.threadTaskIndexes, [
+    { name: "idx_projection_threads_parent_thread_id" },
+  ]);
+  assert.deepStrictEqual(state.messageSourceColumns, [{ name: "source" }]);
   assert.deepStrictEqual(state.forkLedger, [
     {
       migration_id: 1,
@@ -84,6 +112,14 @@ const assertForkMigrationApplied = (state: Effect.Success<typeof readMigrationSt
     {
       migration_id: 3,
       name: "DatabaseCompactionJournal",
+    },
+    {
+      migration_id: 4,
+      name: "ProjectionThreadTasks",
+    },
+    {
+      migration_id: 5,
+      name: "ProjectionThreadMessageSource",
     },
   ]);
 };
@@ -184,6 +220,8 @@ freshLayer("ForkMigrations (fresh database)", (it) => {
         [1, "AttachmentCleanupQueue"],
         [2, "ProjectionThreadSessionRecovery"],
         [3, "DatabaseCompactionJournal"],
+        [4, "ProjectionThreadTasks"],
+        [5, "ProjectionThreadMessageSource"],
       ]);
       assertBaseLedgerEndsAt34(state);
       assertForkMigrationApplied(state);
@@ -214,6 +252,8 @@ baseOnlyLayer("ForkMigrations (existing base-only database)", (it) => {
         [1, "AttachmentCleanupQueue"],
         [2, "ProjectionThreadSessionRecovery"],
         [3, "DatabaseCompactionJournal"],
+        [4, "ProjectionThreadTasks"],
+        [5, "ProjectionThreadMessageSource"],
       ]);
       assertBaseLedgerEndsAt34(state);
       assertForkMigrationApplied(state);
