@@ -244,6 +244,88 @@ export function resolveDisplayedTimelineActivityCycle(input: {
   });
 }
 
+/**
+ * The pinned surface is chosen from the scroll offset, and the card it renders
+ * is an overlay whose measured height becomes part of the list's bottom inset.
+ * Letting a scroll offset drop the pin therefore unmounts the card, shrinks the
+ * inset, and moves the very offset that chose the cycle — the list flickers as
+ * the card opens and closes. So a cycle that carries no workflow of its own
+ * keeps the last workflow surface pinned; only another workflow-bearing cycle
+ * takes over, and only the thread's own data (or an explicit close) clears it.
+ */
+export function resolveStickyWorkflowActivityTurnId(input: {
+  readonly resolvedCycle: TimelineActivityCycle | null;
+  readonly currentTurnId: TurnId | null;
+  readonly cycles: ReadonlyArray<TimelineActivityCycle>;
+}): TurnId | null {
+  const resolvedTurnId = input.resolvedCycle?.activityTurnId ?? null;
+  if (resolvedTurnId !== null) {
+    return resolvedTurnId;
+  }
+  if (input.currentTurnId === null) {
+    return null;
+  }
+  // A pin whose turn no longer appears in the timeline is stale, not sticky.
+  return input.cycles.some((cycle) => cycle.activityTurnId === input.currentTurnId)
+    ? input.currentTurnId
+    : null;
+}
+
+export interface TimelineExtentState {
+  readonly contentLength?: number;
+  readonly scroll?: number;
+  readonly scrollLength?: number;
+}
+
+/**
+ * Whether the list is resting on its last pixel. LegendList's own `isAtEnd`
+ * carries a tolerance, so it still answers "yes" a notch or two above the
+ * bottom; re-arming end-following on that answer would undo the reader's
+ * scroll. This measures the extent instead.
+ */
+export function resolveTimelineIsAtExactEnd(
+  state: TimelineExtentState | undefined,
+): boolean | undefined {
+  const contentLength = state?.contentLength;
+  const scroll = state?.scroll;
+  const scrollLength = state?.scrollLength;
+  if (
+    typeof contentLength !== "number" ||
+    typeof scroll !== "number" ||
+    typeof scrollLength !== "number" ||
+    !Number.isFinite(contentLength) ||
+    !Number.isFinite(scroll) ||
+    !Number.isFinite(scrollLength)
+  ) {
+    return undefined;
+  }
+  return scroll + scrollLength >= contentLength - 2;
+}
+
+/**
+ * Whether LegendList should keep re-anchoring the list to its end.
+ *
+ * LegendList maintains the end for any layout change while the offset is
+ * within its near-end threshold, so a reader who has nudged up a notch is
+ * still "at the end" to it — and the next bottom-inset change (a pinned card
+ * mounting, an approval card growing the composer) drags them back down. A
+ * manual gesture therefore drops end-following outright, and only a scroll
+ * that lands exactly on the end re-arms it.
+ */
+export function resolveTimelineEndFollowing(input: {
+  readonly current: boolean;
+  readonly manualNavigation: boolean;
+  readonly isAtExactEnd: boolean | undefined;
+}): boolean {
+  if (input.manualNavigation) {
+    return false;
+  }
+  if (input.isAtExactEnd === true) {
+    return true;
+  }
+  return input.current;
+}
+
 export interface TimelineEndState {
   readonly isAtEnd?: boolean;
   readonly isNearEnd?: boolean;

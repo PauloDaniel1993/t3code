@@ -14,7 +14,10 @@ import {
   resolveActiveTimelineActivityCycle,
   resolveDisplayedTimelineActivityCycle,
   resolveAssistantMessageCopyState,
+  resolveStickyWorkflowActivityTurnId,
   resolveTaskCardExpansionA11y,
+  resolveTimelineEndFollowing,
+  resolveTimelineIsAtExactEnd,
   workEntryIsTranscriptVisible,
   workLogEntryIsTaskLike,
   type MessagesTimelineRow,
@@ -213,6 +216,81 @@ describe("timeline activity cycles", () => {
         userNavigated: true,
       })?.id,
     ).toBe("cycle-1");
+  });
+
+  it("keeps the last workflow pinned through cycles that have none of their own", () => {
+    const cycles = [
+      { id: "cycle-1", startRowIndex: 0, activityTurnId: turnOne },
+      { id: "cycle-2", startRowIndex: 1, activityTurnId: null },
+      { id: "cycle-3", startRowIndex: 2, activityTurnId: turnTwo },
+    ];
+
+    expect(
+      resolveStickyWorkflowActivityTurnId({
+        resolvedCycle: cycles[1]!,
+        currentTurnId: turnTwo,
+        cycles,
+      }),
+    ).toBe(turnTwo);
+    expect(
+      resolveStickyWorkflowActivityTurnId({
+        resolvedCycle: cycles[0]!,
+        currentTurnId: turnTwo,
+        cycles,
+      }),
+    ).toBe(turnOne);
+  });
+
+  it("drops a pin whose turn is no longer in the timeline", () => {
+    const cycles = [{ id: "cycle-1", startRowIndex: 0, activityTurnId: turnOne }];
+
+    expect(
+      resolveStickyWorkflowActivityTurnId({
+        resolvedCycle: null,
+        currentTurnId: turnRetry,
+        cycles,
+      }),
+    ).toBeNull();
+    expect(
+      resolveStickyWorkflowActivityTurnId({ resolvedCycle: null, currentTurnId: null, cycles }),
+    ).toBeNull();
+  });
+});
+
+describe("timeline end following", () => {
+  it("stops following on a manual gesture and re-arms only at the exact end", () => {
+    expect(
+      resolveTimelineEndFollowing({
+        current: true,
+        manualNavigation: true,
+        isAtExactEnd: undefined,
+      }),
+    ).toBe(false);
+    // LegendList still reports "near end" a notch up; only the exact end re-arms.
+    expect(
+      resolveTimelineEndFollowing({ current: false, manualNavigation: false, isAtExactEnd: false }),
+    ).toBe(false);
+    expect(
+      resolveTimelineEndFollowing({ current: false, manualNavigation: false, isAtExactEnd: true }),
+    ).toBe(true);
+    expect(
+      resolveTimelineEndFollowing({
+        current: false,
+        manualNavigation: false,
+        isAtExactEnd: undefined,
+      }),
+    ).toBe(false);
+  });
+
+  it("measures the exact end from the list extent", () => {
+    expect(
+      resolveTimelineIsAtExactEnd({ contentLength: 1000, scroll: 800, scrollLength: 200 }),
+    ).toBe(true);
+    expect(
+      resolveTimelineIsAtExactEnd({ contentLength: 1000, scroll: 680, scrollLength: 200 }),
+    ).toBe(false);
+    expect(resolveTimelineIsAtExactEnd(undefined)).toBeUndefined();
+    expect(resolveTimelineIsAtExactEnd({ scroll: 10, scrollLength: 200 })).toBeUndefined();
   });
 });
 
