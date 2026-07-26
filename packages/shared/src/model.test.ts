@@ -5,6 +5,7 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
+  findReasoningOptionDescriptor,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
@@ -12,6 +13,7 @@ import {
   getProviderOptionStringSelectionValue,
   normalizeCustomModelSlug,
   normalizeModelSlug,
+  resolveReasoningOptionChoiceId,
 } from "./model.ts";
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
@@ -144,6 +146,93 @@ describe("descriptor helpers", () => {
     ).toBeUndefined();
     expect(getModelSelectionStringOptionValue(selection, "reasoningEffort")).toBe("high");
     expect(getModelSelectionBooleanOptionValue(selection, "fastMode")).toBe(true);
+  });
+});
+
+describe("reasoning descriptor lookup", () => {
+  const cursorCaps: ModelCapabilities = createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "reasoning",
+        label: "Thought Level",
+        type: "select",
+        options: [
+          { id: "standard", label: "Standard", isDefault: true },
+          { id: "max", label: "Max" },
+        ],
+      },
+    ],
+  });
+
+  it("finds the reasoning option under each driver's own id", () => {
+    for (const [caps, expected] of [
+      [codexCaps, "reasoningEffort"],
+      [claudeCaps, "effort"],
+      [cursorCaps, "reasoning"],
+    ] as const) {
+      expect(findReasoningOptionDescriptor(getProviderOptionDescriptors({ caps }))?.id).toBe(
+        expected,
+      );
+    }
+  });
+
+  it("finds a reasoning option named only by its label", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "thought_level",
+          label: "Thinking",
+          type: "select",
+          options: [{ id: "deep", label: "Deep" }],
+        },
+      ],
+    });
+
+    expect(findReasoningOptionDescriptor(getProviderOptionDescriptors({ caps }))?.id).toBe(
+      "thought_level",
+    );
+  });
+
+  it("reports no reasoning option rather than claiming an unrelated select", () => {
+    // OpenCode publishes `variant` and `agent` selects and no reasoning level;
+    // treating the first select as "the reasoning one" would silently reassign
+    // the agent a task was meant to run under.
+    const openCodeCaps: ModelCapabilities = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "variant",
+          label: "Variant",
+          type: "select",
+          options: [{ id: "default", label: "Default" }],
+        },
+        {
+          id: "agent",
+          label: "Agent",
+          type: "select",
+          options: [{ id: "build", label: "Build" }],
+        },
+      ],
+    });
+
+    expect(
+      findReasoningOptionDescriptor(getProviderOptionDescriptors({ caps: openCodeCaps })),
+    ).toBe(null);
+    expect(findReasoningOptionDescriptor([])).toBe(null);
+  });
+
+  it("matches a requested level by id or label, however it is punctuated", () => {
+    const descriptor = findReasoningOptionDescriptor(
+      getProviderOptionDescriptors({ caps: codexCaps }),
+    );
+    if (!descriptor) throw new Error("expected a reasoning descriptor");
+
+    expect(resolveReasoningOptionChoiceId(descriptor, "xhigh")).toBe("xhigh");
+    expect(resolveReasoningOptionChoiceId(descriptor, " HIGH ")).toBe("high");
+    expect(resolveReasoningOptionChoiceId(descriptor, "extra high")).toBe("xhigh");
+    expect(resolveReasoningOptionChoiceId(descriptor, "extra-high")).toBe("xhigh");
+    expect(resolveReasoningOptionChoiceId(descriptor, "maximum")).toBe(null);
+    expect(resolveReasoningOptionChoiceId(descriptor, "")).toBe(null);
+    expect(resolveReasoningOptionChoiceId(descriptor, null)).toBe(null);
   });
 });
 

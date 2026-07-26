@@ -19,6 +19,7 @@ import {
 import { type AppModelOption, getAppModelOptionsForInstance } from "../modelSelection";
 import { primaryServerProvidersAtom } from "../state/server";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
+import { TraitsPicker } from "./chat/TraitsPicker";
 import { useThread } from "../state/entities";
 import { Button } from "./ui/button";
 import {
@@ -101,6 +102,14 @@ export function NewThreadTaskDialog(props: {
   );
   const [modelOverride, setModelOverride] = useState<ModelSelection | null>(null);
   const effectiveModel = modelOverride ?? thread?.modelSelection ?? null;
+  // Reasoning level and the rest of the model's traits come from the instance
+  // the task will actually run on, which is the override once one is picked.
+  const effectiveInstanceEntry = useMemo(
+    () =>
+      providerInstanceEntries.find((entry) => entry.instanceId === effectiveModel?.instanceId) ??
+      null,
+    [effectiveModel?.instanceId, providerInstanceEntries],
+  );
   const problem = validateNewThreadTaskDraft(draft);
   const selectedIds = draft.selectedMessageIds;
 
@@ -206,9 +215,34 @@ export function NewThreadTaskDialog(props: {
                   modelOptionsByInstance={modelOptionsByInstance}
                   triggerVariant="outline"
                   onInstanceModelChange={(instanceId, model) =>
+                    // A different model has different traits, so the previous
+                    // model's options are dropped rather than carried onto it.
                     setModelOverride(createModelSelection(instanceId, model))
                   }
                 />
+                {effectiveInstanceEntry === null ? null : (
+                  <span data-testid="new-thread-task-traits">
+                    <TraitsPicker
+                      provider={effectiveInstanceEntry.driverKind}
+                      instanceId={effectiveInstanceEntry.instanceId}
+                      models={effectiveInstanceEntry.models}
+                      model={effectiveModel.model}
+                      modelOptions={effectiveModel.options}
+                      prompt={draft.prompt}
+                      onPromptChange={(prompt) => setDraft((current) => ({ ...current, prompt }))}
+                      onModelOptionsChange={(nextOptions) =>
+                        setModelOverride(
+                          createModelSelection(
+                            effectiveModel.instanceId,
+                            effectiveModel.model,
+                            nextOptions ?? [],
+                          ),
+                        )
+                      }
+                      triggerVariant="outline"
+                    />
+                  </span>
+                )}
                 {modelOverride === null ? (
                   <span className="text-[12px] text-muted-foreground">Same as this thread</span>
                 ) : (

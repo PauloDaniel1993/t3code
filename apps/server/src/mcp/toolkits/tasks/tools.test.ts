@@ -60,8 +60,21 @@ it("requires the brief that makes a task self-contained", () => {
   // and the handler rejects an empty list rather than the schema.
   expect(create.required).not.toContain("messageIds");
   expect(Object.keys(create.properties ?? {})).toEqual(
-    expect.arrayContaining(["title", "prompt", "context", "messageIds", "model"]),
+    expect.arrayContaining(["title", "prompt", "context", "messageIds", "model", "reasoning"]),
   );
+});
+
+it("lets the reasoning level be set without also naming a model", () => {
+  // Reasoning is its own top-level argument, not a field of `model`, so
+  // "run this task harder on the model I am already using" is one argument.
+  const create = jsonSchemaOf(TasksToolkit.tools.task_create);
+  expect(create.required).not.toContain("reasoning");
+  expect(create.required).not.toContain("model");
+  const reasoning = create.properties?.reasoning;
+  expect(schemaHasDescription(reasoning)).toBe(true);
+  // The levels are per-model and come from the live provider snapshot, so the
+  // published schema must stay an open string rather than a stale enum.
+  expect((reasoning as { readonly enum?: unknown }).enum).toBeUndefined();
 });
 
 it("takes a task thread id to cancel and an optional status filter to list", () => {

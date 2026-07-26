@@ -12,17 +12,21 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   OrchestrationEngineService,
   ProjectionSnapshotQuery,
+  // Reasoning levels are per-model and live in the provider snapshot, so
+  // `task_create` validates one against the model it targets.
+  ProviderRegistry,
   Crypto.Crypto,
 ];
 
 export const TaskCreateTool = Tool.make("task_create", {
   description:
-    "Delegate work to a task: a full thread owned by this one, running its own provider session. Returns immediately — the task's result is delivered back into this thread automatically when it finishes, waking this thread if it has gone idle. Choose context: 'full-thread' passes this conversation, 'selected-messages' passes only the message ids you list, 'none' passes just the prompt. Write the prompt as a complete, self-contained brief.",
+    "Delegate work to a task: a full thread owned by this one, running its own provider session. Returns immediately — the task's result is delivered back into this thread automatically when it finishes, waking this thread if it has gone idle. Choose context: 'full-thread' passes this conversation, 'selected-messages' passes only the message ids you list, 'none' passes just the prompt. Write the prompt as a complete, self-contained brief. Pass 'model' to run the task on a different provider instance or model, and 'reasoning' to set how hard it thinks — either can be set on its own.",
   parameters: TaskCreateToolInput,
   success: ThreadTaskToolSummary,
   failure: ThreadTaskToolError,
