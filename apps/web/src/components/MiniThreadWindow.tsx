@@ -1,6 +1,6 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { ArrowUpIcon, ExternalLinkIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, CheckIcon, ExternalLinkIcon, LoaderIcon, XIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -118,9 +118,30 @@ export function MiniThreadWindow(props: {
       role="dialog"
       aria-label={`Task: ${task.title}`}
       data-testid="mini-thread-window"
-      className="pointer-events-auto absolute left-full z-50 ml-2 w-[26rem] rounded-xl border border-border/60 bg-popover/95 shadow-xl backdrop-blur-md"
+      className={cn(
+        "pointer-events-auto absolute top-0 left-full z-50 ml-2 w-[22rem] rounded-2xl",
+        "border border-border/60 bg-popover/95 shadow-xl backdrop-blur-md",
+        "animate-mini-thread-in",
+        // Caret tying the card to the row it belongs to, aimed at the row-s
+        // vertical centre.
+        "before:absolute before:-left-[5px] before:top-[9px] before:size-[9px] before:rotate-45",
+        "before:border-b before:border-l before:border-border/60 before:bg-popover/95 before:content-['']",
+      )}
     >
       <div className="flex items-center gap-2 px-3 pt-2.5">
+        {task.status === "running" || task.status === "queued" ? (
+          <LoaderIcon
+            aria-hidden
+            className="size-3 shrink-0 animate-spin text-sky-600 motion-reduce:animate-none dark:text-sky-400"
+          />
+        ) : task.status === "failed" ? (
+          <XIcon aria-hidden className="size-3 shrink-0 text-red-600 dark:text-red-400" />
+        ) : (
+          <CheckIcon
+            aria-hidden
+            className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400"
+          />
+        )}
         <span
           data-testid="mini-thread-status"
           className={cn(
@@ -161,12 +182,14 @@ export function MiniThreadWindow(props: {
           <span
             key={chip.id}
             className={cn(
-              "rounded-full px-2 py-0.5 text-[10px]",
+              // Every chip is an outlined pill; the two that carry meaning
+              // (who asked, and whether it woke the parent) are tinted.
+              "rounded-full border px-2 py-0.5 text-[11px]",
               chip.tone === "returned"
-                ? "bg-blue-500/10 text-blue-600 dark:text-blue-300"
+                ? "border-blue-400/40 bg-blue-400/10 text-blue-600 dark:text-blue-300"
                 : chip.tone === "creator"
-                  ? "bg-violet-500/10 text-violet-600 dark:text-violet-300"
-                  : "bg-muted text-muted-foreground",
+                  ? "border-indigo-400/40 bg-indigo-400/12 text-indigo-600 dark:text-indigo-200"
+                  : "border-border/60 bg-muted/60 text-muted-foreground",
             )}
           >
             {chip.label}
@@ -176,7 +199,7 @@ export function MiniThreadWindow(props: {
 
       <div className="max-h-64 space-y-2 overflow-y-auto px-3 py-3">
         {promptMessage === null ? null : (
-          <p className="ml-6 rounded-lg bg-muted/70 px-2.5 py-1.5 text-[12px] leading-snug text-foreground/90">
+          <p className="ml-auto max-w-[86%] rounded-xl border border-border/60 bg-foreground/[0.07] px-2.5 py-1.5 text-[12px] leading-snug text-foreground/90">
             {task.prompt}
           </p>
         )}
