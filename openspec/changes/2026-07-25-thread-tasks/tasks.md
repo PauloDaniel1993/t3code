@@ -75,7 +75,7 @@
 - [x] 8.5 Add the plain-text steer composer dispatching `thread.turn.start` to the task thread with no navigation
 - [x] 8.6 Add the awaiting-approval/input state that directs the user to the full thread, plus the cancel and return-results-again actions
 - [x] 8.7 Implement dismissal on Escape, outside click, and group collapse
-- [ ] 8.8 Add mini window tests for anatomy, live updates, steer dispatch, dismissal paths, and mobile fallback to full-thread navigation
+- [x] 8.8 Add mini window tests for anatomy, live updates, steer dispatch, dismissal paths, and mobile fallback to full-thread navigation
 
 ## 9. Web Timeline And Creation Dialog
 
