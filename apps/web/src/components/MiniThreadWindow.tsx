@@ -20,6 +20,7 @@ import {
   resolveTaskChips,
   taskIsCancellable,
   taskIsRedeliverable,
+  taskThreadIsWorking,
 } from "./SidebarTaskRows.logic";
 
 // Placement has to land before paint or the card flashes at the previous
@@ -115,6 +116,13 @@ export function MiniThreadWindow(props: {
     };
   }, [anchor, onClose]);
 
+  // A settled task whose thread starts a new turn is working again; the card
+  // has to say so rather than keep reporting the recorded result.
+  const activity = useMemo(
+    () => ({ latestTurn: thread?.latestTurn ?? null, session: thread?.session ?? null }),
+    [thread?.latestTurn, thread?.session],
+  );
+  const working = taskThreadIsWorking(activity);
   const task = thread?.task ?? null;
   const chips = useMemo(
     () => (task === null ? [] : resolveTaskChips({ task, modelLabel: props.modelLabel })),
@@ -179,7 +187,7 @@ export function MiniThreadWindow(props: {
       )}
     >
       <div className="flex items-center gap-2 px-3 pt-2.5">
-        {task.status === "running" || task.status === "queued" ? (
+        {working || task.status === "running" || task.status === "queued" ? (
           <LoaderIcon
             aria-hidden
             className="size-3 shrink-0 animate-spin text-sky-600 motion-reduce:animate-none dark:text-sky-400"
@@ -196,14 +204,14 @@ export function MiniThreadWindow(props: {
           data-testid="mini-thread-status"
           className={cn(
             "font-mono text-[11px]",
-            task.status === "running" || task.status === "queued"
+            working || task.status === "running" || task.status === "queued"
               ? "text-sky-600 dark:text-sky-400"
               : task.status === "failed"
                 ? "text-red-600 dark:text-red-400"
                 : "text-emerald-600 dark:text-emerald-400",
           )}
         >
-          {formatTaskStatusLine({ task, nowMs })}
+          {formatTaskStatusLine({ task, activity, nowMs })}
         </span>
         <span className="flex-1" />
         <button
@@ -270,7 +278,7 @@ export function MiniThreadWindow(props: {
       </div>
 
       <div className="flex items-center gap-1 border-t border-border/50 px-2 py-1.5">
-        {taskIsCancellable(task.status) ? (
+        {taskIsCancellable(task.status, activity) ? (
           <button
             type="button"
             data-testid="mini-thread-cancel"

@@ -4,7 +4,11 @@
  * Kept separate from the components so the rules — which icon, which status
  * line, when the group opens — are testable without rendering.
  */
-import type { ThreadTaskMetadata, ThreadTaskStatus } from "@t3tools/contracts";
+import type {
+  OrchestrationThreadShell,
+  ThreadTaskMetadata,
+  ThreadTaskStatus,
+} from "@t3tools/contracts";
 
 /** The subset of a sidebar thread shell the grouping rules need. */
 export interface SidebarTaskGroupingThread {
@@ -64,6 +68,29 @@ export function groupSidebarTaskThreads<T extends SidebarTaskGroupingThread>(inp
   return { topLevel, tasksByParent };
 }
 
+/**
+ * The task thread's own live state, which outranks the recorded task status.
+ *
+ * `ThreadTaskStatus` is deliberately coarse and freezes once a result has been
+ * recorded. A task thread is still an ordinary thread, though: steering it, or
+ * opening it and sending a prompt, starts a new turn. The row has to read as
+ * working again when that happens, or the sidebar claims a thread is done while
+ * it is visibly running.
+ */
+export interface TaskThreadActivity {
+  readonly latestTurn: Pick<
+    NonNullable<OrchestrationThreadShell["latestTurn"]>,
+    "state" | "requestedAt" | "startedAt" | "completedAt"
+  > | null;
+  readonly session: Pick<NonNullable<OrchestrationThreadShell["session"]>, "activeTurnId"> | null;
+}
+
+export function taskThreadIsWorking(activity: TaskThreadActivity | undefined): boolean {
+  if (activity === undefined) return false;
+  if (activity.session?.activeTurnId != null) return true;
+  return activity.latestTurn?.state === "running";
+}
+
 export type TaskRowIcon = "running" | "done" | "failed" | "cancelled";
 
 export interface TaskRowPresentation {
@@ -73,10 +100,13 @@ export interface TaskRowPresentation {
   readonly iconLabel: string;
 }
 
-export function resolveTaskRowPresentation(task: ThreadTaskMetadata): TaskRowPresentation {
+export function resolveTaskRowPresentation(
+  task: ThreadTaskMetadata,
+  activity?: TaskThreadActivity,
+): TaskRowPresentation {
   const returnedToParent = task.delivery?.state === "delivered";
   const icon: TaskRowIcon =
-    task.status === "queued" || task.status === "running"
+    taskThreadIsWorking(activity) || task.status === "queued" || task.status === "running"
       ? "running"
       : task.status === "failed"
         ? "failed"
@@ -106,10 +136,17 @@ export function resolveTaskRowPresentation(task: ThreadTaskMetadata): TaskRowPre
  */
 export function formatTaskElapsedLabel(input: {
   readonly task: ThreadTaskMetadata;
+  readonly activity?: TaskThreadActivity;
   readonly nowMs: number;
 }): string {
-  const running = input.task.status === "queued" || input.task.status === "running";
-  const startedAtMs = Date.parse(input.task.startedAt ?? input.task.requestedAt);
+  // A settled task that started a fresh turn is timed from that turn, not from
+  // the original run — the label is about the work happening now.
+  const working = taskThreadIsWorking(input.activity);
+  const running = working || input.task.status === "queued" || input.task.status === "running";
+  const turnStartedAt = working
+    ? (input.activity?.latestTurn?.startedAt ?? input.activity?.latestTurn?.requestedAt ?? null)
+    : null;
+  const startedAtMs = Date.parse(turnStartedAt ?? input.task.startedAt ?? input.task.requestedAt);
   if (!Number.isFinite(startedAtMs)) return "";
   const endedAtMs = running
     ? input.nowMs
@@ -128,9 +165,13 @@ export function formatTaskElapsedLabel(input: {
 /** `Working · 3m` while it runs, `Done in 8m` once it has stopped. */
 export function formatTaskStatusLine(input: {
   readonly task: ThreadTaskMetadata;
+  readonly activity?: TaskThreadActivity;
   readonly nowMs: number;
 }): string {
   const elapsed = formatTaskElapsedLabel(input);
+  if (taskThreadIsWorking(input.activity)) {
+    return elapsed === "" ? "Working" : `Working · ${elapsed}`;
+  }
   switch (input.task.status) {
     case "queued":
       return elapsed === "" ? "Queued" : `Queued · ${elapsed}`;
@@ -199,8 +240,11 @@ export function resolveMiniWindowMode(input: {
   return "steer";
 }
 
-export function taskIsCancellable(status: ThreadTaskStatus): boolean {
-  return status === "queued" || status === "running";
+export function taskIsCancellable(
+  status: ThreadTaskStatus,
+  activity?: TaskThreadActivity,
+): boolean {
+  return taskThreadIsWorking(activity) || status === "queued" || status === "running";
 }
 
 export function taskIsRedeliverable(task: ThreadTaskMetadata): boolean {

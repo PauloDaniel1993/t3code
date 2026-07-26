@@ -1572,7 +1572,7 @@ export default function SidebarV2() {
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true,
         parentKey: (task) =>
           scopedThreadKey(scopeThreadRef(task.environmentId, task.parentThreadId as ThreadId)),
-        compareTasks: (left, right) => left.createdAt.localeCompare(right.createdAt),
+        compareTasks: (left, right) => right.createdAt.localeCompare(left.createdAt),
       });
       for (const thread of topLevel) {
         // Threads on servers without the settlement capability (old server,
