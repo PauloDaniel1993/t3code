@@ -3,6 +3,14 @@ import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
+import { parseThreadTaskActivity } from "../../threadTaskActivity";
+
+// Task lifecycle rows link to the task thread. Static rendering has no router,
+// and navigation is not what these tests are about.
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => () => Promise.resolve(),
+}));
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -196,6 +204,7 @@ function buildProps() {
     contentInsetEndAdjustment: 0,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
+    threadTasksEnabled: true,
   };
 }
 
@@ -1304,5 +1313,187 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-maintain-visible-content-position="object"');
     expect(markup).toContain('data-maintain-visible-content-position-data="true"');
     expect(markup).toContain('data-maintain-visible-content-position-size="false"');
+  });
+
+  describe("thread task lifecycle rows", () => {
+    const renderTaskActivity = (payload: Record<string, unknown>, kind: string) =>
+      renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              id: "entry-1",
+              kind: "work",
+              createdAt: MESSAGE_CREATED_AT,
+              entry: {
+                id: "work-1",
+                createdAt: MESSAGE_CREATED_AT,
+                label: kind,
+                tone: "info",
+                sourceActivityKind: kind,
+                threadTask: parseThreadTaskActivity({ kind, payload } as never)!,
+              },
+            },
+          ]}
+        />,
+      );
+
+    const created = (overrides: Record<string, unknown> = {}) =>
+      renderTaskActivity(
+        {
+          taskThreadId: "task-1",
+          title: "Inventory the handlers",
+          createdBy: "agent",
+          contextLabel: "full thread",
+          ...overrides,
+        },
+        "task.created",
+      );
+
+    const finished = (overrides: Record<string, unknown> = {}) =>
+      renderTaskActivity(
+        {
+          taskThreadId: "task-1",
+          title: "Inventory the handlers",
+          outcome: "succeeded",
+          summary: "Found 4 handlers without tests.",
+          deliveryState: "delivered",
+          ...overrides,
+        },
+        "task.finished",
+      );
+
+    it("attributes a created row to the agent or to the user", () => {
+      const byAgent = created();
+      expect(byAgent).toContain('data-testid="thread-task-row-task.created"');
+      expect(byAgent).toContain("Agent created task");
+      expect(byAgent).toContain("Inventory the handlers");
+      expect(byAgent).toContain("full thread");
+
+      expect(created({ createdBy: "user" })).toContain("You created task");
+    });
+
+    it("offers no disclosure on a created row, which has nothing to reveal", () => {
+      const markup = created();
+      expect(markup).not.toContain("aria-expanded");
+      expect(markup).not.toContain("<pre");
+    });
+
+    it("says the parent resumed only for a delivered result, and tints it accordingly", () => {
+      const delivered = finished();
+      expect(delivered).toContain("Task finished. Main thread resumed.");
+      expect(delivered).toContain("bg-blue-500/[0.06]");
+      expect(delivered).not.toContain("text-amber-600");
+
+      const skipped = finished({ deliveryState: "skipped", deliverySkipReason: "parent-archived" });
+      expect(skipped).toContain("results were not delivered");
+      expect(skipped).toContain("this thread was archived");
+      expect(skipped).not.toContain("Main thread resumed");
+      expect(skipped).toContain("text-amber-600");
+      expect(skipped).not.toContain("bg-blue-500/[0.06]");
+    });
+
+    it("carries the task's outcome into the wake-up sentence", () => {
+      expect(finished({ outcome: "failed" })).toContain("Task failed.");
+      expect(finished({ outcome: "cancelled" })).toContain("Task was cancelled.");
+    });
+
+    // The injected text is the parent's next prompt, so it must be reachable —
+    // but collapsed, or a long result would bury the transcript around it.
+    it("keeps the injected result behind a collapsed disclosure", () => {
+      const markup = finished();
+      expect(markup).toContain('aria-expanded="false"');
+      expect(markup).toContain('aria-label="Task finished. Main thread resumed."');
+      expect(markup).not.toContain("Found 4 handlers without tests.");
+    });
+
+    it("offers no disclosure when the task returned nothing to inject", () => {
+      const markup = finished({ summary: "" });
+      expect(markup).not.toContain("aria-expanded");
+      expect(markup).toContain("Task finished. Main thread resumed.");
+    });
+
+    it("marks a server-trimmed result so the disclosure is not read as the whole output", () => {
+      expect(finished({ summaryTruncated: true })).toContain("trimmed");
+      expect(finished()).not.toContain("trimmed");
+    });
+
+    // The beta owns the whole surface: with it off there is no task chrome to
+    // explain, so the lifecycle rows go with it. The wake-up message stays
+    // suppressed either way — see the suppression test below.
+    it("hides the lifecycle rows when the thread tasks beta is off", () => {
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          threadTasksEnabled={false}
+          timelineEntries={[
+            {
+              id: "entry-1",
+              kind: "work",
+              createdAt: MESSAGE_CREATED_AT,
+              entry: {
+                id: "work-1",
+                createdAt: MESSAGE_CREATED_AT,
+                label: "task.finished",
+                tone: "info",
+                sourceActivityKind: "task.finished",
+                threadTask: parseThreadTaskActivity({
+                  kind: "task.finished",
+                  payload: {
+                    taskThreadId: "task-1",
+                    title: "Inventory the handlers",
+                    outcome: "succeeded",
+                    summary: "Found 4 handlers without tests.",
+                    deliveryState: "delivered",
+                  },
+                } as never)!,
+              },
+            },
+            { ...buildUserTimelineEntry("Carry on then."), id: "entry-2" },
+          ]}
+        />,
+      );
+
+      expect(markup).not.toContain("thread-task-row-task.finished");
+      expect(markup).not.toContain("Main thread resumed");
+      expect(markup).toContain("Carry on then.");
+    });
+
+    it("links to the task thread from both row variants", () => {
+      expect(created()).toContain('data-testid="thread-task-open-thread"');
+      expect(finished()).toContain('data-testid="thread-task-open-thread"');
+    });
+
+    // The wake-up is delivered as a `user` message so the provider acts on it.
+    // Nobody typed it, so it must not appear as a user bubble — the lifecycle
+    // row above is the only place it shows.
+    it("suppresses the injected task-result message from the transcript", () => {
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              id: "entry-0",
+              kind: "message",
+              createdAt: MESSAGE_CREATED_AT,
+              message: {
+                id: MessageId.make("message-0"),
+                role: "user",
+                text: "Task results: found 4 handlers without tests.",
+                source: "task-result",
+                turnId: null,
+                createdAt: MESSAGE_CREATED_AT,
+                updatedAt: MESSAGE_CREATED_AT,
+                streaming: false,
+              } as import("../../types").ChatMessage,
+            },
+            buildUserTimelineEntry("Carry on then."),
+          ]}
+        />,
+      );
+
+      expect(markup).not.toContain("found 4 handlers without tests");
+      expect(markup).toContain("Carry on then.");
+    });
   });
 });

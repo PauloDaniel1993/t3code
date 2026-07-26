@@ -7,6 +7,7 @@ import {
   MessageId,
   NonNegativeInt,
   OrchestrationCheckpointFile,
+  OrchestrationMessageSource,
   OrchestrationSessionRecovery,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
@@ -29,6 +30,8 @@ import {
   ModelSelection,
   ProjectId,
   ThreadId,
+  ThreadTaskMetadata,
+  ThreadTaskSummary,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -79,6 +82,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
+    source: Schema.NullOr(OrchestrationMessageSource),
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
   }),
 );
@@ -86,6 +90,8 @@ const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
+    task: Schema.NullOr(Schema.fromJsonString(ThreadTaskMetadata)),
+    taskSummary: Schema.NullOr(Schema.fromJsonString(ThreadTaskSummary)),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -473,7 +479,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
-          deleted_at AS "deletedAt"
+          deleted_at AS "deletedAt",
+          parent_thread_id AS "parentThreadId",
+          task_json AS "task",
+          task_summary_json AS "taskSummary"
         FROM projection_threads
         ORDER BY created_at ASC, thread_id ASC
       `,
@@ -505,7 +514,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
-          deleted_at AS "deletedAt"
+          deleted_at AS "deletedAt",
+          parent_thread_id AS "parentThreadId",
+          task_json AS "task",
+          task_summary_json AS "taskSummary"
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NULL
@@ -539,7 +551,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
-          deleted_at AS "deletedAt"
+          deleted_at AS "deletedAt",
+          parent_thread_id AS "parentThreadId",
+          task_json AS "task",
+          task_summary_json AS "taskSummary"
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NOT NULL
@@ -557,6 +572,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
+          source,
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
@@ -937,7 +953,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
-          deleted_at AS "deletedAt"
+          deleted_at AS "deletedAt",
+          parent_thread_id AS "parentThreadId",
+          task_json AS "task",
+          task_summary_json AS "taskSummary"
         FROM projection_threads
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
@@ -956,6 +975,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
+          source,
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
@@ -1324,6 +1344,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 threadMessages.push({
                   id: row.messageId,
                   role: row.role,
+                  ...(row.source !== null ? { source: row.source } : {}),
                   text: row.text,
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
@@ -1457,6 +1478,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const threads: ReadonlyArray<OrchestrationThread> = threadRows.map((row) => ({
                 id: row.threadId,
                 projectId: row.projectId,
+                parentThreadId: row.parentThreadId,
+                task: row.task,
+                taskSummary: row.taskSummary,
                 title: row.title,
                 modelSelection: row.modelSelection,
                 runtimeMode: row.runtimeMode,
@@ -1661,6 +1685,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 threads.push({
                   id: row.threadId,
                   projectId: row.projectId,
+                  parentThreadId: row.parentThreadId,
+                  task: row.task,
+                  taskSummary: row.taskSummary,
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -1794,6 +1821,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   ? Result.succeed({
                       id: row.threadId,
                       projectId: row.projectId,
+                      parentThreadId: row.parentThreadId,
+                      task: row.task,
+                      taskSummary: row.taskSummary,
                       title: row.title,
                       modelSelection: row.modelSelection,
                       runtimeMode: row.runtimeMode,
@@ -1932,6 +1962,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 (row): OrchestrationThreadShell => ({
                   id: row.threadId,
                   projectId: row.projectId,
+                  parentThreadId: row.parentThreadId,
+                  task: row.task,
+                  taskSummary: row.taskSummary,
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -2176,6 +2209,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       return Option.some({
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        parentThreadId: threadRow.value.parentThreadId,
+        task: threadRow.value.task,
+        taskSummary: threadRow.value.taskSummary,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
@@ -2277,6 +2313,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        parentThreadId: threadRow.value.parentThreadId,
+        task: threadRow.value.task,
+        taskSummary: threadRow.value.taskSummary,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
@@ -2296,6 +2335,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           const message = {
             id: row.messageId,
             role: row.role,
+            ...(row.source !== null ? { source: row.source } : {}),
             text: row.text,
             turnId: row.turnId,
             streaming: row.isStreaming === 1,
