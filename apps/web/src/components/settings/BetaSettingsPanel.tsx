@@ -59,6 +59,7 @@ export function BetaSettingsPanel() {
   const sidebarAutoSettleAfterDays = useClientSettings(
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
+  const threadTasksEnabled = useClientSettings((settings) => settings.threadTasksEnabled);
   const updateSettings = useUpdateClientSettings();
 
   return (
@@ -113,6 +114,19 @@ export function BetaSettingsPanel() {
             ) : null}
           </>
         ) : null}
+        <SettingsRow
+          title="Thread tasks"
+          description="Delegate work to a sub-thread that runs on its own and returns its results here, waking this thread when it finishes. You and the agent can both start one. Needs an up-to-date server. Turning this off hides the task surface — task threads stay in the sidebar as ordinary threads, and nothing is lost."
+          control={
+            <Switch
+              checked={threadTasksEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ threadTasksEnabled: Boolean(checked) })
+              }
+              aria-label="Enable the thread tasks beta"
+            />
+          }
+        />
       </SettingsSection>
     </SettingsPageContainer>
   );

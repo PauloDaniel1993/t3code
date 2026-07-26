@@ -89,6 +89,7 @@ import {
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapTopPercent,
+  threadTaskEntryIsTranscriptVisible,
   workEntryIsTranscriptVisible,
   workLogEntryIsTaskLike,
   type StableMessagesTimelineRowsState,
@@ -153,6 +154,7 @@ interface TimelineRowSharedState {
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
+  threadTasksEnabled: boolean;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -234,6 +236,8 @@ interface MessagesTimelineProps {
   contentInsetEndAdjustment: number;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: () => void;
+  /** Thread-tasks beta. Off hides the task lifecycle rows. */
+  threadTasksEnabled?: boolean;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
   hasOlderActivities?: boolean;
@@ -277,6 +281,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   contentInsetEndAdjustment,
   onIsAtEndChange,
   onManualNavigation,
+  threadTasksEnabled = false,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
   hasOlderActivities = false,
@@ -377,8 +382,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
+        threadTasksEnabled,
       }),
     [
+      threadTasksEnabled,
       timelineEntries,
       latestTurn,
       runningTurnId,
@@ -538,6 +545,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      threadTasksEnabled,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -556,6 +564,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      threadTasksEnabled,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -1365,7 +1374,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const { workspaceRoot, threadTasksEnabled } = use(TimelineRowCtx);
   // Row construction already gates transcript visibility; repeat it here so
   // this secondary filter path can never reintroduce hidden entries.
   const nonEmptyEntries = useMemo(
@@ -1373,11 +1382,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
       groupedEntries.filter(
         (entry) =>
           workEntryIsTranscriptVisible(entry) &&
+          threadTaskEntryIsTranscriptVisible(entry, threadTasksEnabled) &&
           // Task lifecycle rows carry their own status; the tool-neutral filter
           // does not apply to them and must not swallow the wake-up row.
           (entry.threadTask !== undefined || !workEntryIndicatesToolNeutralStatus(entry)),
       ),
-    [groupedEntries],
+    [groupedEntries, threadTasksEnabled],
   );
   const onlyTaskEntries = nonEmptyEntries.every((entry) => workLogEntryIsTaskLike(entry));
   const onlyToolEntries =
