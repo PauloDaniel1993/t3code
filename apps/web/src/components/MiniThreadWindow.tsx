@@ -1,9 +1,11 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { createPortal } from "react-dom";
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { ArrowUpIcon, ExternalLinkIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, CheckIcon, ExternalLinkIcon, LoaderIcon, XIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -18,7 +20,12 @@ import {
   resolveTaskChips,
   taskIsCancellable,
   taskIsRedeliverable,
+  taskThreadIsWorking,
 } from "./SidebarTaskRows.logic";
+
+// Placement has to land before paint or the card flashes at the previous
+// row-s coordinates; on the server there is no layout to measure.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
  * Peek at a task without navigating: status, chips, a live mini timeline, and a
@@ -38,14 +45,51 @@ export function MiniThreadWindow(props: {
   onSteer: (threadRef: ScopedThreadRef, text: string) => void;
   onCancelTask: (threadRef: ScopedThreadRef) => void;
   onRedeliver: (threadRef: ScopedThreadRef) => void;
+  /** Reaching for the card must not count as leaving the row that opened it. */
+  onKeepOpen: () => void;
+  onPeekLeave: () => void;
 }) {
-  const { anchor, isMobile, onCancelTask, onClose, onOpenThread, onRedeliver, onSteer, threadRef } =
-    props;
+  const {
+    anchor,
+    isMobile,
+    onCancelTask,
+    onClose,
+    onKeepOpen,
+    onOpenThread,
+    onPeekLeave,
+    onRedeliver,
+    onSteer,
+    threadRef,
+  } = props;
   const thread = useThread(threadRef);
   const shell = useThreadShell(threadRef);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState("");
+  const [placement, setPlacement] = useState<{ left: number; top: number } | undefined>(undefined);
   const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Anchored to the row the way the mockup does it: just outside the sidebar,
+  // aligned a little above the row so the caret lands on its centre, and
+  // clamped so a card near the bottom of a long list stays on screen.
+  useIsomorphicLayoutEffect(() => {
+    if (anchor === null) return;
+    const place = () => {
+      const rect = anchor.getBoundingClientRect();
+      const height = containerRef.current?.offsetHeight ?? 0;
+      setPlacement({
+        left: rect.right + 14,
+        top: Math.max(10, Math.min(rect.top - 8, window.innerHeight - height - 12)),
+      });
+    };
+    place();
+    // Capture phase: the sidebar scrolls, not the window.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [anchor]);
 
   // Keeps the elapsed label honest while the window stays open.
   useEffect(() => {
@@ -72,6 +116,13 @@ export function MiniThreadWindow(props: {
     };
   }, [anchor, onClose]);
 
+  // A settled task whose thread starts a new turn is working again; the card
+  // has to say so rather than keep reporting the recorded result.
+  const activity = useMemo(
+    () => ({ latestTurn: thread?.latestTurn ?? null, session: thread?.session ?? null }),
+    [thread?.latestTurn, thread?.session],
+  );
+  const working = taskThreadIsWorking(activity);
   const task = thread?.task ?? null;
   const chips = useMemo(
     () => (task === null ? [] : resolveTaskChips({ task, modelLabel: props.modelLabel })),
@@ -112,27 +163,55 @@ export function MiniThreadWindow(props: {
     .reverse()
     .find((message) => message.role === "assistant");
 
-  return (
+  const card = (
     <div
       ref={containerRef}
+      onMouseEnter={onKeepOpen}
+      onMouseLeave={onPeekLeave}
       role="dialog"
       aria-label={`Task: ${task.title}`}
       data-testid="mini-thread-window"
-      className="pointer-events-auto absolute left-full z-50 ml-2 w-[26rem] rounded-xl border border-border/60 bg-popover/95 shadow-xl backdrop-blur-md"
+      style={placement}
+      className={cn(
+        // Fixed, not absolute: inside the sidebar-s scroll container an
+        // absolutely-positioned card 352px wide hangs off a ~264px sidebar and
+        // adds that overhang to the container-s scrollable area, so scrollbars
+        // appeared for as long as the card was open.
+        "pointer-events-auto fixed z-50 w-[22rem] rounded-2xl",
+        "border border-border/60 bg-popover/95 shadow-xl backdrop-blur-md",
+        placement === undefined ? "invisible" : "animate-mini-thread-in",
+        // Caret tying the card to the row it belongs to, aimed at the row-s
+        // vertical centre.
+        "before:absolute before:-left-[5px] before:top-[18px] before:size-[9px] before:rotate-45",
+        "before:border-b before:border-l before:border-border/60 before:bg-popover/95 before:content-['']",
+      )}
     >
       <div className="flex items-center gap-2 px-3 pt-2.5">
+        {working || task.status === "running" || task.status === "queued" ? (
+          <LoaderIcon
+            aria-hidden
+            className="size-3 shrink-0 animate-spin text-sky-600 motion-reduce:animate-none dark:text-sky-400"
+          />
+        ) : task.status === "failed" ? (
+          <XIcon aria-hidden className="size-3 shrink-0 text-red-600 dark:text-red-400" />
+        ) : (
+          <CheckIcon
+            aria-hidden
+            className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400"
+          />
+        )}
         <span
           data-testid="mini-thread-status"
           className={cn(
             "font-mono text-[11px]",
-            task.status === "running" || task.status === "queued"
+            working || task.status === "running" || task.status === "queued"
               ? "text-sky-600 dark:text-sky-400"
               : task.status === "failed"
                 ? "text-red-600 dark:text-red-400"
                 : "text-emerald-600 dark:text-emerald-400",
           )}
         >
-          {formatTaskStatusLine({ task, nowMs })}
+          {formatTaskStatusLine({ task, activity, nowMs })}
         </span>
         <span className="flex-1" />
         <button
@@ -161,12 +240,14 @@ export function MiniThreadWindow(props: {
           <span
             key={chip.id}
             className={cn(
-              "rounded-full px-2 py-0.5 text-[10px]",
+              // Every chip is an outlined pill; the two that carry meaning
+              // (who asked, and whether it woke the parent) are tinted.
+              "rounded-full border px-2 py-0.5 text-[11px]",
               chip.tone === "returned"
-                ? "bg-blue-500/10 text-blue-600 dark:text-blue-300"
+                ? "border-blue-400/40 bg-blue-400/10 text-blue-600 dark:text-blue-300"
                 : chip.tone === "creator"
-                  ? "bg-violet-500/10 text-violet-600 dark:text-violet-300"
-                  : "bg-muted text-muted-foreground",
+                  ? "border-indigo-400/40 bg-indigo-400/12 text-indigo-600 dark:text-indigo-200"
+                  : "border-border/60 bg-muted/60 text-muted-foreground",
             )}
           >
             {chip.label}
@@ -176,7 +257,7 @@ export function MiniThreadWindow(props: {
 
       <div className="max-h-64 space-y-2 overflow-y-auto px-3 py-3">
         {promptMessage === null ? null : (
-          <p className="ml-6 rounded-lg bg-muted/70 px-2.5 py-1.5 text-[12px] leading-snug text-foreground/90">
+          <p className="ml-auto max-w-[86%] rounded-xl border border-border/60 bg-foreground/[0.07] px-2.5 py-1.5 text-[12px] leading-snug text-foreground/90">
             {task.prompt}
           </p>
         )}
@@ -197,7 +278,7 @@ export function MiniThreadWindow(props: {
       </div>
 
       <div className="flex items-center gap-1 border-t border-border/50 px-2 py-1.5">
-        {taskIsCancellable(task.status) ? (
+        {taskIsCancellable(task.status, activity) ? (
           <button
             type="button"
             data-testid="mini-thread-cancel"
@@ -248,6 +329,13 @@ export function MiniThreadWindow(props: {
       )}
     </div>
   );
+
+  // Portalled to the body, not just fixed: an ancestor of the sidebar rows
+  // establishes a containing block (a transform or backdrop-filter is enough),
+  // which makes a fixed card resolve against that ancestor instead of the
+  // viewport — mispositioning it and still stretching the sidebar's scroll
+  // area, which is what put scrollbars on screen for as long as it was open.
+  return typeof document === "undefined" ? card : createPortal(card, document.body);
 }
 
 const PREVIEW_MAX_CHARS = 400;

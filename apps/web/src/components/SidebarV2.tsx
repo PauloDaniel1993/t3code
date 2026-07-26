@@ -1473,7 +1473,7 @@ export default function SidebarV2() {
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true,
         parentKey: (task) =>
           scopedThreadKey(scopeThreadRef(task.environmentId, task.parentThreadId as ThreadId)),
-        compareTasks: (left, right) => left.createdAt.localeCompare(right.createdAt),
+        compareTasks: (left, right) => right.createdAt.localeCompare(left.createdAt),
       });
       for (const thread of topLevel) {
         // Threads on servers without the settlement capability (old server,
@@ -1623,15 +1623,19 @@ export default function SidebarV2() {
   // rendered at click time.
   const orderedThreadKeysRef = useRef(orderedThreadKeys);
   orderedThreadKeysRef.current = orderedThreadKeys;
+  // Nested task rows are deliberately absent from `orderedThreads` — they do
+  // not take part in ordering, traversal, or range-select. They still need to
+  // be findable, though: handlers that act on a row (context menu, delete) look
+  // the thread up here, and a task row that misses would silently do nothing.
   const threadByKey = useMemo(
     () =>
       new Map(
-        orderedThreads.map(
+        [...orderedThreads, ...[...tasksByParent.values()].flat()].map(
           (thread) =>
             [scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)), thread] as const,
         ),
       ),
-    [orderedThreads],
+    [orderedThreads, tasksByParent],
   );
   // Handlers read these through refs: depending on per-update Map/Set
   // identities would give every row a fresh callback prop on each shell
@@ -1738,19 +1742,54 @@ export default function SidebarV2() {
     [taskGroupExpandedByThreadId, threadLastVisitedAtById],
   );
 
-  const handleOpenTask = useCallback(
+  // Hover peeks, click navigates. The open delay keeps the window from flashing
+  // while the pointer crosses the group; the close delay covers the gap between
+  // the row and the window, which the pointer has to travel through.
+  const peekTimerRef = useRef<number | null>(null);
+  const clearPeekTimer = useCallback(() => {
+    if (peekTimerRef.current !== null) {
+      window.clearTimeout(peekTimerRef.current);
+      peekTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => clearPeekTimer, [clearPeekTimer]);
+
+  const openTaskKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    openTaskKeyRef.current = openTask?.key ?? null;
+  }, [openTask]);
+
+  const handlePeekTask = useCallback(
     (threadRef: ScopedThreadRef, anchor: HTMLElement | null) => {
+      // Touch fires mouseenter on tap, which would peek and navigate at once.
+      if (isMobile) return;
+      clearPeekTimer();
       const key = scopedThreadKey(threadRef);
-      if (isMobile) {
-        // No room for a floating card: go straight to the full task thread.
-        navigateToThread(threadRef);
+      if (openTaskKeyRef.current === key) return;
+      if (openTaskKeyRef.current !== null) {
+        // A window is already up, so moving between rows should track the
+        // pointer rather than blink out and fade back in.
+        setOpenTask({ key, threadRef, anchor });
         return;
       }
-      setOpenTask((current) => (current?.key === key ? null : { key, threadRef, anchor }));
+      peekTimerRef.current = window.setTimeout(() => {
+        peekTimerRef.current = null;
+        setOpenTask({ key, threadRef, anchor });
+      }, 260);
     },
-    [isMobile, navigateToThread],
+    [clearPeekTimer, isMobile],
   );
-  const closeOpenTask = useCallback(() => setOpenTask(null), []);
+  const handlePeekLeave = useCallback(() => {
+    clearPeekTimer();
+    peekTimerRef.current = window.setTimeout(() => {
+      peekTimerRef.current = null;
+      setOpenTask(null);
+    }, 220);
+  }, [clearPeekTimer]);
+  const closeOpenTask = useCallback(() => {
+    clearPeekTimer();
+    setOpenTask(null);
+  }, [clearPeekTimer]);
 
   const handleSteerTask = useCallback(
     (threadRef: ScopedThreadRef, text: string) => {
@@ -2220,45 +2259,55 @@ export default function SidebarV2() {
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
         // Presets resolve at menu-open time (same as the popover).
         const snoozePresets = resolveSnoozePresets(new Date());
+        // A task row gets only the items that mean something for a task. Its
+        // lifecycle belongs to the parent: settling, snoozing or branching a
+        // task on its own would strand it out of its group.
+        const isTaskRow = thread.parentThreadId != null;
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
-            [
-              ...(thread.branch
-                ? [
-                    {
-                      id: "new-thread-on-branch",
-                      label: `New thread on ${thread.branch}`,
-                    },
-                  ]
-                : []),
-              ...(supportsSettlement
-                ? [
-                    isSettled
-                      ? { id: "unsettle", label: "Un-settle thread" }
-                      : { id: "settle", label: "Settle thread" },
-                  ]
-                : []),
-              ...(supportsSnooze
-                ? [
-                    isSnoozed
-                      ? { id: "unsnooze", label: "Wake thread" }
-                      : {
-                          id: "snooze",
-                          label: "Snooze",
-                          disabled: !canSnooze(thread, { now: new Date().toISOString() }),
-                          children: snoozePresets.map((preset) => ({
-                            id: `snooze:${preset.id}`,
-                            label: `${preset.label} (${preset.whenLabel})`,
-                          })),
+            isTaskRow
+              ? [
+                  { id: "rename", label: "Rename task" },
+                  { id: "copy-thread-id", label: "Copy Thread ID" },
+                  { id: "delete", label: "Delete", destructive: true, icon: "trash" },
+                ]
+              : [
+                  ...(thread.branch
+                    ? [
+                        {
+                          id: "new-thread-on-branch",
+                          label: `New thread on ${thread.branch}`,
                         },
-                  ]
-                : []),
-              ...(supportsThreadTasks ? [{ id: "new-task", label: "New task…" }] : []),
-              { id: "rename", label: "Rename thread" },
-              { id: "mark-unread", label: "Mark unread" },
-              { id: "copy-thread-id", label: "Copy Thread ID" },
-              { id: "delete", label: "Delete", destructive: true, icon: "trash" },
-            ],
+                      ]
+                    : []),
+                  ...(supportsSettlement
+                    ? [
+                        isSettled
+                          ? { id: "unsettle", label: "Un-settle thread" }
+                          : { id: "settle", label: "Settle thread" },
+                      ]
+                    : []),
+                  ...(supportsSnooze
+                    ? [
+                        isSnoozed
+                          ? { id: "unsnooze", label: "Wake thread" }
+                          : {
+                              id: "snooze",
+                              label: "Snooze",
+                              disabled: !canSnooze(thread, { now: new Date().toISOString() }),
+                              children: snoozePresets.map((preset) => ({
+                                id: `snooze:${preset.id}`,
+                                label: `${preset.label} (${preset.whenLabel})`,
+                              })),
+                            },
+                      ]
+                    : []),
+                  ...(supportsThreadTasks ? [{ id: "new-task", label: "New task…" }] : []),
+                  { id: "rename", label: "Rename thread" },
+                  { id: "mark-unread", label: "Mark unread" },
+                  { id: "copy-thread-id", label: "Copy Thread ID" },
+                  { id: "delete", label: "Delete", destructive: true, icon: "trash" },
+                ],
             position,
           ),
         );
@@ -2738,7 +2787,15 @@ export default function SidebarV2() {
                         expanded={isTaskGroupExpanded(threadKey, thread, tasks)}
                         openTaskKey={openTaskKey}
                         nowMs={taskNowMs}
-                        onOpenTask={handleOpenTask}
+                        onPeekTask={handlePeekTask}
+                        onPeekLeave={handlePeekLeave}
+                        onOpenThread={navigateToThread}
+                        onContextMenu={handleThreadContextMenu}
+                        renamingTaskKey={renamingThreadKey}
+                        renamingTitle={renamingTitle}
+                        onRenameTitleChange={setRenamingTitle}
+                        onCommitRename={commitThreadRename}
+                        onCancelRename={cancelThreadRename}
                         onNewTask={handleNewTask}
                         miniWindow={
                           openTask === null ? null : (
@@ -2755,6 +2812,8 @@ export default function SidebarV2() {
                               onSteer={handleSteerTask}
                               onCancelTask={handleCancelTask}
                               onRedeliver={handleRedeliverTask}
+                              onKeepOpen={clearPeekTimer}
+                              onPeekLeave={handlePeekLeave}
                             />
                           )
                         }
