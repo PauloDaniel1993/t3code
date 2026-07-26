@@ -212,6 +212,66 @@ export function buildProviderOptionSelectionsFromDescriptors(
   return nextSelections.length > 0 ? nextSelections : undefined;
 }
 
+type SelectOptionDescriptor = Extract<ProviderOptionDescriptor, { type: "select" }>;
+
+/** Lowercased and stripped of everything a caller might punctuate differently. */
+function foldOptionKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+const REASONING_DESCRIPTOR_IDS: ReadonlySet<string> = new Set([
+  "reasoningeffort",
+  "effort",
+  "reasoning",
+  "reasoninglevel",
+  "thinkinglevel",
+]);
+
+/**
+ * The select descriptor that carries a model's reasoning level, or null when
+ * the model has none.
+ *
+ * Every driver names this option differently — `effort` on Claude,
+ * `reasoningEffort` on Codex, `reasoning` on Cursor, and whatever the agent
+ * reported on the ACP-backed drivers — so callers that mean "the reasoning
+ * level" cannot key off a single id. Matching is deliberately narrow: it is
+ * better to tell a caller a model has no reasoning level than to silently
+ * point `reasoning` at OpenCode's `variant` or `agent` picker.
+ */
+export function findReasoningOptionDescriptor(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor> | null | undefined,
+): SelectOptionDescriptor | null {
+  const selects = (descriptors ?? []).filter(
+    (descriptor): descriptor is SelectOptionDescriptor => descriptor.type === "select",
+  );
+  return (
+    selects.find((descriptor) => REASONING_DESCRIPTOR_IDS.has(foldOptionKey(descriptor.id))) ??
+    selects.find((descriptor) => /reason|effort/.test(foldOptionKey(descriptor.id))) ??
+    selects.find((descriptor) => /reason|effort|thinking/.test(foldOptionKey(descriptor.label))) ??
+    null
+  );
+}
+
+/**
+ * Match a caller-supplied reasoning level against a descriptor's choices,
+ * returning the canonical choice id or null when nothing matches.
+ *
+ * Both the id and the label are accepted, and both sides are folded, so an
+ * agent writing "extra high" lands on `xhigh` the same way "xhigh" does.
+ */
+export function resolveReasoningOptionChoiceId(
+  descriptor: SelectOptionDescriptor,
+  raw: string | null | undefined,
+): string | null {
+  const wanted = foldOptionKey(trimOrNull(raw) ?? "");
+  if (wanted.length === 0) return null;
+  return (
+    descriptor.options.find((option) => foldOptionKey(option.id) === wanted)?.id ??
+    descriptor.options.find((option) => foldOptionKey(option.label) === wanted)?.id ??
+    null
+  );
+}
+
 export function getModelSelectionOptionDescriptors(
   modelSelection: ModelSelection | null | undefined,
   caps?: ModelCapabilities | null | undefined,

@@ -45,6 +45,9 @@ const ToolText = (input: { readonly maxChars: number; readonly description: stri
     Schema.isMaxLength(input.maxChars),
   );
 
+const REASONING_TOOL_DESCRIPTION =
+  "Reasoning level for the task's session, e.g. 'low', 'high', 'xhigh', 'max'. Applies to the model in `model`, or to this thread's model when `model` is omitted. Which levels exist depends on the provider and model; an unsupported value is rejected with the list of valid ones.";
+
 export const TaskCreateToolInput = Schema.Struct({
   title: ToolText({
     maxChars: THREAD_TASK_TITLE_MAX_CHARS,
@@ -77,6 +80,17 @@ export const TaskCreateToolInput = Schema.Struct({
   ).annotate({
     description: "Model for the task's own session. Defaults to this thread's model when omitted.",
   }),
+  reasoning: Schema.optional(
+    // Plain string, not an enum: the levels a model offers come from the live
+    // provider snapshot and differ per driver and per model, so there is no
+    // fixed set to publish. The handler matches the value against the target
+    // model's own levels and names the valid ones when it does not fit.
+    Schema.String.check(
+      Schema.isNonEmpty({
+        description: REASONING_TOOL_DESCRIPTION,
+      }),
+    ),
+  ).annotate({ description: REASONING_TOOL_DESCRIPTION }),
 });
 export type TaskCreateToolInput = typeof TaskCreateToolInput.Type;
 

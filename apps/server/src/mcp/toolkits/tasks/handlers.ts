@@ -20,6 +20,8 @@ import {
   countParentTasks,
   type ThreadTaskCreateRejection,
 } from "../../../orchestration/threadTasks.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
+import { resolveTaskModelSelection } from "./reasoning.ts";
 import { TasksToolkit } from "./tools.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -148,6 +150,21 @@ const handlers = {
       return yield* fail(toolReasonFor(rejection), rejection.detail);
     }
 
+    // A reasoning level only means something against the model that will run
+    // the task, so resolve the two together — including the case where the
+    // agent set a level but let the task inherit this thread's model.
+    const providerRegistry = yield* ProviderRegistry;
+    const providers = yield* providerRegistry.getProviders;
+    const resolvedModel = resolveTaskModelSelection({
+      providers,
+      parentSelection: parent.modelSelection,
+      override: input.model,
+      reasoning: input.reasoning,
+    });
+    if (!resolvedModel.ok) {
+      return yield* fail("invalid-model", resolvedModel.message);
+    }
+
     const orchestrationEngine = yield* OrchestrationEngineService;
     const crypto = yield* Crypto.Crypto;
     const taskThreadId = ThreadId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
@@ -162,7 +179,9 @@ const handlers = {
         title: input.title,
         prompt: input.prompt,
         context,
-        ...(input.model === undefined ? {} : { modelSelection: input.model }),
+        ...(resolvedModel.modelSelection === undefined
+          ? {}
+          : { modelSelection: resolvedModel.modelSelection }),
         // Server-authored: only this path can claim agent authorship.
         createdBy: "agent",
         createdAt: yield* nowIso,
