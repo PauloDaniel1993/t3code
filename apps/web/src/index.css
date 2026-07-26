@@ -142,6 +142,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --animate-status-pulse: status-pulse 2s infinite;
   --animate-status-ping: status-ping 2s infinite;
   --animate-sidebar-working-text: sidebar-working-text 3.4s infinite;
+  --animate-mini-thread-in: mini-thread-in 0.13s cubic-bezier(0.2, 0, 0.2, 1) both;
   --font-sans: var(--app-ui-font-family);
   --font-mono: var(--app-mono-font-family);
   --color-warning-foreground: var(--warning-foreground);
@@ -185,6 +186,17 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
+  /* The peek card slides out of the row it belongs to, matching the mockup. */
+  @keyframes mini-thread-in {
+    from {
+      opacity: 0;
+      transform: translateX(-4px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
   @keyframes skeleton {
     to {
       background-position: -200% 0;
