@@ -47,7 +47,7 @@
 - [x] 5.3 Add `mcp/toolkits/tasks/handlers.ts` resolving the parent from the invocation scope and dispatching the orchestration commands
 - [x] 5.4 Register the tasks toolkit in `McpHttpServer.ts` alongside the preview toolkit
 - [x] 5.5 Map command rejections to structured tool errors naming the reason (nesting, caps, eligibility, provider readiness, invalid message ids)
-- [ ] 5.6 Add toolkit tests for capability gating, scope isolation, non-blocking create, list/cancel behavior, and each rejection reason
+- [x] 5.6 Add toolkit tests for capability gating, scope isolation, non-blocking create, list/cancel behavior, and each rejection reason
 
 ## 6. Client Runtime
 

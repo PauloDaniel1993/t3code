@@ -35,7 +35,7 @@ export const TaskCreateTool = Tool.make("task_create", {
 
 export const TaskListTool = Tool.make("task_list", {
   description:
-    "List the tasks this thread owns, with their status and — once finished — the result that was returned. Use this to check whether delegated work is still running before deciding to wait or proceed.",
+    "List the tasks this thread owns, with their status and — once finished — the result that was returned. Use this to check whether delegated work is still running before deciding to wait or proceed. Pass a status to list only tasks in that state.",
   parameters: TaskListToolInput,
   success: TaskListToolOutput,
   failure: ThreadTaskToolError,
