@@ -96,6 +96,18 @@ export const normalizeDispatchCommand = Effect.fn("normalizeDispatchCommand")(fu
     };
   }
 
+  // Authorship is server-authored so a client cannot claim a task was the
+  // agent's idea. The client command carries no `createdBy` at all, so it is
+  // stamped here rather than defaulted at decode.
+  if (canonicalCommand.type === "thread.task.create") {
+    return {
+      command: {
+        ...canonicalCommand,
+        createdBy: "user",
+      } satisfies OrchestrationCommand,
+    };
+  }
+
   if (canonicalCommand.type !== "thread.turn.start") {
     return { command: canonicalCommand as OrchestrationCommand };
   }

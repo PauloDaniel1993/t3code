@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   type ChatAttachment,
+  type IsoDateTime,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
@@ -526,6 +527,63 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       });
     });
 
+    /**
+     * Recompute a parent's task rollup from its task rows. Task events land on
+     * the task thread's aggregate, so this is what makes the parent's shell row
+     * (and therefore its sidebar count chip and unread dot) re-emit.
+     *
+     * Soft-deleted tasks drop out of `total`/`running` but their delivery still
+     * counts toward `latestDeliveredAt`: the parent really was woken.
+     */
+    const refreshParentTaskSummary = Effect.fn("refreshParentTaskSummary")(function* (
+      parentThreadId: ThreadId,
+    ) {
+      const parentRow = yield* projectionThreadRepository.getById({ threadId: parentThreadId });
+      if (Option.isNone(parentRow)) {
+        return;
+      }
+      const taskRows = yield* projectionThreadRepository.listByParentThreadId({ parentThreadId });
+
+      let total = 0;
+      let running = 0;
+      let latestResultAt: IsoDateTime | null = null;
+      let latestDeliveredAt: IsoDateTime | null = null;
+
+      for (const row of taskRows) {
+        const task = row.task;
+        if (task === null) {
+          continue;
+        }
+        if (row.deletedAt === null) {
+          total += 1;
+          if (task.status === "queued" || task.status === "running") {
+            running += 1;
+          }
+        }
+        if (
+          task.result !== null &&
+          (latestResultAt === null || task.result.completedAt > latestResultAt)
+        ) {
+          latestResultAt = task.result.completedAt;
+        }
+        if (
+          task.delivery !== null &&
+          task.delivery.state === "delivered" &&
+          (latestDeliveredAt === null || task.delivery.updatedAt > latestDeliveredAt)
+        ) {
+          latestDeliveredAt = task.delivery.updatedAt;
+        }
+      }
+
+      yield* projectionThreadRepository.upsert({
+        ...parentRow.value,
+        taskSummary:
+          total === 0 && latestDeliveredAt === null && latestResultAt === null
+            ? null
+            : { total, running, latestResultAt, latestDeliveredAt },
+      });
+    });
+
     const applyThreadsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadsProjection",
     )(function* (event, attachmentSideEffects) {
@@ -555,8 +613,89 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
             deletedAt: null,
+            // A task thread's `thread.created` carries no task data; the
+            // `thread.task-created` event that follows it sets the link.
+            parentThreadId: null,
+            task: null,
+            taskSummary: null,
           });
           return;
+
+        case "thread.task-created": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            parentThreadId: event.payload.parentThreadId,
+            task: {
+              parentThreadId: event.payload.parentThreadId,
+              title: event.payload.title,
+              prompt: event.payload.prompt,
+              context: event.payload.context,
+              contextTruncated: event.payload.contextTruncated,
+              createdBy: event.payload.createdBy,
+              status: event.payload.status,
+              requestedAt: event.payload.requestedAt,
+              startedAt: null,
+              finishedAt: null,
+              result: null,
+              delivery: null,
+            },
+            updatedAt: event.payload.requestedAt,
+          });
+          yield* refreshParentTaskSummary(event.payload.parentThreadId);
+          return;
+        }
+
+        case "thread.task-updated": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow) || existingRow.value.task === null) {
+            return;
+          }
+          const previous = existingRow.value.task;
+          const status = event.payload.status ?? previous.status;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            task: {
+              ...previous,
+              status,
+              startedAt:
+                previous.startedAt ?? (status === "running" ? event.payload.updatedAt : null),
+              ...(event.payload.delivery === undefined ? {} : { delivery: event.payload.delivery }),
+            },
+            updatedAt: event.payload.updatedAt,
+          });
+          yield* refreshParentTaskSummary(event.payload.parentThreadId);
+          return;
+        }
+
+        case "thread.task-finished": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow) || existingRow.value.task === null) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            task: {
+              ...existingRow.value.task,
+              status: event.payload.status,
+              finishedAt: event.payload.finishedAt,
+              result: event.payload.result,
+              delivery: event.payload.delivery,
+            },
+            updatedAt: event.payload.finishedAt,
+          });
+          yield* refreshParentTaskSummary(event.payload.parentThreadId);
+          return;
+        }
 
         case "thread.archived": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -855,6 +994,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
             role: event.payload.role,
+            ...(event.payload.source !== undefined
+              ? { source: event.payload.source }
+              : previousMessage?.source !== undefined
+                ? { source: previousMessage.source }
+                : {}),
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,

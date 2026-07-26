@@ -78,6 +78,20 @@ function commandToAggregateRef(command: OrchestrationCommand): {
         aggregateKind: "project",
         aggregateId: command.projectId,
       };
+    // Task commands name both threads. The task thread is the aggregate: its
+    // detail subscription is what the mini thread window streams, so lifecycle
+    // events have to land there. The parent learns about them through its
+    // re-projected shell row and its own activity rows.
+    case "thread.task.create":
+    case "thread.task.cancel":
+    case "thread.task.redeliver":
+    case "thread.task.status.set":
+    case "thread.task.finish":
+    case "thread.task.delivery.set":
+      return {
+        aggregateKind: "thread",
+        aggregateId: command.taskThreadId,
+      };
     default:
       return {
         aggregateKind: "thread",

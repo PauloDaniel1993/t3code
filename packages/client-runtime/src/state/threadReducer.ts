@@ -262,6 +262,7 @@ export function applyThreadDetailEvent(
         ...(event.payload.attachments !== undefined
           ? { attachments: event.payload.attachments }
           : {}),
+        ...(event.payload.source !== undefined ? { source: event.payload.source } : {}),
         turnId: event.payload.turnId,
         streaming: event.payload.streaming,
         createdAt: event.payload.createdAt,
@@ -286,6 +287,9 @@ export function applyThreadDetailEvent(
                   ...(message.attachments !== undefined
                     ? { attachments: message.attachments }
                     : {}),
+                  // Authorship is decided when the message first lands; a
+                  // streaming append that omits it must not erase it.
+                  ...(message.source !== undefined ? { source: message.source } : {}),
                 },
           )
         : Arr.append(thread.messages, message);

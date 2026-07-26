@@ -100,6 +100,9 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         pendingUserInputCount: 0,
         hasActionableProposedPlan: 0,
         deletedAt: null,
+        parentThreadId: null,
+        task: null,
+        taskSummary: null,
       });
 
       const rows = yield* sql<{
@@ -162,6 +165,9 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         pendingUserInputCount: 0,
         hasActionableProposedPlan: 0,
         deletedAt: null,
+        parentThreadId: null,
+        task: null,
+        taskSummary: null,
       });
 
       const persisted = yield* threads.getById({
