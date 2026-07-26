@@ -20,6 +20,8 @@ import {
   countParentTasks,
   type ThreadTaskCreateRejection,
 } from "../../../orchestration/threadTasks.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
+import { buildTaskModelCatalog, resolveTaskModelSelection } from "./reasoning.ts";
 import { TasksToolkit } from "./tools.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -42,6 +44,20 @@ function toolReasonFor(rejection: ThreadTaskCreateRejection): ThreadTaskToolErro
     case "invalid-context":
       return "invalid-context";
   }
+}
+
+/**
+ * A task asking for a task of its own is the one rejection where the agent has
+ * a real move left, so the message spells it out. Delegation stays one level
+ * deep — the thread that owns the task is the only one that can widen the
+ * fan-out, and it can only do that if the task hands it something it can act
+ * on without a follow-up round trip.
+ */
+export const NESTED_TASK_MESSAGE =
+  "This thread is itself a task, and a task cannot create tasks. Ask the thread that owns you to create it: end your turn with the request, giving the title, the complete self-contained prompt to run, the context it needs ('full-thread', specific message ids, or 'none'), and the model or reasoning level if it should differ from yours. Your result is delivered to that thread automatically, so a well-formed request there is all it takes.";
+
+function rejectionMessage(rejection: ThreadTaskCreateRejection): string {
+  return rejection.reason === "nesting-depth" ? NESTED_TASK_MESSAGE : rejection.detail;
 }
 
 function summarize(thread: OrchestrationThread): ThreadTaskToolSummary | null {
@@ -145,7 +161,22 @@ const handlers = {
       context,
     });
     if (rejection !== null) {
-      return yield* fail(toolReasonFor(rejection), rejection.detail);
+      return yield* fail(toolReasonFor(rejection), rejectionMessage(rejection));
+    }
+
+    // A reasoning level only means something against the model that will run
+    // the task, so resolve the two together — including the case where the
+    // agent set a level but let the task inherit this thread's model.
+    const providerRegistry = yield* ProviderRegistry;
+    const providers = yield* providerRegistry.getProviders;
+    const resolvedModel = resolveTaskModelSelection({
+      providers,
+      parentSelection: parent.modelSelection,
+      override: input.model,
+      reasoning: input.reasoning,
+    });
+    if (!resolvedModel.ok) {
+      return yield* fail("invalid-model", resolvedModel.message);
     }
 
     const orchestrationEngine = yield* OrchestrationEngineService;
@@ -162,7 +193,9 @@ const handlers = {
         title: input.title,
         prompt: input.prompt,
         context,
-        ...(input.model === undefined ? {} : { modelSelection: input.model }),
+        ...(resolvedModel.modelSelection === undefined
+          ? {}
+          : { modelSelection: resolvedModel.modelSelection }),
         // Server-authored: only this path can claim agent authorship.
         createdBy: "agent",
         createdAt: yield* nowIso,
@@ -208,6 +241,24 @@ const handlers = {
         ];
       }),
     };
+  }),
+
+  task_models: Effect.fn("TasksToolkit.task_models")(function* (input) {
+    // The calling thread's own selection is part of the answer: it is what a
+    // task inherits, so an agent can see whether naming a model changes
+    // anything before it names one.
+    const caller = yield* requireCallingThread();
+    const providerRegistry = yield* ProviderRegistry;
+    const providers = yield* providerRegistry.getProviders;
+    const catalog = buildTaskModelCatalog({
+      providers,
+      current: caller.modelSelection,
+      instanceId: input.instanceId,
+    });
+    if (!catalog.ok) {
+      return yield* fail("invalid-model", catalog.message);
+    }
+    return catalog.catalog;
   }),
 
   task_cancel: Effect.fn("TasksToolkit.task_cancel")(function* (input) {

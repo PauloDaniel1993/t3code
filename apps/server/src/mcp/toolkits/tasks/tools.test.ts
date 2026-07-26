@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
+import { NESTED_TASK_MESSAGE } from "./handlers.ts";
 import { TasksToolkit } from "./tools.ts";
 
 const schemaHasDescription = (schema: unknown): boolean => {
@@ -60,8 +61,21 @@ it("requires the brief that makes a task self-contained", () => {
   // and the handler rejects an empty list rather than the schema.
   expect(create.required).not.toContain("messageIds");
   expect(Object.keys(create.properties ?? {})).toEqual(
-    expect.arrayContaining(["title", "prompt", "context", "messageIds", "model"]),
+    expect.arrayContaining(["title", "prompt", "context", "messageIds", "model", "reasoning"]),
   );
+});
+
+it("lets the reasoning level be set without also naming a model", () => {
+  // Reasoning is its own top-level argument, not a field of `model`, so
+  // "run this task harder on the model I am already using" is one argument.
+  const create = jsonSchemaOf(TasksToolkit.tools.task_create);
+  expect(create.required).not.toContain("reasoning");
+  expect(create.required).not.toContain("model");
+  const reasoning = create.properties?.reasoning;
+  expect(schemaHasDescription(reasoning)).toBe(true);
+  // The levels are per-model and come from the live provider snapshot, so the
+  // published schema must stay an open string rather than a stale enum.
+  expect((reasoning as { readonly enum?: unknown }).enum).toBeUndefined();
 });
 
 it("takes a task thread id to cancel and an optional status filter to list", () => {
@@ -69,6 +83,29 @@ it("takes a task thread id to cancel and an optional status filter to list", () 
   const list = jsonSchemaOf(TasksToolkit.tools.task_list);
   expect(Object.keys(list.properties ?? {})).toEqual(["status"]);
   expect(list.required ?? []).toEqual([]);
+});
+
+it("publishes the model catalog an agent has to read before naming a model", () => {
+  // instanceId slugs, model slugs and reasoning levels are all per-machine and
+  // per-model. Without a way to look them up, an agent can only guess at
+  // `model` and `reasoning`, and every guess costs a rejected call.
+  const models = jsonSchemaOf(TasksToolkit.tools.task_models);
+  expect(Object.keys(models.properties ?? {})).toEqual(["instanceId"]);
+  expect(models.required ?? []).toEqual([]);
+  expect(TasksToolkit.tools.task_models.description).toContain("reasoning levels");
+});
+
+it("tells a task what to do instead of creating a task of its own", () => {
+  // Nesting is refused by the domain rule; what the agent needs from the tool
+  // surface is the move that is still open to it, in both the description it
+  // reads up front and the error it gets if it tries anyway.
+  const create = TasksToolkit.tools.task_create.description ?? "";
+  expect(create).toContain("A task cannot create tasks");
+  expect(create.toLowerCase()).toContain("self-contained prompt");
+  expect(NESTED_TASK_MESSAGE).toContain("Ask the thread that owns you");
+  for (const part of ["title", "prompt", "context", "reasoning"]) {
+    expect(NESTED_TASK_MESSAGE.toLowerCase()).toContain(part);
+  }
 });
 
 it("annotates the write and destructive tools honestly", () => {
@@ -87,6 +124,11 @@ it("annotates the write and destructive tools honestly", () => {
   expect(annotations(TasksToolkit.tools.task_list)).toMatchObject({
     readonly: true,
     destructive: false,
+  });
+  expect(annotations(TasksToolkit.tools.task_models)).toMatchObject({
+    readonly: true,
+    destructive: false,
+    idempotent: true,
   });
   // Cancelling interrupts real work, but cancelling twice changes nothing.
   expect(annotations(TasksToolkit.tools.task_cancel)).toMatchObject({
