@@ -6,6 +6,7 @@ import {
   formatTaskStatusLine,
   resolveMiniWindowMode,
   resolveTaskChips,
+  groupSidebarTaskThreads,
   resolveTaskRowPresentation,
   taskIsCancellable,
   taskIsRedeliverable,
@@ -208,5 +209,75 @@ describe("mini window affordances", () => {
         }),
       ),
     ).toBe(true);
+  });
+});
+
+describe("groupSidebarTaskThreads", () => {
+  interface Row {
+    readonly id: string;
+    readonly environmentId: string;
+    readonly parentThreadId?: string | null;
+    readonly createdAt: string;
+  }
+  const row = (id: string, overrides: Partial<Row> = {}): Row => ({
+    id,
+    environmentId: "env-1",
+    createdAt: `2026-07-25T12:00:0${id.slice(-1)}.000Z`,
+    ...overrides,
+  });
+  const group = (threads: ReadonlyArray<Row>, supported = true) =>
+    groupSidebarTaskThreads({
+      threads,
+      supportsThreadTasks: () => supported,
+      parentKey: (task) => `${task.environmentId}:${task.parentThreadId}`,
+      compareTasks: (left, right) => left.createdAt.localeCompare(right.createdAt),
+    });
+
+  it("puts each thread in exactly one place", () => {
+    const result = group([
+      row("p1"),
+      row("t2", { parentThreadId: "p1" }),
+      row("p3"),
+      row("t4", { parentThreadId: "p1" }),
+    ]);
+    expect(result.topLevel.map((thread) => thread.id)).toEqual(["p1", "p3"]);
+    expect(result.tasksByParent.get("env-1:p1")?.map((thread) => thread.id)).toEqual(["t2", "t4"]);
+    // No task also appears at the top level — a duplicated row would be two
+    // entries for one thread.
+    expect(result.topLevel.some((thread) => thread.parentThreadId != null)).toBe(false);
+  });
+
+  it("orders each group oldest first", () => {
+    const result = group([
+      row("t3", { parentThreadId: "p1", createdAt: "2026-07-25T12:00:03.000Z" }),
+      row("t1", { parentThreadId: "p1", createdAt: "2026-07-25T12:00:01.000Z" }),
+      row("t2", { parentThreadId: "p1", createdAt: "2026-07-25T12:00:02.000Z" }),
+    ]);
+    expect(result.tasksByParent.get("env-1:p1")?.map((thread) => thread.id)).toEqual([
+      "t1",
+      "t2",
+      "t3",
+    ]);
+  });
+
+  it("keeps a task at the top level where the environment cannot render groups", () => {
+    // Nesting a thread into a group that will never render would drop it from
+    // the sidebar entirely, so an unsupported environment ignores the link.
+    const result = group([row("p1"), row("t2", { parentThreadId: "p1" })], false);
+    expect(result.topLevel.map((thread) => thread.id)).toEqual(["p1", "t2"]);
+    expect(result.tasksByParent.size).toBe(0);
+  });
+
+  it("keeps an orphaned task's group even with no parent row in view", () => {
+    // An archived or filtered-out parent is not in `threads`; its tasks still
+    // group, and simply render nothing until the parent is visible again.
+    const result = group([row("t1", { parentThreadId: "gone" })]);
+    expect(result.topLevel).toEqual([]);
+    expect(result.tasksByParent.get("env-1:gone")?.map((thread) => thread.id)).toEqual(["t1"]);
+  });
+
+  it("treats an explicit null parent as top level", () => {
+    const result = group([row("p1", { parentThreadId: null })]);
+    expect(result.topLevel.map((thread) => thread.id)).toEqual(["p1"]);
   });
 });
