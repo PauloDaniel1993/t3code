@@ -277,3 +277,31 @@ tasks or the viewport is not the desktop layout.
 - **WHEN** the sidebar renders in the mobile layout
 - **THEN** task rows still render nested under their parent, and activating one opens the full task
   thread instead of the mini thread window
+
+### Requirement: Gate the task surface behind a beta setting
+
+The web UI SHALL expose a client setting under Beta features that controls whether the task surface
+renders at all, defaulting to off. Turning it off SHALL hide the surface without hiding any thread.
+
+#### Scenario: Setting off by default
+
+- **WHEN** a client has never touched the setting
+- **THEN** no task groups, chevrons, count chips, `+ New task`, mini thread window, `New task…` menu
+  item, or task lifecycle rows render, and no task commands are dispatched
+
+#### Scenario: Task threads stay reachable when the setting is off
+
+- **WHEN** the setting is off and the parent already owns task threads
+- **THEN** each task thread renders as an ordinary top-level sidebar row rather than disappearing
+  with the group that would have held it
+
+#### Scenario: Wake-up messages stay suppressed either way
+
+- **WHEN** the setting is off and the parent carries a delivered `task-result` message
+- **THEN** the transcript still omits it, because a message nobody typed must never render as a user
+  bubble regardless of the setting
+
+#### Scenario: Turning the setting on
+
+- **WHEN** the setting is turned on against a server that advertises `threadTasks`
+- **THEN** the full task surface renders for existing tasks without any further action

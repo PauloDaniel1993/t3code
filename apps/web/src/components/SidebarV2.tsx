@@ -1070,6 +1070,7 @@ export default function SidebarV2() {
   const autoSettleAfterDays = useClientSettings((s) => s.sidebarAutoSettleAfterDays);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
+  const threadTasksEnabled = useClientSettings((s) => s.threadTasksEnabled);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, deleteThread } =
     useThreadActions();
@@ -1468,6 +1469,7 @@ export default function SidebarV2() {
       const { topLevel, tasksByParent } = groupSidebarTaskThreads({
         threads: visible,
         supportsThreadTasks: (thread) =>
+          threadTasksEnabled &&
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true,
         parentKey: (task) =>
           scopedThreadKey(scopeThreadRef(task.environmentId, task.parentThreadId as ThreadId)),
@@ -1518,6 +1520,7 @@ export default function SidebarV2() {
       scopedProjectKeys,
       serverConfigs,
       snoozeWakeTick,
+      threadTasksEnabled,
       threads,
     ]);
 
@@ -2210,6 +2213,7 @@ export default function SidebarV2() {
         // A task thread cannot own tasks of its own — v1 allows one level of
         // nesting — so the entry point is hidden rather than shown and rejected.
         const supportsThreadTasks =
+          threadTasksEnabled &&
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true &&
           thread.parentThreadId == null;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
@@ -2354,6 +2358,7 @@ export default function SidebarV2() {
       markThreadUnread,
       serverConfigs,
       startThreadRename,
+      threadTasksEnabled,
     ],
   );
 
