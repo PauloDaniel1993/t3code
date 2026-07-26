@@ -93,7 +93,13 @@ function latestFailureDetail(thread: OrchestrationThread): string {
   return "The task ended with an error and produced no output.";
 }
 
-const make = Effect.gen(function* () {
+/**
+ * One evaluation pass for a task thread.
+ *
+ * Split out from the reactor's event plumbing so the settlement and delivery
+ * rules can be driven directly, without racing an event stream to observe them.
+ */
+export const makeThreadTaskEvaluator = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
@@ -302,6 +308,14 @@ const make = Effect.gen(function* () {
       yield* deliverResult(thread);
     }
   });
+
+  return { evaluateTaskThread };
+});
+
+const make = Effect.gen(function* () {
+  const orchestrationEngine = yield* OrchestrationEngineService;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const { evaluateTaskThread } = yield* makeThreadTaskEvaluator;
 
   const evaluateSafely = (threadId: ThreadId) =>
     evaluateTaskThread(threadId).pipe(

@@ -1,8 +1,10 @@
 import {
   CommandId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationThread,
@@ -399,5 +401,90 @@ it.effect("leaves tasks running when the parent settles", () =>
       ]),
     );
     expect(events.map((event) => event.type)).not.toContain("thread.task-updated");
+  }),
+);
+
+// The wake-up is delivered as an ordinary turn start on purpose: that is what
+// makes it clear the parent's lifecycle overrides. A source-aware exception
+// here would strand the parent asleep with a result waiting on it.
+it.effect("a task-result wake-up unsettles and unsnoozes the parent", () =>
+  Effect.gen(function* () {
+    const events = yield* decide(
+      {
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-11"),
+        threadId: PARENT,
+        message: {
+          messageId: MessageId.make("wake-1"),
+          role: "user",
+          text: "Task finished.",
+          attachments: [],
+          source: "task-result",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt: NOW,
+      },
+      readModel([
+        thread({
+          id: PARENT,
+          settledOverride: "settled",
+          settledAt: NOW,
+          snoozedUntil: "2026-07-26T00:00:00.000Z",
+          snoozedAt: NOW,
+        } as Partial<OrchestrationThread> & { id: ThreadId }),
+      ]),
+    );
+
+    const types = events.map((event) => event.type);
+    expect(types).toContain("thread.unsettled");
+    expect(types).toContain("thread.unsnoozed");
+    expect(types).toContain("thread.turn-start-requested");
+
+    const sent = events.find((event) => event.type === "thread.message-sent");
+    expect((sent?.payload as { source?: string }).source).toBe("task-result");
+  }),
+);
+
+// Delivery into a busy parent must not be rejected — the provider path turns
+// the turn start into a steer, which is how results reach a working thread.
+it.effect("a task-result wake-up steers a parent whose turn is still running", () =>
+  Effect.gen(function* () {
+    const events = yield* decide(
+      {
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-12"),
+        threadId: PARENT,
+        message: {
+          messageId: MessageId.make("wake-2"),
+          role: "user",
+          text: "Task finished.",
+          attachments: [],
+          source: "task-result",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt: NOW,
+      },
+      readModel([
+        thread({
+          id: PARENT,
+          latestTurn: {
+            turnId: TurnId.make("turn-1"),
+            state: "running",
+            requestedAt: NOW,
+            startedAt: NOW,
+            completedAt: null,
+            assistantMessageId: null,
+          },
+          session: { threadId: PARENT, activeTurnId: TurnId.make("turn-1") },
+        } as Partial<OrchestrationThread> & { id: ThreadId }),
+      ]),
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.message-sent",
+      "thread.turn-start-requested",
+    ]);
   }),
 );

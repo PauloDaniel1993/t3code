@@ -38,7 +38,7 @@
 - [x] 4.5 Implement delivery skip paths for missing, deleted, and archived parents, and for dispatch failure, including a parent failure activity
 - [x] 4.6 Implement pending-delivery retry on server restart without producing a second result recording
 - [x] 4.7 Implement explicit re-delivery for an already-finished task
-- [ ] 4.8 Add reactor tests for idle detection, approval/input suppression, failed-turn results, cancelled results, each skip reason, restart retry, steer-into-running-parent delivery, and un-settle/un-snooze side effects
+- [x] 4.8 Add reactor tests for idle detection, approval/input suppression, failed-turn results, cancelled results, each skip reason, restart retry, steer-into-running-parent delivery, and un-settle/un-snooze side effects
 
 ## 5. Agent Tool Surface
 
