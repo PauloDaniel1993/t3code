@@ -45,6 +45,12 @@ const ToolText = (input: { readonly maxChars: number; readonly description: stri
     Schema.isMaxLength(input.maxChars),
   );
 
+const REASONING_TOOL_DESCRIPTION =
+  "Reasoning level for the task's session, e.g. 'low', 'high', 'xhigh', 'max'. Applies to the model in `model`, or to this thread's model when `model` is omitted. Levels differ per provider and per model and some models have none — call task_models for the exact list. An unsupported value is rejected and names the valid ones.";
+
+const MODEL_TOOL_DESCRIPTION =
+  "Model for the task's own session, as an instanceId and model slug from task_models. Defaults to this thread's model when omitted. Both fields must come from the same instance — a slug from another provider is rejected.";
+
 export const TaskCreateToolInput = Schema.Struct({
   title: ToolText({
     maxChars: THREAD_TASK_TITLE_MAX_CHARS,
@@ -70,13 +76,19 @@ export const TaskCreateToolInput = Schema.Struct({
     description: `Message ids to carry over, required and non-empty when context is 'selected-messages' and ignored otherwise. At most ${THREAD_TASK_MAX_SELECTED_MESSAGES}.`,
   }),
   model: Schema.optional(
-    ThreadTaskToolModelSelection.annotate({
-      description:
-        "Model for the task's own session. Defaults to this thread's model when omitted.",
-    }),
-  ).annotate({
-    description: "Model for the task's own session. Defaults to this thread's model when omitted.",
-  }),
+    ThreadTaskToolModelSelection.annotate({ description: MODEL_TOOL_DESCRIPTION }),
+  ).annotate({ description: MODEL_TOOL_DESCRIPTION }),
+  reasoning: Schema.optional(
+    // Plain string, not an enum: the levels a model offers come from the live
+    // provider snapshot and differ per driver and per model, so there is no
+    // fixed set to publish. The handler matches the value against the target
+    // model's own levels and names the valid ones when it does not fit.
+    Schema.String.check(
+      Schema.isNonEmpty({
+        description: REASONING_TOOL_DESCRIPTION,
+      }),
+    ),
+  ).annotate({ description: REASONING_TOOL_DESCRIPTION }),
 });
 export type TaskCreateToolInput = typeof TaskCreateToolInput.Type;
 
@@ -109,6 +121,73 @@ export const TaskCancelToolInput = Schema.Struct({
   ),
 });
 export type TaskCancelToolInput = typeof TaskCancelToolInput.Type;
+
+const TASK_MODELS_INSTANCE_FILTER_DESCRIPTION =
+  "Return only this provider instance's models. Omit to list every instance this machine has configured.";
+
+export const TaskModelsToolInput = Schema.Struct({
+  // Same reason as `TaskListToolInput`: the filter keeps the published schema a
+  // real object, and it keeps the result small on machines with many providers.
+  instanceId: Schema.optional(
+    Schema.String.check(
+      Schema.isNonEmpty({ description: TASK_MODELS_INSTANCE_FILTER_DESCRIPTION }),
+    ),
+  ).annotate({ description: TASK_MODELS_INSTANCE_FILTER_DESCRIPTION }),
+});
+export type TaskModelsToolInput = typeof TaskModelsToolInput.Type;
+
+export const ThreadTaskReasoningLevel = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  /** The level the model runs at when `reasoning` is omitted. */
+  isDefault: Schema.Boolean,
+  /**
+   * True when selecting this level works by prefixing the task's prompt rather
+   * than by configuring the session — Claude's `ultrathink` is the live case.
+   * It still runs the task; it just costs prompt text instead of a setting.
+   */
+  promptInjected: Schema.Boolean,
+});
+export type ThreadTaskReasoningLevel = typeof ThreadTaskReasoningLevel.Type;
+
+export const ThreadTaskModelInfo = Schema.Struct({
+  /** Pass this verbatim as `model.model` on task_create. */
+  model: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  isDefault: Schema.Boolean,
+  /** Empty when this model has no reasoning level; passing `reasoning` then fails. */
+  reasoningLevels: Schema.Array(ThreadTaskReasoningLevel),
+});
+export type ThreadTaskModelInfo = typeof ThreadTaskModelInfo.Type;
+
+export const ThreadTaskProviderInstanceInfo = Schema.Struct({
+  /** Pass this verbatim as `model.instanceId` on task_create. */
+  instanceId: ProviderInstanceId,
+  provider: TrimmedNonEmptyString,
+  displayName: TrimmedNonEmptyString,
+  /**
+   * False when the instance is configured but not currently usable (not
+   * installed, signed out, disabled). A task started on one will fail.
+   */
+  ready: Schema.Boolean,
+  models: Schema.Array(ThreadTaskModelInfo),
+});
+export type ThreadTaskProviderInstanceInfo = typeof ThreadTaskProviderInstanceInfo.Type;
+
+export const ThreadTaskCurrentModel = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  model: TrimmedNonEmptyString,
+  /** The calling thread's reasoning level, or null when its model has none. */
+  reasoning: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ThreadTaskCurrentModel = typeof ThreadTaskCurrentModel.Type;
+
+export const TaskModelsToolOutput = Schema.Struct({
+  /** What a task inherits when `model` and `reasoning` are both omitted. */
+  current: ThreadTaskCurrentModel,
+  instances: Schema.Array(ThreadTaskProviderInstanceInfo),
+});
+export type TaskModelsToolOutput = typeof TaskModelsToolOutput.Type;
 
 export const ThreadTaskToolResult = Schema.Struct({
   outcome: ThreadTaskOutcome,
