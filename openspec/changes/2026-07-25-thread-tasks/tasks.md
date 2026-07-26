@@ -60,10 +60,10 @@
 
 - [x] 7.1 Add a grouping transform in `Sidebar.logic.ts` that removes task threads from the top-level list and yields parent-with-tasks groups in the parent's sort position
 - [x] 7.2 Add per-parent task-group collapse state to `uiStateStore` with the running/undelivered default-expansion rule
-- [ ] 7.3 Add the parent row chevron, `N tasks` count chip, and unread-results blue dot with its own visual treatment
+- [x] 7.3 Add the parent row chevron, `N tasks` count chip, and unread-results blue dot with its own visual treatment
 - [x] 7.4 Add the indented task row with guide line, status icon (running spinner, done check, returned marker), title, and elapsed time
 - [x] 7.5 Add the hover-visible `+ New task` row at the end of each expanded group
-- [ ] 7.6 Gate every task affordance on the environment's `threadTasks` capability
+- [x] 7.6 Gate every task affordance on the environment's `threadTasks` capability
 - [ ] 7.7 Add sidebar logic and render tests for grouping, no top-level duplication, archived-parent behavior, collapse persistence, unread-dot clearing, and capability gating
 
 ## 8. Web Mini Thread Window
@@ -84,9 +84,9 @@
 - [x] 9.3 Render the info-blue wake-up row, expandable to reveal the injected result text
 - [x] 9.4 Suppress `source: "task-result"` messages from ordinary user-bubble rendering in `MessagesTimeline.logic.ts`
 - [x] 9.5 Render the skipped-delivery variant that states the reason instead of claiming the thread resumed
-- [ ] 9.6 Add the creation dialog with title, prompt, model override, and the Full thread / Selected messages / No context picker
-- [ ] 9.7 Add the newest-first checkbox message list with selection count, bound enforcement, and preserved input on rejection
-- [ ] 9.8 Add the `New task…` action to the active thread actions menu
+- [x] 9.6 Add the creation dialog with title, prompt, model override, and the Full thread / Selected messages / No context picker
+- [x] 9.7 Add the newest-first checkbox message list with selection count, bound enforcement, and preserved input on rejection
+- [x] 9.8 Add the `New task…` action to the active thread actions menu
 - [ ] 9.9 Add timeline and dialog tests for each row variant, `task-result` suppression, context picker behavior, bounds, and rejection handling
 
 ## 10. Verification

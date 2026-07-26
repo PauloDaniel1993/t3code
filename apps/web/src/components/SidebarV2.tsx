@@ -8,11 +8,18 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
+  parseScopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef, SidebarProjectGroupingMode, ThreadId } from "@t3tools/contracts";
+import type {
+  ModelSelection,
+  ScopedThreadRef,
+  SidebarProjectGroupingMode,
+  ThreadId,
+  ThreadTaskContextSpec,
+} from "@t3tools/contracts";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
@@ -154,6 +161,7 @@ import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrom
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { SidebarTaskGroup } from "./SidebarTaskGroup";
 import { MiniThreadWindow } from "./MiniThreadWindow";
+import { NewThreadTaskDialog } from "./NewThreadTaskDialog";
 import {
   defaultTaskGroupExpanded,
   hasUnreadTaskResults,
@@ -396,6 +404,14 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   onSnooze: (threadRef: ScopedThreadRef, preset: SnoozePreset) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
   onChangeRequestState: (threadKey: string, state: "open" | "closed" | "merged" | null) => void;
+  /** Present only while this thread owns at least one task. */
+  taskGroup: {
+    readonly count: number;
+    readonly expanded: boolean;
+    /** A task woke this thread since the user last looked at it. */
+    readonly hasUnreadResults: boolean;
+    readonly onToggle: () => void;
+  } | null;
 }) {
   const {
     isRenaming,
@@ -718,6 +734,45 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     </span>
   );
 
+  // The chevron doubles as the count chip: one target, and the number is the
+  // thing worth reading. The dot marks results that landed while the user was
+  // elsewhere, so it survives a collapsed group.
+  const taskGroup = props.taskGroup;
+  const taskGroupBadge =
+    taskGroup === null ? null : (
+      <button
+        type="button"
+        data-testid="sidebar-task-group-toggle"
+        aria-expanded={taskGroup.expanded}
+        aria-label={`${taskGroup.expanded ? "Hide" : "Show"} ${taskGroup.count} ${
+          taskGroup.count === 1 ? "task" : "tasks"
+        }`}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          taskGroup.onToggle();
+        }}
+        className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full px-1.5 py-px text-xs text-muted-foreground/75 transition-colors hover:bg-sidebar-accent hover:text-foreground"
+      >
+        <ChevronDownIcon
+          aria-hidden
+          className={cn(
+            "size-3 shrink-0 transition-transform duration-200",
+            !taskGroup.expanded && "-rotate-90",
+          )}
+        />
+        {taskGroup.count} {taskGroup.count === 1 ? "task" : "tasks"}
+        {taskGroup.hasUnreadResults ? (
+          <span
+            data-testid="sidebar-task-unread-dot"
+            role="status"
+            aria-label="New task results"
+            className="size-1.5 shrink-0 rounded-full bg-blue-500 dark:bg-blue-400"
+          />
+        ) : null}
+      </button>
+    );
+
   const prBadge =
     prStatus && pr ? (
       <button
@@ -775,6 +830,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               />
             </span>
             {title}
+            {taskGroupBadge}
             {/* The PR badge stays outside the hover-fading slot: it must
               remain visible AND clickable while the row is hovered. Only
               the time/jump label yields to the settle affordance. */}
@@ -957,6 +1013,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               ) : (
                 <span className="flex-1" />
               )}
+              {taskGroupBadge}
               {prBadge}
               {diff ? (
                 <span className="shrink-0 font-mono">
@@ -1407,9 +1464,16 @@ export default function SidebarV2() {
       // Task threads never classify into the top-level lists or the snoozed /
       // settled shelves: they render nested under their parent, in the parent's
       // sort position, and a settled task stays inside its group.
+      //
+      // Where the environment does not advertise `threadTasks` there is no
+      // group to nest into, so a parent link is ignored and the thread stays an
+      // ordinary top-level row — hiding it would lose it entirely.
+      const nestsAsTask = (thread: EnvironmentThreadShell): boolean =>
+        thread.parentThreadId != null &&
+        serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true;
       const tasksByParent = new Map<string, EnvironmentThreadShell[]>();
       for (const thread of visible) {
-        if (thread.parentThreadId == null) continue;
+        if (!nestsAsTask(thread) || thread.parentThreadId == null) continue;
         const groupKey = scopedThreadKey(
           scopeThreadRef(thread.environmentId, thread.parentThreadId),
         );
@@ -1424,7 +1488,7 @@ export default function SidebarV2() {
         group.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
       }
       for (const thread of visible) {
-        if (thread.parentThreadId != null) continue;
+        if (nestsAsTask(thread)) continue;
         // Threads on servers without the settlement capability (old server,
         // or descriptor not loaded yet) never classify as settled: the user
         // could neither un-settle nor pin them, so auto-settling them would
@@ -1744,9 +1808,36 @@ export default function SidebarV2() {
   );
 
   const handleNewTask = useCallback((parentThreadKey: string) => {
-    setNewTaskParentKey(parentThreadKey);
+    setNewTaskParentRef(parseScopedThreadKey(parentThreadKey));
   }, []);
-  const [newTaskParentKey, setNewTaskParentKey] = useState<string | null>(null);
+  const [newTaskParentRef, setNewTaskParentRef] = useState<ScopedThreadRef | null>(null);
+  const closeNewTask = useCallback(() => setNewTaskParentRef(null), []);
+
+  /**
+   * Dispatch a manual create and translate a rejection into text the dialog can
+   * show. Returning the message rather than toasting keeps the draft on screen:
+   * a cap or an archived parent is something to fix and retry.
+   */
+  const submitNewTask = useCallback(
+    async (input: {
+      readonly parentThreadId: ThreadId;
+      readonly taskThreadId: ThreadId;
+      readonly title: string;
+      readonly prompt: string;
+      readonly context: ThreadTaskContextSpec;
+      readonly modelSelection?: ModelSelection;
+    }): Promise<string | null> => {
+      if (newTaskParentRef === null) return "This thread is no longer open.";
+      const result = await createTaskMutation({
+        environmentId: newTaskParentRef.environmentId,
+        input,
+      } as never);
+      if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return null;
+      const error = squashAtomCommandFailure(result);
+      return error instanceof Error ? error.message : "Could not create the task.";
+    },
+    [createTaskMutation, newTaskParentRef],
+  );
 
   const [renamingThreadKey, setRenamingThreadKey] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
@@ -2131,6 +2222,11 @@ export default function SidebarV2() {
           true;
         const supportsSnooze =
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true;
+        // A task thread cannot own tasks of its own — v1 allows one level of
+        // nesting — so the entry point is hidden rather than shown and rejected.
+        const supportsThreadTasks =
+          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true &&
+          thread.parentThreadId == null;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
         // Presets resolve at menu-open time (same as the popover).
@@ -2168,6 +2264,7 @@ export default function SidebarV2() {
                         },
                   ]
                 : []),
+              ...(supportsThreadTasks ? [{ id: "new-task", label: "New task…" }] : []),
               { id: "rename", label: "Rename thread" },
               { id: "mark-unread", label: "Mark unread" },
               { id: "copy-thread-id", label: "Copy Thread ID" },
@@ -2216,6 +2313,9 @@ export default function SidebarV2() {
             return;
           case "unsnooze":
             attemptUnsnooze(threadRef);
+            return;
+          case "new-task":
+            setNewTaskParentRef(threadRef);
             return;
           case "rename":
             startThreadRename(threadRef, thread.title);
@@ -2538,8 +2638,26 @@ export default function SidebarV2() {
                   // not from the sidebar second-guessing what still matters.
                   const isCard = section === "active";
                   const rowVariant = isCard ? "card" : "slim";
+                  const tasks = tasksByParent.get(threadKey);
                   return (
                     <SidebarV2Row
+                      taskGroup={
+                        tasks === undefined || tasks.length === 0
+                          ? null
+                          : {
+                              count: tasks.length,
+                              expanded: isTaskGroupExpanded(threadKey, thread, tasks),
+                              hasUnreadResults: hasUnreadTaskResults({
+                                taskSummary: thread.taskSummary,
+                                lastVisitedAt: threadLastVisitedAtById[threadKey],
+                              }),
+                              onToggle: () =>
+                                setTaskGroupExpanded(
+                                  threadKey,
+                                  !isTaskGroupExpanded(threadKey, thread, tasks),
+                                ),
+                            }
+                      }
                       // Keyed per variant on purpose: when a thread settles,
                       // the card fades out in place and the slim row fades
                       // in at its settled position instead of one element
@@ -2931,6 +3049,13 @@ export default function SidebarV2() {
           </DialogFooter>
         </DialogPopup>
       </Dialog>
+      {newTaskParentRef === null ? null : (
+        <NewThreadTaskDialog
+          parentThreadRef={newTaskParentRef}
+          onClose={closeNewTask}
+          onCreate={submitNewTask}
+        />
+      )}
       <SidebarChromeFooter />
     </>
   );
