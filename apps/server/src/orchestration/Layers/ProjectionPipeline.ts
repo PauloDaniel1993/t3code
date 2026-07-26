@@ -886,7 +886,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.session.activeTurnId,
+            // A session that goes idle reports `activeTurnId: null`. That is
+            // the *end* of the latest turn, not the disappearance of one, so
+            // the pointer keeps naming the turn that just finished — clearing
+            // it would leave the thread unable to resolve its own latest turn
+            // for as long as no new turn starts.
+            latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
