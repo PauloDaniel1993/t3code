@@ -16,7 +16,7 @@
 - [x] 2.3 Update `persistence/Layers/ProjectionThreads.ts` writes and reads for the new columns
 - [x] 2.4 Update `ProjectionSnapshotQuery.ts` so thread shell and detail snapshots carry `parentThreadId`, `task`, and `taskSummary`
 - [x] 2.5 Add a projection query helper that resolves a parent's tasks through the new index
-- [ ] 2.6 Add migration and projection tests covering pre-existing rows, migration re-run, parent lookup, and replay-identical task state
+- [x] 2.6 Add migration and projection tests covering pre-existing rows, migration re-run, parent lookup, and replay-identical task state
 
 ## 3. Server Task Lifecycle
 
