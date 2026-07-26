@@ -8,6 +8,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationThread,
+  type ThreadTaskLimits,
   type ThreadTaskMetadata,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -69,8 +70,9 @@ const task = (overrides: Partial<ThreadTaskMetadata> = {}): ThreadTaskMetadata =
 const decide = (
   command: Parameters<typeof decideOrchestrationCommand>[0]["command"],
   model: OrchestrationReadModel,
+  limits?: ThreadTaskLimits,
 ) =>
-  decideOrchestrationCommand({ command, readModel: model }).pipe(
+  decideOrchestrationCommand({ command, readModel: model, limits }).pipe(
     Effect.map((decided) => (Array.isArray(decided) ? decided : [decided])),
     Effect.provide(NodeServices.layer),
   );
@@ -144,6 +146,35 @@ it.effect("rejects nesting beyond one level", () =>
       readModel([thread({ id: PARENT, parentThreadId: ThreadId.make("grandparent") })]),
     ).pipe(Effect.flip);
     expect(result._tag).toBe("OrchestrationCommandInvariantError");
+  }),
+);
+
+it.effect("applies the configured caps rather than the built-in ones", () =>
+  Effect.gen(function* () {
+    // Two tasks in flight: fine by default, over a configured cap of one.
+    const withTwoRunning = readModel([
+      thread({ id: PARENT }),
+      thread({ id: ThreadId.make("running-1"), parentThreadId: PARENT, task: task() }),
+      thread({ id: ThreadId.make("running-2"), parentThreadId: PARENT, task: task() }),
+    ]);
+
+    const allowed = yield* decide(createCommand, withTwoRunning);
+    expect(allowed.map((event) => event.type)).toContain("thread.task-created");
+
+    const rejected = yield* decide(createCommand, withTwoRunning, {
+      maxRunning: 1,
+      maxTotal: 10,
+    }).pipe(Effect.flip);
+    expect(rejected._tag).toBe("OrchestrationCommandInvariantError");
+
+    const overLifetime = yield* decide(createCommand, withTwoRunning, {
+      maxRunning: 10,
+      maxTotal: 2,
+    }).pipe(Effect.flip);
+    expect(overLifetime._tag).toBe("OrchestrationCommandInvariantError");
+
+    const raised = yield* decide(createCommand, withTwoRunning, { maxRunning: 10, maxTotal: 50 });
+    expect(raised.map((event) => event.type)).toContain("thread.task-created");
   }),
 );
 

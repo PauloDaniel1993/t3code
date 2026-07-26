@@ -1,7 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DEFAULT_SERVER_SETTINGS,
+  DEFAULT_THREAD_TASK_MAX_RUNNING,
   ProviderDriverKind,
+  resolveThreadTaskLimits,
   ProviderInstanceId,
   ServerSettings,
   ServerSettingsPatch,
@@ -525,6 +527,44 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         },
         automaticGitFetchInterval: 10_000,
       });
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("round-trips the thread task caps, including clearing the total back to derived", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+
+      assert.equal(DEFAULT_SERVER_SETTINGS.threadTaskMaxRunning, DEFAULT_THREAD_TASK_MAX_RUNNING);
+      assert.equal(DEFAULT_SERVER_SETTINGS.threadTaskMaxTotal, null);
+
+      const raised = yield* serverSettings.updateSettings({
+        threadTaskMaxRunning: 12,
+        threadTaskMaxTotal: 40,
+      });
+      assert.deepEqual(
+        resolveThreadTaskLimits({
+          maxRunning: raised.threadTaskMaxRunning,
+          maxTotal: raised.threadTaskMaxTotal,
+        }),
+        { maxRunning: 12, maxTotal: 40 },
+      );
+
+      // Clearing the total is a `null`, not an omission — it has to survive the
+      // patch merge or the field would keep its previous explicit value.
+      const derived = yield* serverSettings.updateSettings({ threadTaskMaxTotal: null });
+      assert.deepEqual(
+        resolveThreadTaskLimits({
+          maxRunning: derived.threadTaskMaxRunning,
+          maxTotal: derived.threadTaskMaxTotal,
+        }),
+        { maxRunning: 12, maxTotal: 60 },
+      );
+
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      assert.deepEqual(JSON.parse(raw), { threadTaskMaxRunning: 12 });
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
