@@ -1,6 +1,7 @@
 import {
+  DEFAULT_THREAD_TASK_MAX_RUNNING,
+  resolveThreadTaskLimits,
   THREAD_TASK_CONTEXT_MAX_CHARS,
-  THREAD_TASK_MAX_RUNNING,
   THREAD_TASK_RESULT_SUMMARY_MAX_CHARS,
   type OrchestrationMessage,
   type OrchestrationThread,
@@ -108,10 +109,36 @@ describe("checkTaskCreateEligibility", () => {
       checkTaskCreateEligibility({
         parent: parentBase,
         parentThreadId: threadId("parent"),
-        counts: { total: THREAD_TASK_MAX_RUNNING, running: THREAD_TASK_MAX_RUNNING, lifetime: 5 },
+        counts: {
+          total: DEFAULT_THREAD_TASK_MAX_RUNNING,
+          running: DEFAULT_THREAD_TASK_MAX_RUNNING,
+          lifetime: 5,
+        },
         context: { kind: "none" },
       })?.reason,
     ).toBe("concurrency-cap");
+  });
+
+  it("honours a configured concurrency cap over the built-in one", () => {
+    const overTheConfiguredCap = {
+      parent: parentBase,
+      parentThreadId: threadId("parent"),
+      counts: { total: 2, running: 2, lifetime: 2 },
+      context: { kind: "none" },
+    } as const;
+    expect(checkTaskCreateEligibility(overTheConfiguredCap)).toBeNull();
+    expect(
+      checkTaskCreateEligibility({
+        ...overTheConfiguredCap,
+        limits: resolveThreadTaskLimits({ maxRunning: 2 }),
+      })?.reason,
+    ).toBe("concurrency-cap");
+    expect(
+      checkTaskCreateEligibility({
+        ...overTheConfiguredCap,
+        limits: resolveThreadTaskLimits({ maxRunning: 20 }),
+      }),
+    ).toBeNull();
   });
 
   it("rejects once the lifetime cap is reached", () => {

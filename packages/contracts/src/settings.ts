@@ -5,7 +5,14 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DEFAULT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
-import { ModelSelection } from "./orchestration.ts";
+import {
+  DEFAULT_THREAD_TASK_MAX_RUNNING,
+  MAX_THREAD_TASK_MAX_RUNNING,
+  MAX_THREAD_TASK_MAX_TOTAL,
+  MIN_THREAD_TASK_MAX_RUNNING,
+  MIN_THREAD_TASK_MAX_TOTAL,
+  ModelSelection,
+} from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -734,6 +741,22 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
+export const ThreadTaskMaxRunning = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_THREAD_TASK_MAX_RUNNING,
+    maximum: MAX_THREAD_TASK_MAX_RUNNING,
+  }),
+);
+export type ThreadTaskMaxRunning = typeof ThreadTaskMaxRunning.Type;
+
+export const ThreadTaskMaxTotal = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_THREAD_TASK_MAX_TOTAL,
+    maximum: MAX_THREAD_TASK_MAX_TOTAL,
+  }),
+);
+export type ThreadTaskMaxTotal = typeof ThreadTaskMaxTotal.Type;
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -760,6 +783,22 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /**
+   * Tasks one thread may run at the same time. Server-authoritative because the
+   * cap is enforced in the decider, which is also the path an agent's own
+   * `task_create` call takes — a client-side number would not bind it.
+   */
+  threadTaskMaxRunning: ThreadTaskMaxRunning.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_THREAD_TASK_MAX_RUNNING)),
+  ),
+  /**
+   * Tasks one thread may create over its whole life. `null` means "derive it"
+   * — see `resolveThreadTaskLimits` — so a thread's lifetime budget follows its
+   * concurrency setting until someone pins it.
+   */
+  threadTaskMaxTotal: Schema.NullOr(ThreadTaskMaxTotal).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({
@@ -916,6 +955,8 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
+  threadTaskMaxRunning: Schema.optionalKey(ThreadTaskMaxRunning),
+  threadTaskMaxTotal: Schema.optionalKey(Schema.NullOr(ThreadTaskMaxTotal)),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   sourceControlWritingStyle: Schema.optionalKey(
     Schema.Struct({

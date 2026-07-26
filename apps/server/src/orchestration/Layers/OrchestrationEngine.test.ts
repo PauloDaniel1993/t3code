@@ -9,12 +9,14 @@ import {
   TurnId,
   type ChatAttachment,
   type OrchestrationEvent,
+  type ThreadTaskLimits,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -40,6 +42,7 @@ import {
   type OrchestrationEventStoreShape,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import { ThreadTaskLimitsSource } from "../threadTaskLimits.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -92,7 +95,7 @@ function makeFailingTransactionSqlLayer(consumeFailure: () => boolean) {
   ).pipe(Layer.provide(SqlitePersistenceMemory));
 }
 
-async function createOrchestrationSystem() {
+async function createOrchestrationSystem(options: { threadTaskLimits?: ThreadTaskLimits } = {}) {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-orchestration-engine-test-",
   });
@@ -100,6 +103,11 @@ async function createOrchestrationSystem() {
     OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
+      Layer.provide(
+        options.threadTaskLimits === undefined
+          ? Layer.empty
+          : Layer.succeed(ThreadTaskLimitsSource, Effect.succeed(options.threadTaskLimits)),
+      ),
     ),
     OrchestrationProjectionSnapshotQueryLive,
   ).pipe(
@@ -137,6 +145,76 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("enforces the configured task concurrency cap, not the built-in one", async () => {
+    const createdAt = now();
+    // One at a time, where the built-in cap would have allowed five.
+    const system = await createOrchestrationSystem({
+      threadTaskLimits: { maxRunning: 1, maxTotal: 10 },
+    });
+    const { engine } = system;
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-task-cap-project"),
+        projectId: asProjectId("project-task-cap"),
+        title: "Task cap",
+        workspaceRoot: "/tmp/project-task-cap",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-task-cap-thread"),
+        threadId: ThreadId.make("thread-task-cap"),
+        projectId: asProjectId("project-task-cap"),
+        title: "Parent",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const createTask = (suffix: string) =>
+      engine.dispatch({
+        type: "thread.task.create",
+        commandId: CommandId.make(`cmd-task-cap-create-${suffix}`),
+        parentThreadId: ThreadId.make("thread-task-cap"),
+        taskThreadId: ThreadId.make(`thread-task-cap-task-${suffix}`),
+        title: `Task ${suffix}`,
+        prompt: "Do the thing.",
+        context: { kind: "none" },
+        createdBy: "agent",
+        createdAt,
+      });
+
+    await system.run(createTask("1"));
+    const secondTask = await system.run(Effect.exit(createTask("2")));
+
+    expect(Exit.isFailure(secondTask)).toBe(true);
+    expect(JSON.stringify(secondTask)).toContain("1 tasks in flight (limit 1)");
+
+    const readModel = await system.readModel();
+    expect(
+      readModel.threads.filter(
+        (thread) => thread.parentThreadId === ThreadId.make("thread-task-cap"),
+      ),
+    ).toHaveLength(1);
+
+    await system.dispose();
+  });
+
   it("bootstraps command handling from persisted projections without reading the full snapshot", async () => {
     let nextSequence = 8;
     const eventStore: OrchestrationEventStoreShape = {

@@ -1,9 +1,20 @@
 import { useEffect, useState } from "react";
 
 import {
+  MAX_THREAD_TASK_MAX_RUNNING,
+  MAX_THREAD_TASK_MAX_TOTAL,
+  MIN_THREAD_TASK_MAX_RUNNING,
+  MIN_THREAD_TASK_MAX_TOTAL,
+  resolveThreadTaskLimits,
+  THREAD_TASK_TOTAL_PER_RUNNING,
+} from "@t3tools/contracts";
+
+import {
   useClientSettings,
+  usePrimarySettings,
   useSidebarV2Enabled,
   useUpdateClientSettings,
+  useUpdatePrimarySettings,
 } from "../../hooks/useSettings";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
@@ -13,43 +24,61 @@ const AUTO_SETTLE_MIN_DAYS = 1;
 const AUTO_SETTLE_MAX_DAYS = 90;
 const AUTO_SETTLE_DEFAULT_DAYS = 3;
 
-function AutoSettleDaysInput({
+/**
+ * Bounded integer field. A local draft lets the box be emptied mid-edit; the
+ * setting only moves on a valid value and snaps back to the persisted one on
+ * blur.
+ *
+ * With `onClear`, emptying the box is itself a commit — that is how a nullable
+ * setting is returned to its derived default.
+ */
+function BoundedNumberInput({
   value,
+  min,
+  max,
+  placeholder,
+  label,
   onCommit,
+  onClear,
 }: {
-  value: number;
-  onCommit: (days: number) => void;
+  value: number | null;
+  min: number;
+  max: number;
+  placeholder?: string;
+  label: string;
+  onCommit: (next: number) => void;
+  onClear?: () => void;
 }) {
-  // Local draft so the field can be emptied mid-edit; the setting only moves
-  // on valid input and snaps back to the persisted value on blur.
-  const [draft, setDraft] = useState(String(value));
+  const persisted = value === null ? "" : String(value);
+  const [draft, setDraft] = useState(persisted);
   useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
+    setDraft(persisted);
+  }, [persisted]);
 
   return (
     <Input
       type="number"
-      min={AUTO_SETTLE_MIN_DAYS}
-      max={AUTO_SETTLE_MAX_DAYS}
+      min={min}
+      max={max}
       className="w-full sm:w-24"
       value={draft}
+      {...(placeholder === undefined ? {} : { placeholder })}
       onChange={(event) => {
-        setDraft(event.target.value);
-        // Number(), not parseInt: "3.5" must be rejected (not truncated to a
-        // committed 3 while the field shows 3.5) — commit only when the
-        // persisted value matches the displayed one.
-        const parsed = Number(event.target.value);
-        if (
-          Number.isInteger(parsed) &&
-          parsed >= AUTO_SETTLE_MIN_DAYS &&
-          parsed <= AUTO_SETTLE_MAX_DAYS
-        ) {
+        const next = event.target.value;
+        setDraft(next);
+        if (next.trim() === "") {
+          onClear?.();
+          return;
+        }
+        // Number(), not parseInt: "3.5" must be rejected rather than silently
+        // truncated to a committed 3 while the field still shows 3.5.
+        const parsed = Number(next);
+        if (Number.isInteger(parsed) && parsed >= min && parsed <= max) {
           onCommit(parsed);
         }
       }}
-      onBlur={() => setDraft(String(value))}
-      aria-label="Days of inactivity before auto-settle"
+      onBlur={() => setDraft(persisted)}
+      aria-label={label}
     />
   );
 }
@@ -61,6 +90,16 @@ export function BetaSettingsPanel() {
   );
   const threadTasksEnabled = useClientSettings((settings) => settings.threadTasksEnabled);
   const updateSettings = useUpdateClientSettings();
+
+  // The task caps are server settings: the decider enforces them, and that is
+  // also the path an agent's own `task_create` takes.
+  const threadTaskMaxRunning = usePrimarySettings((settings) => settings.threadTaskMaxRunning);
+  const threadTaskMaxTotal = usePrimarySettings((settings) => settings.threadTaskMaxTotal);
+  const updateServerSettings = useUpdatePrimarySettings();
+  const resolvedLimits = resolveThreadTaskLimits({
+    maxRunning: threadTaskMaxRunning,
+    maxTotal: threadTaskMaxTotal,
+  });
 
   return (
     <SettingsPageContainer>
@@ -105,8 +144,11 @@ export function BetaSettingsPanel() {
                 title="Days of inactivity before auto-settle"
                 description="Any new activity un-settles a thread automatically."
                 control={
-                  <AutoSettleDaysInput
+                  <BoundedNumberInput
                     value={sidebarAutoSettleAfterDays}
+                    min={AUTO_SETTLE_MIN_DAYS}
+                    max={AUTO_SETTLE_MAX_DAYS}
+                    label="Days of inactivity before auto-settle"
                     onCommit={(days) => updateSettings({ sidebarAutoSettleAfterDays: days })}
                   />
                 }
@@ -127,6 +169,38 @@ export function BetaSettingsPanel() {
             />
           }
         />
+        {threadTasksEnabled ? (
+          <>
+            <SettingsRow
+              title="Tasks running at once"
+              description={`How many tasks one thread may have queued or running at the same time. Creating one past the limit is refused until a slot frees up — the agent is told to wait or cancel. Between ${MIN_THREAD_TASK_MAX_RUNNING} and ${MAX_THREAD_TASK_MAX_RUNNING}; every running task is a full provider session, so raise it as far as your machine and your plan can carry.`}
+              control={
+                <BoundedNumberInput
+                  value={threadTaskMaxRunning}
+                  min={MIN_THREAD_TASK_MAX_RUNNING}
+                  max={MAX_THREAD_TASK_MAX_RUNNING}
+                  label="Tasks one thread can run at once"
+                  onCommit={(next) => updateServerSettings({ threadTaskMaxRunning: next })}
+                />
+              }
+            />
+            <SettingsRow
+              title="Tasks in total per thread"
+              description={`How many tasks one thread may create over its whole life, counting finished and deleted ones. This is the backstop on a task waking its parent, which starts another task, and so on. Leave it empty to keep it at ${THREAD_TASK_TOTAL_PER_RUNNING}× the concurrent limit — currently ${resolvedLimits.maxTotal}.`}
+              control={
+                <BoundedNumberInput
+                  value={threadTaskMaxTotal}
+                  min={MIN_THREAD_TASK_MAX_TOTAL}
+                  max={MAX_THREAD_TASK_MAX_TOTAL}
+                  placeholder={String(resolvedLimits.maxTotal)}
+                  label="Tasks one thread can create in total"
+                  onCommit={(next) => updateServerSettings({ threadTaskMaxTotal: next })}
+                  onClear={() => updateServerSettings({ threadTaskMaxTotal: null })}
+                />
+              }
+            />
+          </>
+        ) : null}
       </SettingsSection>
     </SettingsPageContainer>
   );
