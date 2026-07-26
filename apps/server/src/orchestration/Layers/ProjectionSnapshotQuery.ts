@@ -1266,6 +1266,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  /**
+   * The thread's latest turn.
+   *
+   * `latest_turn_id` is the authority when it resolves, but it is not required
+   * to: rows written before the pointer stopped being cleared at turn end
+   * still carry a null, and a revert can drop the turn it named. Falling back
+   * to the newest surviving turn row keeps a finished turn readable instead of
+   * reporting the thread as having never taken one — which readers such as the
+   * thread task reactor treat as "still working". Reverted turns are deleted
+   * outright, so the fallback cannot resurrect one.
+   */
   const getLatestTurnRowByThread = SqlSchema.findOneOption({
     Request: ThreadIdLookupInput,
     Result: ProjectionLatestTurnDbRowSchema,
@@ -1284,10 +1295,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads threads
         JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
-          AND turns.turn_id = threads.latest_turn_id
+          AND turns.turn_id IS NOT NULL
         WHERE threads.thread_id = ${threadId}
           AND threads.deleted_at IS NULL
           AND threads.archived_at IS NULL
+        ORDER BY
+          CASE
+            WHEN threads.latest_turn_id IS NOT NULL AND turns.turn_id = threads.latest_turn_id
+              THEN 0
+            ELSE 1
+          END,
+          turns.requested_at DESC,
+          turns.row_id DESC
         LIMIT 1
       `,
   });
