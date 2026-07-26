@@ -87,7 +87,7 @@
 - [x] 9.6 Add the creation dialog with title, prompt, model override, and the Full thread / Selected messages / No context picker
 - [x] 9.7 Add the newest-first checkbox message list with selection count, bound enforcement, and preserved input on rejection
 - [x] 9.8 Add the `New task…` action to the active thread actions menu
-- [ ] 9.9 Add timeline and dialog tests for each row variant, `task-result` suppression, context picker behavior, bounds, and rejection handling
+- [x] 9.9 Add timeline and dialog tests for each row variant, `task-result` suppression, context picker behavior, bounds, and rejection handling
 
 ## 10. Verification
 
