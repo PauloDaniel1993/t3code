@@ -179,13 +179,14 @@ const handlers = {
     return yield* readTaskSummary(taskThreadId);
   }),
 
-  task_list: Effect.fn("TasksToolkit.task_list")(function* () {
+  task_list: Effect.fn("TasksToolkit.task_list")(function* (input) {
     const parent = yield* requireCallingThread();
     const tasks = yield* listTasksOf(parent.id);
     return {
       tasks: tasks.flatMap((shell) => {
         const task = shell.task;
         if (task == null) return [];
+        if (input.status !== undefined && task.status !== input.status) return [];
         return [
           {
             threadId: shell.id,
@@ -211,10 +212,11 @@ const handlers = {
 
   task_cancel: Effect.fn("TasksToolkit.task_cancel")(function* (input) {
     const parent = yield* requireCallingThread();
+    const taskThreadId = ThreadId.make(input.threadId);
     const tasks = yield* listTasksOf(parent.id);
-    const target = tasks.find((shell) => shell.id === input.threadId);
+    const target = tasks.find((shell) => shell.id === taskThreadId);
     if (target === undefined) {
-      return yield* fail("task-not-found", `Task '${input.threadId}' is not owned by this thread.`);
+      return yield* fail("task-not-found", `Task '${taskThreadId}' is not owned by this thread.`);
     }
 
     const orchestrationEngine = yield* OrchestrationEngineService;
@@ -224,12 +226,12 @@ const handlers = {
         type: "thread.task.cancel",
         commandId: CommandId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie)),
         parentThreadId: parent.id,
-        taskThreadId: input.threadId,
+        taskThreadId,
         createdAt: yield* nowIso,
       })
       .pipe(Effect.catch(() => fail("dispatch-failed", "Could not cancel the task.")));
 
-    return yield* readTaskSummary(input.threadId);
+    return yield* readTaskSummary(taskThreadId);
   }),
 } satisfies Parameters<typeof TasksToolkit.toLayer>[0];
 
