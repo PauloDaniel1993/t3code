@@ -127,45 +127,55 @@ export const make = Effect.gen(function* () {
 
       const stateArg: ChangeRequestState | "all" = input.state;
       return github
-        .execute({
-          cwd: input.cwd,
-          args: [
-            "pr",
-            "list",
-            "--head",
-            input.headSelector,
-            "--state",
-            stateArg,
-            "--limit",
-            String(input.limit ?? 20),
-            "--json",
-            "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
-          ],
-        })
+        .pullRequestQueryRepositoryArgs({ cwd: input.cwd })
         .pipe(
-          Effect.flatMap((result) => {
-            const raw = result.stdout.trim();
-            if (raw.length === 0) {
+          Effect.flatMap((repositoryArgSets) =>
+            Effect.forEach(repositoryArgSets, (repositoryArgs) =>
+              github.execute({
+                cwd: input.cwd,
+                args: [
+                  "pr",
+                  "list",
+                  ...repositoryArgs,
+                  "--head",
+                  input.headSelector,
+                  "--state",
+                  stateArg,
+                  "--limit",
+                  String(input.limit ?? 20),
+                  "--json",
+                  "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
+                ],
+              }),
+            ),
+          ),
+          Effect.flatMap((results) => {
+            const raws = results
+              .map((result) => result.stdout.trim())
+              .filter((raw) => raw.length > 0);
+            if (raws.length === 0) {
               return Effect.succeed([]);
             }
-            return Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
-              Effect.flatMap((decoded) =>
-                Result.isSuccess(decoded)
-                  ? Effect.succeed(
-                      decoded.success.map((item) => ({
-                        ...toChangeRequest(item),
-                        updatedAt: item.updatedAt,
-                      })),
-                    )
-                  : Effect.fail(
-                      new GitHubCli.GitHubChangeRequestListDecodeError({
-                        command: "gh",
-                        cwd: input.cwd,
-                        cause: decoded.failure,
-                      }),
-                    ),
+            return Effect.forEach(raws, (raw) =>
+              Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
+                Effect.flatMap((decoded) =>
+                  Result.isSuccess(decoded)
+                    ? Effect.succeed(
+                        decoded.success.map((item) => ({
+                          ...toChangeRequest(item),
+                          updatedAt: item.updatedAt,
+                        })),
+                      )
+                    : Effect.fail(
+                        new GitHubCli.GitHubChangeRequestListDecodeError({
+                          command: "gh",
+                          cwd: input.cwd,
+                          cause: decoded.failure,
+                        }),
+                      ),
+                ),
               ),
-            );
+            ).pipe(Effect.map(GitHubCli.mergePullRequestsByUrl));
           }),
           Effect.mapError(
             (error) =>
