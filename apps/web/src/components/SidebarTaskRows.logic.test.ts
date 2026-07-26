@@ -70,13 +70,31 @@ describe("formatTaskElapsedLabel", () => {
     expect(formatTaskElapsedLabel({ task: task(), nowMs: NOW })).toBe("3m");
   });
 
-  it("measures a settled task from when it finished", () => {
+  // A settled task reports how long it took, not how long ago it stopped: a
+  // number that keeps climbing after the work ended reads as still running.
+  it("freezes a settled task at its run duration", () => {
+    const settled = task({
+      status: "finished",
+      startedAt: "2026-07-25T11:50:00.000Z",
+      finishedAt: "2026-07-25T11:52:00.000Z",
+    });
+    expect(formatTaskElapsedLabel({ task: settled, nowMs: NOW })).toBe("2m");
+    // An hour later it still says the same thing.
+    expect(formatTaskElapsedLabel({ task: settled, nowMs: NOW + 3_600_000 })).toBe("2m");
+  });
+
+  it("falls back to the request time when a settled task never recorded a start", () => {
     expect(
       formatTaskElapsedLabel({
-        task: task({ status: "finished", finishedAt: "2026-07-25T11:52:00.000Z" }),
+        task: task({
+          status: "finished",
+          startedAt: null,
+          requestedAt: "2026-07-25T11:59:30.000Z",
+          finishedAt: "2026-07-25T11:59:45.000Z",
+        }),
         nowMs: NOW,
       }),
-    ).toBe("8m");
+    ).toBe("15s");
   });
 
   it("scales through seconds, hours, and days", () => {
@@ -101,25 +119,37 @@ describe("formatTaskStatusLine", () => {
     expect(formatTaskStatusLine({ task: task(), nowMs: NOW })).toBe("Working · 3m");
     expect(
       formatTaskStatusLine({
-        task: task({ status: "finished", finishedAt: "2026-07-25T11:52:00.000Z" }),
+        task: task({
+          status: "finished",
+          startedAt: "2026-07-25T11:44:00.000Z",
+          finishedAt: "2026-07-25T11:52:00.000Z",
+        }),
         nowMs: NOW,
       }),
-    ).toBe("Done · 8m ago");
+    ).toBe("Done in 8m");
   });
 
   it("labels failure and cancellation", () => {
     expect(
       formatTaskStatusLine({
-        task: task({ status: "failed", finishedAt: "2026-07-25T11:59:00.000Z" }),
+        task: task({
+          status: "failed",
+          startedAt: "2026-07-25T11:58:00.000Z",
+          finishedAt: "2026-07-25T11:59:00.000Z",
+        }),
         nowMs: NOW,
       }),
-    ).toBe("Failed · 1m ago");
+    ).toBe("Failed after 1m");
     expect(
       formatTaskStatusLine({
-        task: task({ status: "cancelled", finishedAt: "2026-07-25T11:59:00.000Z" }),
+        task: task({
+          status: "cancelled",
+          startedAt: "2026-07-25T11:58:00.000Z",
+          finishedAt: "2026-07-25T11:59:00.000Z",
+        }),
         nowMs: NOW,
       }),
-    ).toBe("Cancelled · 1m ago");
+    ).toBe("Cancelled after 1m");
   });
 });
 
