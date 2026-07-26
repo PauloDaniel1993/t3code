@@ -8,7 +8,7 @@ import {
 import { createModelCapabilities, createModelSelection } from "@t3tools/shared/model";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveTaskModelSelection } from "./reasoning.ts";
+import { buildTaskModelCatalog, resolveTaskModelSelection } from "./reasoning.ts";
 
 const CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const CLAUDE_INSTANCE = ProviderInstanceId.make("claudeAgent");
@@ -53,7 +53,9 @@ const claudeModel: ServerProviderModel = {
         options: [
           { id: "high", label: "High", isDefault: true },
           { id: "max", label: "Max" },
+          { id: "ultrathink", label: "Ultrathink" },
         ],
+        promptInjectedValues: ["ultrathink"],
       },
     ],
   }),
@@ -69,6 +71,7 @@ const plainModel: ServerProviderModel = {
 const makeProvider = (
   instanceId: ProviderInstanceId,
   models: ReadonlyArray<ServerProviderModel>,
+  overrides: Partial<ServerProvider> = {},
 ): ServerProvider => ({
   instanceId,
   driver: ProviderDriverKind.make(instanceId),
@@ -81,6 +84,7 @@ const makeProvider = (
   models,
   slashCommands: [],
   skills: [],
+  ...overrides,
 });
 
 const providers: ReadonlyArray<ServerProvider> = [
@@ -218,5 +222,117 @@ describe("resolveTaskModelSelection", () => {
 
   it("treats a blank reasoning level as unset rather than invalid", () => {
     expect(resolve({ reasoning: "   " })).toEqual({ ok: true });
+  });
+});
+
+describe("buildTaskModelCatalog", () => {
+  const catalogOf = (input: {
+    readonly providers?: ReadonlyArray<ServerProvider>;
+    readonly current?: ModelSelection;
+    readonly instanceId?: string;
+  }) =>
+    buildTaskModelCatalog({
+      providers: input.providers ?? providers,
+      current: input.current ?? parentSelection,
+      instanceId: input.instanceId,
+    });
+
+  it("publishes each model's reasoning levels under that model's own vocabulary", () => {
+    const result = catalogOf({ instanceId: CLAUDE_INSTANCE });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.catalog.instances).toEqual([
+      {
+        instanceId: CLAUDE_INSTANCE,
+        provider: CLAUDE_INSTANCE,
+        displayName: CLAUDE_INSTANCE,
+        ready: true,
+        models: [
+          {
+            model: claudeModel.slug,
+            name: claudeModel.name,
+            isDefault: false,
+            reasoningLevels: [
+              { id: "high", label: "High", isDefault: true, promptInjected: false },
+              { id: "max", label: "Max", isDefault: false, promptInjected: false },
+              // Selecting this one prefixes the task's prompt rather than
+              // configuring the session, which is worth saying out loud.
+              { id: "ultrathink", label: "Ultrathink", isDefault: false, promptInjected: true },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("reports no levels for a model that has none rather than inventing some", () => {
+    const result = catalogOf({ instanceId: CODEX_INSTANCE });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const models = result.catalog.instances[0]?.models ?? [];
+    expect(models.find((model) => model.model === plainModel.slug)?.reasoningLevels).toEqual([]);
+    expect(
+      models.find((model) => model.model === codexModel.slug)?.reasoningLevels.map((l) => l.id),
+    ).toEqual(["medium", "high", "xhigh"]);
+  });
+
+  it("answers what a task inherits when the agent names nothing", () => {
+    const result = catalogOf({});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The thread carries an explicit level, so that is what a task inherits.
+    expect(result.catalog.current).toEqual({
+      instanceId: CODEX_INSTANCE,
+      model: codexModel.slug,
+      reasoning: "medium",
+    });
+
+    // With no level of its own, the inherited level is the model's default.
+    const bare = catalogOf({ current: createModelSelection(CLAUDE_INSTANCE, claudeModel.slug) });
+    expect(bare.ok).toBe(true);
+    if (!bare.ok) return;
+    expect(bare.catalog.current.reasoning).toBe("high");
+
+    // A model with no reasoning level reports none rather than a placeholder.
+    const plain = catalogOf({ current: createModelSelection(CODEX_INSTANCE, plainModel.slug) });
+    expect(plain.ok).toBe(true);
+    if (!plain.ok) return;
+    expect(plain.catalog.current.reasoning).toBe(null);
+  });
+
+  it("flags an instance a task would fail on instead of hiding it", () => {
+    const signedOut = makeProvider(CLAUDE_INSTANCE, [claudeModel], {
+      status: "error",
+      displayName: "Claude",
+    });
+    const result = catalogOf({ providers: [signedOut] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.catalog.instances[0]).toMatchObject({ displayName: "Claude", ready: false });
+  });
+
+  it("omits instances whose driver this build cannot run", () => {
+    // An unavailable instance is a leftover binding for a driver that is not
+    // in this build. Listing it would only invite a task that cannot start.
+    const missingDriver = makeProvider(ProviderInstanceId.make("ghost"), [], {
+      availability: "unavailable",
+    });
+    const result = catalogOf({ providers: [...providers, missingDriver] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.catalog.instances.map((instance) => instance.instanceId)).toEqual([
+      CODEX_INSTANCE,
+      CLAUDE_INSTANCE,
+    ]);
+  });
+
+  it("names the configured instances when asked to filter by an unknown one", () => {
+    const result = catalogOf({ instanceId: "nope" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("No provider instance 'nope' is configured");
+    expect(result.message).toContain("codex, claudeAgent");
   });
 });
