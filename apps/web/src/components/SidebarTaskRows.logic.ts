@@ -6,6 +6,64 @@
  */
 import type { ThreadTaskMetadata, ThreadTaskStatus } from "@t3tools/contracts";
 
+/** The subset of a sidebar thread shell the grouping rules need. */
+export interface SidebarTaskGroupingThread {
+  readonly id: string;
+  readonly environmentId: string;
+  readonly parentThreadId?: string | null | undefined;
+}
+
+/**
+ * Whether a thread renders nested under a parent rather than at the top level.
+ *
+ * Where the environment does not advertise `threadTasks` there is no group to
+ * nest into, so a parent link is ignored and the thread stays an ordinary
+ * top-level row — hiding it would lose it from the sidebar entirely.
+ */
+export function nestsAsTask<T extends SidebarTaskGroupingThread>(
+  thread: T,
+  supportsThreadTasks: (thread: T) => boolean,
+): boolean {
+  return thread.parentThreadId != null && supportsThreadTasks(thread);
+}
+
+/**
+ * Split the visible threads into the top-level list and each parent's task
+ * group. A thread appears in exactly one of the two, never both.
+ */
+export function groupSidebarTaskThreads<T extends SidebarTaskGroupingThread>(input: {
+  readonly threads: ReadonlyArray<T>;
+  readonly supportsThreadTasks: (thread: T) => boolean;
+  /** Scoped key builder, so grouping matches the keys rows are addressed by. */
+  readonly parentKey: (task: T) => string;
+  readonly compareTasks?: (left: T, right: T) => number;
+}): {
+  readonly topLevel: ReadonlyArray<T>;
+  readonly tasksByParent: ReadonlyMap<string, ReadonlyArray<T>>;
+} {
+  const topLevel: T[] = [];
+  const tasksByParent = new Map<string, T[]>();
+  for (const thread of input.threads) {
+    if (!nestsAsTask(thread, input.supportsThreadTasks)) {
+      topLevel.push(thread);
+      continue;
+    }
+    const groupKey = input.parentKey(thread);
+    const existing = tasksByParent.get(groupKey);
+    if (existing === undefined) {
+      tasksByParent.set(groupKey, [thread]);
+    } else {
+      existing.push(thread);
+    }
+  }
+  if (input.compareTasks !== undefined) {
+    for (const group of tasksByParent.values()) {
+      group.sort(input.compareTasks);
+    }
+  }
+  return { topLevel, tasksByParent };
+}
+
 export type TaskRowIcon = "running" | "done" | "failed" | "cancelled";
 
 export interface TaskRowPresentation {

@@ -213,7 +213,14 @@ disarm the task so a second recording cannot occur for the same arming.
 When a result is recorded and the parent is eligible, the system SHALL dispatch a turn start on the
 parent thread carrying a user-role message with `source: "task-result"` whose text is a deterministic
 wrapper containing the task title, the original task prompt, the outcome, and the result summary.
-The delivery outcome SHALL be recorded on the task.
+The delivery outcome SHALL be recorded on the task. The message's `source` SHALL be persisted with
+the message, so authorship survives a reload rather than living only on the event.
+
+#### Scenario: Reloading a woken thread
+
+- **WHEN** a thread that was woken by a task result is reloaded from the projection
+- **THEN** the injected message still reports `source: "task-result"`, and messages persisted before
+  authorship was tracked report no source at all rather than a wrong one
 
 #### Scenario: Parent has no live provider session
 
