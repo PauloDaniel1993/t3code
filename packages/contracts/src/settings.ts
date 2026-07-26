@@ -337,6 +337,12 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT)),
   ),
   sidebarV2Enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Thread tasks beta. Off by default, so the surface stays hidden until it is
+   * turned on. Turning it back off never hides a thread: a task thread simply
+   * stops nesting and renders as an ordinary top-level row.
+   */
+  threadTasksEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
@@ -875,6 +881,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   sidebarV2Enabled: Schema.optionalKey(Schema.Boolean),
+  threadTasksEnabled: Schema.optionalKey(Schema.Boolean),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   terminalFontFamily: Schema.optionalKey(TrimmedString),
   wordWrap: Schema.optionalKey(Schema.Boolean),

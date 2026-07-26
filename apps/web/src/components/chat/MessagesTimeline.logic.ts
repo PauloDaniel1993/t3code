@@ -482,6 +482,18 @@ export function messageEntryIsTranscriptVisible(
   return !isTaskResultMessage(message);
 }
 
+/**
+ * Task lifecycle rows belong to the thread-tasks beta, so they disappear with
+ * it. The wake-up message stays suppressed either way — a message nobody typed
+ * must never render as a user bubble, whatever the beta is set to.
+ */
+export function threadTaskEntryIsTranscriptVisible(
+  entry: Pick<WorkLogEntry, "threadTask">,
+  threadTasksEnabled: boolean,
+): boolean {
+  return threadTasksEnabled || entry.threadTask === undefined;
+}
+
 export function formatTaskTokenCount(totalTokens: number): string {
   return `${totalTokens.toLocaleString("en-US")} ${totalTokens === 1 ? "token" : "tokens"}`;
 }
@@ -746,6 +758,11 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  /**
+   * Thread-tasks beta. Defaults off, matching the setting, so a caller that
+   * predates the beta cannot surface its rows by omission.
+   */
+  threadTasksEnabled?: boolean;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   // Remove transcript-hidden tasks, panel-only activity projections, and
@@ -753,7 +770,8 @@ export function deriveMessagesTimelineRows(input: {
   // hidden counts, toggle labels, stable rows, or rendering downstream.
   const timelineEntries = input.timelineEntries.filter((entry) =>
     entry.kind === "work"
-      ? workEntryIsTranscriptVisible(entry.entry)
+      ? workEntryIsTranscriptVisible(entry.entry) &&
+        threadTaskEntryIsTranscriptVisible(entry.entry, input.threadTasksEnabled === true)
       : entry.kind === "message"
         ? messageEntryIsTranscriptVisible(entry.message)
         : true,

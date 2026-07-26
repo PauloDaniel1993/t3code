@@ -204,6 +204,7 @@ function buildProps() {
     contentInsetEndAdjustment: 0,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
+    threadTasksEnabled: true,
   };
 }
 
@@ -1415,6 +1416,47 @@ describe("MessagesTimeline", () => {
     it("marks a server-trimmed result so the disclosure is not read as the whole output", () => {
       expect(finished({ summaryTruncated: true })).toContain("trimmed");
       expect(finished()).not.toContain("trimmed");
+    });
+
+    // The beta owns the whole surface: with it off there is no task chrome to
+    // explain, so the lifecycle rows go with it. The wake-up message stays
+    // suppressed either way — see the suppression test below.
+    it("hides the lifecycle rows when the thread tasks beta is off", () => {
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          threadTasksEnabled={false}
+          timelineEntries={[
+            {
+              id: "entry-1",
+              kind: "work",
+              createdAt: MESSAGE_CREATED_AT,
+              entry: {
+                id: "work-1",
+                createdAt: MESSAGE_CREATED_AT,
+                label: "task.finished",
+                tone: "info",
+                sourceActivityKind: "task.finished",
+                threadTask: parseThreadTaskActivity({
+                  kind: "task.finished",
+                  payload: {
+                    taskThreadId: "task-1",
+                    title: "Inventory the handlers",
+                    outcome: "succeeded",
+                    summary: "Found 4 handlers without tests.",
+                    deliveryState: "delivered",
+                  },
+                } as never)!,
+              },
+            },
+            { ...buildUserTimelineEntry("Carry on then."), id: "entry-2" },
+          ]}
+        />,
+      );
+
+      expect(markup).not.toContain("thread-task-row-task.finished");
+      expect(markup).not.toContain("Main thread resumed");
+      expect(markup).toContain("Carry on then.");
     });
 
     it("links to the task thread from both row variants", () => {
