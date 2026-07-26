@@ -58,6 +58,8 @@ const render = (props: Partial<Parameters<typeof MiniThreadWindow>[0]> = {}) =>
       onSteer={() => {}}
       onCancelTask={() => {}}
       onRedeliver={() => {}}
+      onKeepOpen={() => {}}
+      onPeekLeave={() => {}}
       {...props}
     />,
   );
