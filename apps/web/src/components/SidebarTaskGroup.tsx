@@ -15,6 +15,13 @@ import { cn } from "../lib/utils";
 import { formatTaskElapsedLabel, resolveTaskRowPresentation } from "./SidebarTaskRows.logic";
 
 /**
+ * Rows visible before the list starts scrolling. A parent may accumulate a lot
+ * of tasks over its lifetime, and an unbounded group would push every thread
+ * below it off the sidebar.
+ */
+const VISIBLE_TASK_ROWS = 4;
+
+/**
  * A parent thread's nested task rows plus the hover-visible `+ New task` row.
  *
  * The group is rendered inline in the sidebar list, directly beneath its parent
@@ -66,49 +73,62 @@ export const SidebarTaskGroup = memo(function SidebarTaskGroup(props: {
 
   return (
     <li className="list-none" data-thread-selection-safe data-testid="sidebar-task-group">
-      <ul role="list" className="group/tasks relative flex flex-col gap-px pl-6">
+      <div className="group/tasks relative pl-6">
         {/* Guide line joining the group to its parent row. */}
         <span
           aria-hidden
           className="absolute bottom-2 left-3 top-0 w-px bg-sidebar-border/70 dark:bg-white/10"
         />
-        {tasks.map((task) => {
-          const taskKey = scopedThreadKey(scopeThreadRef(task.environmentId, task.id));
-          const isOpen = openTaskKey === taskKey;
-          return (
-            <SidebarTaskRow
-              key={taskKey}
-              task={task}
-              nowMs={nowMs}
-              isOpen={isOpen}
-              onPeekTask={onPeekTask}
-              onPeekLeave={onPeekLeave}
-              onOpenThread={onOpenThread}
-              onContextMenu={onContextMenu}
-              isRenaming={renamingTaskKey === taskKey}
-              renamingTitle={renamingTaskKey === taskKey ? renamingTitle : ""}
-              onRenameTitleChange={onRenameTitleChange}
-              onCommitRename={onCommitRename}
-              onCancelRename={onCancelRename}
-            >
-              {isOpen ? miniWindow : null}
-            </SidebarTaskRow>
-          );
-        })}
-        <li className="list-none">
-          <button
-            type="button"
-            data-testid="sidebar-task-new"
-            onClick={() => onNewTask(parentThreadKey)}
-            className="flex h-6 w-full cursor-pointer items-center gap-1.5 rounded-md px-2 text-left text-[11px] text-muted-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent/50 hover:text-foreground focus-visible:opacity-100 group-hover/tasks:opacity-100"
-          >
-            <PlusIcon aria-hidden className="size-3" />
-            New task
-          </button>
-        </li>
-      </ul>
+        <ul
+          role="list"
+          data-testid="sidebar-task-list"
+          // Four rows (h-7) plus the hairlines between them. Past that the group
+          // scrolls in place rather than growing without bound.
+          className={cn(
+            "flex flex-col gap-px",
+            tasks.length > VISIBLE_TASK_ROWS && "max-h-[calc(7rem+3px)] overflow-y-auto",
+          )}
+        >
+          {renderRows(tasks)}
+        </ul>
+        <button
+          type="button"
+          data-testid="sidebar-task-new"
+          onClick={() => onNewTask(parentThreadKey)}
+          className="flex h-6 w-full cursor-pointer items-center gap-1.5 rounded-md px-2 text-left text-[11px] text-muted-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent/50 hover:text-foreground focus-visible:opacity-100 group-hover/tasks:opacity-100"
+        >
+          <PlusIcon aria-hidden className="size-3" />
+          New task
+        </button>
+      </div>
     </li>
   );
+
+  function renderRows(rows: ReadonlyArray<EnvironmentThreadShell>) {
+    return rows.map((task) => {
+      const taskKey = scopedThreadKey(scopeThreadRef(task.environmentId, task.id));
+      const isOpen = openTaskKey === taskKey;
+      return (
+        <SidebarTaskRow
+          key={taskKey}
+          task={task}
+          nowMs={nowMs}
+          isOpen={isOpen}
+          onPeekTask={onPeekTask}
+          onPeekLeave={onPeekLeave}
+          onOpenThread={onOpenThread}
+          onContextMenu={onContextMenu}
+          isRenaming={renamingTaskKey === taskKey}
+          renamingTitle={renamingTaskKey === taskKey ? renamingTitle : ""}
+          onRenameTitleChange={onRenameTitleChange}
+          onCommitRename={onCommitRename}
+          onCancelRename={onCancelRename}
+        >
+          {isOpen ? miniWindow : null}
+        </SidebarTaskRow>
+      );
+    });
+  }
 });
 
 const SidebarTaskRow = memo(function SidebarTaskRow(props: {
@@ -147,15 +167,19 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
     [task.environmentId, task.id],
   );
   const metadata = task.task;
+  const activity = useMemo(
+    () => ({ latestTurn: task.latestTurn ?? null, session: task.session ?? null }),
+    [task.latestTurn, task.session],
+  );
   const presentation = useMemo(
-    () => (metadata == null ? null : resolveTaskRowPresentation(metadata)),
-    [metadata],
+    () => (metadata == null ? null : resolveTaskRowPresentation(metadata, activity)),
+    [activity, metadata],
   );
   if (metadata == null || presentation === null) {
     return null;
   }
 
-  const elapsed = formatTaskElapsedLabel({ task: metadata, nowMs });
+  const elapsed = formatTaskElapsedLabel({ task: metadata, activity, nowMs });
 
   // Renaming borrows the row, so peeking must not steal focus back or close
   // the editor out from under the pointer.
