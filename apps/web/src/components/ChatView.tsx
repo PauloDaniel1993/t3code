@@ -1341,6 +1341,9 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const legendListRef = useRef<LegendListRef | null>(null);
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
+  const [timelineOverlayWheelHost, setTimelineOverlayWheelHost] = useState<HTMLDivElement | null>(
+    null,
+  );
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const [composerInputHeight, setComposerInputHeight] = useState(0);
   const [workflowActivityOverlayHeight, setWorkflowActivityOverlayHeight] = useState(0);
@@ -6024,7 +6027,14 @@ function ChatViewContent(props: ChatViewProps) {
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
-          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" data-chat-column="true">
+          {/* The chat column also hosts wheel forwarding: it wraps both the
+              timeline and every surface stacked on top of it (activity card,
+              banners, composer), whose gestures must still scroll the list. */}
+          <div
+            ref={setTimelineOverlayWheelHost}
+            className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+            data-chat-column="true"
+          >
             {/* Provider status overlays the timeline without changing its content height. */}
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
               <ProviderStatusBanner
@@ -6070,6 +6080,7 @@ function ChatViewContent(props: ChatViewProps) {
                 onAnchorReady={onTimelineAnchorReady}
                 onAnchorSizeChanged={onTimelineAnchorSizeChanged}
                 contentInsetEndAdjustment={timelineBottomOverlayHeight}
+                overlayWheelHost={timelineOverlayWheelHost}
                 onIsAtEndChange={onIsAtEndChange}
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
