@@ -25,8 +25,23 @@ const metadata = (overrides: Partial<ThreadTaskMetadata> = {}): ThreadTaskMetada
     ...overrides,
   }) as ThreadTaskMetadata;
 
-const shell = (task: ThreadTaskMetadata): EnvironmentThreadShell =>
-  ({ id: "task-1", environmentId: "env-1", task }) as unknown as EnvironmentThreadShell;
+const shell = (
+  task: ThreadTaskMetadata,
+  overrides: Record<string, unknown> = {},
+): EnvironmentThreadShell =>
+  ({
+    id: "task-1",
+    environmentId: "env-1",
+    task,
+    latestTurn: null,
+    session: null,
+    ...overrides,
+  }) as unknown as EnvironmentThreadShell;
+
+const runningTurn = (startedAt = "2026-07-25T11:58:00.000Z") => ({
+  latestTurn: { state: "running", requestedAt: startedAt, startedAt, completedAt: null },
+  session: { activeTurnId: "turn-2" },
+});
 
 const render = (props: Partial<Parameters<typeof SidebarTaskGroup>[0]> = {}) =>
   renderToStaticMarkup(
@@ -63,7 +78,8 @@ describe("SidebarTaskGroup", () => {
   // The row navigates now, so it is not a disclosure control — the peek opens
   // on hover and focus instead.
   it("does not present the row as an expandable disclosure", () => {
-    expect(render()).not.toContain("aria-expanded");
+    const rowTag = render().split('data-testid="sidebar-task-row"')[0]?.split("<button").pop();
+    expect(rowTag).not.toContain("aria-expanded");
   });
 
   // A settled task shows how long it took. Before, this measured time since it
@@ -90,5 +106,53 @@ describe("SidebarTaskGroup", () => {
 
   it("renders nothing while the group is collapsed", () => {
     expect(render({ expanded: false })).toBe("");
+  });
+});
+
+describe("SidebarTaskGroup — a long list", () => {
+  const many = (count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      shell(metadata({ title: `Task ${index + 1}` }), { id: `task-${index + 1}` }),
+    );
+
+  it("renders every task, however many there are", () => {
+    const html = render({ tasks: many(9) });
+    expect(html).toContain("Task 1");
+    expect(html).toContain("Task 9");
+  });
+
+  // A parent can accumulate a lot of tasks; an unbounded group would push
+  // every thread below it off the sidebar.
+  it("scrolls in place once the list runs past four rows", () => {
+    expect(render({ tasks: many(5) })).toContain("overflow-y-auto");
+  });
+
+  it("leaves a list of four or fewer to size itself", () => {
+    expect(render({ tasks: many(4) })).not.toContain("overflow-y-auto");
+    expect(render({ tasks: many(1) })).not.toContain("overflow-y-auto");
+  });
+});
+
+// A task thread is still an ordinary thread: steering it, or opening it and
+// sending a prompt, starts a new turn that the sidebar has to reflect.
+describe("SidebarTaskGroup — a settled task that starts working again", () => {
+  const revived = () => shell(metadata(), runningTurn());
+
+  it("counts as working rather than settling into the done shelf", () => {
+    const html = render({ tasks: [revived()] });
+    expect(html).not.toContain('data-testid="sidebar-task-done-toggle"');
+  });
+
+  it("shows the running icon even though the recorded status is finished", () => {
+    const html = render({ tasks: [revived()] });
+    expect(html).toContain('data-task-status="finished"');
+    expect(html).toContain("Running");
+    expect(html).not.toContain('aria-label="Done"');
+  });
+
+  it("times the new turn, not the original run", () => {
+    // Turn started 2m before now; the original run took 12s.
+    expect(render({ tasks: [revived()], nowMs: NOW })).toContain("2m");
+    expect(render({ tasks: [revived()], nowMs: NOW })).not.toContain("12s");
   });
 });
