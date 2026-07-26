@@ -84,6 +84,12 @@ for the agent to decide whether to wait or proceed.
 - **WHEN** the calling thread owns no tasks
 - **THEN** the tool returns an empty list rather than an error
 
+#### Scenario: Filtering by status
+
+- **WHEN** the agent calls `task_list` with a `status`
+- **THEN** only the calling thread's tasks in that state are returned, and omitting `status` returns
+  all of them
+
 #### Scenario: Scope isolation
 
 - **WHEN** the agent calls `task_list`

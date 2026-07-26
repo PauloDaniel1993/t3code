@@ -160,6 +160,7 @@ import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./u
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { SidebarTaskGroup } from "./SidebarTaskGroup";
+import { groupSidebarTaskThreads } from "./SidebarTaskRows.logic";
 import { MiniThreadWindow } from "./MiniThreadWindow";
 import { NewThreadTaskDialog } from "./NewThreadTaskDialog";
 import {
@@ -1464,31 +1465,15 @@ export default function SidebarV2() {
       // Task threads never classify into the top-level lists or the snoozed /
       // settled shelves: they render nested under their parent, in the parent's
       // sort position, and a settled task stays inside its group.
-      //
-      // Where the environment does not advertise `threadTasks` there is no
-      // group to nest into, so a parent link is ignored and the thread stays an
-      // ordinary top-level row — hiding it would lose it entirely.
-      const nestsAsTask = (thread: EnvironmentThreadShell): boolean =>
-        thread.parentThreadId != null &&
-        serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true;
-      const tasksByParent = new Map<string, EnvironmentThreadShell[]>();
-      for (const thread of visible) {
-        if (!nestsAsTask(thread) || thread.parentThreadId == null) continue;
-        const groupKey = scopedThreadKey(
-          scopeThreadRef(thread.environmentId, thread.parentThreadId),
-        );
-        const existing = tasksByParent.get(groupKey);
-        if (existing === undefined) {
-          tasksByParent.set(groupKey, [thread]);
-        } else {
-          existing.push(thread);
-        }
-      }
-      for (const group of tasksByParent.values()) {
-        group.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-      }
-      for (const thread of visible) {
-        if (nestsAsTask(thread)) continue;
+      const { topLevel, tasksByParent } = groupSidebarTaskThreads({
+        threads: visible,
+        supportsThreadTasks: (thread) =>
+          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true,
+        parentKey: (task) =>
+          scopedThreadKey(scopeThreadRef(task.environmentId, task.parentThreadId as ThreadId)),
+        compareTasks: (left, right) => left.createdAt.localeCompare(right.createdAt),
+      });
+      for (const thread of topLevel) {
         // Threads on servers without the settlement capability (old server,
         // or descriptor not loaded yet) never classify as settled: the user
         // could neither un-settle nor pin them, so auto-settling them would

@@ -64,7 +64,7 @@
 - [x] 7.4 Add the indented task row with guide line, status icon (running spinner, done check, returned marker), title, and elapsed time
 - [x] 7.5 Add the hover-visible `+ New task` row at the end of each expanded group
 - [x] 7.6 Gate every task affordance on the environment's `threadTasks` capability
-- [ ] 7.7 Add sidebar logic and render tests for grouping, no top-level duplication, archived-parent behavior, collapse persistence, unread-dot clearing, and capability gating
+- [x] 7.7 Add sidebar logic and render tests for grouping, no top-level duplication, archived-parent behavior, collapse persistence, unread-dot clearing, and capability gating
 
 ## 8. Web Mini Thread Window
 
