@@ -1772,7 +1772,7 @@ export default function SidebarV2() {
       void cancelTaskMutation({
         environmentId: threadRef.environmentId,
         input: { parentThreadId, taskThreadId: threadRef.threadId },
-      } as never);
+      });
     },
     [cancelTaskMutation, threads],
   );
@@ -1787,7 +1787,7 @@ export default function SidebarV2() {
       void redeliverTaskMutation({
         environmentId: threadRef.environmentId,
         input: { parentThreadId, taskThreadId: threadRef.threadId },
-      } as never);
+      });
     },
     [redeliverTaskMutation, threads],
   );
@@ -1816,7 +1816,7 @@ export default function SidebarV2() {
       const result = await createTaskMutation({
         environmentId: newTaskParentRef.environmentId,
         input,
-      } as never);
+      });
       if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return null;
       const error = squashAtomCommandFailure(result);
       return error instanceof Error ? error.message : "Could not create the task.";

@@ -93,4 +93,4 @@
 
 - [x] 10.1 Run focused tests for `packages/contracts`, `apps/server` orchestration/persistence/MCP, `packages/client-runtime`, and `apps/web`
 - [x] 10.2 Run targeted formatting, lint, and type checks for the changed scope
-- [ ] 10.3 Run one integrated web verification pass with the `test-t3-app` skill against an isolated environment: create a task manually, create one via an agent tool call, peek and steer from the mini window, and confirm the parent wakes with an unread blue dot while viewing another thread
+- [x] 10.3 Run one integrated web verification pass with the `test-t3-app` skill against an isolated environment: create a task manually, create one via an agent tool call, peek and steer from the mini window, and confirm the parent wakes with an unread blue dot while viewing another thread
