@@ -9,6 +9,7 @@ import {
   deriveTimelineActivityCycles,
   formatTaskTokenCount,
   formatTaskToolUseCount,
+  messageEntryIsTranscriptVisible,
   normalizeCompactToolLabel,
   resolveActiveTimelineActivityCycle,
   resolveDisplayedTimelineActivityCycle,
@@ -2096,5 +2097,50 @@ describe("computeStableMessagesTimelineRows", () => {
       expect(restored.result).toHaveLength(1);
       expect(restored.result[0]?.id).toBe("task-activity-started");
     });
+  });
+});
+
+describe("messageEntryIsTranscriptVisible", () => {
+  it("hides the wake-up message a finished task injects into its parent", () => {
+    expect(messageEntryIsTranscriptVisible({ role: "user", source: "task-result" })).toBe(false);
+  });
+
+  it("keeps every message a person or a provider actually produced", () => {
+    expect(messageEntryIsTranscriptVisible({ role: "user", source: "user" })).toBe(true);
+    expect(messageEntryIsTranscriptVisible({ role: "assistant", source: "provider" })).toBe(true);
+    expect(messageEntryIsTranscriptVisible({ role: "system", source: "system" })).toBe(true);
+    // Rows written before authorship was tracked carry no source at all.
+    expect(messageEntryIsTranscriptVisible({ role: "user" })).toBe(true);
+  });
+
+  it("removes task-result messages before rows are derived", () => {
+    const createdAt = "2026-01-01T00:00:00Z";
+    const message = (id: string, source: "user" | "task-result") => ({
+      id: `entry:${id}`,
+      kind: "message" as const,
+      createdAt,
+      message: {
+        id: MessageId.make(id),
+        role: "user" as const,
+        source,
+        text: id,
+        turnId: null,
+        createdAt,
+        updatedAt: createdAt,
+        streaming: false,
+      },
+    });
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [message("typed", "user"), message("woken", "task-result")],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.flatMap((row) => (row.kind === "message" ? [row.message.text] : []))).toEqual([
+      "typed",
+    ]);
   });
 });

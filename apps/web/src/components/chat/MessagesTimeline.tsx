@@ -3,8 +3,10 @@ import {
   type MessageId,
   type ScopedThreadRef,
   type ServerProviderSkill,
+  type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import {
@@ -87,6 +89,7 @@ import {
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapTopPercent,
+  threadTaskEntryIsTranscriptVisible,
   workEntryIsTranscriptVisible,
   workLogEntryIsTaskLike,
   type StableMessagesTimelineRowsState,
@@ -121,6 +124,11 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
+import {
+  describeThreadTaskCreated,
+  describeThreadTaskFinished,
+  type ThreadTaskActivity,
+} from "../../threadTaskActivity";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {
   buildReviewCommentRenderablePatch,
@@ -146,6 +154,7 @@ interface TimelineRowSharedState {
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
+  threadTasksEnabled: boolean;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -227,6 +236,8 @@ interface MessagesTimelineProps {
   contentInsetEndAdjustment: number;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: () => void;
+  /** Thread-tasks beta. Off hides the task lifecycle rows. */
+  threadTasksEnabled?: boolean;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
   hasOlderActivities?: boolean;
@@ -270,6 +281,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   contentInsetEndAdjustment,
   onIsAtEndChange,
   onManualNavigation,
+  threadTasksEnabled = false,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
   hasOlderActivities = false,
@@ -370,8 +382,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
+        threadTasksEnabled,
       }),
     [
+      threadTasksEnabled,
       timelineEntries,
       latestTurn,
       runningTurnId,
@@ -531,6 +545,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      threadTasksEnabled,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -549,6 +564,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      threadTasksEnabled,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -1358,16 +1374,20 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const { workspaceRoot, threadTasksEnabled } = use(TimelineRowCtx);
   // Row construction already gates transcript visibility; repeat it here so
   // this secondary filter path can never reintroduce hidden entries.
   const nonEmptyEntries = useMemo(
     () =>
       groupedEntries.filter(
         (entry) =>
-          workEntryIsTranscriptVisible(entry) && !workEntryIndicatesToolNeutralStatus(entry),
+          workEntryIsTranscriptVisible(entry) &&
+          threadTaskEntryIsTranscriptVisible(entry, threadTasksEnabled) &&
+          // Task lifecycle rows carry their own status; the tool-neutral filter
+          // does not apply to them and must not swallow the wake-up row.
+          (entry.threadTask !== undefined || !workEntryIndicatesToolNeutralStatus(entry)),
       ),
-    [groupedEntries],
+    [groupedEntries, threadTasksEnabled],
   );
   const onlyTaskEntries = nonEmptyEntries.every((entry) => workLogEntryIsTaskLike(entry));
   const onlyToolEntries =
@@ -1393,7 +1413,13 @@ const WorkGroupSection = memo(function WorkGroupSection({
       )}
       <div className="space-y-px">
         {nonEmptyEntries.map((workEntry) =>
-          workLogEntryIsTaskLike(workEntry) ? (
+          workEntry.threadTask !== undefined ? (
+            <ThreadTaskWorkEntryRow
+              key={workEntry.id}
+              workEntry={workEntry}
+              threadTask={workEntry.threadTask}
+            />
+          ) : workLogEntryIsTaskLike(workEntry) ? (
             <TaskWorkEntryRow
               key={workEntry.id}
               workEntry={workEntry}
@@ -2158,6 +2184,136 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 }
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
+
+// ---------------------------------------------------------------------------
+// Thread task lifecycle rows. A task is a whole thread of its own, so the
+// parent transcript only carries the two moments that concern it: the task
+// being created, and its results coming back and waking this thread.
+// ---------------------------------------------------------------------------
+
+const ThreadTaskWorkEntryRow = memo(function ThreadTaskWorkEntryRow(props: {
+  workEntry: TimelineWorkEntry;
+  threadTask: ThreadTaskActivity;
+}) {
+  const { threadTask } = props;
+  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
+  const navigate = useNavigate();
+  const [expanded, setExpanded] = useState(false);
+  const detailRegionId = useId();
+
+  const openTaskThread = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: activeThreadEnvironmentId,
+          threadId: threadTask.taskThreadId as ThreadId,
+        },
+      });
+    },
+    [activeThreadEnvironmentId, navigate, threadTask.taskThreadId],
+  );
+
+  const created = threadTask.kind === "task.created" ? threadTask : null;
+  const finished = threadTask.kind === "task.finished" ? threadTask : null;
+  // Only a finished task has anything to disclose: the text that was injected.
+  const detailText = finished !== null && finished.summary.length > 0 ? finished.summary : null;
+  const canExpand = detailText !== null;
+  const undelivered = finished !== null && !finished.delivered;
+
+  const heading =
+    created !== null ? describeThreadTaskCreated(created) : describeThreadTaskFinished(finished!);
+  const toneClass = undelivered
+    ? "text-amber-600 dark:text-amber-400"
+    : finished !== null
+      ? "text-blue-600 dark:text-blue-400"
+      : "text-muted-foreground/70";
+
+  return (
+    <div
+      data-testid={`thread-task-row-${threadTask.kind}`}
+      className={cn(
+        "flex flex-col rounded-md px-0.5 py-0.5 transition-colors",
+        finished !== null && !undelivered && "bg-blue-500/[0.06]",
+        canExpand && "cursor-pointer hover:bg-accent/20",
+      )}
+      {...(canExpand
+        ? {
+            role: "button" as const,
+            tabIndex: 0 as const,
+            "aria-label": heading,
+            "aria-expanded": expanded,
+            "aria-controls": detailRegionId,
+            onClick: () => setExpanded((value) => !value),
+            onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setExpanded((value) => !value);
+              }
+            },
+          }
+        : {})}
+    >
+      <div className="flex select-none items-center gap-1.5">
+        <span className={cn("flex size-5 shrink-0 items-center justify-center", toneClass)}>
+          {created !== null ? (
+            created.createdBy === "agent" ? (
+              <BotIcon aria-hidden className="block size-3.5 shrink-0 stroke-[1.8] opacity-80" />
+            ) : (
+              <SquarePenIcon
+                aria-hidden
+                className="block size-3.5 shrink-0 stroke-[1.8] opacity-80"
+              />
+            )
+          ) : undelivered ? (
+            <CircleAlertIcon aria-hidden className="block size-3.5 shrink-0 stroke-[1.8]" />
+          ) : (
+            <Undo2Icon aria-hidden className="block size-3.5 shrink-0 stroke-[1.8]" />
+          )}
+        </span>
+        <p className="flex min-w-0 flex-1 items-baseline gap-1.5 text-[12px] leading-5">
+          <span className={cn("shrink-0 font-medium", toneClass)}>{heading}</span>
+          <span className="min-w-0 shrink truncate text-foreground/82">{threadTask.title}</span>
+          {created?.contextLabel != null && (
+            <span className="shrink-0 truncate text-muted-foreground/55">
+              {created.contextLabel}
+            </span>
+          )}
+          {finished?.summaryTruncated === true && (
+            <span className="shrink-0 text-muted-foreground/55">trimmed</span>
+          )}
+        </p>
+        <button
+          type="button"
+          data-testid="thread-task-open-thread"
+          onClick={openTaskThread}
+          className="shrink-0 cursor-pointer rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+        >
+          Open thread
+        </button>
+        <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden={!canExpand}>
+          {canExpand ? (
+            <ChevronDownIcon
+              aria-hidden
+              className={cn(
+                "size-3 shrink-0 opacity-70 transition-transform duration-200",
+                expanded && "rotate-180",
+              )}
+            />
+          ) : null}
+        </span>
+      </div>
+      {canExpand && expanded ? (
+        <div id={detailRegionId} className="ml-6 pt-1 pb-0.5">
+          <pre className="whitespace-pre-wrap break-words rounded-md bg-muted/50 px-2 py-1.5 font-mono text-[11px] leading-snug text-foreground/80">
+            {detailText}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  );
+});
 
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;

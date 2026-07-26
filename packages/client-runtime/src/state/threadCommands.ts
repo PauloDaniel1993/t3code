@@ -4,7 +4,10 @@ import { Atom } from "effect/unstable/reactivity";
 import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
 import {
   type ArchiveThreadInput,
+  type CancelThreadTaskInput,
   type CreateThreadInput,
+  type CreateThreadTaskInput,
+  type RedeliverThreadTaskInput,
   type DeleteThreadInput,
   type InterruptThreadTurnInput,
   type RespondToThreadApprovalInput,
@@ -21,8 +24,11 @@ import {
   type UnsnoozeThreadInput,
   type UpdateThreadMetadataInput,
   archiveThread,
+  cancelThreadTask,
   createThread,
+  createThreadTask,
   deleteThread,
+  redeliverThreadTask,
   interruptThreadTurn,
   respondToThreadApproval,
   respondToThreadUserInput,
@@ -42,7 +48,10 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 
 export type {
   ArchiveThreadInput,
+  CancelThreadTaskInput,
   CreateThreadInput,
+  CreateThreadTaskInput,
+  RedeliverThreadTaskInput,
   DeleteThreadInput,
   InterruptThreadTurnInput,
   RespondToThreadApprovalInput,
@@ -68,6 +77,14 @@ export function createThreadEnvironmentAtoms<R, E>(
     mode: "serial" as const,
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
       JSON.stringify([environmentId, input.threadId]),
+  };
+  // Task commands name two threads; serialize on the task thread so a cancel
+  // and a re-delivery for the same task cannot interleave, while tasks under
+  // one parent stay independent.
+  const taskConcurrency = {
+    mode: "serial" as const,
+    key: ({ environmentId, input }: { environmentId: string; input: { taskThreadId: string } }) =>
+      JSON.stringify([environmentId, input.taskThreadId]),
   };
   return {
     create: createEnvironmentCommand(runtime, {
@@ -135,6 +152,24 @@ export function createThreadEnvironmentAtoms<R, E>(
       execute: (input: SetThreadInteractionModeInput) => setThreadInteractionMode(input),
       scheduler,
       concurrency,
+    }),
+    createTask: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:create-task",
+      execute: (input: CreateThreadTaskInput) => createThreadTask(input),
+      scheduler,
+      concurrency: taskConcurrency,
+    }),
+    cancelTask: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:cancel-task",
+      execute: (input: CancelThreadTaskInput) => cancelThreadTask(input),
+      scheduler,
+      concurrency: taskConcurrency,
+    }),
+    redeliverTask: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:redeliver-task",
+      execute: (input: RedeliverThreadTaskInput) => redeliverThreadTask(input),
+      scheduler,
+      concurrency: taskConcurrency,
     }),
     startTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:start-turn",

@@ -1,4 +1,5 @@
 import * as Equal from "effect/Equal";
+import { isTaskResultMessage } from "@t3tools/client-runtime/state/thread-tasks";
 import {
   formatDuration,
   workEntryIndicatesToolNeutralStatus,
@@ -469,6 +470,30 @@ export function workEntryIsTranscriptVisible(entry: WorkLogEntry): boolean {
   return true;
 }
 
+/**
+ * A finished thread task wakes its parent by injecting its results as a `user`
+ * message — that is what makes the provider act on them. Nobody typed it, so
+ * the transcript must not show it as a user bubble; the `task.finished`
+ * lifecycle row carries the wake-up instead, with the text behind a disclosure.
+ */
+export function messageEntryIsTranscriptVisible(
+  message: Pick<ChatMessage, "role" | "source">,
+): boolean {
+  return !isTaskResultMessage(message);
+}
+
+/**
+ * Task lifecycle rows belong to the thread-tasks beta, so they disappear with
+ * it. The wake-up message stays suppressed either way — a message nobody typed
+ * must never render as a user bubble, whatever the beta is set to.
+ */
+export function threadTaskEntryIsTranscriptVisible(
+  entry: Pick<WorkLogEntry, "threadTask">,
+  threadTasksEnabled: boolean,
+): boolean {
+  return threadTasksEnabled || entry.threadTask === undefined;
+}
+
 export function formatTaskTokenCount(totalTokens: number): string {
   return `${totalTokens.toLocaleString("en-US")} ${totalTokens === 1 ? "token" : "tokens"}`;
 }
@@ -733,13 +758,23 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  /**
+   * Thread-tasks beta. Defaults off, matching the setting, so a caller that
+   * predates the beta cannot surface its rows by omission.
+   */
+  threadTasksEnabled?: boolean;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
-  // Remove transcript-hidden tasks and panel-only activity projections up
-  // front so they cannot leak into folds, grouping, hidden counts, toggle
-  // labels, stable rows, or rendering downstream.
-  const timelineEntries = input.timelineEntries.filter(
-    (entry) => entry.kind !== "work" || workEntryIsTranscriptVisible(entry.entry),
+  // Remove transcript-hidden tasks, panel-only activity projections, and
+  // task-result wake-ups up front so they cannot leak into folds, grouping,
+  // hidden counts, toggle labels, stable rows, or rendering downstream.
+  const timelineEntries = input.timelineEntries.filter((entry) =>
+    entry.kind === "work"
+      ? workEntryIsTranscriptVisible(entry.entry) &&
+        threadTaskEntryIsTranscriptVisible(entry.entry, input.threadTasksEnabled === true)
+      : entry.kind === "message"
+        ? messageEntryIsTranscriptVisible(entry.message)
+        : true,
   );
   const durationStartByMessageId = computeMessageDurationStart(
     timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),

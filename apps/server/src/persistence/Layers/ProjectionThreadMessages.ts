@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { ChatAttachment } from "@t3tools/contracts";
+import { ChatAttachment, OrchestrationMessageSource } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -20,6 +20,7 @@ import {
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
+    source: Schema.NullOr(OrchestrationMessageSource),
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
   }),
 );
@@ -32,6 +33,7 @@ function toProjectionThreadMessage(
     threadId: row.threadId,
     turnId: row.turnId,
     role: row.role,
+    ...(row.source !== null ? { source: row.source } : {}),
     text: row.text,
     isStreaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -54,6 +56,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           thread_id,
           turn_id,
           role,
+          source,
           text,
           attachments_json,
           is_streaming,
@@ -65,6 +68,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.threadId},
           ${row.turnId},
           ${row.role},
+          ${row.source ?? null},
           ${row.text},
           COALESCE(
             ${nextAttachmentsJson},
@@ -83,6 +87,9 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           thread_id = excluded.thread_id,
           turn_id = excluded.turn_id,
           role = excluded.role,
+          -- Authorship is decided when the message first lands; a streaming
+          -- append that omits it must not erase it.
+          source = COALESCE(excluded.source, projection_thread_messages.source),
           text = excluded.text,
           attachments_json = COALESCE(
             excluded.attachments_json,
@@ -105,6 +112,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
+          source,
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
@@ -126,6 +134,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
+          source,
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
