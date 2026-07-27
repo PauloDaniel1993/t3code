@@ -10,14 +10,14 @@
  * tests exercise the same functions the runtime does.
  */
 import {
+  DEFAULT_THREAD_TASK_LIMITS,
   THREAD_TASK_CONTEXT_MAX_CHARS,
-  THREAD_TASK_MAX_RUNNING,
-  THREAD_TASK_MAX_TOTAL,
   THREAD_TASK_RESULT_SUMMARY_MAX_CHARS,
   type ChatAttachment,
   type OrchestrationMessage,
   type OrchestrationThread,
   type ThreadTaskContextSpec,
+  type ThreadTaskLimits,
   type ThreadTaskMetadata,
   type ThreadTaskOutcome,
   type ThreadId,
@@ -72,6 +72,9 @@ export type ThreadTaskCreateRejection =
 /**
  * Eligibility for creating a task under `parent`. Provider readiness is checked
  * separately, where the provider registry is available.
+ *
+ * `limits` are the configured caps. They default to the built-in ones so the
+ * structural checks stay callable from anywhere that has no settings to hand.
  */
 export function checkTaskCreateEligibility(input: {
   readonly parent:
@@ -82,8 +85,10 @@ export function checkTaskCreateEligibility(input: {
   readonly parentThreadId: ThreadId;
   readonly counts: ParentTaskCounts;
   readonly context: ThreadTaskContextSpec;
+  readonly limits?: ThreadTaskLimits | undefined;
 }): ThreadTaskCreateRejection | null {
   const { parent, parentThreadId, counts, context } = input;
+  const limits = input.limits ?? DEFAULT_THREAD_TASK_LIMITS;
   if (parent === undefined) {
     return {
       reason: "parent-missing",
@@ -108,16 +113,16 @@ export function checkTaskCreateEligibility(input: {
       detail: `Thread '${parentThreadId}' is itself a task. Tasks are limited to one level of nesting.`,
     };
   }
-  if (counts.running >= THREAD_TASK_MAX_RUNNING) {
+  if (counts.running >= limits.maxRunning) {
     return {
       reason: "concurrency-cap",
-      detail: `Thread '${parentThreadId}' already has ${counts.running} tasks in flight (limit ${THREAD_TASK_MAX_RUNNING}). Wait for one to finish or cancel it.`,
+      detail: `Thread '${parentThreadId}' already has ${counts.running} tasks in flight (limit ${limits.maxRunning}). Wait for one to finish or cancel it.`,
     };
   }
-  if (counts.lifetime >= THREAD_TASK_MAX_TOTAL) {
+  if (counts.lifetime >= limits.maxTotal) {
     return {
       reason: "lifetime-cap",
-      detail: `Thread '${parentThreadId}' has created ${counts.lifetime} tasks (limit ${THREAD_TASK_MAX_TOTAL}).`,
+      detail: `Thread '${parentThreadId}' has created ${counts.lifetime} tasks (limit ${limits.maxTotal}).`,
     };
   }
   if (context.kind === "selected-messages") {

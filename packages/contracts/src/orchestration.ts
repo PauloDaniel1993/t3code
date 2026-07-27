@@ -475,10 +475,46 @@ export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 // "task" (subagent/workflow cards) already carried on `WorkLogEntry.taskId`.
 // ---------------------------------------------------------------------------
 
-/** Most tasks a parent may have in flight at once. */
-export const THREAD_TASK_MAX_RUNNING = 5;
-/** Most tasks a parent may create over its lifetime — the wake-up-loop backstop. */
-export const THREAD_TASK_MAX_TOTAL = 25;
+/** Tasks a parent may have in flight at once when nothing is configured. */
+export const DEFAULT_THREAD_TASK_MAX_RUNNING = 5;
+/**
+ * A thread's lifetime task budget is this many times its concurrent cap unless
+ * it is set explicitly. The lifetime cap is the wake-up-loop backstop — a task
+ * finishing wakes its parent, whose agent can start another — so it stays
+ * proportional to how wide the fan-out was configured to be.
+ */
+export const THREAD_TASK_TOTAL_PER_RUNNING = 5;
+
+export const MIN_THREAD_TASK_MAX_RUNNING = 1;
+export const MAX_THREAD_TASK_MAX_RUNNING = 100;
+export const MIN_THREAD_TASK_MAX_TOTAL = 1;
+export const MAX_THREAD_TASK_MAX_TOTAL = 10_000;
+
+/** The two per-parent task caps, both already resolved to concrete numbers. */
+export interface ThreadTaskLimits {
+  readonly maxRunning: number;
+  readonly maxTotal: number;
+}
+
+/**
+ * Resolve configured caps into the pair the eligibility check needs. An absent
+ * `maxTotal` is not "unlimited" — it means "derive it", so raising concurrency
+ * alone widens the lifetime budget with it instead of leaving a thread stuck at
+ * a total it can exhaust in a single batch.
+ */
+export function resolveThreadTaskLimits(input: {
+  readonly maxRunning?: number | null | undefined;
+  readonly maxTotal?: number | null | undefined;
+}): ThreadTaskLimits {
+  const maxRunning = input.maxRunning ?? DEFAULT_THREAD_TASK_MAX_RUNNING;
+  return {
+    maxRunning,
+    maxTotal: input.maxTotal ?? maxRunning * THREAD_TASK_TOTAL_PER_RUNNING,
+  };
+}
+
+export const DEFAULT_THREAD_TASK_LIMITS: ThreadTaskLimits = resolveThreadTaskLimits({});
+
 export const THREAD_TASK_MAX_SELECTED_MESSAGES = 100;
 export const THREAD_TASK_CONTEXT_MAX_CHARS = 60_000;
 export const THREAD_TASK_RESULT_SUMMARY_MAX_CHARS = 16_000;

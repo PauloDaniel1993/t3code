@@ -23,6 +23,7 @@ import {
   OrchestrationThread,
   OrchestrationThreadShell,
   ProjectCreateCommand,
+  resolveThreadTaskLimits,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
@@ -1127,3 +1128,20 @@ it.effect("ModelSelection rejects malformed instance ids", () =>
     assert.strictEqual(result._tag, "Failure");
   }),
 );
+
+it("resolveThreadTaskLimits derives the lifetime cap from the concurrent one", () => {
+  assert.deepStrictEqual(resolveThreadTaskLimits({}), { maxRunning: 5, maxTotal: 25 });
+  assert.deepStrictEqual(resolveThreadTaskLimits({ maxRunning: 12 }), {
+    maxRunning: 12,
+    maxTotal: 60,
+  });
+  // An explicit total wins; null and undefined both mean "derive it".
+  assert.deepStrictEqual(resolveThreadTaskLimits({ maxRunning: 12, maxTotal: 13 }), {
+    maxRunning: 12,
+    maxTotal: 13,
+  });
+  assert.deepStrictEqual(resolveThreadTaskLimits({ maxRunning: 3, maxTotal: null }), {
+    maxRunning: 3,
+    maxTotal: 15,
+  });
+});

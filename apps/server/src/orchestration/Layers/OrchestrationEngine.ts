@@ -47,6 +47,7 @@ import {
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
+import { ThreadTaskLimitsSource } from "../threadTaskLimits.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -110,6 +111,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
   const serverConfig = yield* ServerConfig;
+  const readThreadTaskLimits = yield* ThreadTaskLimitsSource;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
@@ -191,9 +193,14 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        // Read per command, not once at startup: the task caps are settings,
+        // and editing them has to take hold without a server restart.
+        const limits = yield* readThreadTaskLimits;
+
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          limits,
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError((cause) =>
