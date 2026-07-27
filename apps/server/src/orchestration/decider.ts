@@ -4,6 +4,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type ThreadTaskLimits,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -249,9 +250,12 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
+  limits,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  /** Configured task caps; the built-in ones apply when the caller has none. */
+  readonly limits?: ThreadTaskLimits | undefined;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandInvariantError | PlatformError.PlatformError,
@@ -1346,6 +1350,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         parentThreadId: command.parentThreadId,
         counts,
         context: command.context,
+        limits,
       });
       if (rejection !== null || parent === undefined) {
         return yield* new OrchestrationCommandInvariantError({

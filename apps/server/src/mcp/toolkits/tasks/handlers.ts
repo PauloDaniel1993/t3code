@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadTaskLimitsSource } from "../../../orchestration/threadTaskLimits.ts";
 import {
   checkTaskCreateEligibility,
   countParentTasks,
@@ -146,6 +147,10 @@ const handlers = {
           : { kind: "none" };
 
     const tasks = yield* listTasksOf(parent.id);
+    // The decider re-checks this. Doing it here first is what turns a cap into
+    // a structured `concurrency-cap` the agent can wait out, rather than an
+    // opaque dispatch failure.
+    const limits = yield* yield* ThreadTaskLimitsSource;
     const rejection = checkTaskCreateEligibility({
       parent,
       parentThreadId: parent.id,
@@ -159,6 +164,7 @@ const handlers = {
         parent.id,
       ),
       context,
+      limits,
     });
     if (rejection !== null) {
       return yield* fail(toolReasonFor(rejection), rejectionMessage(rejection));
