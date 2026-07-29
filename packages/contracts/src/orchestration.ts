@@ -619,6 +619,54 @@ export const ThreadTaskSummary = Schema.Struct({
 });
 export type ThreadTaskSummary = typeof ThreadTaskSummary.Type;
 
+// ---------------------------------------------------------------------------
+// In-session agents — a provider's own subagents (Claude Code's Task tool and
+// friends). Unlike a thread task these are not threads: they run inside the
+// parent's provider session, on its session id, and T3 Code only observes them
+// through `task.started` / `task.progress` / `task.completed` activities.
+//
+// They are therefore projected onto the PARENT thread rather than owning a row,
+// and everything here is limited to what those activities actually carry. There
+// is no transcript, no model, and no per-beat history to draw on, and none of
+// them can be steered or cancelled on their own.
+// ---------------------------------------------------------------------------
+
+export const ThreadNativeAgentStatus = Schema.Literals(["running", "finished", "failed"]);
+export type ThreadNativeAgentStatus = typeof ThreadNativeAgentStatus.Type;
+
+/** Every counter is optional: providers report usage unevenly, and a missing one must render as absent rather than zero. */
+export const ThreadNativeAgentUsage = Schema.Struct({
+  totalTokens: Schema.optional(NonNegativeInt),
+  toolUses: Schema.optional(NonNegativeInt),
+  durationMs: Schema.optional(NonNegativeInt),
+});
+export type ThreadNativeAgentUsage = typeof ThreadNativeAgentUsage.Type;
+
+export const ThreadNativeAgent = Schema.Struct({
+  /** The provider's own task id — unique within the session, not a `ThreadId`. */
+  taskId: TrimmedNonEmptyString,
+  /** The turn that spawned it. Native agents belong to a turn, not to the thread. */
+  turnId: Schema.NullOr(TurnId),
+  status: ThreadNativeAgentStatus,
+  /** Provider-supplied label; falls back to the subagent type when absent. */
+  description: TrimmedNonEmptyString,
+  subagentType: Schema.optional(TrimmedNonEmptyString),
+  /** The brief the parent agent handed it, when the provider reports one. */
+  prompt: Schema.optional(Schema.String),
+  startedAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  /** Rolling one-line progress while running. Not a history — each update replaces the last. */
+  progressSummary: Schema.optional(Schema.String),
+  resultSummary: Schema.optional(Schema.String),
+  errorMessage: Schema.optional(Schema.String),
+  lastToolName: Schema.optional(TrimmedNonEmptyString),
+  usage: Schema.optional(ThreadNativeAgentUsage),
+  /** Retry linkage, so a failed run and its replacement can point at each other. */
+  retryOfTaskId: Schema.optional(TrimmedNonEmptyString),
+  retriedByTaskId: Schema.optional(TrimmedNonEmptyString),
+});
+export type ThreadNativeAgent = typeof ThreadNativeAgent.Type;
+
 /**
  * Optional rather than null-defaulted, matching how `snoozedUntil`/`snoozedAt`
  * were added: payloads from pre-tasks servers still decode, and consumers treat
@@ -628,6 +676,12 @@ const ThreadTaskThreadFields = {
   parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   task: Schema.optional(Schema.NullOr(ThreadTaskMetadata)),
   taskSummary: Schema.optional(Schema.NullOr(ThreadTaskSummary)),
+  /**
+   * In-session agents spawned by this thread's own provider session. Bounded to
+   * the latest turn's set plus anything still running — a thread accumulates
+   * these indefinitely, and the sidebar only ever wants the live picture.
+   */
+  nativeAgents: Schema.optional(Schema.Array(ThreadNativeAgent)),
 } as const;
 
 export const OrchestrationThread = Schema.Struct({
