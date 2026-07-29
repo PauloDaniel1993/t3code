@@ -55,6 +55,11 @@ import {
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
 import { compactedLegacyToolActivityId } from "../LegacyToolActivityIdentity.ts";
+import {
+  applyNativeAgentActivity,
+  isNativeAgentActivityKind,
+  selectVisibleNativeAgents,
+} from "../nativeAgents.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -616,6 +621,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             parentThreadId: null,
             task: null,
             taskSummary: null,
+            nativeAgents: null,
           });
           return;
 
@@ -869,8 +875,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          // In-session agents are folded incrementally off the same activity
+          // stream that renders them: applying one activity to the stored set
+          // costs nothing per event, where recomputing from history would grow
+          // with the transcript.
+          const activity =
+            event.type === "thread.activity-appended" || event.type === "thread.activity-upserted"
+              ? event.payload.activity
+              : null;
+          const nativeAgents =
+            activity !== null && isNativeAgentActivityKind(activity.kind)
+              ? selectVisibleNativeAgents(
+                  applyNativeAgentActivity(existingRow.value.nativeAgents ?? [], activity),
+                )
+              : existingRow.value.nativeAgents;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
+            nativeAgents,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

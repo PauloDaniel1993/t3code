@@ -30,6 +30,7 @@ import {
   ModelSelection,
   ProjectId,
   ThreadId,
+  ThreadNativeAgent,
   ThreadTaskMetadata,
   ThreadTaskSummary,
 } from "@t3tools/contracts";
@@ -92,6 +93,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     modelSelection: Schema.fromJsonString(ModelSelection),
     task: Schema.NullOr(Schema.fromJsonString(ThreadTaskMetadata)),
     taskSummary: Schema.NullOr(Schema.fromJsonString(ThreadTaskSummary)),
+    nativeAgents: Schema.NullOr(Schema.fromJsonString(Schema.Array(ThreadNativeAgent))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -482,7 +484,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           deleted_at AS "deletedAt",
           parent_thread_id AS "parentThreadId",
           task_json AS "task",
-          task_summary_json AS "taskSummary"
+          task_summary_json AS "taskSummary",
+          native_agents_json AS "nativeAgents"
         FROM projection_threads
         ORDER BY created_at ASC, thread_id ASC
       `,
@@ -517,7 +520,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           deleted_at AS "deletedAt",
           parent_thread_id AS "parentThreadId",
           task_json AS "task",
-          task_summary_json AS "taskSummary"
+          task_summary_json AS "taskSummary",
+          native_agents_json AS "nativeAgents"
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NULL
@@ -554,7 +558,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           deleted_at AS "deletedAt",
           parent_thread_id AS "parentThreadId",
           task_json AS "task",
-          task_summary_json AS "taskSummary"
+          task_summary_json AS "taskSummary",
+          native_agents_json AS "nativeAgents"
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NOT NULL
@@ -956,7 +961,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           deleted_at AS "deletedAt",
           parent_thread_id AS "parentThreadId",
           task_json AS "task",
-          task_summary_json AS "taskSummary"
+          task_summary_json AS "taskSummary",
+          native_agents_json AS "nativeAgents"
         FROM projection_threads
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
@@ -1500,6 +1506,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 parentThreadId: row.parentThreadId,
                 task: row.task,
                 taskSummary: row.taskSummary,
+                ...(row.nativeAgents === null ? {} : { nativeAgents: row.nativeAgents }),
                 title: row.title,
                 modelSelection: row.modelSelection,
                 runtimeMode: row.runtimeMode,
@@ -1707,6 +1714,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   parentThreadId: row.parentThreadId,
                   task: row.task,
                   taskSummary: row.taskSummary,
+                  ...(row.nativeAgents === null ? {} : { nativeAgents: row.nativeAgents }),
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -1843,6 +1851,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       parentThreadId: row.parentThreadId,
                       task: row.task,
                       taskSummary: row.taskSummary,
+                      ...(row.nativeAgents === null ? {} : { nativeAgents: row.nativeAgents }),
                       title: row.title,
                       modelSelection: row.modelSelection,
                       runtimeMode: row.runtimeMode,
@@ -1984,6 +1993,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   parentThreadId: row.parentThreadId,
                   task: row.task,
                   taskSummary: row.taskSummary,
+                  ...(row.nativeAgents === null ? {} : { nativeAgents: row.nativeAgents }),
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -2231,6 +2241,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         parentThreadId: threadRow.value.parentThreadId,
         task: threadRow.value.task,
         taskSummary: threadRow.value.taskSummary,
+        ...(threadRow.value.nativeAgents === null
+          ? {}
+          : { nativeAgents: threadRow.value.nativeAgents }),
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
@@ -2335,6 +2348,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         parentThreadId: threadRow.value.parentThreadId,
         task: threadRow.value.task,
         taskSummary: threadRow.value.taskSummary,
+        ...(threadRow.value.nativeAgents === null
+          ? {}
+          : { nativeAgents: threadRow.value.nativeAgents }),
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
