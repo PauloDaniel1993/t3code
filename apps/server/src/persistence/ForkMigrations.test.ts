@@ -121,6 +121,10 @@ const assertForkMigrationApplied = (state: Effect.Success<typeof readMigrationSt
       migration_id: 5,
       name: "ProjectionThreadMessageSource",
     },
+    {
+      migration_id: 6,
+      name: "ProjectionThreadNativeAgents",
+    },
   ]);
 };
 
@@ -222,6 +226,7 @@ freshLayer("ForkMigrations (fresh database)", (it) => {
         [3, "DatabaseCompactionJournal"],
         [4, "ProjectionThreadTasks"],
         [5, "ProjectionThreadMessageSource"],
+        [6, "ProjectionThreadNativeAgents"],
       ]);
       assertBaseLedgerEndsAt34(state);
       assertForkMigrationApplied(state);
@@ -254,6 +259,7 @@ baseOnlyLayer("ForkMigrations (existing base-only database)", (it) => {
         [3, "DatabaseCompactionJournal"],
         [4, "ProjectionThreadTasks"],
         [5, "ProjectionThreadMessageSource"],
+        [6, "ProjectionThreadNativeAgents"],
       ]);
       assertBaseLedgerEndsAt34(state);
       assertForkMigrationApplied(state);

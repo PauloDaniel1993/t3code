@@ -73,120 +73,119 @@ function statusForCompletion(value: unknown): ThreadNativeAgentStatus {
   return value === "failed" ? "failed" : "finished";
 }
 
-interface Draft {
-  taskId: string;
-  turnId: TurnId | null;
-  status: ThreadNativeAgentStatus;
-  description?: string;
-  subagentType?: string;
-  prompt?: string;
-  startedAt: string;
-  updatedAt: string;
-  progressSummary?: string;
-  resultSummary?: string;
-  errorMessage?: string;
-  lastToolName?: string;
-  usage?: ThreadNativeAgentUsage;
-  retryOfTaskId?: string;
-  retriedByTaskId?: string;
+/**
+ * Apply one activity to the running set, returning a new list.
+ *
+ * This is the single fold step behind both entry points: the projection
+ * pipeline calls it once per incoming activity against the row it already has,
+ * and `deriveNativeAgents` reduces a whole history through it. Keeping one
+ * implementation means an incrementally-built projection and a full replay can
+ * never disagree.
+ *
+ * An activity for an unknown task id creates an entry rather than being
+ * dropped: providers sometimes report a subagent only once it is already
+ * underway, and ignoring that would hide live work.
+ */
+export function applyNativeAgentActivity(
+  agents: ReadonlyArray<ThreadNativeAgent>,
+  activity: OrchestrationThreadActivity,
+): ReadonlyArray<ThreadNativeAgent> {
+  if (!isNativeAgentActivityKind(activity.kind)) return agents;
+  const payload = asRecord(activity.payload);
+  const taskId = readString(payload?.taskId);
+  if (payload === null || taskId === undefined) return agents;
+
+  const index = agents.findIndex((agent) => agent.taskId === taskId);
+  const existing = index === -1 ? undefined : agents[index];
+
+  const subagentType = readString(payload.subagentType) ?? existing?.subagentType;
+  const startedDescription =
+    activity.kind === "task.started" ? readString(payload.description) : undefined;
+  // The label comes from `task.started`. `task.progress` carries rolling
+  // progress text in the same `description` field, so it may only supply a
+  // label for an agent first seen mid-flight — reading it on every update
+  // would rename the row as the work moved along.
+  const description =
+    startedDescription ??
+    existing?.description ??
+    readString(payload.title) ??
+    readString(payload.description) ??
+    subagentType ??
+    "In-session agent";
+
+  const progressSummary =
+    activity.kind === "task.progress"
+      ? (readString(payload.summary) ??
+        readString(payload.description) ??
+        existing?.progressSummary)
+      : existing?.progressSummary;
+
+  const completed = activity.kind === "task.completed";
+  const next: ThreadNativeAgent = {
+    taskId,
+    turnId: existing?.turnId ?? activity.turnId,
+    status: completed ? statusForCompletion(payload.status) : (existing?.status ?? "running"),
+    description,
+    startedAt:
+      activity.kind === "task.started"
+        ? activity.createdAt
+        : (existing?.startedAt ?? activity.createdAt),
+    updatedAt: activity.createdAt,
+    ...(subagentType === undefined ? {} : { subagentType }),
+    ...(() => {
+      const prompt = readString(payload.prompt) ?? existing?.prompt;
+      return prompt === undefined ? {} : { prompt };
+    })(),
+    ...(progressSummary === undefined ? {} : { progressSummary }),
+    ...(() => {
+      const resultSummary =
+        (completed ? readString(payload.summary) : undefined) ?? existing?.resultSummary;
+      return resultSummary === undefined ? {} : { resultSummary };
+    })(),
+    ...(() => {
+      const errorMessage =
+        (completed ? readString(payload.error) : undefined) ?? existing?.errorMessage;
+      return errorMessage === undefined ? {} : { errorMessage };
+    })(),
+    ...(() => {
+      const lastToolName = readString(payload.lastToolName) ?? existing?.lastToolName;
+      return lastToolName === undefined ? {} : { lastToolName };
+    })(),
+    ...(() => {
+      const usage = readUsage(payload.usage) ?? existing?.usage;
+      return usage === undefined ? {} : { usage };
+    })(),
+    ...(() => {
+      const retryOfTaskId =
+        (activity.kind === "task.started" ? readString(payload.retryOfTaskId) : undefined) ??
+        existing?.retryOfTaskId;
+      return retryOfTaskId === undefined ? {} : { retryOfTaskId };
+    })(),
+    ...(existing?.retriedByTaskId === undefined
+      ? {}
+      : { retriedByTaskId: existing.retriedByTaskId }),
+  };
+
+  const updated = index === -1 ? [...agents, next] : agents.map((a, i) => (i === index ? next : a));
+
+  // Point the original at its replacement, so a failed run and its retry can
+  // reference each other from either side.
+  const retryOf = next.retryOfTaskId;
+  if (retryOf === undefined) return updated;
+  return updated.map((agent) =>
+    agent.taskId === retryOf ? { ...agent, retriedByTaskId: taskId } : agent,
+  );
 }
 
 /**
  * Fold a thread's activities into one entry per in-session agent, in the order
- * they started.
- *
- * Activities are expected in chronological order, which is how both the read
- * model and the projection store them. A `task.progress` or `task.completed`
- * with no preceding `task.started` still produces a row: providers sometimes
- * report a subagent only once it is already underway, and dropping it would
- * hide live work.
+ * they were first seen. Activities are expected in chronological order, which
+ * is how both the read model and the projection store them.
  */
 export function deriveNativeAgents(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlyArray<ThreadNativeAgent> {
-  const drafts = new Map<string, Draft>();
-
-  for (const activity of activities) {
-    if (!isNativeAgentActivityKind(activity.kind)) continue;
-    const payload = asRecord(activity.payload);
-    const taskId = readString(payload?.taskId);
-    if (payload === null || taskId === undefined) continue;
-
-    const existing = drafts.get(taskId);
-    const draft: Draft = existing ?? {
-      taskId,
-      turnId: activity.turnId,
-      status: "running",
-      startedAt: activity.createdAt,
-      updatedAt: activity.createdAt,
-    };
-    draft.updatedAt = activity.createdAt;
-    if (draft.turnId === null && activity.turnId !== null) draft.turnId = activity.turnId;
-
-    // The row's label comes from `task.started`. The other two kinds may only
-    // fill it when it is still empty — a provider can report a subagent that is
-    // already underway, but `task.progress` carries rolling progress text in the
-    // same field, and reading that unconditionally would rename the row on every
-    // update.
-    if (activity.kind === "task.started") {
-      const description = readString(payload.description);
-      if (description !== undefined) draft.description = description;
-    } else if (draft.description === undefined) {
-      const fallback = readString(payload.title) ?? readString(payload.description);
-      if (fallback !== undefined) draft.description = fallback;
-    }
-    const subagentType = readString(payload.subagentType);
-    if (subagentType !== undefined) draft.subagentType = subagentType;
-    const prompt = readString(payload.prompt);
-    if (prompt !== undefined) draft.prompt = prompt;
-    const usage = readUsage(payload.usage);
-    if (usage !== undefined) draft.usage = usage;
-    const lastToolName = readString(payload.lastToolName);
-    if (lastToolName !== undefined) draft.lastToolName = lastToolName;
-
-    if (activity.kind === "task.started") {
-      draft.startedAt = activity.createdAt;
-      const retryOfTaskId = readString(payload.retryOfTaskId);
-      if (retryOfTaskId !== undefined) {
-        draft.retryOfTaskId = retryOfTaskId;
-        const original = drafts.get(retryOfTaskId);
-        if (original !== undefined) original.retriedByTaskId = taskId;
-      }
-    } else if (activity.kind === "task.progress") {
-      // A rolling summary, not a log: the newest replaces the previous one,
-      // which is all the provider gives us.
-      const summary = readString(payload.summary) ?? readString(payload.description);
-      if (summary !== undefined) draft.progressSummary = summary;
-    } else {
-      draft.status = statusForCompletion(payload.status);
-      const summary = readString(payload.summary);
-      if (summary !== undefined) draft.resultSummary = summary;
-      const error = readString(payload.error);
-      if (error !== undefined) draft.errorMessage = error;
-    }
-
-    drafts.set(taskId, draft);
-  }
-
-  return [...drafts.values()].map((draft) => ({
-    taskId: draft.taskId,
-    turnId: draft.turnId,
-    status: draft.status,
-    // The provider does not always label a run; the subagent type is the next
-    // most useful thing a row can say, and it is never blank.
-    description: draft.description ?? draft.subagentType ?? "In-session agent",
-    startedAt: draft.startedAt,
-    updatedAt: draft.updatedAt,
-    ...(draft.subagentType === undefined ? {} : { subagentType: draft.subagentType }),
-    ...(draft.prompt === undefined ? {} : { prompt: draft.prompt }),
-    ...(draft.progressSummary === undefined ? {} : { progressSummary: draft.progressSummary }),
-    ...(draft.resultSummary === undefined ? {} : { resultSummary: draft.resultSummary }),
-    ...(draft.errorMessage === undefined ? {} : { errorMessage: draft.errorMessage }),
-    ...(draft.lastToolName === undefined ? {} : { lastToolName: draft.lastToolName }),
-    ...(draft.usage === undefined ? {} : { usage: draft.usage }),
-    ...(draft.retryOfTaskId === undefined ? {} : { retryOfTaskId: draft.retryOfTaskId }),
-    ...(draft.retriedByTaskId === undefined ? {} : { retriedByTaskId: draft.retriedByTaskId }),
-  }));
+  return activities.reduce<ReadonlyArray<ThreadNativeAgent>>(applyNativeAgentActivity, []);
 }
 
 /**

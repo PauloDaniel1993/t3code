@@ -16,6 +16,7 @@ import {
   RuntimeMode,
   ThreadId,
   ThreadTaskMetadata,
+  ThreadNativeAgent,
   ThreadTaskSummary,
   TurnId,
 } from "@t3tools/contracts";
@@ -56,6 +57,11 @@ export const ProjectionThread = Schema.Struct({
   task: Schema.NullOr(ThreadTaskMetadata),
   /** Rollup over this thread's own tasks when it is a parent; null otherwise. */
   taskSummary: Schema.NullOr(ThreadTaskSummary),
+  /**
+   * In-session agents spawned by this thread's provider session, bounded to the
+   * live picture. Null on threads that have never spawned one.
+   */
+  nativeAgents: Schema.NullOr(Schema.Array(ThreadNativeAgent)),
 });
 export type ProjectionThread = typeof ProjectionThread.Type;
 

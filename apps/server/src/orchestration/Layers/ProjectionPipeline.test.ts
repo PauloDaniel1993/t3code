@@ -2664,6 +2664,150 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       }),
   );
 
+  it.effect("folds in-session agent activities onto the spawning thread", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-native-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-native"),
+        occurredAt: "2026-07-29T10:00:00.000Z",
+        commandId: CommandId.make("cmd-native-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-native-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-native"),
+          title: "Project Native",
+          workspaceRoot: "/tmp/project-native",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-07-29T10:00:00.000Z",
+          updatedAt: "2026-07-29T10:00:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-native-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-native"),
+        occurredAt: "2026-07-29T10:00:01.000Z",
+        commandId: CommandId.make("cmd-native-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-native-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-native"),
+          projectId: ProjectId.make("project-native"),
+          title: "Thread Native",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-07-29T10:00:01.000Z",
+          updatedAt: "2026-07-29T10:00:01.000Z",
+        },
+      });
+
+      const nativeActivity = (
+        suffix: string,
+        kind: string,
+        payload: Record<string, unknown>,
+        at: string,
+      ) =>
+        appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-native-${suffix}`),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-native"),
+          occurredAt: at,
+          commandId: CommandId.make(`cmd-native-${suffix}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-native-${suffix}`),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-native"),
+            activity: {
+              id: EventId.make(`activity-native-${suffix}`),
+              tone: "info",
+              kind,
+              summary: kind,
+              payload,
+              turnId: null,
+              createdAt: at,
+            },
+          },
+        });
+
+      yield* nativeActivity(
+        "3",
+        "task.started",
+        { taskId: "w1", description: "Map handlers", subagentType: "Explore" },
+        "2026-07-29T10:00:02.000Z",
+      );
+      yield* nativeActivity(
+        "4",
+        "task.progress",
+        { taskId: "w1", description: "scanning session/*", summary: "7 of 12 checked" },
+        "2026-07-29T10:00:03.000Z",
+      );
+
+      const readAgents = Effect.map(
+        sql<{ readonly nativeAgents: string | null }>`
+          SELECT native_agents_json AS "nativeAgents"
+          FROM projection_threads
+          WHERE thread_id = 'thread-native'
+        `,
+        (rows) =>
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          rows[0]?.nativeAgents === null || rows[0]?.nativeAgents === undefined
+            ? []
+            : (JSON.parse(rows[0].nativeAgents) as ReadonlyArray<Record<string, unknown>>),
+      );
+
+      const running = yield* readAgents;
+      assert.equal(running.length, 1);
+      assert.deepInclude(running[0], {
+        taskId: "w1",
+        status: "running",
+        // The label survives `task.progress`, whose `description` is rolling
+        // progress text rather than a name.
+        description: "Map handlers",
+        subagentType: "Explore",
+        progressSummary: "7 of 12 checked",
+      });
+
+      yield* nativeActivity(
+        "5",
+        "task.completed",
+        { taskId: "w1", status: "completed", summary: "3 gaps found" },
+        "2026-07-29T10:00:04.000Z",
+      );
+
+      const finished = yield* readAgents;
+      assert.equal(finished.length, 1);
+      assert.deepInclude(finished[0], {
+        taskId: "w1",
+        status: "finished",
+        description: "Map handlers",
+        resultSummary: "3 gaps found",
+      });
+    }),
+  );
+
   it.effect("clears stale pending approvals from projected shell summaries", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
