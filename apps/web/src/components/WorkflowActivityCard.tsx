@@ -463,11 +463,11 @@ function WorkflowWorkerCard({
             {subline}
           </p>
         ) : null}
-        {worker.outputFile ? (
-          <p className="mt-0.5 break-all font-mono text-[10.5px] text-muted-foreground/50">
-            {worker.outputFile}
-          </p>
-        ) : null}
+        {/* `outputFile` is deliberately not drawn. It is an absolute temp path
+            that wraps to two more lines of monospace under an already-clamped
+            summary, so it doubled each row's text for something a reader cannot
+            act on in place. It stays on the model for a surface that can offer
+            it as an action rather than as body text. */}
       </div>
       <span className="ms-auto flex shrink-0 items-center gap-2 pt-0.5">
         <span className={cn("text-[10px] font-semibold", presentation.labelClass)}>

@@ -370,7 +370,10 @@ describe("WorkflowActivityCard rendering", () => {
     );
     expect(markup).toContain("Found 3 issues");
     expect(markup).toContain(">Completed<");
-    expect(markup).toContain("/tmp/review-output.md");
+    // A row is a title plus at most two lines. The output path is an absolute
+    // temp path that wrapped to two more lines of monospace, doubling the row
+    // for something the reader cannot act on in place.
+    expect(markup).not.toContain("/tmp/review-output.md");
     // The old presentation's affordances are gone.
     expect(markup).not.toContain('data-slot="workflow-worker-result-toggle"');
     expect(markup).not.toContain("Output:");
