@@ -15,7 +15,12 @@ import {
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
 } from "../Services/ProjectionThreads.ts";
-import { ModelSelection, ThreadTaskMetadata, ThreadTaskSummary } from "@t3tools/contracts";
+import {
+  ModelSelection,
+  ThreadNativeAgent,
+  ThreadTaskMetadata,
+  ThreadTaskSummary,
+} from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
@@ -24,6 +29,7 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     // thread that is neither a task nor a parent) carry SQL NULL here.
     task: Schema.NullOr(Schema.fromJsonString(ThreadTaskMetadata)),
     taskSummary: Schema.NullOr(Schema.fromJsonString(ThreadTaskSummary)),
+    nativeAgents: Schema.NullOr(Schema.fromJsonString(Schema.Array(ThreadNativeAgent))),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -54,7 +60,8 @@ const PROJECTION_THREAD_COLUMNS = `
           deleted_at AS "deletedAt",
           parent_thread_id AS "parentThreadId",
           task_json AS "task",
-          task_summary_json AS "taskSummary"
+          task_summary_json AS "taskSummary",
+          native_agents_json AS "nativeAgents"
 `;
 
 const makeProjectionThreadRepository = Effect.gen(function* () {
@@ -90,7 +97,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           deleted_at,
           parent_thread_id,
           task_json,
-          task_summary_json
+          task_summary_json,
+          native_agents_json
         )
         VALUES (
           ${row.threadId},
@@ -118,7 +126,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.deletedAt},
           ${row.parentThreadId},
           ${row.task === null ? null : JSON.stringify(row.task)},
-          ${row.taskSummary === null ? null : JSON.stringify(row.taskSummary)}
+          ${row.taskSummary === null ? null : JSON.stringify(row.taskSummary)},
+          ${row.nativeAgents === null ? null : JSON.stringify(row.nativeAgents)}
         )
         ON CONFLICT (thread_id)
         DO UPDATE SET
@@ -146,7 +155,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           deleted_at = excluded.deleted_at,
           parent_thread_id = excluded.parent_thread_id,
           task_json = excluded.task_json,
-          task_summary_json = excluded.task_summary_json
+          task_summary_json = excluded.task_summary_json,
+          native_agents_json = excluded.native_agents_json
       `,
   });
 

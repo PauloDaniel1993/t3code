@@ -1,5 +1,5 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { ThreadTaskMetadata } from "@t3tools/contracts";
+import type { ThreadNativeAgent, ThreadTaskMetadata } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -48,12 +48,16 @@ const render = (props: Partial<Parameters<typeof SidebarTaskGroup>[0]> = {}) =>
     <SidebarTaskGroup
       parentThreadKey="env-1:parent-1"
       tasks={[shell(metadata())]}
+      nativeAgents={[]}
       expanded
       openTaskKey={null}
+      openNativeAgentKey={null}
       nowMs={NOW}
       onPeekTask={() => {}}
+      onPeekNativeAgent={() => {}}
       onPeekLeave={() => {}}
       onOpenThread={() => {}}
+      onNativeAgentClick={() => {}}
       onContextMenu={() => {}}
       renamingTaskKey={null}
       renamingTitle=""
@@ -62,6 +66,7 @@ const render = (props: Partial<Parameters<typeof SidebarTaskGroup>[0]> = {}) =>
       onCancelRename={() => {}}
       onNewTask={() => {}}
       miniWindow={null}
+      nativeAgentMiniWindow={null}
       {...props}
     />,
   );
@@ -123,13 +128,13 @@ describe("SidebarTaskGroup — a long list", () => {
 
   // A parent can accumulate a lot of tasks; an unbounded group would push
   // every thread below it off the sidebar.
-  it("scrolls in place once the list runs past four rows", () => {
-    expect(render({ tasks: many(5) })).toContain("overflow-y-auto");
-  });
-
-  it("leaves a list of four or fewer to size itself", () => {
-    expect(render({ tasks: many(4) })).not.toContain("overflow-y-auto");
-    expect(render({ tasks: many(1) })).not.toContain("overflow-y-auto");
+  // The bound is unconditional: in-session agents share this scroller, and a
+  // thread with several turns of them overflows even with no tasks at all.
+  it("bounds the group at two thread cards and scrolls in place", () => {
+    const html = render({ tasks: many(5) });
+    expect(html).toContain('data-testid="sidebar-task-scroll"');
+    expect(html).toContain("overflow-y-auto");
+    expect(html).toContain("max-height:192px");
   });
 });
 
@@ -154,5 +159,98 @@ describe("SidebarTaskGroup — a settled task that starts working again", () => 
     // Turn started 2m before now; the original run took 12s.
     expect(render({ tasks: [revived()], nowMs: NOW })).toContain("2m");
     expect(render({ tasks: [revived()], nowMs: NOW })).not.toContain("12s");
+  });
+});
+
+// In-session agents nest under the task rows, grouped per turn. They are not
+// threads: no context menu, no rename, and their rows never claim to open one.
+describe("SidebarTaskGroup — in-session agents", () => {
+  const nativeAgent = (
+    overrides: Omit<Partial<ThreadNativeAgent>, "turnId"> & {
+      taskId: string;
+      turnId?: string | null;
+    },
+  ): ThreadNativeAgent =>
+    ({
+      turnId: "turn-1",
+      status: "running",
+      description: overrides.taskId,
+      startedAt: "2026-07-25T11:58:00.000Z",
+      updatedAt: "2026-07-25T11:58:00.000Z",
+      ...overrides,
+    }) as ThreadNativeAgent;
+
+  it("shares the task rows' bounded scroller", () => {
+    // Agents used to render outside it, so a thread with several turns of them
+    // grew the group without limit and pushed the threads below it off screen.
+    const html = render({
+      tasks: [shell(metadata())],
+      nativeAgents: [nativeAgent({ taskId: "a" })],
+    });
+    const scrollerAt = html.indexOf('data-testid="sidebar-task-scroll"');
+    const agentsAt = html.indexOf('data-testid="sidebar-native-agent-groups"');
+    const newTaskAt = html.indexOf('data-testid="sidebar-task-new"');
+    expect(scrollerAt).toBeGreaterThan(-1);
+    // Inside the scroller means after it opens and before `+ New task`, which
+    // is the first thing rendered once the scroller closes.
+    expect(agentsAt).toBeGreaterThan(scrollerAt);
+    expect(agentsAt).toBeLessThan(newTaskAt);
+  });
+
+  it("renders a per-turn group with a relative label and live counts", () => {
+    const html = render({
+      nativeAgents: [
+        nativeAgent({ taskId: "w1", description: "Map handlers" }),
+        nativeAgent({
+          taskId: "w2",
+          description: "Trace refresh",
+          status: "failed",
+          updatedAt: "2026-07-25T11:59:00.000Z",
+        }),
+      ],
+    });
+    expect(html).toContain('data-testid="sidebar-native-agent-groups"');
+    expect(html).toContain("Latest turn · 2 agents");
+    expect(html).toContain("Map handlers");
+    expect(html).toContain("Trace refresh");
+    // One running, one failed — a zero count is omitted, not rendered.
+    const groupsHtml = html.split('data-testid="sidebar-native-agent-groups"')[1] ?? "";
+    expect(groupsHtml).toContain("1 running");
+    expect(groupsHtml).toContain("1 failed");
+    expect(groupsHtml).not.toContain("finished");
+  });
+
+  it("opens the group while work is live, even without a user toggle", () => {
+    const html = render({ nativeAgents: [nativeAgent({ taskId: "w1" })] });
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('data-testid="sidebar-native-agent-row"');
+  });
+
+  it("keeps an old, fully settled group collapsed", () => {
+    const html = render({
+      nativeAgents: [
+        nativeAgent({ taskId: "w1", turnId: "turn-old", status: "finished" }),
+        nativeAgent({ taskId: "w2", turnId: "turn-new", status: "finished" }),
+      ],
+    });
+    const toggles = html.split('data-testid="sidebar-native-agent-group-toggle"');
+    // Two groups: the older collapsed, the latest expanded.
+    expect(toggles).toHaveLength(3);
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-expanded="true"');
+  });
+
+  it("marks a retry with ↺ and never presents the row as a thread", () => {
+    const html = render({
+      nativeAgents: [nativeAgent({ taskId: "w4", retryOfTaskId: "w3", description: "Retry run" })],
+    });
+    expect(html).toContain("↺");
+    const rowTag = html.split('data-testid="sidebar-native-agent-row"')[0]?.split("<button").pop();
+    expect(rowTag).not.toContain("data-thread-item");
+    expect(rowTag).not.toContain("aria-expanded");
+  });
+
+  it("renders no agent section when the thread has none", () => {
+    expect(render()).not.toContain('data-testid="sidebar-native-agent-groups"');
   });
 });

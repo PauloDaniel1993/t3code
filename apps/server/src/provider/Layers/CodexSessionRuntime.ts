@@ -36,6 +36,14 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
+import {
+  applyCodexChildThreadNotification,
+  applyCodexCollabNotification,
+  codexCollabEmissionEvent,
+  settleCodexCollabAgentByThread,
+  settleCodexCollabAgentsForTurn,
+  type CollabAgentRecord,
+} from "./codexCollabAgents.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
@@ -601,28 +609,6 @@ export function readCodexNotificationRouteFields(notification: CodexServerNotifi
   }
 }
 
-function rememberCollabReceiverTurns(
-  collabReceiverTurns: Map<string, TurnId>,
-  notification: CodexServerNotification,
-  parentTurnId: TurnId | undefined,
-): void {
-  if (!parentTurnId) {
-    return;
-  }
-
-  if (notification.method !== "item/started" && notification.method !== "item/completed") {
-    return;
-  }
-
-  if (notification.params.item.type !== "collabAgentToolCall") {
-    return;
-  }
-
-  for (const receiverThreadId of notification.params.item.receiverThreadIds) {
-    collabReceiverTurns.set(receiverThreadId, parentTurnId);
-  }
-}
-
 function shouldSuppressChildConversationNotification(
   method: CodexRpc.ServerNotificationMethod,
 ): boolean {
@@ -723,7 +709,7 @@ export const makeCodexSessionRuntime = (
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
-    const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const collabAgentsRef = yield* Ref.make<ReadonlyMap<string, CollabAgentRecord>>(new Map());
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -844,54 +830,48 @@ export const makeCodexSessionRuntime = (
       Effect.gen(function* () {
         const payload = notification.params;
         const route = readCodexNotificationRouteFields(notification);
-        const receiverUpdate = yield* Ref.modify(collabReceiverTurnsRef, (current) => {
-          const next = new Map(current);
+        const receiverUpdate = yield* Ref.modify(collabAgentsRef, (current) => {
           const providerConversationId = readNotificationThreadId(notification);
           const childParentTurnId = providerConversationId
-            ? current.get(providerConversationId)
+            ? current.get(providerConversationId)?.turnId
             : undefined;
-          rememberCollabReceiverTurns(next, notification, route.turnId);
+
+          // Spawns and, where Codex reports them, restated `agentsStates`.
+          const fromItem = applyCodexCollabNotification(current, notification, route.turnId);
+
+          // Progress and the final answer, read off the agent's own thread.
+          const fromChild = applyCodexChildThreadNotification(fromItem.next, notification);
+
+          // Then the two safety nets that close agents whose terminal state the
+          // item never carried: the child conversation reporting its own turn
+          // done, and the parent turn ending with agents still open.
+          const settled =
+            notification.method === "turn/completed"
+              ? childParentTurnId !== undefined && providerConversationId !== undefined
+                ? settleCodexCollabAgentByThread(fromChild.next, providerConversationId)
+                : route.turnId !== undefined
+                  ? settleCodexCollabAgentsForTurn(fromChild.next, route.turnId)
+                  : { next: fromChild.next, emissions: [] }
+              : { next: fromChild.next, emissions: [] };
+
           return [
             {
               childParentTurnId,
-              newCollabReceivers: [...next.keys()].filter(
-                (receiverThreadId) => !current.has(receiverThreadId),
-              ),
+              emissions: [...fromItem.emissions, ...fromChild.emissions, ...settled.emissions],
             },
-            next,
+            settled.next,
           ] as const;
         });
         const childParentTurnId = receiverUpdate.childParentTurnId;
-        const newCollabReceivers = receiverUpdate.newCollabReceivers;
-        for (const receiverThreadId of newCollabReceivers) {
-          const item =
-            notification.method === "item/started" || notification.method === "item/completed"
-              ? notification.params.item
-              : undefined;
+        for (const emission of receiverUpdate.emissions) {
+          const event = codexCollabEmissionEvent(emission);
           yield* emitEvent({
             kind: "notification",
             threadId: options.threadId,
-            method: "t3/task/started",
-            ...(route.turnId ? { turnId: route.turnId } : {}),
-            payload: {
-              taskId: receiverThreadId,
-              ...(item?.type === "collabAgentToolCall" && item.prompt
-                ? { description: item.prompt, prompt: item.prompt }
-                : {}),
-            },
+            method: event.method,
+            turnId: event.turnId,
+            payload: event.payload,
           });
-        }
-        if (childParentTurnId && notification.method === "turn/completed") {
-          const providerConversationId = readNotificationThreadId(notification);
-          if (providerConversationId) {
-            yield* emitEvent({
-              kind: "notification",
-              threadId: options.threadId,
-              method: "t3/task/completed",
-              turnId: childParentTurnId,
-              payload: { taskId: providerConversationId, status: "completed" },
-            });
-          }
         }
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
           return;

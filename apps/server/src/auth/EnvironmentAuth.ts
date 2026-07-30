@@ -706,7 +706,23 @@ export const make = Effect.gen(function* () {
                 ...(input?.proofKeyThumbprint
                   ? {
                       proofKeyThumbprint: input.proofKeyThumbprint,
-                      ttl: Duration.hours(1),
+                      // STOPGAP — see openspec/changes/add-oauth-refresh-token.
+                      //
+                      // An hour is the right lifetime for a proof-of-possession
+                      // token, but nothing can renew one: no refresh token is
+                      // issued and `/oauth/token` has no refresh grant, so the
+                      // only recovery is the pairing flow, which needs a human.
+                      // A long-running MCP client therefore died hourly with
+                      // "requires re-authorization", and in a headless session
+                      // it stayed dead.
+                      //
+                      // A week buys quiet until refresh lands, at the cost of
+                      // the property short tokens exist for: a leaked token is
+                      // useful for a week instead of an hour. Acceptable while
+                      // environments are local and single-user. Put this back to
+                      // hours the moment renewal works — task 5.1 of that change
+                      // is exactly this line.
+                      ttl: Duration.days(7),
                     }
                   : {}),
                 client: {

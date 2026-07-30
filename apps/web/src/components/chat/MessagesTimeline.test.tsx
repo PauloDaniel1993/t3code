@@ -305,21 +305,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("1 changed file");
   });
 
-  it("keeps workflow activity view state independent for every turn", async () => {
-    const { updateWorkflowActivityViewState } = await import("./MessagesTimeline");
-    const turnOne = TurnId.make("turn-one");
-    const turnTwo = TurnId.make("turn-two");
-
-    let states = new Map();
-    states = new Map(updateWorkflowActivityViewState(states, turnOne, "expanded"));
-    states = new Map(updateWorkflowActivityViewState(states, turnTwo, "expanded"));
-    states = new Map(updateWorkflowActivityViewState(states, turnOne, "closed"));
-
-    expect(states.get(turnOne)).toBe("closed");
-    expect(states.get(turnTwo)).toBe("expanded");
-  });
-
-  it("renders only a closed turn's inline launcher before its terminal response", async () => {
+  it("renders every activity-bearing turn's expanded card after its terminal response", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const makeAssistantEntry = (turnId: ReturnType<typeof TurnId.make>, index: number) => ({
       id: `entry-assistant-${index}`,
@@ -365,20 +351,83 @@ describe("MessagesTimeline", () => {
             [turnTwo, makeModel(turnTwo, 2)],
           ])
         }
-        workflowActivityViewStateByTurnId={new Map([[turnOne, "closed"]])}
       />,
     );
 
-    expect(markup.match(/data-workflow-activity-placement="inline"/g)).toHaveLength(1);
+    expect(markup.match(/data-workflow-activity-turn-id=/g)).toHaveLength(2);
     expect(markup).toContain('data-workflow-activity-turn-id="turn-one"');
-    expect(markup).not.toContain('data-workflow-activity-turn-id="turn-two"');
-    expect(markup).toContain('data-workflow-activity-state="closed"');
-    expect(markup).toContain('data-slot="workflow-activity-launcher"');
-    expect(markup.indexOf('data-workflow-activity-turn-id="turn-one"')).toBeLessThan(
-      markup.indexOf("Response 1"),
+    expect(markup).toContain('data-workflow-activity-turn-id="turn-two"');
+    // Each card sits at the end of its turn's terminal response.
+    expect(markup.indexOf("Response 1")).toBeLessThan(
+      markup.indexOf('data-workflow-activity-turn-id="turn-one"'),
     );
-    expect(markup).not.toContain("Worker 1");
-    expect(markup).not.toContain("Worker 2");
+    // Every worker row mounts expanded with its native-agent jump marker.
+    expect(markup).toContain("Worker 1");
+    expect(markup).toContain("Worker 2");
+    expect(markup).toContain('data-native-agent-task-id="worker-1"');
+    expect(markup).toContain('data-native-agent-task-id="worker-2"');
+  });
+
+  it("renders the card while its turn is still running", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnOne = TurnId.make("turn-one");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        runningTurnId={turnOne}
+        latestTurn={{
+          turnId: turnOne,
+          state: "running",
+          startedAt: "2026-03-17T19:12:20.000Z",
+          completedAt: null,
+        }}
+        timelineEntries={[
+          {
+            id: "entry-assistant-1",
+            kind: "message" as const,
+            createdAt: "2026-03-17T19:12:21.000Z",
+            message: {
+              id: MessageId.make("message-assistant-1"),
+              role: "assistant" as const,
+              text: "Working on it",
+              turnId: turnOne,
+              createdAt: "2026-03-17T19:12:21.000Z",
+              updatedAt: "2026-03-17T19:12:21.000Z",
+              streaming: true,
+            } as import("../../types").ChatMessage,
+          },
+        ]}
+        workflowActivityModelsByTurnId={
+          new Map([
+            [
+              turnOne,
+              {
+                turnId: turnOne,
+                steps: [],
+                historicalSteps: [],
+                otherActivity: null,
+                workers: [
+                  {
+                    id: "worker-1",
+                    taskId: "worker-1",
+                    turnId: turnOne,
+                    startedAt: "2026-03-17T19:12:21.000Z",
+                    updatedAt: "2026-03-17T19:12:21.000Z",
+                    status: "inProgress" as const,
+                    description: "Live worker",
+                  },
+                ],
+                recentTools: [],
+              },
+            ],
+          ])
+        }
+      />,
+    );
+
+    expect(markup).toContain('data-workflow-activity-turn-id="turn-one"');
+    expect(markup).toContain("Live worker");
+    expect(markup).toContain('data-native-agent-task-id="worker-1"');
   });
 
   it("uses LegendList isNearEnd when deciding whether the live edge is visible", async () => {

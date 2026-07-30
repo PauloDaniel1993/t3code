@@ -3437,6 +3437,108 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("# Plan title");
   });
 
+  it("carries the canonical nativeAgent marker onto every task activity", async () => {
+    // Codex names its in-session agents by child thread id and reports no
+    // `subagentType`, so the marker is the only evidence the projection has that
+    // these rows are agents. It has to survive the whole lifecycle, including a
+    // completion that has to identify itself on its own.
+    const harness = await createHarness();
+    const now = "2026-07-30T00:00:00.000Z";
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-marker-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-marker"),
+      payload: {
+        taskId: "child-a",
+        taskType: "subagent",
+        description: "Inspect SidebarV2.tsx",
+        nativeAgent: true,
+      },
+    });
+    harness.emit({
+      type: "task.progress",
+      eventId: asEventId("evt-marker-progress"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-marker"),
+      payload: {
+        taskId: "child-a",
+        description: "reading files",
+        summary: "reading files",
+        nativeAgent: true,
+      },
+    });
+    harness.emit({
+      type: "task.completed",
+      eventId: asEventId("evt-marker-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-marker"),
+      payload: {
+        taskId: "child-a",
+        status: "completed",
+        description: "Inspect SidebarV2.tsx",
+        subagentType: "explorer",
+        nativeAgent: true,
+      },
+    });
+    // An ordinary backgrounded task on the same channel stays unmarked.
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-marker-shell"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-marker"),
+      payload: { taskId: "shell-1", taskType: "local_bash", description: "Serve the mockups" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-marker-shell",
+      ),
+    );
+
+    const readPayload = (activity: ProviderRuntimeTestActivity | undefined) =>
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+    const payloadOf = (id: string) =>
+      readPayload(
+        thread.activities.find((candidate: ProviderRuntimeTestActivity) => candidate.id === id),
+      );
+    // `task.progress` is a replaceable activity, so it carries a stable derived
+    // id rather than the event id.
+    const progressPayload = readPayload(
+      thread.activities.find(
+        (candidate: ProviderRuntimeTestActivity) => candidate.kind === "task.progress",
+      ),
+    );
+
+    expect(payloadOf("evt-marker-started")).toMatchObject({
+      taskId: "child-a",
+      nativeAgent: true,
+    });
+    expect(progressPayload).toMatchObject({
+      taskId: "child-a",
+      nativeAgent: true,
+    });
+    expect(payloadOf("evt-marker-completed")).toMatchObject({
+      taskId: "child-a",
+      status: "completed",
+      description: "Inspect SidebarV2.tsx",
+      subagentType: "explorer",
+      nativeAgent: true,
+    });
+    expect(payloadOf("evt-marker-shell")).not.toHaveProperty("nativeAgent");
+  });
+
   it("titles task activities with the task description, including on completion", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

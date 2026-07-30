@@ -121,6 +121,18 @@ const assertForkMigrationApplied = (state: Effect.Success<typeof readMigrationSt
       migration_id: 5,
       name: "ProjectionThreadMessageSource",
     },
+    {
+      migration_id: 6,
+      name: "ProjectionThreadNativeAgents",
+    },
+    {
+      migration_id: 7,
+      name: "ResetProjectionThreadNativeAgents",
+    },
+    {
+      migration_id: 8,
+      name: "BackfillProjectionThreadNativeAgents",
+    },
   ]);
 };
 
@@ -222,9 +234,104 @@ freshLayer("ForkMigrations (fresh database)", (it) => {
         [3, "DatabaseCompactionJournal"],
         [4, "ProjectionThreadTasks"],
         [5, "ProjectionThreadMessageSource"],
+        [6, "ProjectionThreadNativeAgents"],
+        [7, "ResetProjectionThreadNativeAgents"],
+        [8, "BackfillProjectionThreadNativeAgents"],
       ]);
       assertBaseLedgerEndsAt34(state);
       assertForkMigrationApplied(state);
+    }),
+  );
+});
+
+// The projection folds in-session agents as their activities arrive and never
+// re-reads stored ones, so agents that ran before the feature existed — or that
+// migration 007 cleared — would stay invisible forever without a backfill.
+const backfillLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+
+backfillLayer("ForkMigrations (in-session agent backfill)", (it) => {
+  it.effect("rebuilds agents from stored activities, ignoring non-agent tasks", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // Migrate up to 007 first, so the schema exists and the column is clear.
+      yield* reconcileBaseMigrationLedger();
+      yield* runMigrations();
+      yield* runForkMigrations({ toMigrationInclusive: 7 });
+
+      yield* sql`
+        INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at)
+        VALUES ('thread-backfill', 'project-1', 'Backfill', '2026-07-30T09:00:00.000Z', '2026-07-30T09:00:00.000Z')
+      `;
+
+      const activity = (
+        activityId: string,
+        kind: string,
+        payload: Record<string, unknown>,
+        sequence: number,
+      ) => sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at, sequence
+        )
+        VALUES (
+          ${activityId},
+          'thread-backfill',
+          'turn-1',
+          'info',
+          ${kind},
+          ${kind},
+          ${JSON.stringify(payload)},
+          ${`2026-07-30T09:00:0${sequence}.000Z`},
+          ${sequence}
+        )
+      `;
+
+      yield* activity(
+        "a1",
+        "task.started",
+        {
+          taskId: "w1",
+          subagentType: "Explore",
+          description: "Map handlers",
+        },
+        1,
+      );
+      yield* activity(
+        "a2",
+        "task.completed",
+        { taskId: "w1", status: "completed", summary: "3 gaps" },
+        2,
+      );
+      // A backgrounded shell on the same channel must not come back as an agent.
+      yield* activity(
+        "a3",
+        "task.started",
+        {
+          taskId: "bash-1",
+          taskType: "local_bash",
+          description: "Restart the mockup static server",
+        },
+        3,
+      );
+
+      yield* runForkMigrations();
+
+      const rows = yield* sql<{ readonly nativeAgents: string | null }>`
+        SELECT native_agents_json AS "nativeAgents"
+        FROM projection_threads
+        WHERE thread_id = 'thread-backfill'
+      `;
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      const agents = JSON.parse(rows[0]?.nativeAgents ?? "[]") as ReadonlyArray<
+        Record<string, unknown>
+      >;
+      assert.equal(agents.length, 1);
+      assert.deepInclude(agents[0], {
+        taskId: "w1",
+        status: "finished",
+        description: "Map handlers",
+        subagentType: "Explore",
+        resultSummary: "3 gaps",
+      });
     }),
   );
 });
@@ -254,6 +361,9 @@ baseOnlyLayer("ForkMigrations (existing base-only database)", (it) => {
         [3, "DatabaseCompactionJournal"],
         [4, "ProjectionThreadTasks"],
         [5, "ProjectionThreadMessageSource"],
+        [6, "ProjectionThreadNativeAgents"],
+        [7, "ResetProjectionThreadNativeAgents"],
+        [8, "BackfillProjectionThreadNativeAgents"],
       ]);
       assertBaseLedgerEndsAt34(state);
       assertForkMigrationApplied(state);

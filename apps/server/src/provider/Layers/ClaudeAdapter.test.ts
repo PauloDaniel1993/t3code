@@ -2138,7 +2138,12 @@ describe("ClaudeAdapterLive", () => {
         workflowName: "review",
         prompt: "",
         skipTranscript: false,
+        // The Task tool's agent kind is Claude's evidence that this run is an
+        // in-session agent, asserted here as the canonical marker.
+        nativeAgent: true,
       });
+      // Sparse start carries no `subagent_type` or `workflow_name`, so it stays
+      // unmarked — an ordinary task, not an agent.
       assert.deepEqual(payloadWithStringTaskId(runtimeEvents[1]?.payload), {
         taskId: "task-start-sparse",
         description: "Minimal task",
@@ -2155,6 +2160,7 @@ describe("ClaudeAdapterLive", () => {
           durationMs: 0,
         },
         lastToolName: "Read",
+        nativeAgent: true,
       });
       assert.deepEqual(payloadWithStringTaskId(runtimeEvents[3]?.payload), {
         taskId: "task-progress-sparse",
@@ -2314,13 +2320,20 @@ describe("ClaudeAdapterLive", () => {
         taskType: "agent",
         subagentType: "code-reviewer",
         prompt: "Review the adapter for regressions.",
+        nativeAgent: true,
       });
+      // `task_notification` repeats none of the start's evidence, so the adapter
+      // restates what it remembered: this completion identifies and names its
+      // agent even if the start never reached a consumer.
       assert.deepEqual(payloadWithStringTaskId(runtimeEvents[1]?.payload), {
         taskId: "task-failed-attempt",
         status: "failed",
         outputFile: "task-failed.txt",
         summary: "Worker connection closed unexpectedly.",
         error: "Worker connection closed unexpectedly.",
+        description: "Review the adapter",
+        subagentType: "code-reviewer",
+        nativeAgent: true,
       });
       assert.deepEqual(payloadWithStringTaskId(runtimeEvents[2]?.payload), {
         taskId: "task-retry-attempt",
@@ -2329,6 +2342,7 @@ describe("ClaudeAdapterLive", () => {
         taskType: "agent",
         subagentType: "code-reviewer",
         prompt: "Review the adapter for regressions.",
+        nativeAgent: true,
       });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
