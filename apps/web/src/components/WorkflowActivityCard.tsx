@@ -355,9 +355,9 @@ function workerStatusPresentation(status: WorkLogToolLifecycleStatus): {
 } {
   if (status === "completed") {
     return {
-      icon: <CheckIcon className="size-3.5 text-success-foreground" aria-hidden />,
+      icon: <CheckIcon className="size-3.5 text-success" aria-hidden />,
       label: "Completed",
-      labelClass: "text-success-foreground",
+      labelClass: "text-success",
     };
   }
   if (status === "failed") {
@@ -589,7 +589,7 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
         style={{ maxHeight: "min(26rem, 55vh)" }}
       >
         <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5 pb-1 text-[12px] text-muted-foreground">
-          <ZapIcon className="size-3 shrink-0 text-primary/85" aria-hidden />
+          <ZapIcon className="size-3 shrink-0 text-success/85" aria-hidden />
           <p className="font-medium text-foreground/85">{title}</p>
           {counter ? (
             <span className="tabular-nums text-muted-foreground/70">· {counter}</span>
