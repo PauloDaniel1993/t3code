@@ -22,11 +22,36 @@ import type {
   TurnId,
 } from "@t3tools/contracts";
 
-/** Activity kinds this module folds. Anything else is ignored by `deriveNativeAgents`. */
+/**
+ * Activity kinds this module folds. Necessary but NOT sufficient — see
+ * `startedActivityDescribesAgent`.
+ */
 const NATIVE_AGENT_ACTIVITY_KINDS = new Set(["task.started", "task.progress", "task.completed"]);
 
 export function isNativeAgentActivityKind(kind: string): boolean {
   return NATIVE_AGENT_ACTIVITY_KINDS.has(kind);
+}
+
+/**
+ * `task.*` is not a subagent channel. Providers report other per-turn work
+ * through it too: Claude Code emits `taskType: "local_bash"` for every
+ * backgrounded shell and `taskType: "plan"` for plan tasks. Folding those in
+ * produced sidebar rows like "Restart the mockup static server", spinning
+ * forever because a background server never exits.
+ *
+ * So membership needs positive evidence that a run is an agent, and the only
+ * evidence the payload carries is `subagentType` (the Task tool's agent kind) or
+ * `workflowName` (a named fan-out of them). Everything else is some other kind
+ * of task and does not belong in this list.
+ *
+ * This is an allowlist on purpose. A provider that spawns real subagents without
+ * labelling them would be missed, which is the safer failure: an absent row is a
+ * gap, a mislabelled one is a lie about what the user is looking at.
+ */
+export function startedActivityDescribesAgent(payload: Record<string, unknown>): boolean {
+  return (
+    readString(payload.subagentType) !== undefined || readString(payload.workflowName) !== undefined
+  );
 }
 
 /**
@@ -82,9 +107,11 @@ function statusForCompletion(value: unknown): ThreadNativeAgentStatus {
  * implementation means an incrementally-built projection and a full replay can
  * never disagree.
  *
- * An activity for an unknown task id creates an entry rather than being
- * dropped: providers sometimes report a subagent only once it is already
- * underway, and ignoring that would hide live work.
+ * Only a `task.started` that `startedActivityDescribesAgent` accepts can admit a
+ * new entry. `task.progress` and `task.completed` carry just a `taskId` and a
+ * `toolUseId` — no evidence of what kind of task they belong to — so admitting
+ * on those would let every backgrounded shell back in through its completion
+ * event. An unrecognised task id is therefore ignored rather than created.
  */
 export function applyNativeAgentActivity(
   agents: ReadonlyArray<ThreadNativeAgent>,
@@ -97,6 +124,12 @@ export function applyNativeAgentActivity(
 
   const index = agents.findIndex((agent) => agent.taskId === taskId);
   const existing = index === -1 ? undefined : agents[index];
+  if (
+    existing === undefined &&
+    !(activity.kind === "task.started" && startedActivityDescribesAgent(payload))
+  ) {
+    return agents;
+  }
 
   const subagentType = readString(payload.subagentType) ?? existing?.subagentType;
   const startedDescription =
