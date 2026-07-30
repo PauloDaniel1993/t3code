@@ -201,6 +201,18 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       transform: none;
     }
   }
+  /* The sidebar's "show in transcript" jump flashes the target so the eye
+     lands on the row (or the collapsed card standing in for it). */
+  @keyframes native-agent-jump-flash {
+    0% {
+      background-color: color-mix(in oklab, var(--accent) 65%, transparent);
+      box-shadow: 0 0 0 1px var(--ring);
+    }
+    100% {
+      background-color: transparent;
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
   @keyframes skeleton {
     to {
       background-position: -200% 0;
@@ -251,6 +263,13 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       opacity: 1;
     }
   }
+}
+
+/* The sidebar's "show in transcript" jump flashes the target so the eye lands
+   on the row (or the collapsed card standing in for it). */
+.native-agent-jump-flash {
+  animation: native-agent-jump-flash 1.6s ease-out both;
+  border-radius: var(--radius-md);
 }
 
 @layer base {

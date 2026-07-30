@@ -18,6 +18,7 @@ import type {
   ScopedThreadRef,
   SidebarProjectGroupingMode,
   ThreadId,
+  ThreadNativeAgent,
   ThreadTaskContextSpec,
 } from "@t3tools/contracts";
 import {
@@ -170,7 +171,9 @@ import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrom
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { SidebarTaskGroup } from "./SidebarTaskGroup";
 import { groupSidebarTaskThreads } from "./SidebarTaskRows.logic";
-import { MiniThreadWindow } from "./MiniThreadWindow";
+import { MiniNativeAgentWindow, MiniThreadWindow } from "./MiniThreadWindow";
+import { formatTaskGroupChipLabel } from "./SidebarNativeAgentGroups.logic";
+import { jumpToNativeAgentInTranscript } from "../lib/nativeAgentJump";
 import { NewThreadTaskDialog } from "./NewThreadTaskDialog";
 import {
   defaultTaskGroupExpanded,
@@ -436,9 +439,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   onSnooze: (threadRef: ScopedThreadRef, preset: SnoozePreset) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
   onChangeRequestState: (threadKey: string, state: "open" | "closed" | "merged" | null) => void;
-  /** Present only while this thread owns at least one task. */
+  /** Present while this thread owns at least one task or in-session agent. */
   taskGroup: {
-    readonly count: number;
+    /** Pre-formatted ("2 tasks · 1 agent"): the group can mix both kinds. */
+    readonly label: string;
     readonly expanded: boolean;
     /** A task woke this thread since the user last looked at it. */
     readonly hasUnreadResults: boolean;
@@ -785,9 +789,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
         type="button"
         data-testid="sidebar-task-group-toggle"
         aria-expanded={taskGroup.expanded}
-        aria-label={`${taskGroup.expanded ? "Hide" : "Show"} ${taskGroup.count} ${
-          taskGroup.count === 1 ? "task" : "tasks"
-        }`}
+        aria-label={`${taskGroup.expanded ? "Hide" : "Show"} ${taskGroup.label}`}
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -802,7 +804,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
             !taskGroup.expanded && "-rotate-90",
           )}
         />
-        {taskGroup.count} {taskGroup.count === 1 ? "task" : "tasks"}
+        {taskGroup.label}
         {taskGroup.hasUnreadResults ? (
           <span
             data-testid="sidebar-task-unread-dot"
@@ -1801,12 +1803,21 @@ export default function SidebarV2() {
   );
 
   // --- Thread tasks -------------------------------------------------------
-  const [openTask, setOpenTask] = useState<{
-    key: string;
-    threadRef: ScopedThreadRef;
-    anchor: HTMLElement | null;
-  } | null>(null);
-  const openTaskKey = openTask?.key ?? null;
+  // One peek at a time, whichever kind of work it points at: a task peeks its
+  // thread, an in-session agent peeks the run projected onto its parent.
+  const [openPeek, setOpenPeek] = useState<
+    | { kind: "task"; key: string; threadRef: ScopedThreadRef; anchor: HTMLElement | null }
+    | {
+        kind: "nativeAgent";
+        key: string;
+        parentThreadRef: ScopedThreadRef;
+        taskId: string;
+        anchor: HTMLElement | null;
+      }
+    | null
+  >(null);
+  const openTaskKey = openPeek?.kind === "task" ? openPeek.key : null;
+  const openNativeAgentKey = openPeek?.kind === "nativeAgent" ? openPeek.key : null;
   const [taskNowMs, setTaskNowMs] = useState(() => Date.now());
   useEffect(() => {
     const interval = window.setInterval(() => setTaskNowMs(Date.now()), 5_000);
@@ -1827,16 +1838,22 @@ export default function SidebarV2() {
       threadKey: string,
       parent: EnvironmentThreadShell,
       tasks: ReadonlyArray<EnvironmentThreadShell>,
+      nativeAgents: ReadonlyArray<ThreadNativeAgent> = [],
     ) => {
       const explicit = taskGroupExpandedByThreadId[threadKey];
       if (explicit !== undefined) return explicit;
-      return defaultTaskGroupExpanded({
-        tasks,
-        hasUnreadResults: hasUnreadTaskResults({
-          taskSummary: parent.taskSummary,
-          lastVisitedAt: threadLastVisitedAtById[threadKey],
-        }),
-      });
+      return (
+        defaultTaskGroupExpanded({
+          tasks,
+          hasUnreadResults: hasUnreadTaskResults({
+            taskSummary: parent.taskSummary,
+            lastVisitedAt: threadLastVisitedAtById[threadKey],
+          }),
+        }) ||
+        // Live in-session work must not hide behind a collapsed group — the
+        // same rule the per-turn groups apply to themselves.
+        nativeAgents.some((agent) => agent.status === "running")
+      );
     },
     [taskGroupExpandedByThreadId, threadLastVisitedAtById],
   );
@@ -1853,10 +1870,10 @@ export default function SidebarV2() {
   }, []);
   useEffect(() => clearPeekTimer, [clearPeekTimer]);
 
-  const openTaskKeyRef = useRef<string | null>(null);
+  const openPeekKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    openTaskKeyRef.current = openTask?.key ?? null;
-  }, [openTask]);
+    openPeekKeyRef.current = openPeek?.key ?? null;
+  }, [openPeek]);
 
   const handlePeekTask = useCallback(
     (threadRef: ScopedThreadRef, anchor: HTMLElement | null) => {
@@ -1864,16 +1881,33 @@ export default function SidebarV2() {
       if (isMobile) return;
       clearPeekTimer();
       const key = scopedThreadKey(threadRef);
-      if (openTaskKeyRef.current === key) return;
-      if (openTaskKeyRef.current !== null) {
+      if (openPeekKeyRef.current === key) return;
+      if (openPeekKeyRef.current !== null) {
         // A window is already up, so moving between rows should track the
         // pointer rather than blink out and fade back in.
-        setOpenTask({ key, threadRef, anchor });
+        setOpenPeek({ kind: "task", key, threadRef, anchor });
         return;
       }
       peekTimerRef.current = window.setTimeout(() => {
         peekTimerRef.current = null;
-        setOpenTask({ key, threadRef, anchor });
+        setOpenPeek({ kind: "task", key, threadRef, anchor });
+      }, 260);
+    },
+    [clearPeekTimer, isMobile],
+  );
+  const handlePeekNativeAgent = useCallback(
+    (parentThreadRef: ScopedThreadRef, taskId: string, anchor: HTMLElement | null) => {
+      if (isMobile) return;
+      clearPeekTimer();
+      const key = `${scopedThreadKey(parentThreadRef)}:native:${taskId}`;
+      if (openPeekKeyRef.current === key) return;
+      if (openPeekKeyRef.current !== null) {
+        setOpenPeek({ kind: "nativeAgent", key, parentThreadRef, taskId, anchor });
+        return;
+      }
+      peekTimerRef.current = window.setTimeout(() => {
+        peekTimerRef.current = null;
+        setOpenPeek({ kind: "nativeAgent", key, parentThreadRef, taskId, anchor });
       }, 260);
     },
     [clearPeekTimer, isMobile],
@@ -1882,13 +1916,26 @@ export default function SidebarV2() {
     clearPeekTimer();
     peekTimerRef.current = window.setTimeout(() => {
       peekTimerRef.current = null;
-      setOpenTask(null);
+      setOpenPeek(null);
     }, 220);
   }, [clearPeekTimer]);
-  const closeOpenTask = useCallback(() => {
+  const closeOpenPeek = useCallback(() => {
     clearPeekTimer();
-    setOpenTask(null);
+    setOpenPeek(null);
   }, [clearPeekTimer]);
+
+  // Clicking an agent row — or the peek's "Show in transcript" — locates the
+  // run in the turn's workflow card. There is no thread to open; navigating to
+  // the parent is only needed when it is not the thread on screen.
+  const jumpToNativeAgent = useCallback(
+    (parentThreadRef: ScopedThreadRef, agent: ThreadNativeAgent) => {
+      if (routeThreadKey !== scopedThreadKey(parentThreadRef)) {
+        navigateToThread(parentThreadRef);
+      }
+      jumpToNativeAgentInTranscript({ taskId: agent.taskId, turnId: agent.turnId });
+    },
+    [navigateToThread, routeThreadKey],
+  );
 
   const handleSteerTask = useCallback(
     (threadRef: ScopedThreadRef, text: string) => {
@@ -2881,14 +2928,24 @@ export default function SidebarV2() {
                   const isCard = section === "active";
                   const rowVariant = isCard ? "card" : "slim";
                   const tasks = tasksByParent.get(threadKey);
+                  const nativeAgents = thread.nativeAgents ?? [];
+                  const taskCount = tasks?.length ?? 0;
                   return (
                     <SidebarV2Row
                       taskGroup={
-                        tasks === undefined || tasks.length === 0
+                        taskCount === 0 && nativeAgents.length === 0
                           ? null
                           : {
-                              count: tasks.length,
-                              expanded: isTaskGroupExpanded(threadKey, thread, tasks),
+                              label: formatTaskGroupChipLabel({
+                                taskCount,
+                                nativeAgentCount: nativeAgents.length,
+                              }),
+                              expanded: isTaskGroupExpanded(
+                                threadKey,
+                                thread,
+                                tasks ?? [],
+                                nativeAgents,
+                              ),
                               hasUnreadResults: hasUnreadTaskResults({
                                 taskSummary: thread.taskSummary,
                                 lastVisitedAt: threadLastVisitedAtById[threadKey],
@@ -2896,7 +2953,12 @@ export default function SidebarV2() {
                               onToggle: () =>
                                 setTaskGroupExpanded(
                                   threadKey,
-                                  !isTaskGroupExpanded(threadKey, thread, tasks),
+                                  !isTaskGroupExpanded(
+                                    threadKey,
+                                    thread,
+                                    tasks ?? [],
+                                    nativeAgents,
+                                  ),
                                 ),
                             }
                       }
@@ -2978,21 +3040,29 @@ export default function SidebarV2() {
                     scopeThreadRef(thread.environmentId, thread.id),
                   );
                   const tasks = tasksByParent.get(threadKey);
-                  if (tasks === undefined || tasks.length === 0) {
+                  const nativeAgents = thread.nativeAgents ?? [];
+                  if ((tasks === undefined || tasks.length === 0) && nativeAgents.length === 0) {
                     return renderThreadRow(thread, section);
                   }
+                  const parentThreadRef = scopeThreadRef(thread.environmentId, thread.id);
                   return (
                     <Fragment key={`${threadKey}:group`}>
                       {renderThreadRow(thread, section)}
                       <SidebarTaskGroup
                         parentThreadKey={threadKey}
-                        tasks={tasks}
-                        expanded={isTaskGroupExpanded(threadKey, thread, tasks)}
+                        tasks={tasks ?? []}
+                        nativeAgents={nativeAgents}
+                        expanded={isTaskGroupExpanded(threadKey, thread, tasks ?? [], nativeAgents)}
                         openTaskKey={openTaskKey}
+                        openNativeAgentKey={openNativeAgentKey}
                         nowMs={taskNowMs}
                         onPeekTask={handlePeekTask}
+                        onPeekNativeAgent={(taskId, anchor) =>
+                          handlePeekNativeAgent(parentThreadRef, taskId, anchor)
+                        }
                         onPeekLeave={handlePeekLeave}
                         onOpenThread={navigateToThread}
+                        onNativeAgentClick={(agent) => jumpToNativeAgent(parentThreadRef, agent)}
                         onContextMenu={handleThreadContextMenu}
                         renamingTaskKey={renamingThreadKey}
                         renamingTitle={renamingTitle}
@@ -3001,20 +3071,45 @@ export default function SidebarV2() {
                         onCancelRename={cancelThreadRename}
                         onNewTask={handleNewTask}
                         miniWindow={
-                          openTask === null ? null : (
+                          openPeek?.kind !== "task" ? null : (
                             <MiniThreadWindow
-                              threadRef={openTask.threadRef}
-                              anchor={openTask.anchor}
+                              threadRef={openPeek.threadRef}
+                              anchor={openPeek.anchor}
                               modelLabel={null}
                               isMobile={isMobile}
-                              onClose={closeOpenTask}
+                              onClose={closeOpenPeek}
                               onOpenThread={(ref) => {
-                                closeOpenTask();
+                                closeOpenPeek();
                                 navigateToThread(ref);
                               }}
                               onSteer={handleSteerTask}
                               onCancelTask={handleCancelTask}
                               onRedeliver={handleRedeliverTask}
+                              onKeepOpen={clearPeekTimer}
+                              onPeekLeave={handlePeekLeave}
+                            />
+                          )
+                        }
+                        nativeAgentMiniWindow={
+                          openPeek?.kind !== "nativeAgent" ? null : (
+                            <MiniNativeAgentWindow
+                              parentThreadRef={openPeek.parentThreadRef}
+                              taskId={openPeek.taskId}
+                              anchor={openPeek.anchor}
+                              isMobile={isMobile}
+                              onClose={closeOpenPeek}
+                              onShowInTranscript={(agent) => {
+                                closeOpenPeek();
+                                jumpToNativeAgent(openPeek.parentThreadRef, agent);
+                              }}
+                              onOpenAgent={(taskId) => {
+                                if (openPeek.kind !== "nativeAgent") return;
+                                setOpenPeek({
+                                  ...openPeek,
+                                  key: `${scopedThreadKey(openPeek.parentThreadRef)}:native:${taskId}`,
+                                  taskId,
+                                });
+                              }}
                               onKeepOpen={clearPeekTimer}
                               onPeekLeave={handlePeekLeave}
                             />
