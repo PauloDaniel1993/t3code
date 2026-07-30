@@ -201,6 +201,12 @@ interface ClaudeAgentTaskAttempt {
   readonly prompt?: string;
   readonly subagentType?: string;
   readonly taskType?: string;
+  /**
+   * Whether `task_started` identified this run as a subagent. Remembered because
+   * `task_progress` and `task_notification` do not repeat the evidence, and the
+   * canonical `nativeAgent` marker has to be asserted on those events too.
+   */
+  readonly nativeAgent?: boolean;
   retryOfTaskId?: string;
   retriedByTaskId?: string;
   status: "inProgress" | "completed" | "failed" | "stopped";
@@ -2863,6 +2869,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const taskType = readString(message.task_type);
         const workflowName = readString(message.workflow_name);
         const prompt = readString(message.prompt);
+        // Claude's own evidence that this task is a subagent rather than a
+        // backgrounded shell or a plan task: the Task tool's agent kind, or a
+        // named fan-out of them. Asserted here, at the provider boundary, so
+        // downstream consumers read one canonical marker instead of re-deriving
+        // it from Claude-shaped fields.
+        const nativeAgent = subagentType !== undefined || workflowName !== undefined;
         const existingAttempt = context.agentTaskAttempts.get(message.task_id);
         const attempt: ClaudeAgentTaskAttempt = existingAttempt ?? {
           taskId: message.task_id,
@@ -2871,6 +2883,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(prompt !== undefined ? { prompt } : {}),
           ...(subagentType !== undefined ? { subagentType } : {}),
           ...(taskType !== undefined ? { taskType } : {}),
+          ...(nativeAgent ? { nativeAgent } : {}),
           status: "inProgress",
         };
         const retryOfTaskId =
@@ -2897,14 +2910,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(typeof message.skip_transcript === "boolean"
               ? { skipTranscript: message.skip_transcript }
               : {}),
+            ...(nativeAgent ? { nativeAgent } : {}),
           },
         });
         return;
       }
       case "task_progress": {
-        const taskTurnId =
-          context.agentTaskAttempts.get(message.task_id)?.turnId ??
-          resolveClaudeAgentTaskTurnId(context);
+        const progressAttempt = context.agentTaskAttempts.get(message.task_id);
+        const taskTurnId = progressAttempt?.turnId ?? resolveClaudeAgentTaskTurnId(context);
         const toolUseId = readString(message.tool_use_id);
         const subagentType = readString(message.subagent_type);
         const summary = readString(message.summary);
@@ -2930,6 +2943,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(summary !== undefined ? { summary } : {}),
             ...(taskUsage !== undefined ? { usage: taskUsage } : {}),
             ...(lastToolName !== undefined ? { lastToolName } : {}),
+            ...(progressAttempt?.nativeAgent === true || subagentType !== undefined
+              ? { nativeAgent: true }
+              : {}),
           },
         });
         return;
@@ -2971,6 +2987,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(summary !== undefined ? { summary } : {}),
             ...(message.status === "failed" && summary !== undefined ? { error: summary } : {}),
             ...(taskUsage !== undefined ? { usage: taskUsage } : {}),
+            ...(attempt?.description !== undefined ? { description: attempt.description } : {}),
+            ...(attempt?.subagentType !== undefined ? { subagentType: attempt.subagentType } : {}),
+            ...(attempt?.nativeAgent === true ? { nativeAgent: true } : {}),
           },
         });
         return;

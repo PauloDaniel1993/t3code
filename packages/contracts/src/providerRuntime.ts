@@ -526,6 +526,24 @@ export const TaskUsageSnapshot = TaskUsageSnapshotSource.pipe(
 );
 export type TaskUsageSnapshot = typeof TaskUsageSnapshot.Type;
 
+/**
+ * The canonical, provider-independent marker for "this `task.*` run is an
+ * in-session agent".
+ *
+ * `task.*` is not a subagent channel: providers report backgrounded shells,
+ * plan tasks, and other per-turn work through it too. Consumers therefore need
+ * positive evidence before treating a task as an agent, and each provider
+ * adapter asserts it at its own boundary — Claude from `subagent_type` /
+ * `workflow_name`, Codex from a `collabAgentToolCall` receiver thread.
+ *
+ * It is carried on all three lifecycle payloads rather than only on
+ * `task.started`, so a progress or completion event that arrives before (or
+ * without) its start still identifies itself. Optional, so events from older
+ * providers and replayed history decode unchanged; absent means "no evidence",
+ * not "not an agent".
+ */
+const NativeAgentMarker = Schema.optional(Schema.Boolean);
+
 const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   retryOfTaskId: Schema.optional(RuntimeTaskId),
@@ -536,6 +554,7 @@ const TaskStartedPayload = Schema.Struct({
   workflowName: Schema.optional(TrimmedNonEmptyStringSchema),
   prompt: Schema.optional(Schema.String),
   skipTranscript: Schema.optional(Schema.Boolean),
+  nativeAgent: NativeAgentMarker,
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
@@ -547,6 +566,7 @@ const TaskProgressPayload = Schema.Struct({
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
   usage: Schema.optional(TaskUsageSnapshot),
   lastToolName: Schema.optional(TrimmedNonEmptyStringSchema),
+  nativeAgent: NativeAgentMarker,
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 
@@ -559,6 +579,10 @@ const TaskCompletedPayload = Schema.Struct({
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
   error: Schema.optional(TrimmedNonEmptyStringSchema),
   usage: Schema.optional(TaskUsageSnapshot),
+  /** Carried so a completion that outruns its start still names the row. */
+  description: Schema.optional(TrimmedNonEmptyStringSchema),
+  subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
+  nativeAgent: NativeAgentMarker,
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
 

@@ -665,6 +665,9 @@ export function runtimeEventToActivities(
             ...(event.payload.skipTranscript !== undefined
               ? { skipTranscript: event.payload.skipTranscript }
               : {}),
+            ...(event.payload.nativeAgent !== undefined
+              ? { nativeAgent: event.payload.nativeAgent }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -701,6 +704,9 @@ export function runtimeEventToActivities(
               ? { lastToolName: event.payload.lastToolName }
               : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
+            ...(event.payload.nativeAgent !== undefined
+              ? { nativeAgent: event.payload.nativeAgent }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -725,6 +731,17 @@ export function runtimeEventToActivities(
             taskId: event.payload.taskId,
             status: event.payload.status,
             ...(taskTitle ? { title: truncateDetail(taskTitle, 120) } : {}),
+            // Carried so a completion that outran its start still identifies and
+            // names an in-session agent row.
+            ...(event.payload.description !== undefined
+              ? { description: event.payload.description }
+              : {}),
+            ...(event.payload.subagentType !== undefined
+              ? { subagentType: event.payload.subagentType }
+              : {}),
+            ...(event.payload.nativeAgent !== undefined
+              ? { nativeAgent: event.payload.nativeAgent }
+              : {}),
             ...(event.payload.toolUseId !== undefined
               ? { toolUseId: event.payload.toolUseId }
               : {}),
