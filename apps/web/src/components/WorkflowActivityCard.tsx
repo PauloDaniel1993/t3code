@@ -1,4 +1,4 @@
-import { Fragment, memo, useId, useMemo, useState } from "react";
+import { Fragment, memo, useId, useMemo, useState, type ReactNode } from "react";
 import {
   ActivityIcon,
   BotIcon,
@@ -13,6 +13,7 @@ import {
   TerminalIcon,
   WrenchIcon,
   XIcon,
+  ZapIcon,
 } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -343,6 +344,68 @@ function WorkflowTextDisclosure({
   );
 }
 
+/** Icon, and the colour its status word takes, per the mockup's `.sic`/`.wstat`. */
+function workerStatusPresentation(status: WorkLogToolLifecycleStatus): {
+  readonly icon: ReactNode;
+  readonly label: string;
+  readonly labelClass: string;
+} {
+  if (status === "completed") {
+    return {
+      icon: <CheckIcon className="size-3.5 text-success-foreground" aria-hidden />,
+      label: "Completed",
+      labelClass: "text-success-foreground",
+    };
+  }
+  if (status === "failed") {
+    return {
+      icon: <XFailIcon />,
+      label: "Failed",
+      labelClass: "text-destructive",
+    };
+  }
+  if (status === "declined" || status === "stopped") {
+    return {
+      icon: <SquareIcon className="size-3 text-muted-foreground/60" aria-hidden />,
+      label: status === "declined" ? "Declined" : "Stopped",
+      labelClass: "text-muted-foreground/70",
+    };
+  }
+  return {
+    icon: <LoaderIcon className="size-3.5 animate-spin text-primary" aria-hidden />,
+    label: "Running",
+    labelClass: "text-primary",
+  };
+}
+
+function XFailIcon() {
+  return (
+    <svg
+      className="size-3.5 text-destructive"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="m15 9-6 6M9 9l6 6" />
+    </svg>
+  );
+}
+
+/**
+ * One worker, as a flat row rather than a nested card.
+ *
+ * The layout follows the agreed mockup: status icon, then the name with its
+ * subagent type beside it, then the latest summary underneath, with the status
+ * word and this worker's own usage on the right. Boxing each worker and leading
+ * with a filled status pill made a list of five read as five competing cards.
+ *
+ * The summary is shown rather than hidden behind a disclosure. It is clamped so
+ * one verbose result cannot crowd out the others, with the full text on hover;
+ * the card scrolls internally, so a long list stays contained either way.
+ */
 function WorkflowWorkerCard({
   worker,
   idPrefix,
@@ -350,84 +413,85 @@ function WorkflowWorkerCard({
   readonly worker: WorkflowActivityWorker;
   readonly idPrefix: string;
 }) {
-  const statusMeta = WORKER_STATUS_META[worker.status] ?? WORKER_STATUS_META.inProgress;
+  const presentation = workerStatusPresentation(worker.status);
   const metrics = deriveWorkerMetricSegments(worker);
   const label = worker.description ?? worker.subagentType ?? worker.taskType ?? "Task";
-  const safeTaskId = worker.taskId.replace(/[^a-zA-Z0-9_-]/g, "-");
-  const progressRegionId = `${idPrefix}-progress-${safeTaskId}`;
-  const resultRegionId = `${idPrefix}-result-${safeTaskId}`;
-  const agentReference = (taskId: string) =>
-    `agent ${taskId.length > 16 ? taskId.slice(0, 8) : taskId}`;
+  const failed = worker.status === "failed";
+  // Newest first: an error explains a finished run better than its last result,
+  // and a result supersedes the progress line it came from.
+  const summary = worker.errorMessage ?? worker.resultSummary ?? worker.progressSummary;
+  const retryNote = worker.retriedByTaskId
+    ? "Retried below ↺"
+    : worker.retryOfTaskId
+      ? "↺ Retry of the failed run"
+      : null;
+  const lastTool =
+    worker.status === "inProgress" && worker.lastToolName !== undefined
+      ? `Last: ${worker.lastToolName}`
+      : null;
+  const subline = [retryNote, lastTool, summary].filter((part) => part != null).join(" · ");
 
   return (
-    <article
-      className="min-w-0 rounded-md border border-border/60 bg-background/60 px-2 py-1.5"
+    <div
+      className="flex min-w-0 items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-accent/25"
       data-slot="workflow-worker-card"
       // The sidebar's in-session agent rows locate a run here ("Show in
       // transcript"): the provider's task id is the shared key.
       data-native-agent-task-id={worker.taskId}
+      id={`${idPrefix}-worker-${worker.taskId.replace(/[^a-zA-Z0-9_-]/g, "-")}`}
     >
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-        <Badge variant={statusMeta.variant} size="sm">
-          {statusMeta.label}
-        </Badge>
-        <p className="min-w-0 flex-1 break-words text-xs font-medium text-foreground/85">{label}</p>
+      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+        {presentation.icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+          <span
+            className={cn(
+              "min-w-0 truncate text-[12.5px] font-medium",
+              failed ? "text-muted-foreground" : "text-foreground/90",
+            )}
+          >
+            {label}
+          </span>
+          {worker.subagentType ? (
+            <span className="shrink-0 text-[10.5px] text-muted-foreground/60">
+              {worker.subagentType}
+            </span>
+          ) : null}
+        </div>
+        {subline.length > 0 ? (
+          <p
+            className={cn(
+              "mt-0.5 line-clamp-3 break-words text-[11px] leading-[1.45]",
+              failed ? "text-destructive/90" : "text-muted-foreground/70",
+            )}
+            title={subline}
+          >
+            {subline}
+          </p>
+        ) : null}
+        {worker.outputFile ? (
+          <p className="mt-0.5 break-all font-mono text-[10.5px] text-muted-foreground/50">
+            {worker.outputFile}
+          </p>
+        ) : null}
+      </div>
+      <span className="ms-auto flex shrink-0 items-center gap-2 pt-0.5">
+        <span className={cn("text-[10px] font-semibold", presentation.labelClass)}>
+          {presentation.label}
+        </span>
         {metrics.length > 0 ? (
-          <p className="flex flex-wrap items-center gap-x-1.5 text-[11px] tabular-nums text-muted-foreground/60">
+          <span className="flex items-center gap-1 text-[10.5px] tabular-nums text-muted-foreground/60">
             {metrics.map((segment, index) => (
               <Fragment key={segment.id}>
                 {index > 0 ? <span aria-hidden="true">·</span> : null}
                 <span>{segment.text}</span>
               </Fragment>
             ))}
-          </p>
+          </span>
         ) : null}
-      </div>
-      {worker.progressSummary ? (
-        <WorkflowTextDisclosure
-          id={progressRegionId}
-          label="Progress"
-          text={worker.progressSummary}
-          bodyClassName="max-h-40"
-          toggleSlot="workflow-worker-progress-toggle"
-        />
-      ) : null}
-      {worker.errorMessage ? (
-        <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-destructive">
-          <span className="font-medium">Error: </span>
-          {worker.errorMessage}
-        </p>
-      ) : null}
-      {worker.resultSummary ? (
-        <WorkflowTextDisclosure
-          id={resultRegionId}
-          label="Result"
-          text={worker.resultSummary}
-          bodyClassName="max-h-48"
-          toggleSlot="workflow-worker-result-toggle"
-        />
-      ) : null}
-      {worker.retriedByTaskId ? (
-        <p className="mt-1 text-[11px] text-muted-foreground/70">
-          Retried by{" "}
-          <span className="font-medium text-foreground/70" title={worker.retriedByTaskId}>
-            {agentReference(worker.retriedByTaskId)}
-          </span>
-        </p>
-      ) : worker.retryOfTaskId ? (
-        <p className="mt-1 text-[11px] text-muted-foreground/70">
-          Retry of{" "}
-          <span className="font-medium text-foreground/70" title={worker.retryOfTaskId}>
-            {agentReference(worker.retryOfTaskId)}
-          </span>
-        </p>
-      ) : null}
-      {worker.outputFile ? (
-        <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground/60">
-          Output: {worker.outputFile}
-        </p>
-      ) : null}
-    </article>
+      </span>
+    </div>
   );
 }
 
@@ -512,16 +576,15 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
         className="mx-auto flex w-full min-w-0 max-w-3xl flex-col rounded-lg border border-border/80 bg-card/45 px-2.5 py-2"
         style={{ height: "min(26rem, 55vh)" }}
       >
-        <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
-          <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60">
-            {title}
-          </p>
+        <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5 pb-1 text-[12px] text-muted-foreground">
+          <ZapIcon className="size-3 shrink-0 text-primary/85" aria-hidden />
+          <p className="font-medium text-foreground/85">{title}</p>
           {counter ? (
-            <span className="text-[11px] tabular-nums text-muted-foreground/60">{counter}</span>
+            <span className="tabular-nums text-muted-foreground/70">· {counter}</span>
           ) : null}
           {model.workers.length > 0 ? (
-            <span className="text-[11px] tabular-nums text-muted-foreground/60">
-              {model.workers.length} {model.workers.length === 1 ? "worker" : "workers"}
+            <span className="tabular-nums text-muted-foreground/70">
+              · {model.workers.length} {model.workers.length === 1 ? "worker" : "workers"}
             </span>
           ) : null}
           {totalUsageSegments.length > 0 ? (
