@@ -128,13 +128,13 @@ describe("SidebarTaskGroup — a long list", () => {
 
   // A parent can accumulate a lot of tasks; an unbounded group would push
   // every thread below it off the sidebar.
-  it("scrolls in place once the list runs past four rows", () => {
-    expect(render({ tasks: many(5) })).toContain("overflow-y-auto");
-  });
-
-  it("leaves a list of four or fewer to size itself", () => {
-    expect(render({ tasks: many(4) })).not.toContain("overflow-y-auto");
-    expect(render({ tasks: many(1) })).not.toContain("overflow-y-auto");
+  // The bound is unconditional: in-session agents share this scroller, and a
+  // thread with several turns of them overflows even with no tasks at all.
+  it("bounds the group at two thread cards and scrolls in place", () => {
+    const html = render({ tasks: many(5) });
+    expect(html).toContain('data-testid="sidebar-task-scroll"');
+    expect(html).toContain("overflow-y-auto");
+    expect(html).toContain("max-height:192px");
   });
 });
 
@@ -179,6 +179,23 @@ describe("SidebarTaskGroup — in-session agents", () => {
       updatedAt: "2026-07-25T11:58:00.000Z",
       ...overrides,
     }) as ThreadNativeAgent;
+
+  it("shares the task rows' bounded scroller", () => {
+    // Agents used to render outside it, so a thread with several turns of them
+    // grew the group without limit and pushed the threads below it off screen.
+    const html = render({
+      tasks: [shell(metadata())],
+      nativeAgents: [nativeAgent({ taskId: "a" })],
+    });
+    const scrollerAt = html.indexOf('data-testid="sidebar-task-scroll"');
+    const agentsAt = html.indexOf('data-testid="sidebar-native-agent-groups"');
+    const newTaskAt = html.indexOf('data-testid="sidebar-task-new"');
+    expect(scrollerAt).toBeGreaterThan(-1);
+    // Inside the scroller means after it opens and before `+ New task`, which
+    // is the first thing rendered once the scroller closes.
+    expect(agentsAt).toBeGreaterThan(scrollerAt);
+    expect(agentsAt).toBeLessThan(newTaskAt);
+  });
 
   it("renders a per-turn group with a relative label and live counts", () => {
     const html = render({
