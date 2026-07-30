@@ -1,11 +1,9 @@
-import { Fragment, memo, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useId, useMemo, useState } from "react";
 import {
   ActivityIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
-  ChevronsDownUpIcon,
-  ChevronsUpDownIcon,
   FileSearchIcon,
   GlobeIcon,
   HistoryIcon,
@@ -26,10 +24,7 @@ import type {
   WorkflowPlanStepStatus,
   WorkflowRecentTool,
 } from "../workflow-activity";
-import { resolveWorkflowCardExpandedMaxHeight } from "./chat/timelineScrollAnchoring";
 import { Badge } from "./ui/badge";
-import { Button } from "./ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for focused tests)
@@ -96,44 +91,6 @@ export function deriveWorkflowSelectionGroups(
     });
   }
   return groups;
-}
-
-/** Local step selection, tagged with the turn it was made under. */
-export interface WorkflowStepSelection {
-  readonly turnId: string;
-  readonly stepId: string;
-}
-
-/**
- * Selection never leaks into a replacement turn: it only resolves while the
- * model's turn identity matches the turn the selection was made under. ChatView
- * additionally remounts the card on thread/turn replacement, so this resolver
- * is the in-component guarantee that a stale selection cannot dangle.
- */
-export function resolveTurnScopedSelectedStepId(
-  selection: WorkflowStepSelection | null,
-  turnId: string,
-): string | null {
-  return selection !== null && selection.turnId === turnId ? selection.stepId : null;
-}
-
-/** Click toggles: same step clears, a different step switches the inline region. */
-export function resolveNextWorkflowStepSelection(
-  currentStepId: string | null,
-  clickedStepId: string,
-): string | null {
-  return currentStepId === clickedStepId ? null : clickedStepId;
-}
-
-/** Stale selections (step vanished from a replaced plan) collapse instead of dangling. */
-export function resolveSelectedWorkflowGroup(
-  groups: ReadonlyArray<WorkflowActivitySelectionGroup>,
-  selectedStepId: string | null,
-): WorkflowActivitySelectionGroup | null {
-  if (selectedStepId === null) {
-    return null;
-  }
-  return groups.find((group) => group.id === selectedStepId) ?? null;
 }
 
 /** Overall step counter: "Step 2 of 4" while a step is active, otherwise a completion tally. */
@@ -506,83 +463,27 @@ function WorkflowRecentToolRow({ tool }: { readonly tool: WorkflowRecentTool }) 
 }
 
 // ---------------------------------------------------------------------------
-// WorkflowActivityCard — reusable pinned/inline turn activity disclosure
+// WorkflowActivityCard — always-expanded inline turn activity card
 // ---------------------------------------------------------------------------
 
-export type WorkflowActivityCardViewState = "closed" | "collapsed" | "expanded";
-
+/**
+ * The card renders inline in the transcript, so its outer height must never
+ * change after first mount: LegendList keeps the reader's position stable
+ * across data changes but not across row resizes, and a growing card would
+ * shove the transcript under the reader. The box is therefore fixed at the
+ * height cap from the start; every region below the header lives inside the
+ * box's own scroll, so arriving workers, steps, and tool rows scroll within
+ * it instead of resizing it.
+ */
 export const WorkflowActivityCard = memo(function WorkflowActivityCard({
   model,
-  placement = "pinned",
-  viewState: controlledViewState,
-  defaultViewState,
-  defaultOpen = false,
-  pinnedMaxHeight,
-  onViewStateChange,
-  onHeightChange,
 }: {
   readonly model: WorkflowActivityModel;
-  readonly placement?: "pinned" | "inline" | undefined;
-  readonly viewState?: WorkflowActivityCardViewState | undefined;
-  readonly defaultViewState?: WorkflowActivityCardViewState | undefined;
-  /**
-   * Backward-compatible initial disclosure flag for fixtures and focused
-   * rendering tests. `defaultViewState` takes precedence when supplied.
-   */
-  readonly defaultOpen?: boolean | undefined;
-  /** Maximum outer height for the bottom-pinned surface, including its top gap. */
-  readonly pinnedMaxHeight?: number | undefined;
-  readonly onViewStateChange?: ((state: WorkflowActivityCardViewState) => void) | undefined;
-  /**
-   * Reports the card's settled outer height (integer px) whenever it changes,
-   * and 0 when the card renders nothing. ChatView uses it to reserve a matching
-   * bottom inset in the timeline and position controls above the overlay.
-   */
-  readonly onHeightChange?: ((height: number) => void) | undefined;
 }) {
   const reactId = useId();
   const idPrefix = `workflow-activity-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
-  const activityRegionId = `${idPrefix}-details`;
-  const workerRegionId = `${idPrefix}-workers`;
   const reasoningRegionId = `${idPrefix}-reasoning`;
-
-  const [uncontrolledViewState, setUncontrolledViewState] = useState<WorkflowActivityCardViewState>(
-    () => defaultViewState ?? (defaultOpen ? "expanded" : "collapsed"),
-  );
-  const viewState = controlledViewState ?? uncontrolledViewState;
-  const activityOpen = viewState === "expanded";
-  const setViewState = (next: WorkflowActivityCardViewState) => {
-    if (controlledViewState === undefined) {
-      setUncontrolledViewState(next);
-    }
-    onViewStateChange?.(next);
-  };
-  const [selection, setSelection] = useState<WorkflowStepSelection | null>(null);
   const [reasoningOpen, setReasoningOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const [chatColumnHeight, setChatColumnHeight] = useState(0);
-
-  // Measure the chat column so expanded content is bounded on short viewports
-  // and scrolls internally instead of covering the full conversation.
-  useEffect(() => {
-    if (placement !== "pinned" || pinnedMaxHeight !== undefined) {
-      return;
-    }
-    const column =
-      rootRef.current?.closest<HTMLElement>('[data-chat-column="true"]') ??
-      rootRef.current?.parentElement;
-    if (!column || typeof ResizeObserver === "undefined") {
-      return;
-    }
-    const measure = () => {
-      const nextHeight = Math.floor(column.getBoundingClientRect().height);
-      setChatColumnHeight((current) => (current === nextHeight ? current : nextHeight));
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(column);
-    return () => observer.disconnect();
-  }, [pinnedMaxHeight, placement]);
 
   const hasPlan = model.steps.length > 0;
   const hasRenderableContent =
@@ -590,54 +491,7 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
     model.recentTools.length > 0 ||
     model.reasoningSummary !== undefined ||
     hasPlan;
-
-  // Report the card's own settled height so ChatView can reserve matching
-  // bottom space. Re-runs when content appears or disappears (the root element
-  // only exists while content renders).
-  useEffect(() => {
-    if (!onHeightChange) {
-      return;
-    }
-    const root = rootRef.current;
-    if (!root) {
-      onHeightChange(0);
-      return;
-    }
-    let lastReportedHeight = -1;
-    const measure = () => {
-      const nextHeight = Math.round(root.getBoundingClientRect().height);
-      if (nextHeight === lastReportedHeight) {
-        return;
-      }
-      lastReportedHeight = nextHeight;
-      onHeightChange(nextHeight);
-    };
-    // Always report the initial settled height, even where ResizeObserver is
-    // unavailable.
-    measure();
-    if (typeof ResizeObserver === "undefined") {
-      return;
-    }
-    const observer = new ResizeObserver(measure);
-    observer.observe(root);
-    return () => observer.disconnect();
-  }, [hasRenderableContent, onHeightChange, pinnedMaxHeight]);
-
   const groups = useMemo(() => deriveWorkflowSelectionGroups(model), [model]);
-  const selectedStepId = resolveTurnScopedSelectedStepId(selection, model.turnId);
-  const selectedGroup = resolveSelectedWorkflowGroup(groups, selectedStepId);
-  const expandedMaxHeight =
-    placement === "inline"
-      ? "min(26rem, 55vh)"
-      : pinnedMaxHeight === undefined
-        ? resolveWorkflowCardExpandedMaxHeight(chatColumnHeight)
-        : "none";
-  // The pinned root uses up to 0.75rem (12px) of top spacing. Subtract that
-  // maximum so its total rendered height never exceeds the requested cap.
-  const pinnedContentMaxHeight =
-    placement === "pinned" && pinnedMaxHeight !== undefined
-      ? Math.max(0, Math.floor(pinnedMaxHeight - 12))
-      : undefined;
 
   if (!hasRenderableContent) {
     return null;
@@ -646,277 +500,160 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
   const title = deriveWorkflowCardTitle(model);
   const counter = hasPlan ? deriveWorkflowStepCounter(model.steps) : null;
   const totalUsageSegments = model.totalUsage ? deriveUsageMetricSegments(model.totalUsage) : [];
-  const accessibleTitle = hasPlan ? "workflow activity" : "task activity";
-  const rootClassName =
-    placement === "pinned"
-      ? "workflow-activity-switch-enter chat-composer-horizontal-inset pointer-events-auto shrink-0 pt-2 sm:pt-3"
-      : "min-w-0 py-2";
-
-  if (viewState === "closed") {
-    return (
-      <div
-        ref={rootRef}
-        className={rootClassName}
-        data-slot="workflow-activity-card"
-        data-workflow-activity-placement={placement}
-        data-workflow-activity-state={viewState}
-        data-workflow-activity-turn-id={model.turnId}
-      >
-        <button
-          type="button"
-          aria-label={`Open ${accessibleTitle} for this response`}
-          onClick={() => setViewState("expanded")}
-          className="mx-auto flex w-fit max-w-full cursor-pointer items-center gap-1.5 rounded-full border border-border/70 bg-card/45 px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
-          data-slot="workflow-activity-launcher"
-        >
-          <ActivityIcon className="size-3.5 shrink-0" aria-hidden />
-          <span className="truncate">{title}</span>
-          {model.workers.length > 0 ? (
-            <span className="shrink-0 tabular-nums text-muted-foreground/60">
-              · {model.workers.length} {model.workers.length === 1 ? "task" : "tasks"}
-            </span>
-          ) : null}
-          <span className="shrink-0 text-foreground/70">Open</span>
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div
-      ref={rootRef}
-      className={rootClassName}
+      className="min-w-0 py-2"
       data-slot="workflow-activity-card"
-      data-workflow-activity-placement={placement}
-      data-workflow-activity-state={viewState}
       data-workflow-activity-turn-id={model.turnId}
     >
       <section
         aria-label={hasPlan ? "Workflow activity" : "Task activity"}
-        className={cn(
-          "mx-auto w-full min-w-0 max-w-3xl rounded-lg border border-border/80 px-2.5 py-2",
-          placement === "pinned"
-            ? "overflow-y-auto overscroll-contain bg-card shadow-sm"
-            : "bg-card/45",
-        )}
-        style={
-          pinnedContentMaxHeight === undefined ? undefined : { maxHeight: pinnedContentMaxHeight }
-        }
+        className="mx-auto flex w-full min-w-0 max-w-3xl flex-col rounded-lg border border-border/80 bg-card/45 px-2.5 py-2"
+        style={{ height: "min(26rem, 55vh)" }}
       >
-        {/* Compact summary stays in the chat while details are closed. */}
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
+        <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
           <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60">
             {title}
           </p>
           {counter ? (
             <span className="text-[11px] tabular-nums text-muted-foreground/60">{counter}</span>
           ) : null}
-          <div className="ms-auto flex min-w-0 items-center gap-2">
-            {totalUsageSegments.length > 0 ? (
-              <p className="flex min-w-0 flex-wrap items-center justify-end gap-x-1.5 text-[11px] tabular-nums text-muted-foreground/60">
-                {totalUsageSegments.map((segment, index) => (
-                  <Fragment key={segment.id}>
-                    {index > 0 ? <span aria-hidden="true">·</span> : null}
-                    <span>{segment.text}</span>
-                  </Fragment>
-                ))}
-              </p>
-            ) : null}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    type="button"
-                    size="icon-xs"
-                    variant="outline"
-                    className="!size-[22px]"
-                    aria-label={`${activityOpen ? "Collapse" : "Expand"} ${accessibleTitle}`}
-                    aria-expanded={activityOpen}
-                    aria-controls={activityOpen ? activityRegionId : undefined}
-                    onClick={() => setViewState(activityOpen ? "collapsed" : "expanded")}
-                    data-slot="workflow-activity-toggle"
-                  />
-                }
-              >
-                {activityOpen ? (
-                  <ChevronsDownUpIcon className="size-3" />
-                ) : (
-                  <ChevronsUpDownIcon className="size-3" />
-                )}
-              </TooltipTrigger>
-              <TooltipPopup side="top">
-                {activityOpen ? "Collapse" : "Expand"} {accessibleTitle}
-              </TooltipPopup>
-            </Tooltip>
-            <button
-              type="button"
-              aria-label={`Close ${accessibleTitle}`}
-              title={`Close ${accessibleTitle}`}
-              onClick={() => setViewState("closed")}
-              className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/65 transition-colors hover:bg-accent/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
-              data-slot="workflow-activity-close"
-            >
-              <XIcon className="size-3.5" aria-hidden />
-            </button>
-          </div>
+          {model.workers.length > 0 ? (
+            <span className="text-[11px] tabular-nums text-muted-foreground/60">
+              {model.workers.length} {model.workers.length === 1 ? "worker" : "workers"}
+            </span>
+          ) : null}
+          {totalUsageSegments.length > 0 ? (
+            <p className="ms-auto flex min-w-0 flex-wrap items-center justify-end gap-x-1.5 text-[11px] tabular-nums text-muted-foreground/60">
+              {totalUsageSegments.map((segment, index) => (
+                <Fragment key={segment.id}>
+                  {index > 0 ? <span aria-hidden="true">·</span> : null}
+                  <span>{segment.text}</span>
+                </Fragment>
+              ))}
+            </p>
+          ) : null}
         </div>
 
-        {activityOpen ? (
-          <div id={activityRegionId} data-slot="workflow-activity-details">
-            {/* Segmented progress strip (decorative — the step buttons carry status) */}
-            {hasPlan ? (
-              <div className="mt-1.5 flex gap-0.5 px-0.5" aria-hidden="true">
-                {model.steps.map((step) => (
-                  <span
-                    key={step.id}
-                    data-slot="workflow-step-strip-segment"
-                    className={cn(
-                      "h-1 min-w-2 flex-1 rounded-full",
-                      stepStripSegmentClass(step.status),
-                    )}
-                  />
-                ))}
-              </div>
-            ) : null}
+        {/* Everything below the header lives inside the card's own scroll, so
+            arriving workers, steps, and tool rows never resize the box. */}
+        <div
+          className="mt-1.5 min-h-0 flex-1 overflow-y-auto overscroll-contain pe-0.5"
+          data-slot="workflow-activity-details"
+        >
+          {/* Segmented progress strip (decorative — the step headers carry status) */}
+          {hasPlan ? (
+            <div className="flex gap-0.5 px-0.5" aria-hidden="true">
+              {model.steps.map((step) => (
+                <span
+                  key={step.id}
+                  data-slot="workflow-step-strip-segment"
+                  className={cn(
+                    "h-1 min-w-2 flex-1 rounded-full",
+                    stepStripSegmentClass(step.status),
+                  )}
+                />
+              ))}
+            </div>
+          ) : null}
 
-            {/* Clickable step labels */}
-            {hasPlan ? (
-              <ul className="mt-1 space-y-px">
-                {groups.map((group) => {
-                  const isSelected = selectedGroup?.id === group.id;
-                  return (
-                    <li key={group.id}>
-                      <button
-                        type="button"
-                        aria-expanded={isSelected}
-                        aria-controls={isSelected ? workerRegionId : undefined}
-                        onClick={() =>
-                          setSelection((current) => {
-                            const nextStepId = resolveNextWorkflowStepSelection(
-                              resolveTurnScopedSelectedStepId(current, model.turnId),
-                              group.id,
-                            );
-                            return nextStepId === null
-                              ? null
-                              : { turnId: model.turnId, stepId: nextStepId };
-                          })
-                        }
-                        className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs leading-5 transition-colors duration-150 hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
-                      >
-                        <WorkflowGroupIcon group={group} />
-                        <span className="min-w-0 flex-1 truncate font-medium text-foreground/80">
-                          {group.label}
-                          {group.status ? (
-                            <span className="sr-only"> ({STEP_STATUS_SR_LABEL[group.status]})</span>
-                          ) : null}
-                        </span>
-                        {group.historical ? (
-                          <span className="shrink-0 text-[11px] text-muted-foreground/55">
-                            earlier plan
-                          </span>
-                        ) : null}
-                        {group.workers.length > 0 ? (
-                          <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/55">
-                            {group.workers.length}
-                          </span>
-                        ) : null}
-                        <ChevronDownIcon
-                          className={cn(
-                            "size-3.5 shrink-0 opacity-70 transition-transform duration-200",
-                            isSelected && "rotate-180",
-                          )}
-                          aria-hidden
-                        />
-                      </button>
-                      {isSelected ? (
-                        <div
-                          id={workerRegionId}
-                          className="ms-5 mt-0.5 border-s border-border/60 pb-1 ps-2"
-                        >
-                          <div
-                            className="space-y-1.5 overflow-y-auto overscroll-contain pe-0.5"
-                            style={{ maxHeight: expandedMaxHeight }}
-                            data-slot="workflow-worker-list"
-                          >
-                            {group.workers.length > 0 ? (
-                              group.workers.map((worker) => (
-                                <WorkflowWorkerCard
-                                  key={worker.id}
-                                  worker={worker}
-                                  idPrefix={idPrefix}
-                                />
-                              ))
-                            ) : (
-                              <p className="px-0.5 py-1 text-xs text-muted-foreground/60">
-                                {deriveWorkflowEmptyWorkersMessage(group.status)}
-                              </p>
-                            )}
-                          </div>
-                        </div>
+          {/* Every group's workers stay mounted so the sidebar's in-session
+              agent jump can locate their rows anywhere in the card. */}
+          {hasPlan ? (
+            <ul className="mt-1 space-y-1.5">
+              {groups.map((group) => (
+                <li key={group.id}>
+                  <div className="flex w-full min-w-0 items-center gap-1.5 px-1.5 py-1 text-xs leading-5">
+                    <WorkflowGroupIcon group={group} />
+                    <span className="min-w-0 flex-1 truncate font-medium text-foreground/80">
+                      {group.label}
+                      {group.status ? (
+                        <span className="sr-only"> ({STEP_STATUS_SR_LABEL[group.status]})</span>
                       ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : null}
-
-            {/* Plan-less layout: workers listed directly under the Activity heading */}
-            {!hasPlan && model.workers.length > 0 ? (
-              <div
-                className="mt-1.5 space-y-1.5 overflow-y-auto overscroll-contain pe-0.5"
-                style={{ maxHeight: expandedMaxHeight }}
-                data-slot="workflow-worker-list"
-              >
-                {model.workers.map((worker) => (
-                  <WorkflowWorkerCard key={worker.id} worker={worker} idPrefix={idPrefix} />
-                ))}
-              </div>
-            ) : null}
-
-            {/* Turn-level provider reasoning summary — collapsed by default */}
-            {model.reasoningSummary ? (
-              <div className="mt-1.5 border-t border-border/60 pt-1.5">
-                <button
-                  type="button"
-                  aria-expanded={reasoningOpen}
-                  aria-controls={reasoningOpen ? reasoningRegionId : undefined}
-                  onClick={() => setReasoningOpen((open) => !open)}
-                  className={DISCLOSURE_BUTTON_CLASS}
-                >
-                  <ChevronDownIcon
-                    className={cn(
-                      "size-3.5 opacity-70 transition-transform duration-200",
-                      reasoningOpen && "rotate-180",
+                    </span>
+                    {group.historical ? (
+                      <span className="shrink-0 text-[11px] text-muted-foreground/55">
+                        earlier plan
+                      </span>
+                    ) : null}
+                    {group.workers.length > 0 ? (
+                      <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/55">
+                        {group.workers.length}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div
+                    className="ms-5 mt-0.5 space-y-1.5 border-s border-border/60 pb-1 ps-2"
+                    data-slot="workflow-worker-list"
+                  >
+                    {group.workers.length > 0 ? (
+                      group.workers.map((worker) => (
+                        <WorkflowWorkerCard key={worker.id} worker={worker} idPrefix={idPrefix} />
+                      ))
+                    ) : (
+                      <p className="px-0.5 py-1 text-xs text-muted-foreground/60">
+                        {deriveWorkflowEmptyWorkersMessage(group.status)}
+                      </p>
                     )}
-                    aria-hidden
-                  />
-                  <span>Reasoning</span>
-                </button>
-                {reasoningOpen ? (
-                  <WorkflowDisclosureBody
-                    id={reasoningRegionId}
-                    text={model.reasoningSummary}
-                    className="max-h-48"
-                  />
-                ) : null}
-              </div>
-            ) : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : null}
 
-            {/* Bounded compact recent tools */}
-            {model.recentTools.length > 0 ? (
-              <div className="mt-1.5 border-t border-border/60 pt-1.5">
-                <p className="px-0.5 pb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
-                  Recent tools
-                </p>
-                <ul className="space-y-px">
-                  {model.recentTools.map((tool) => (
-                    <WorkflowRecentToolRow key={tool.id} tool={tool} />
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+          {/* Plan-less layout: workers listed directly under the Activity heading */}
+          {!hasPlan && model.workers.length > 0 ? (
+            <div className="mt-1.5 space-y-1.5" data-slot="workflow-worker-list">
+              {model.workers.map((worker) => (
+                <WorkflowWorkerCard key={worker.id} worker={worker} idPrefix={idPrefix} />
+              ))}
+            </div>
+          ) : null}
+
+          {/* Turn-level provider reasoning summary — collapsed by default */}
+          {model.reasoningSummary ? (
+            <div className="mt-1.5 border-t border-border/60 pt-1.5">
+              <button
+                type="button"
+                aria-expanded={reasoningOpen}
+                aria-controls={reasoningOpen ? reasoningRegionId : undefined}
+                onClick={() => setReasoningOpen((open) => !open)}
+                className={DISCLOSURE_BUTTON_CLASS}
+              >
+                <ChevronDownIcon
+                  className={cn(
+                    "size-3.5 opacity-70 transition-transform duration-200",
+                    reasoningOpen && "rotate-180",
+                  )}
+                  aria-hidden
+                />
+                <span>Reasoning</span>
+              </button>
+              {reasoningOpen ? (
+                <WorkflowDisclosureBody
+                  id={reasoningRegionId}
+                  text={model.reasoningSummary}
+                  className="max-h-48"
+                />
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Bounded compact recent tools */}
+          {model.recentTools.length > 0 ? (
+            <div className="mt-1.5 border-t border-border/60 pt-1.5">
+              <p className="px-0.5 pb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                Recent tools
+              </p>
+              <ul className="space-y-px">
+                {model.recentTools.map((tool) => (
+                  <WorkflowRecentToolRow key={tool.id} tool={tool} />
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
       </section>
     </div>
   );

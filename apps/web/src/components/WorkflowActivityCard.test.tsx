@@ -1,5 +1,4 @@
 import { TurnId } from "@t3tools/contracts";
-import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -10,23 +9,14 @@ import type {
   WorkflowRecentTool,
 } from "../workflow-activity";
 import {
-  WorkflowActivityCard as WorkflowActivityCardComponent,
+  WorkflowActivityCard,
   deriveUsageMetricSegments,
   deriveWorkflowCardTitle,
   deriveWorkflowEmptyWorkersMessage,
   deriveWorkflowSelectionGroups,
   deriveWorkflowStepCounter,
   deriveWorkerMetricSegments,
-  resolveNextWorkflowStepSelection,
-  resolveSelectedWorkflowGroup,
-  resolveTurnScopedSelectedStepId,
 } from "./WorkflowActivityCard";
-
-// Detail-focused rendering tests initialize the outer disclosure open. Tests
-// for the production default use WorkflowActivityCardComponent directly.
-function WorkflowActivityCard(props: ComponentProps<typeof WorkflowActivityCardComponent>) {
-  return <WorkflowActivityCardComponent defaultOpen {...props} />;
-}
 
 const TURN_ID = TurnId.make("turn-1");
 
@@ -179,28 +169,6 @@ describe("deriveWorkflowSelectionGroups", () => {
   });
 });
 
-describe("workflow step selection", () => {
-  it("opens a closed step, collapses the open step, and switches to another step", () => {
-    expect(resolveNextWorkflowStepSelection(null, "step-a")).toBe("step-a");
-    expect(resolveNextWorkflowStepSelection("step-a", "step-a")).toBeNull();
-    expect(resolveNextWorkflowStepSelection("step-a", "step-b")).toBe("step-b");
-  });
-
-  it("collapses a stale selection when the step vanishes from a replaced plan", () => {
-    const groups = deriveWorkflowSelectionGroups(makePlanModel());
-    expect(resolveSelectedWorkflowGroup(groups, "turn-1:step:1")?.label).toBe("Beta");
-    expect(resolveSelectedWorkflowGroup(groups, "turn-9:step:0")).toBeNull();
-    expect(resolveSelectedWorkflowGroup(groups, null)).toBeNull();
-  });
-
-  it("scopes selection to the turn it was made under so a new turn resets it", () => {
-    const selection = { turnId: "turn-1", stepId: "turn-1:step:1" };
-    expect(resolveTurnScopedSelectedStepId(selection, "turn-1")).toBe("turn-1:step:1");
-    expect(resolveTurnScopedSelectedStepId(selection, "turn-2")).toBeNull();
-    expect(resolveTurnScopedSelectedStepId(null, "turn-1")).toBeNull();
-  });
-});
-
 describe("deriveWorkflowEmptyWorkersMessage", () => {
   it("uses settled copy for completed steps and provisional copy otherwise", () => {
     expect(deriveWorkflowEmptyWorkersMessage("completed")).toBe(
@@ -283,83 +251,47 @@ describe("WorkflowActivityCard rendering", () => {
     expect(markup).toBe("");
   });
 
-  it("supports closed, collapsed, and expanded activity states", () => {
+  it("always renders expanded with a stable fixed-height, internally scrolling box", () => {
     const model = makeModel({
       workers: [makeWorker({ description: "Background investigation" })],
       totalUsage: { totalTokens: 1_500, toolUses: 2 },
     });
 
-    const collapsedMarkup = renderToStaticMarkup(<WorkflowActivityCardComponent model={model} />);
-    expect(collapsedMarkup).toContain('data-workflow-activity-state="collapsed"');
-    expect(collapsedMarkup).toContain('data-slot="workflow-activity-toggle"');
-    expect(collapsedMarkup).toContain('data-slot="workflow-activity-close"');
-    expect(collapsedMarkup).toContain('aria-expanded="false"');
-    expect(collapsedMarkup).toContain('aria-label="Expand task activity"');
-    expect(collapsedMarkup).not.toContain('data-slot="workflow-activity-details"');
-    expect(collapsedMarkup).toContain("1.5k tokens");
-    expect(collapsedMarkup).toContain("2 tools");
-
-    const expandedMarkup = renderToStaticMarkup(
-      <WorkflowActivityCardComponent model={model} defaultOpen />,
-    );
-    expect(expandedMarkup).toContain('data-workflow-activity-state="expanded"');
-    expect(expandedMarkup).toContain('aria-expanded="true"');
-    expect(expandedMarkup).toContain('aria-label="Collapse task activity"');
-    expect(expandedMarkup).toMatch(/data-slot="workflow-activity-details">/);
-
-    const closedMarkup = renderToStaticMarkup(
-      <WorkflowActivityCardComponent model={model} defaultViewState="closed" />,
-    );
-    expect(closedMarkup).toContain('data-workflow-activity-state="closed"');
-    expect(closedMarkup).toContain('data-slot="workflow-activity-launcher"');
-    expect(closedMarkup).toContain('aria-label="Open task activity for this response"');
-    expect(closedMarkup).not.toContain('data-slot="workflow-activity-toggle"');
-    expect(closedMarkup).not.toContain('data-slot="workflow-activity-details"');
-  });
-
-  it("uses inline spacing and a viewport-bounded detail region in timeline placement", () => {
-    const markup = renderToStaticMarkup(
-      <WorkflowActivityCardComponent
-        model={makeModel({ workers: [makeWorker({ description: "Historical worker" })] })}
-        placement="inline"
-        defaultViewState="expanded"
-      />,
-    );
-
-    expect(markup).toContain('data-workflow-activity-placement="inline"');
+    const markup = renderToStaticMarkup(<WorkflowActivityCard model={model} />);
+    expect(markup).toContain('data-slot="workflow-activity-card"');
     expect(markup).toContain('data-workflow-activity-turn-id="turn-1"');
-    expect(markup).toContain("max-height:min(26rem, 55vh)");
-    expect(markup).toContain("Historical worker");
-  });
-
-  it("caps the entire pinned surface and scrolls overflowing activity internally", () => {
-    const markup = renderToStaticMarkup(
-      <WorkflowActivityCardComponent
-        model={makeModel({ workers: [makeWorker({ description: "Tall worker" })] })}
-        defaultViewState="expanded"
-        pinnedMaxHeight={280}
-      />,
-    );
-
-    expect(markup).toContain("max-height:268px");
+    expect(markup).toContain('data-slot="workflow-activity-details"');
+    // The outer box is fixed at the height cap; content scrolls inside it.
+    expect(markup).toContain("height:min(26rem, 55vh)");
     expect(markup).toContain("overflow-y-auto");
     expect(markup).toContain("overscroll-contain");
-    expect(markup).toContain("max-height:none");
+    // Header carries the aggregate metrics and worker count.
+    expect(markup).toContain("1.5k tokens");
+    expect(markup).toContain("2 tools");
+    expect(markup).toContain("1 worker");
+    // Workers mount without any disclosure interaction.
+    expect(markup).toContain("Background investigation");
   });
 
-  it("renders plan steps in order with counter, segmented strip, and collapsed selection", () => {
+  it("renders plan steps in order with counter, strip, and every group's workers mounted", () => {
     const markup = renderToStaticMarkup(<WorkflowActivityCard model={makePlanModel()} />);
 
     expect(markup).toContain('aria-label="Workflow activity"');
     expect(markup.indexOf("Alpha")).toBeLessThan(markup.indexOf("Beta"));
     expect(markup.indexOf("Beta")).toBeLessThan(markup.indexOf("Gamma"));
     expect(markup).toContain("Step 2 of 3");
+    expect(markup).toContain("2 workers");
     expect(markup.match(/data-slot="workflow-step-strip-segment"/g)).toHaveLength(3);
-    // All step disclosures start collapsed and no inline worker region is mounted.
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain("No workers for this step yet.");
-    expect(markup).not.toContain("Map the codebase");
-    // Screen-reader status labeling rides on the step buttons.
+    // Every group's workers render without a selection interaction so sidebar
+    // jumps can locate any of them.
+    expect(markup).toContain("Map the codebase");
+    expect(markup).toContain("Sweep ambient caches");
+    expect(markup).toContain('data-native-agent-task-id="task-a"');
+    expect(markup).toContain('data-native-agent-task-id="task-b"');
+    // Worker-less steps say so inline instead of hiding behind a toggle.
+    expect(markup).toContain("No workers were used for this step.");
+    expect(markup).toContain("No workers for this step yet.");
+    // Screen-reader status labeling rides on the step headers.
     expect(markup).toContain("(In progress)");
   });
 
@@ -632,28 +564,19 @@ describe("WorkflowActivityCard rendering", () => {
     expect(markup).toContain("Other activity");
   });
 
-  it("bounds expanded content with a max-height for scroll-safe layout", () => {
+  it("keeps worker rows and detail regions inside the card's own scroll", () => {
     const markup = renderToStaticMarkup(
       <WorkflowActivityCard
         model={makeModel({ workers: [makeWorker({ description: "Tall worker" })] })}
       />,
     );
-    expect(markup).toContain("max-height:");
-    expect(markup).toContain("overflow-y-auto");
     expect(markup).toContain('data-slot="workflow-worker-list"');
-    expect(markup).toContain("overscroll-contain");
-  });
-
-  it("renders identical markup when an onHeightChange observer is attached", () => {
-    // Height reporting is effect-only (ResizeObserver after mount), so the
-    // server-rendered output must not change when ChatView attaches its
-    // scroll-compensation callback.
-    const model = makePlanModel();
-    const bare = renderToStaticMarkup(<WorkflowActivityCard model={model} />);
-    const observed = renderToStaticMarkup(
-      <WorkflowActivityCard model={model} onHeightChange={() => undefined} />,
-    );
-    expect(observed).toBe(bare);
-    expect(observed).toContain('data-slot="workflow-activity-card"');
+    // The worker list carries no height bound of its own — the card's fixed
+    // box and its single internal scroller own all bounding.
+    expect(markup).not.toContain("max-height:min(26rem, 55vh)");
+    const detailsStart = markup.indexOf('data-slot="workflow-activity-details"');
+    const workerListStart = markup.indexOf('data-slot="workflow-worker-list"');
+    expect(detailsStart).toBeGreaterThan(-1);
+    expect(workerListStart).toBeGreaterThan(detailsStart);
   });
 });

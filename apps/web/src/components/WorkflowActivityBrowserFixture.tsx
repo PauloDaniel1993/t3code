@@ -30,15 +30,7 @@ import {
   type MessagesTimelineRow,
   type TimelineLatestTurn,
 } from "./chat/MessagesTimeline.logic";
-import {
-  consumeWorkflowCardHeightDelta,
-  createWorkflowCardHeightBookkeeping,
-  getAnchoredTurnMetrics,
-  reconcileWorkflowCardHeightOwner,
-  recordWorkflowCardHeight,
-  resolveWorkflowCardScrollCompensation,
-  type TimelineScrollMode,
-} from "./chat/timelineScrollAnchoring";
+import { type TimelineScrollMode } from "./chat/timelineScrollAnchoring";
 
 type FixtureThreadId = "alpha" | "beta";
 
@@ -59,19 +51,10 @@ interface FixtureDomSnapshot {
   readonly expandedTaskIds: ReadonlyArray<string>;
   readonly recentToolRows: number;
   readonly recentToolStatuses: ReadonlyArray<string>;
-  readonly pinnedGroupExpanded: boolean;
-  readonly pinnedProgressExpanded: boolean;
+  readonly progressExpanded: boolean;
   readonly reasoningExpanded: boolean;
   readonly minimapPresent: boolean;
   readonly minimapBottomInset: string;
-}
-
-interface CardTelemetry {
-  readonly ownerKey: string;
-  readonly height: number;
-  readonly heightDelta: number;
-  readonly compensation: string;
-  readonly eventCount: number;
 }
 
 interface ActivityInput {
@@ -103,8 +86,7 @@ const EMPTY_DOM_SNAPSHOT: FixtureDomSnapshot = {
   expandedTaskIds: [],
   recentToolRows: 0,
   recentToolStatuses: [],
-  pinnedGroupExpanded: false,
-  pinnedProgressExpanded: false,
+  progressExpanded: false,
   reasoningExpanded: false,
   minimapPresent: false,
   minimapBottomInset: "none",
@@ -614,9 +596,7 @@ function readDomSnapshot(root: HTMLElement | null): FixtureDomSnapshot {
     : [];
   const minimap = root.querySelector<HTMLElement>("[data-testid='timeline-minimap']");
   const expandedButtons = workflowCard
-    ? [...workflowCard.querySelectorAll<HTMLButtonElement>("button[aria-expanded='true']")].filter(
-        (button) => button.dataset.slot !== "workflow-activity-toggle",
-      )
+    ? [...workflowCard.querySelectorAll<HTMLButtonElement>("button[aria-expanded='true']")]
     : [];
   const buttonHasLabel = (button: HTMLButtonElement, label: string) =>
     button.textContent?.trim().startsWith(label) ?? false;
@@ -628,10 +608,7 @@ function readDomSnapshot(root: HTMLElement | null): FixtureDomSnapshot {
       const label = row.querySelector<HTMLElement>("[aria-label]")?.getAttribute("aria-label");
       return label ? [label] : [];
     }),
-    pinnedGroupExpanded: expandedButtons.some(
-      (button) => !buttonHasLabel(button, "Progress") && !buttonHasLabel(button, "Reasoning"),
-    ),
-    pinnedProgressExpanded: expandedButtons.some((button) => buttonHasLabel(button, "Progress")),
+    progressExpanded: expandedButtons.some((button) => buttonHasLabel(button, "Progress")),
     reasoningExpanded: expandedButtons.some((button) => buttonHasLabel(button, "Reasoning")),
     minimapPresent: minimap !== null,
     minimapBottomInset: minimap?.style.bottom || "none",
@@ -643,8 +620,7 @@ function domSnapshotsEqual(left: FixtureDomSnapshot, right: FixtureDomSnapshot):
     left.renderedTaskCards === right.renderedTaskCards &&
     left.recentToolRows === right.recentToolRows &&
     left.recentToolStatuses.join("|") === right.recentToolStatuses.join("|") &&
-    left.pinnedGroupExpanded === right.pinnedGroupExpanded &&
-    left.pinnedProgressExpanded === right.pinnedProgressExpanded &&
+    left.progressExpanded === right.progressExpanded &&
     left.reasoningExpanded === right.reasoningExpanded &&
     left.minimapPresent === right.minimapPresent &&
     left.minimapBottomInset === right.minimapBottomInset &&
@@ -712,25 +688,14 @@ export function WorkflowActivityBrowserFixture() {
   const [isAtEnd, setIsAtEnd] = useState(true);
   const [domSnapshot, setDomSnapshot] = useState<FixtureDomSnapshot>(EMPTY_DOM_SNAPSHOT);
   const [controlNote, setControlNote] = useState("Ready for deterministic browser steps.");
-  const [cardTelemetry, setCardTelemetry] = useState<CardTelemetry>({
-    ownerKey: "",
-    height: 0,
-    heightDelta: 0,
-    compensation: "none",
-    eventCount: 0,
-  });
   const fixtureRootRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
   const activeAnchorIndexRef = useRef<number | null>(null);
   const scrollModeRef = useRef<TimelineScrollMode>(scrollMode);
-  const cardBookkeepingRef = useRef(createWorkflowCardHeightBookkeeping(null));
 
   const activeThread = threads[activeThreadId];
-  // Production height ownership is thread-scoped so replacing a turn/card in
-  // the same thread measures the real old-to-new transition. Timeline anchor
-  // ownership is turn-scoped because a replaced turn must never retain an old
-  // message anchor.
-  const cardOwnerKey = activeThread.id;
+  // Timeline anchor ownership is turn-scoped because a replaced turn must
+  // never retain an old message anchor.
   const timelineOwnerKey = `${activeThread.id}:${activeThread.turnId}`;
   const latestTurn = useMemo<TimelineLatestTurn>(
     () => ({
@@ -795,20 +760,6 @@ export function WorkflowActivityBrowserFixture() {
   );
 
   useLayoutEffect(() => {
-    cardBookkeepingRef.current = reconcileWorkflowCardHeightOwner(
-      cardBookkeepingRef.current,
-      cardOwnerKey,
-    );
-    setCardTelemetry({
-      ownerKey: cardOwnerKey,
-      height: cardBookkeepingRef.current.height,
-      heightDelta: 0,
-      compensation: "owner-reset",
-      eventCount: 0,
-    });
-  }, [cardOwnerKey]);
-
-  useLayoutEffect(() => {
     activeAnchorIndexRef.current = null;
     setAnchorIndex(null);
     setAnchorSize(null);
@@ -827,64 +778,6 @@ export function WorkflowActivityBrowserFixture() {
       .find((message) => message.role === "user")?.id;
     setAnchorMessageId(nextAnchor ?? null);
   }, [activeThread.messages, timelineOwnerKey]);
-
-  const handleCardHeightChange = useCallback(
-    (nextHeight: number) => {
-      const recorded = recordWorkflowCardHeight(
-        cardBookkeepingRef.current,
-        cardOwnerKey,
-        nextHeight,
-      );
-      if (recorded === cardBookkeepingRef.current) return;
-      cardBookkeepingRef.current = recorded;
-      const consumed = consumeWorkflowCardHeightDelta(cardBookkeepingRef.current, cardOwnerKey);
-      cardBookkeepingRef.current = consumed.bookkeeping;
-      const list = listRef.current;
-      const listState = list?.getState() ?? null;
-      const compensation = resolveWorkflowCardScrollCompensation({
-        mode: scrollModeRef.current,
-        heightDelta: consumed.heightDelta,
-        state: listState,
-      });
-
-      if (list && compensation.kind === "restore-end") {
-        void list.scrollToEnd?.({ animated: false });
-      } else if (list && compensation.kind === "preserve-offset") {
-        void list.scrollToOffset({ offset: compensation.targetOffset, animated: false });
-      } else if (
-        list &&
-        listState &&
-        compensation.kind === "revalidate-anchor" &&
-        activeAnchorIndexRef.current !== null
-      ) {
-        const metrics = getAnchoredTurnMetrics({
-          state: listState,
-          anchorIndex: activeAnchorIndexRef.current,
-          composerOverlayHeight: FIXTURE_COMPOSER_INSET_PX,
-          anchorOffset: 0,
-        });
-        if (metrics && metrics.scrollDeltaToRevealEnd > 1) {
-          void list.scrollToOffset({
-            offset: listState.scroll + metrics.scrollDeltaToRevealEnd,
-            animated: false,
-          });
-        }
-      }
-
-      setCardTelemetry((current) => ({
-        ownerKey: cardOwnerKey,
-        height: nextHeight,
-        heightDelta: consumed.heightDelta,
-        compensation: compensation.kind,
-        eventCount: current.ownerKey === cardOwnerKey ? current.eventCount + 1 : 1,
-      }));
-    },
-    [cardOwnerKey],
-  );
-
-  useEffect(() => {
-    if (workflowModel === null) handleCardHeightChange(0);
-  }, [handleCardHeightChange, workflowModel]);
 
   useEffect(() => {
     const capture = () => {
@@ -949,50 +842,7 @@ export function WorkflowActivityBrowserFixture() {
     [activeThread.messages],
   );
 
-  const setPinnedGroupExpanded = useCallback(
-    (expanded: boolean) => {
-      const card = fixtureRootRef.current?.querySelector<HTMLElement>(
-        "[data-slot='workflow-activity-card']",
-      );
-      const candidates = card
-        ? [...card.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")].filter(
-            (button) => {
-              if (button.dataset.slot === "workflow-activity-toggle") return false;
-              const label = button.textContent?.trim() ?? "";
-              return !label.startsWith("Progress") && !label.startsWith("Reasoning");
-            },
-          )
-        : [];
-      const preferredGroupLabel = workflowModel
-        ? [
-            ...workflowModel.steps,
-            ...workflowModel.historicalSteps,
-            ...(workflowModel.otherActivity ? [workflowModel.otherActivity] : []),
-          ].find((group) => group.workers.length > 0)?.label
-        : undefined;
-      const target = expanded
-        ? (candidates.find(
-            (button) =>
-              button.getAttribute("aria-expanded") === "false" &&
-              (preferredGroupLabel === undefined ||
-                button.textContent?.trim().startsWith(preferredGroupLabel)),
-          ) ?? candidates.find((button) => button.getAttribute("aria-expanded") === "false"))
-        : candidates.find((button) => button.getAttribute("aria-expanded") === "true");
-      if (!target) {
-        setControlNote(
-          expanded
-            ? "No collapsed plan group is available; load a plan first."
-            : "The pinned card is already collapsed.",
-        );
-        return;
-      }
-      target.click();
-      setControlNote(`${expanded ? "Expanded" : "Collapsed"} the production pinned card group.`);
-    },
-    [workflowModel],
-  );
-
-  const setPinnedProgressExpanded = useCallback((expanded: boolean) => {
+  const setWorkflowProgressExpanded = useCallback((expanded: boolean) => {
     const card = fixtureRootRef.current?.querySelector<HTMLElement>(
       "[data-slot='workflow-activity-card']",
     );
@@ -1002,11 +852,11 @@ export function WorkflowActivityBrowserFixture() {
         )
       : undefined;
     if (!target) {
-      setControlNote("No visible pinned Progress disclosure; expand a worker-bearing group first.");
+      setControlNote("No visible worker Progress disclosure; add progress to a worker first.");
       return;
     }
     if ((target.getAttribute("aria-expanded") === "true") !== expanded) target.click();
-    setControlNote(`${expanded ? "Expanded" : "Collapsed"} pinned worker progress.`);
+    setControlNote(`${expanded ? "Expanded" : "Collapsed"} worker progress.`);
   }, []);
 
   const setTaskDisclosureExpanded = useCallback(
@@ -1277,7 +1127,7 @@ export function WorkflowActivityBrowserFixture() {
                         skipTranscript: true,
                       });
                       next = appendTaskProgress(next, next.selectedTaskId!, {
-                        summary: "Visible in pinned activity, hidden from transcript",
+                        summary: "Visible in the activity card, hidden from transcript",
                         totalTokens: 500,
                         toolUses: 1,
                         durationMs: 5_000,
@@ -1364,17 +1214,11 @@ export function WorkflowActivityBrowserFixture() {
 
             <ControlGroup title="Disclosures and scroll">
               <div className="grid grid-cols-2 gap-1.5">
-                <FixtureButton onClick={() => setPinnedGroupExpanded(true)}>
-                  Expand pinned card
+                <FixtureButton onClick={() => setWorkflowProgressExpanded(true)}>
+                  Expand worker progress
                 </FixtureButton>
-                <FixtureButton onClick={() => setPinnedGroupExpanded(false)}>
-                  Collapse pinned card
-                </FixtureButton>
-                <FixtureButton onClick={() => setPinnedProgressExpanded(true)}>
-                  Expand pinned progress
-                </FixtureButton>
-                <FixtureButton onClick={() => setPinnedProgressExpanded(false)}>
-                  Collapse pinned progress
+                <FixtureButton onClick={() => setWorkflowProgressExpanded(false)}>
+                  Collapse worker progress
                 </FixtureButton>
                 <FixtureButton onClick={() => setTaskDisclosureExpanded(true)}>
                   Expand task card
@@ -1450,8 +1294,8 @@ export function WorkflowActivityBrowserFixture() {
                 />
                 <Metric label="skipTranscript workers" value={hiddenTranscriptTaskCount} />
                 <Metric
-                  label="Pinned disclosure"
-                  value={`${domSnapshot.pinnedGroupExpanded ? "open" : "closed"} · progress ${domSnapshot.pinnedProgressExpanded ? "open" : "closed"}`}
+                  label="Worker progress"
+                  value={domSnapshot.progressExpanded ? "open" : "closed"}
                 />
                 <Metric
                   label="Task disclosure"
@@ -1462,15 +1306,6 @@ export function WorkflowActivityBrowserFixture() {
                       : "closed"
                   }
                 />
-                <Metric
-                  label="Card height"
-                  value={`${cardTelemetry.height}px · Δ${cardTelemetry.heightDelta}px`}
-                />
-                <Metric
-                  label="Compensation"
-                  value={`${cardTelemetry.compensation} #${cardTelemetry.eventCount}`}
-                />
-                <Metric label="Card owner" value={cardTelemetry.ownerKey || "none"} />
                 <Metric
                   label="Anchor"
                   value={
@@ -1497,12 +1332,7 @@ export function WorkflowActivityBrowserFixture() {
 
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" data-fixture-chat-column>
               {workflowModel ? (
-                <WorkflowActivityCard
-                  key={timelineOwnerKey}
-                  model={workflowModel}
-                  defaultOpen
-                  onHeightChange={handleCardHeightChange}
-                />
+                <WorkflowActivityCard key={timelineOwnerKey} model={workflowModel} />
               ) : null}
               <div className="relative min-h-0 flex-1" data-fixture-virtualized-timeline>
                 <MessagesTimeline
