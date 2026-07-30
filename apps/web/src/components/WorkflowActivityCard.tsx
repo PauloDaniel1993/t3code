@@ -144,11 +144,14 @@ export function deriveWorkerMetricSegments(
 
 /** Card title: workflow name when the provider supplied one, else a generic heading. */
 export function deriveWorkflowCardTitle(model: WorkflowActivityModel): string {
-  if (model.steps.length === 0) {
-    return "Activity";
-  }
   const workflowName = model.workers.find((worker) => worker.workflowName)?.workflowName;
-  return workflowName ?? "Workflow";
+  if (workflowName !== undefined) {
+    return workflowName;
+  }
+  // A card listing workers is a workflow whether or not the provider also sent
+  // a plan. "Activity" is the fallback for a card that has neither — reasoning
+  // or tool rows on their own.
+  return model.workers.length > 0 || model.steps.length > 0 ? "Workflow" : "Activity";
 }
 
 // ---------------------------------------------------------------------------
@@ -573,8 +576,17 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
     >
       <section
         aria-label={hasPlan ? "Workflow activity" : "Task activity"}
-        className="mx-auto flex w-full min-w-0 max-w-3xl flex-col rounded-lg border border-border/80 bg-card/45 px-2.5 py-2"
-        style={{ height: "min(26rem, 55vh)" }}
+        className="mx-auto flex w-full min-w-0 max-w-3xl flex-col rounded-xl border border-border/80 bg-card px-3 py-2.5"
+        // Max, not a fixed height: the card hugs its rows the way the design
+        // does, instead of reserving 26rem and leaving most of it blank under a
+        // short list. It still caps and scrolls internally, so a long workflow
+        // stays contained.
+        //
+        // The cost is that the box grows as workers arrive, and the timeline
+        // does not compensate for item resizes. It grows at the turn's terminal
+        // row, which is the live edge, so it moves content a reader scrolled up
+        // is not looking at.
+        style={{ maxHeight: "min(26rem, 55vh)" }}
       >
         <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5 pb-1 text-[12px] text-muted-foreground">
           <ZapIcon className="size-3 shrink-0 text-primary/85" aria-hidden />

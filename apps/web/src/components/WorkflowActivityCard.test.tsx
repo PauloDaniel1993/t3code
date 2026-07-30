@@ -231,9 +231,12 @@ describe("usage metric segments", () => {
 });
 
 describe("deriveWorkflowCardTitle", () => {
-  it("renders Activity without a plan and Workflow with one", () => {
-    expect(deriveWorkflowCardTitle(makeModel({ workers: [makeWorker()] }))).toBe("Activity");
+  // A card listing workers is a workflow whether or not a plan came with it —
+  // "Activity" is only for a card that has neither.
+  it("titles any card with workers a Workflow, and a bare one Activity", () => {
+    expect(deriveWorkflowCardTitle(makeModel({ workers: [makeWorker()] }))).toBe("Workflow");
     expect(deriveWorkflowCardTitle(makePlanModel())).toBe("Workflow");
+    expect(deriveWorkflowCardTitle(makeModel({ workers: [] }))).toBe("Activity");
   });
 
   it("prefers the provider-supplied workflow name", () => {
@@ -295,14 +298,14 @@ describe("WorkflowActivityCard rendering", () => {
     expect(markup).toContain("(In progress)");
   });
 
-  it("renders task activity without a plan under an Activity heading", () => {
+  it("renders plan-less worker activity under the Workflow heading", () => {
     const model = makeModel({
       workers: [makeWorker({ description: "Unplanned investigation", status: "completed" })],
     });
     const markup = renderToStaticMarkup(<WorkflowActivityCard model={model} />);
 
     expect(markup).toContain('aria-label="Task activity"');
-    expect(markup).toContain(">Activity</p>");
+    expect(markup).toContain(">Workflow</p>");
     expect(markup).toContain("Unplanned investigation");
     expect(markup).toContain("Completed");
     expect(markup).not.toContain("workflow-step-strip-segment");
@@ -567,9 +570,10 @@ describe("WorkflowActivityCard rendering", () => {
       />,
     );
     expect(markup).toContain('data-slot="workflow-worker-list"');
-    // The worker list carries no height bound of its own — the card's fixed
-    // box and its single internal scroller own all bounding.
-    expect(markup).not.toContain("max-height:min(26rem, 55vh)");
+    // Exactly one height bound, on the card itself: it hugs its rows up to the
+    // cap, and its single internal scroller takes over past that. A second bound
+    // further in would give the card two things fighting over the same overflow.
+    expect(markup.split("max-height:min(26rem, 55vh)").length - 1).toBe(1);
     const detailsStart = markup.indexOf('data-slot="workflow-activity-details"');
     const workerListStart = markup.indexOf('data-slot="workflow-worker-list"');
     expect(detailsStart).toBeGreaterThan(-1);
