@@ -37,6 +37,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import {
+  applyCodexChildThreadNotification,
   applyCodexCollabNotification,
   codexCollabEmissionEvent,
   settleCodexCollabAgentByThread,
@@ -835,8 +836,11 @@ export const makeCodexSessionRuntime = (
             ? current.get(providerConversationId)?.turnId
             : undefined;
 
-          // The collab item's own restated `agentsStates` drives the lifecycle.
+          // Spawns and, where Codex reports them, restated `agentsStates`.
           const fromItem = applyCodexCollabNotification(current, notification, route.turnId);
+
+          // Progress and the final answer, read off the agent's own thread.
+          const fromChild = applyCodexChildThreadNotification(fromItem.next, notification);
 
           // Then the two safety nets that close agents whose terminal state the
           // item never carried: the child conversation reporting its own turn
@@ -844,16 +848,16 @@ export const makeCodexSessionRuntime = (
           const settled =
             notification.method === "turn/completed"
               ? childParentTurnId !== undefined && providerConversationId !== undefined
-                ? settleCodexCollabAgentByThread(fromItem.next, providerConversationId)
+                ? settleCodexCollabAgentByThread(fromChild.next, providerConversationId)
                 : route.turnId !== undefined
-                  ? settleCodexCollabAgentsForTurn(fromItem.next, route.turnId)
-                  : { next: fromItem.next, emissions: [] }
-              : { next: fromItem.next, emissions: [] };
+                  ? settleCodexCollabAgentsForTurn(fromChild.next, route.turnId)
+                  : { next: fromChild.next, emissions: [] }
+              : { next: fromChild.next, emissions: [] };
 
           return [
             {
               childParentTurnId,
-              emissions: [...fromItem.emissions, ...settled.emissions],
+              emissions: [...fromItem.emissions, ...fromChild.emissions, ...settled.emissions],
             },
             settled.next,
           ] as const;

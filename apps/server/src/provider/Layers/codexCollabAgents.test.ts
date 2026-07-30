@@ -7,6 +7,7 @@ import {
   collabAgentLifecycleStatus,
   settleCodexCollabAgentByThread,
   settleCodexCollabAgentsForTurn,
+  applyCodexChildThreadNotification,
   type CodexCollabNotification,
   type CollabAgentRecord,
 } from "./codexCollabAgents.ts";
@@ -440,6 +441,152 @@ describe("applyCodexCollabNotification: subAgentActivity", () => {
   });
 });
 
+// A tracked agent's own `agentMessage` items, captured from the same live run.
+// `phase` is `commentary` while it works and `final_answer` when it is done.
+function childMessageNotification(options: {
+  readonly threadId: string;
+  readonly text: string;
+  readonly phase?: "commentary" | "final_answer" | null;
+  readonly method?: "item/started" | "item/completed";
+  readonly type?: string;
+}): CodexCollabNotification {
+  return {
+    method: options.method ?? "item/completed",
+    params: {
+      completedAtMs: 1_785_399_973_556,
+      threadId: options.threadId,
+      turnId: "019fb227-child-turn",
+      item: {
+        id: "msg_0bf73f64040e07ec016a6b0c5a31248195aba666029c373956",
+        type: options.type ?? "agentMessage",
+        memoryCitation: null,
+        phase: options.phase === undefined ? "commentary" : options.phase,
+        text: options.text,
+      },
+    },
+  };
+}
+
+describe("applyCodexChildThreadNotification", () => {
+  const CHILD = OBSERVED_SPAWNS[1].agentThreadId;
+  const tracked = () =>
+    applyCodexCollabNotification(
+      EMPTY,
+      subAgentNotification({ ...OBSERVED_SPAWNS[1], kind: "started" }),
+      PARENT_TURN,
+    ).next;
+
+  it("reports the agent's commentary as progress", () => {
+    const { next, emissions } = applyCodexChildThreadNotification(
+      tracked(),
+      childMessageNotification({
+        threadId: CHILD,
+        text: "I’ll trace the transition paths in `nativeAgents.ts` and report the triggers.",
+      }),
+    );
+
+    expect(emissions).toMatchObject([
+      {
+        kind: "progress",
+        taskId: CHILD,
+        turnId: PARENT_TURN,
+        message: "I’ll trace the transition paths in `nativeAgents.ts` and report the triggers.",
+      },
+    ]);
+    expect(next.get(CHILD)?.settled).toBe(false);
+  });
+
+  it("does not repeat an unchanged commentary line", () => {
+    const message = childMessageNotification({ threadId: CHILD, text: "Still reading." });
+    const first = applyCodexChildThreadNotification(tracked(), message);
+    expect(first.emissions).toHaveLength(1);
+    expect(applyCodexChildThreadNotification(first.next, message).emissions).toEqual([]);
+  });
+
+  it("holds the final answer back and delivers it as the result", () => {
+    // The final answer arrives before the child's turn completes, so it is
+    // remembered rather than emitted as one more progress line.
+    const withResult = applyCodexChildThreadNotification(
+      tracked(),
+      childMessageNotification({
+        threadId: CHILD,
+        text: "`nativeAgents.ts` state transitions: running, finished, failed.",
+        phase: "final_answer",
+      }),
+    );
+    expect(withResult.emissions).toEqual([]);
+
+    const settled = settleCodexCollabAgentByThread(withResult.next, CHILD);
+    expect(settled.emissions).toMatchObject([
+      {
+        kind: "completed",
+        taskId: CHILD,
+        status: "completed",
+        message: "`nativeAgents.ts` state transitions: running, finished, failed.",
+      },
+    ]);
+  });
+
+  it("falls back to the last commentary when the agent gave no final answer", () => {
+    const withProgress = applyCodexChildThreadNotification(
+      tracked(),
+      childMessageNotification({ threadId: CHILD, text: "Halfway through." }),
+    );
+    expect(settleCodexCollabAgentByThread(withProgress.next, CHILD).emissions).toMatchObject([
+      { kind: "completed", message: "Halfway through." },
+    ]);
+  });
+
+  it("reports no result when the agent said nothing", () => {
+    const settled = settleCodexCollabAgentByThread(tracked(), CHILD);
+    expect(settled.emissions).toHaveLength(1);
+    expect(settled.emissions[0]).not.toHaveProperty("message");
+  });
+
+  it("treats an unreported phase as commentary", () => {
+    // Codex does not emit `phase` consistently. Showing interim text as progress
+    // is recoverable; mistaking commentary for a final answer is not.
+    const { emissions } = applyCodexChildThreadNotification(
+      tracked(),
+      childMessageNotification({ threadId: CHILD, text: "Working.", phase: null }),
+    );
+    expect(emissions).toMatchObject([{ kind: "progress", message: "Working." }]);
+  });
+
+  it("ignores messages from a thread that is not a tracked agent", () => {
+    const { next, emissions } = applyCodexChildThreadNotification(
+      tracked(),
+      childMessageNotification({ threadId: PARENT_PROVIDER_THREAD, text: "Parent talking." }),
+    );
+    expect(emissions).toEqual([]);
+    expect(next.get(PARENT_PROVIDER_THREAD)).toBeUndefined();
+  });
+
+  it("ignores messages once the agent has settled", () => {
+    const settled = settleCodexCollabAgentByThread(tracked(), CHILD).next;
+    expect(
+      applyCodexChildThreadNotification(
+        settled,
+        childMessageNotification({ threadId: CHILD, text: "Late words." }),
+      ).emissions,
+    ).toEqual([]);
+  });
+
+  it.each([
+    { label: "empty text", options: { text: "   " } },
+    { label: "a reasoning item", options: { text: "x", type: "reasoning" } },
+    { label: "a command execution", options: { text: "x", type: "commandExecution" } },
+    { label: "item/started", options: { text: "x", method: "item/started" as const } },
+  ])("ignores $label", ({ options }) => {
+    expect(
+      applyCodexChildThreadNotification(
+        tracked(),
+        childMessageNotification({ threadId: CHILD, ...options }),
+      ).emissions,
+    ).toEqual([]);
+  });
+});
+
 describe("settleCodexCollabAgentsForTurn", () => {
   it("stops agents left running when their parent turn ends", () => {
     const { emissions } = settleCodexCollabAgentsForTurn(spawned(), PARENT_TURN);
@@ -532,7 +679,8 @@ describe("the Codex three-agent sequence that produced no sidebar rows", () => {
     // `t3/task/started` notifications with no agent evidence, so the sidebar
     // showed nothing at all.
     let state = EMPTY;
-    const emitted: Array<{ method: string; taskId: string; status?: unknown }> = [];
+    const emitted: Array<{ method: string; taskId: string; status?: unknown; summary?: unknown }> =
+      [];
 
     const step = (notification: CodexCollabNotification) => {
       const result = applyCodexCollabNotification(state, notification, PARENT_TURN);
@@ -608,7 +756,8 @@ describe("the verbatim Codex subAgentActivity sequence that produced no sidebar 
     // parent `turn/completed` that closes the turn. The runtime settles a child
     // by thread when that child is tracked, which is what these assert.
     let state = EMPTY;
-    const emitted: Array<{ method: string; taskId: string; status?: unknown }> = [];
+    const emitted: Array<{ method: string; taskId: string; status?: unknown; summary?: unknown }> =
+      [];
 
     const record = (result: ReturnType<typeof applyCodexCollabNotification>) => {
       state = result.next;
@@ -618,6 +767,7 @@ describe("the verbatim Codex subAgentActivity sequence that produced no sidebar 
           method: event.method,
           taskId: emission.taskId,
           ...(event.payload.status === undefined ? {} : { status: event.payload.status }),
+          ...(event.payload.summary === undefined ? {} : { summary: event.payload.summary }),
         });
       }
     };
@@ -634,6 +784,30 @@ describe("the verbatim Codex subAgentActivity sequence that produced no sidebar 
     }
     expect(emitted.filter((event) => event.method === "t3/task/started")).toHaveLength(3);
     expect([...state.values()].every((agent) => !agent.settled)).toBe(true);
+
+    // Each agent narrates on its own thread, then gives a final answer.
+    for (const spawn of OBSERVED_SPAWNS) {
+      record(
+        applyCodexChildThreadNotification(
+          state,
+          childMessageNotification({
+            threadId: spawn.agentThreadId,
+            text: `Reading for ${spawn.agentPath}.`,
+          }),
+        ),
+      );
+      record(
+        applyCodexChildThreadNotification(
+          state,
+          childMessageNotification({
+            threadId: spawn.agentThreadId,
+            text: `Summary for ${spawn.agentPath}.`,
+            phase: "final_answer",
+          }),
+        ),
+      );
+    }
+    expect(emitted.filter((event) => event.method === "t3/task/progress")).toHaveLength(3);
 
     // Each child hands back, which is not itself a lifecycle change.
     for (const spawn of OBSERVED_SPAWNS) {
@@ -652,7 +826,7 @@ describe("the verbatim Codex subAgentActivity sequence that produced no sidebar 
     }
     expect(emitted.filter((event) => event.method === "t3/task/completed")).toHaveLength(0);
 
-    // Each child's own turn completing settles it.
+    // Each child's own turn completing settles it, carrying its final answer.
     for (const spawn of OBSERVED_SPAWNS) {
       record(settleCodexCollabAgentByThread(state, spawn.agentThreadId));
     }
@@ -661,6 +835,9 @@ describe("the verbatim Codex subAgentActivity sequence that produced no sidebar 
       OBSERVED_SPAWNS.map((spawn) => spawn.agentThreadId),
     );
     expect(completions.every((event) => event.status === "completed")).toBe(true);
+    expect(completions.map((event) => event.summary)).toEqual(
+      OBSERVED_SPAWNS.map((spawn) => `Summary for ${spawn.agentPath}.`),
+    );
 
     // The parent turn then has nothing left to settle.
     expect(settleCodexCollabAgentsForTurn(state, PARENT_TURN).emissions).toEqual([]);

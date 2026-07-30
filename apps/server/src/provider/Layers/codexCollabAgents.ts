@@ -43,6 +43,12 @@ export interface CollabAgentRecord {
   readonly settled: boolean;
   /** Last emitted progress line, so an unchanged status emits nothing. */
   readonly message?: string;
+  /**
+   * The agent's final answer, held until it settles so the row can report a
+   * result rather than just a name. Separate from `message` because the final
+   * answer arrives before the child's turn completes.
+   */
+  readonly resultMessage?: string;
 }
 
 /** A `t3/task/*` notification the runtime should emit for a collab agent. */
@@ -353,6 +359,51 @@ export function settleCodexCollabAgentsForTurn(
   return { next, emissions };
 }
 
+/**
+ * Fold a notification that arrived on a tracked agent's own thread.
+ *
+ * `subAgentActivity` reports no progress text, but the agent's conversation does:
+ * each child emits `agentMessage` items on its own thread, tagged `commentary`
+ * while it works and `final_answer` when it is done. Reading those is the only
+ * way a Codex row says anything beyond its name, and it is real reported data
+ * rather than a synthesized placeholder.
+ *
+ * Reasoning items are ignored: Codex emits them with empty `summary` arrays, so
+ * there is nothing to show.
+ */
+export function applyCodexChildThreadNotification(
+  current: ReadonlyMap<string, CollabAgentRecord>,
+  notification: CodexCollabNotification,
+): CollabAgentFoldResult {
+  if (notification.method !== "item/completed") return { next: current, emissions: [] };
+  const taskId = readNotificationThread(notification);
+  if (taskId === undefined) return { next: current, emissions: [] };
+  const record = current.get(taskId);
+  if (record === undefined || record.settled) return { next: current, emissions: [] };
+
+  const item = readItem(notification);
+  if (item === undefined || item.type !== "agentMessage") return { next: current, emissions: [] };
+  const text = trimOptional(item.text);
+  if (text === undefined) return { next: current, emissions: [] };
+
+  // `phase` is not emitted consistently across models, so an unknown phase is
+  // treated as commentary — showing interim text as progress is recoverable,
+  // while mistaking commentary for the final answer would misreport the result.
+  if (item.phase === "final_answer") {
+    const next = new Map(current);
+    next.set(taskId, { ...record, resultMessage: text });
+    return { next, emissions: [] };
+  }
+
+  if (text === record.message) return { next: current, emissions: [] };
+  const next = new Map(current);
+  next.set(taskId, { ...record, message: text });
+  return {
+    next,
+    emissions: [{ kind: "progress", taskId, turnId: record.turnId, message: text }],
+  };
+}
+
 /** Settle one agent from its child conversation's own `turn/completed`. */
 export function settleCodexCollabAgentByThread(
   current: ReadonlyMap<string, CollabAgentRecord>,
@@ -362,9 +413,19 @@ export function settleCodexCollabAgentByThread(
   if (record === undefined || record.settled) return { next: current, emissions: [] };
   const next = new Map(current);
   next.set(taskId, { ...record, settled: true });
+  // The agent's own final answer, when it gave one, is the result worth showing.
+  const summary = record.resultMessage ?? record.message;
   return {
     next,
-    emissions: [{ kind: "completed", taskId, turnId: record.turnId, status: "completed" }],
+    emissions: [
+      {
+        kind: "completed",
+        taskId,
+        turnId: record.turnId,
+        status: "completed",
+        ...(summary === undefined ? {} : { message: summary }),
+      },
+    ],
   };
 }
 
