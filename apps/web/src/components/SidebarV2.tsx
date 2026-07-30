@@ -76,7 +76,7 @@ import { useShortcutModifierState } from "../shortcutModifierState";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
-import { isMacPlatform } from "~/lib/utils";
+import { cn, isMacPlatform, newMessageId } from "~/lib/utils";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { readLocalApi } from "../localApi";
 import {
@@ -113,7 +113,6 @@ import {
 } from "../threadRoutes";
 import { formatRelativeTimeLabel, parseTimestampDate } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
-import { cn } from "~/lib/utils";
 import {
   buildBulkTitleRegenerationContextMenuItem,
   formatWorkingDurationLabel,
@@ -1943,7 +1942,7 @@ export default function SidebarV2() {
         environmentId: threadRef.environmentId,
         input: {
           threadId: threadRef.threadId,
-          message: { messageId: crypto.randomUUID(), role: "user", text, attachments: [] },
+          message: { messageId: newMessageId(), role: "user", text, attachments: [] },
         },
       } as never);
     },

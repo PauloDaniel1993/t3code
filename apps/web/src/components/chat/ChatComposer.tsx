@@ -2184,6 +2184,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           continue;
         }
         candidateAttachments.push({
+          type: "image",
           id: image.id,
           name: image.name,
           mimeType: result.image.mimeType,

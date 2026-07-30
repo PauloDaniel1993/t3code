@@ -52,6 +52,8 @@ function thread(
     updatedAt: "2026-04-02T00:00:00.000Z",
     archivedAt: null,
     deletedAt: null,
+    settledOverride: null,
+    settledAt: null,
     messages: [],
     proposedPlans: [],
     activities,

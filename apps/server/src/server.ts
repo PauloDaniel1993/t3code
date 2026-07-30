@@ -349,7 +349,7 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
   ProviderSessionStartupRecoveryLive.pipe(Layer.provide(ProviderSessionRuntime.layer)),
 ).pipe(Layer.provideMerge(ProviderLayerLive), Layer.provideMerge(OrchestrationLayerLive));
 
-const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+const RuntimeAgentDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(ThreadTaskLimitsSourceLive.pipe(Layer.provide(ServerSettingsLayerLive))),
@@ -380,6 +380,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // no longer transitively provides it. Exposing it at the runtime level
   // keeps a single Live for all opencode consumers.
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
+);
+
+const RuntimeCoreDependenciesLive = RuntimeAgentDependenciesLive.pipe(
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLayerLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),

@@ -30,9 +30,8 @@ export const ThreadTaskLimitsSource = Context.Reference<Effect.Effect<ThreadTask
 
 export const ThreadTaskLimitsSourceLive = Layer.effect(
   ThreadTaskLimitsSource,
-  Effect.gen(function* () {
-    const serverSettingsService = yield* ServerSettingsService;
-    return serverSettingsService.getSettings.pipe(
+  Effect.map(ServerSettingsService, (serverSettingsService) =>
+    serverSettingsService.getSettings.pipe(
       Effect.map((settings) =>
         resolveThreadTaskLimits({
           maxRunning: settings.threadTaskMaxRunning,
@@ -42,6 +41,6 @@ export const ThreadTaskLimitsSourceLive = Layer.effect(
       // An unreadable settings file must not make task creation impossible;
       // the built-in caps are a working answer.
       Effect.orElseSucceed(() => DEFAULT_THREAD_TASK_LIMITS),
-    );
-  }),
+    ),
+  ),
 );

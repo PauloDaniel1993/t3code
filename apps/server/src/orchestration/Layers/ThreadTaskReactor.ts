@@ -145,34 +145,32 @@ export const makeThreadTaskEvaluator = Effect.gen(function* () {
     });
   });
 
-  const setDelivery = (input: {
+  const setDelivery = Effect.fn("setDelivery")(function* (input: {
     readonly parentThreadId: ThreadId;
     readonly taskThreadId: ThreadId;
     readonly delivery: ThreadTaskDelivery;
-  }) =>
-    Effect.gen(function* () {
-      yield* orchestrationEngine.dispatch({
-        type: "thread.task.delivery.set",
-        commandId: yield* newCommandId,
-        parentThreadId: input.parentThreadId,
-        taskThreadId: input.taskThreadId,
-        delivery: input.delivery,
-        createdAt: yield* nowIso,
-      });
+  }) {
+    return yield* orchestrationEngine.dispatch({
+      type: "thread.task.delivery.set",
+      commandId: yield* newCommandId,
+      parentThreadId: input.parentThreadId,
+      taskThreadId: input.taskThreadId,
+      delivery: input.delivery,
+      createdAt: yield* nowIso,
     });
+  });
 
-  const skipDelivery = (input: {
+  const skipDelivery = Effect.fn("skipDelivery")(function* (input: {
     readonly parentThreadId: ThreadId;
     readonly taskThreadId: ThreadId;
     readonly reason: ThreadTaskDeliverySkipReason;
-  }) =>
-    Effect.gen(function* () {
-      yield* setDelivery({
-        parentThreadId: input.parentThreadId,
-        taskThreadId: input.taskThreadId,
-        delivery: { state: "skipped", reason: input.reason, updatedAt: yield* nowIso },
-      });
+  }) {
+    return yield* setDelivery({
+      parentThreadId: input.parentThreadId,
+      taskThreadId: input.taskThreadId,
+      delivery: { state: "skipped", reason: input.reason, updatedAt: yield* nowIso },
     });
+  });
 
   /**
    * Wake the parent with the task's result.

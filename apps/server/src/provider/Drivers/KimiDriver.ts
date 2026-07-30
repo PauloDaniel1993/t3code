@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { makeKimiTextGeneration } from "../../textGeneration/KimiTextGeneration.ts";
@@ -160,6 +161,7 @@ export const KIMI_MAINTENANCE_RESOLVER: ProviderMaintenanceCapabilitiesResolver 
 };
 
 export type KimiDriverEnv =
+  | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem

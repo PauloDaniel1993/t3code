@@ -1,7 +1,11 @@
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { deriveNativeAgents, selectVisibleNativeAgents } from "../../orchestration/nativeAgents.ts";
+
+const decodePayloadJson = Schema.decodeSync(Schema.UnknownFromJsonString);
+const encodeNativeAgentsJson = Schema.encodeSync(Schema.UnknownFromJsonString);
 
 /**
  * Rebuild `native_agents_json` from the activities already on disk.
@@ -71,8 +75,7 @@ export default Effect.gen(function* () {
       summary: row.summary,
       // Stored as JSON text; the derivation only ever reads known scalar fields
       // off it and ignores anything it does not recognise.
-      // @effect-diagnostics-next-line preferSchemaOverJson:off
-      payload: row.payloadJson === null ? null : (JSON.parse(row.payloadJson) as unknown),
+      payload: row.payloadJson === null ? null : decodePayloadJson(row.payloadJson),
       turnId: row.turnId,
       createdAt: row.createdAt,
       ...(row.sequence === null ? {} : { sequence: row.sequence }),
@@ -83,7 +86,7 @@ export default Effect.gen(function* () {
     const agents = selectVisibleNativeAgents(
       deriveNativeAgents(activities as unknown as Parameters<typeof deriveNativeAgents>[0]),
     );
-    const next = agents.length === 0 ? null : JSON.stringify(agents);
+    const next = agents.length === 0 ? null : encodeNativeAgentsJson(agents);
     yield* sql`
       UPDATE projection_threads
       SET native_agents_json = ${next}

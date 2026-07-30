@@ -2772,7 +2772,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           WHERE thread_id = 'thread-native'
         `,
         (rows) =>
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
           rows[0]?.nativeAgents === null || rows[0]?.nativeAgents === undefined
             ? []
             : (JSON.parse(rows[0].nativeAgents) as ReadonlyArray<Record<string, unknown>>),
@@ -2905,7 +2904,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           WHERE thread_id = 'thread-codex-native'
         `,
         (rows) =>
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
           rows[0]?.nativeAgents === null || rows[0]?.nativeAgents === undefined
             ? []
             : (JSON.parse(rows[0].nativeAgents) as ReadonlyArray<Record<string, unknown>>),

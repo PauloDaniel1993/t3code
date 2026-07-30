@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
   type ClientOrchestrationCommand,
@@ -10,6 +10,7 @@ import {
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../config.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -78,33 +79,33 @@ describe("canonicalizeClientCommandTimestamps", () => {
 });
 
 describe("normalizeDispatchCommand", () => {
+  const TestLayer = WorkspacePaths.layer.pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-normalizer-test-" })),
+    Layer.provideMerge(NodeServices.layer),
+  );
   const run = (command: ClientOrchestrationCommand) =>
-    Effect.runPromise(
-      normalizeDispatchCommand(command).pipe(
-        Effect.provide(WorkspacePaths.layer),
-        Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-normalizer-test-" })),
-        Effect.provide(NodeServices.layer),
-      ),
-    );
+    normalizeDispatchCommand(command).pipe(Effect.provide(TestLayer));
 
   // A client cannot claim a task was the agent's idea, and the client command
   // carries no `createdBy` at all — so it must be stamped here or the projector
   // rejects the event it produces.
-  it("stamps user authorship on a client task creation", async () => {
-    const { command } = await run({
-      type: "thread.task.create",
-      commandId: CommandId.make("command-task"),
-      parentThreadId: ThreadId.make("thread-1"),
-      taskThreadId: ThreadId.make("thread-2"),
-      title: "Inventory handlers",
-      prompt: "List every handler.",
-      context: { kind: "full-thread" },
-      createdAt: clientCreatedAt,
-    });
+  it.effect("stamps user authorship on a client task creation", () =>
+    Effect.gen(function* () {
+      const { command } = yield* run({
+        type: "thread.task.create",
+        commandId: CommandId.make("command-task"),
+        parentThreadId: ThreadId.make("thread-1"),
+        taskThreadId: ThreadId.make("thread-2"),
+        title: "Inventory handlers",
+        prompt: "List every handler.",
+        context: { kind: "full-thread" },
+        createdAt: clientCreatedAt,
+      });
 
-    expect(command.type).toBe("thread.task.create");
-    if (command.type !== "thread.task.create") throw new Error("Expected a task create command");
-    expect(command.createdBy).toBe("user");
-    expect(command.createdAt).not.toBe(clientCreatedAt);
-  });
+      expect(command.type).toBe("thread.task.create");
+      if (command.type !== "thread.task.create") throw new Error("Expected a task create command");
+      expect(command.createdBy).toBe("user");
+      expect(command.createdAt).not.toBe(clientCreatedAt);
+    }),
+  );
 });

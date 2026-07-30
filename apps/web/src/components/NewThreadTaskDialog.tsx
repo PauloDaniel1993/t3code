@@ -9,7 +9,7 @@ import type {
 } from "@t3tools/contracts";
 import { useCallback, useId, useMemo, useState } from "react";
 
-import { cn } from "../lib/utils";
+import { cn, newThreadId } from "../lib/utils";
 import { usePrimarySettings } from "../hooks/useSettings";
 import {
   applyProviderInstanceSettings,
@@ -131,7 +131,7 @@ export function NewThreadTaskDialog(props: {
       setFailure(null);
       const error = await onCreate({
         parentThreadId: parentThreadRef.threadId,
-        taskThreadId: crypto.randomUUID() as ThreadId,
+        taskThreadId: newThreadId(),
         title: deriveTaskTitle(draft),
         prompt: draft.prompt.trim(),
         context: resolveTaskContextSpec(draft),

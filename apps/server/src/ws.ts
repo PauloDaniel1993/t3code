@@ -29,6 +29,7 @@ import {
   OrchestrationGetActivityHistoryError,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
+  OrchestrationReplayEventsError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
@@ -61,6 +62,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -1167,6 +1169,28 @@ const makeWsRpcLayer = (
                     });
                 }
               }),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.replayEvents]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.replayEvents,
+            Stream.runCollect(
+              orchestrationEngine.readEvents(
+                clamp(input.fromSequenceExclusive, {
+                  minimum: 0,
+                  maximum: Number.MAX_SAFE_INTEGER,
+                }),
+              ),
+            ).pipe(
+              Effect.map((events) => Array.from(events, projectActivityEvent)),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationReplayEventsError({
+                    message: "Failed to replay orchestration events",
+                    cause,
+                  }),
+              ),
             ),
             { "rpc.aggregate": "orchestration" },
           ),
