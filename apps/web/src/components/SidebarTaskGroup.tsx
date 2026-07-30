@@ -18,11 +18,16 @@ import { SidebarNativeAgentGroups } from "./SidebarNativeAgentGroups";
 import { formatTaskElapsedLabel, resolveTaskRowPresentation } from "./SidebarTaskRows.logic";
 
 /**
- * Rows visible before the list starts scrolling. A parent may accumulate a lot
- * of tasks over its lifetime, and an unbounded group would push every thread
- * below it off the sidebar.
+ * How tall the group may get before it scrolls: two thread cards' worth.
+ *
+ * An active thread card declares `contain-intrinsic-size: auto 96px` in
+ * `SidebarV2`, so two of them is 12rem. Expressing the bound in cards rather
+ * than in rows is what keeps the group readable as a group — it can never take
+ * more vertical space than the two threads it would otherwise hide.
  */
-const VISIBLE_TASK_ROWS = 4;
+const SIDEBAR_THREAD_CARD_HEIGHT_PX = 96;
+const GROUP_MAX_HEIGHT_CARDS = 2;
+const GROUP_MAX_HEIGHT_PX = SIDEBAR_THREAD_CARD_HEIGHT_PX * GROUP_MAX_HEIGHT_CARDS;
 
 /**
  * A parent thread's nested task rows plus the hover-visible `+ New task` row.
@@ -105,30 +110,36 @@ export const SidebarTaskGroup = memo(function SidebarTaskGroup(props: {
           aria-hidden
           className="absolute bottom-2 left-3 top-0 w-px bg-sidebar-border/70 dark:bg-white/10"
         />
-        <ul
-          role="list"
-          data-testid="sidebar-task-list"
-          // Four rows (h-7) plus the hairlines between them. Past that the group
-          // scrolls in place rather than growing without bound.
-          className={cn(
-            "flex flex-col gap-px",
-            tasks.length > VISIBLE_TASK_ROWS && "max-h-[calc(7rem+3px)] overflow-y-auto",
-          )}
+        {/*
+          Tasks and in-session agents share one scroller. They used to be
+          siblings, with only the task list bounded, so a thread that had
+          accumulated several turns of agents grew the group without limit and
+          pushed every thread below it off the sidebar.
+
+          Peek windows are portalled to the body and fixed, so this scroll
+          container cannot clip them.
+        */}
+        <div
+          data-testid="sidebar-task-scroll"
+          className="flex flex-col gap-px overflow-y-auto"
+          style={{ maxHeight: GROUP_MAX_HEIGHT_PX }}
         >
-          {renderRows(tasks)}
-        </ul>
-        <SidebarNativeAgentGroups
-          parentThreadKey={parentThreadKey}
-          nativeAgents={nativeAgents}
-          nowMs={nowMs}
-          openAgentKey={openNativeAgentKey}
-          expandedOverrides={nativeGroupExpandedOverrides}
-          onToggleGroup={onToggleNativeGroup}
-          onPeekAgent={onPeekNativeAgent}
-          onPeekLeave={onPeekLeave}
-          onAgentClick={onNativeAgentClick}
-          miniWindow={nativeAgentMiniWindow}
-        />
+          <ul role="list" data-testid="sidebar-task-list" className="flex flex-col gap-px">
+            {renderRows(tasks)}
+          </ul>
+          <SidebarNativeAgentGroups
+            parentThreadKey={parentThreadKey}
+            nativeAgents={nativeAgents}
+            nowMs={nowMs}
+            openAgentKey={openNativeAgentKey}
+            expandedOverrides={nativeGroupExpandedOverrides}
+            onToggleGroup={onToggleNativeGroup}
+            onPeekAgent={onPeekNativeAgent}
+            onPeekLeave={onPeekLeave}
+            onAgentClick={onNativeAgentClick}
+            miniWindow={nativeAgentMiniWindow}
+          />
+        </div>
         <button
           type="button"
           data-testid="sidebar-task-new"
