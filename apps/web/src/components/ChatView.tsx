@@ -88,11 +88,7 @@ import {
 } from "../session-logic";
 import { deriveWorkflowActivityModels } from "../workflow-activity";
 import { type LegendListRef } from "@legendapp/list/react";
-import {
-  getAnchoredTurnMetrics,
-  resolveWorkflowCardMaxHeight,
-  type TimelineScrollMode,
-} from "./chat/timelineScrollAnchoring";
+import { getAnchoredTurnMetrics, type TimelineScrollMode } from "./chat/timelineScrollAnchoring";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -232,8 +228,7 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
-import { MessagesTimeline, updateWorkflowActivityViewState } from "./chat/MessagesTimeline";
-import { WorkflowActivityCard, type WorkflowActivityCardViewState } from "./WorkflowActivityCard";
+import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -324,8 +319,6 @@ const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
-const EMPTY_WORKFLOW_ACTIVITY_VIEW_STATES: ReadonlyMap<TurnId, WorkflowActivityCardViewState> =
-  new Map();
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
   const transitionGroupRef = useRef<HTMLDivElement | null>(null);
@@ -1280,12 +1273,6 @@ function ChatViewContent(props: ChatViewProps) {
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const [workflowActivityViewStatesByThreadKey, setWorkflowActivityViewStatesByThreadKey] =
-    useState<ReadonlyMap<string, ReadonlyMap<TurnId, WorkflowActivityCardViewState>>>(new Map());
-  const [scrollContextWorkflowSelection, setScrollContextWorkflowSelection] = useState<{
-    readonly threadKey: string | null;
-    readonly turnId: TurnId | null;
-  }>({ threadKey: null, turnId: null });
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
@@ -1345,8 +1332,6 @@ function ChatViewContent(props: ChatViewProps) {
     null,
   );
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
-  const [composerInputHeight, setComposerInputHeight] = useState(0);
-  const [workflowActivityOverlayHeight, setWorkflowActivityOverlayHeight] = useState(0);
   const isAtEndRef = useRef(true);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
@@ -1355,21 +1340,12 @@ function ChatViewContent(props: ChatViewProps) {
 
   useLayoutEffect(() => {
     if (!composerOverlayElement) return;
-    const composerInputElement = composerOverlayElement.querySelector<HTMLElement>(
-      '[data-chat-composer-form="true"]',
-    );
 
     const updateHeight = () => {
       const nextHeight = Math.ceil(composerOverlayElement.getBoundingClientRect().height);
       if (nextHeight > 0) {
         setComposerOverlayHeight((currentHeight) =>
           currentHeight === nextHeight ? currentHeight : nextHeight,
-        );
-      }
-      const nextInputHeight = Math.ceil(composerInputElement?.getBoundingClientRect().height ?? 0);
-      if (nextInputHeight > 0) {
-        setComposerInputHeight((currentHeight) =>
-          currentHeight === nextInputHeight ? currentHeight : nextInputHeight,
         );
       }
     };
@@ -1379,9 +1355,6 @@ function ChatViewContent(props: ChatViewProps) {
 
     const observer = new ResizeObserver(updateHeight);
     observer.observe(composerOverlayElement);
-    if (composerInputElement) {
-      observer.observe(composerInputElement);
-    }
     return () => observer.disconnect();
   }, [composerOverlayElement]);
 
@@ -2150,67 +2123,6 @@ function ChatViewContent(props: ChatViewProps) {
   const workflowActivityModelsByTurnId = useMemo(
     () => deriveWorkflowActivityModels(threadActivities),
     [threadActivities],
-  );
-  const runningWorkflowTurnId =
-    activeThread?.session?.status === "running"
-      ? activeThread.session.activeTurnId
-      : !latestTurnSettled
-        ? (activeLatestTurn?.turnId ?? null)
-        : null;
-  const initialWorkflowTurnId =
-    runningWorkflowTurnId !== null && workflowActivityModelsByTurnId.has(runningWorkflowTurnId)
-      ? runningWorkflowTurnId
-      : activeLatestTurn !== null && workflowActivityModelsByTurnId.has(activeLatestTurn.turnId)
-        ? activeLatestTurn.turnId
-        : null;
-  const pinnedWorkflowTurnId =
-    scrollContextWorkflowSelection.threadKey === activeThreadKey
-      ? scrollContextWorkflowSelection.turnId
-      : initialWorkflowTurnId;
-  const workflowActivityModel =
-    pinnedWorkflowTurnId === null
-      ? null
-      : (workflowActivityModelsByTurnId.get(pinnedWorkflowTurnId) ?? null);
-  const workflowActivityViewStateByTurnId =
-    (activeThreadKey === null
-      ? undefined
-      : workflowActivityViewStatesByThreadKey.get(activeThreadKey)) ??
-    EMPTY_WORKFLOW_ACTIVITY_VIEW_STATES;
-  const workflowActivityViewState =
-    workflowActivityModel === null
-      ? null
-      : (workflowActivityViewStateByTurnId.get(workflowActivityModel.turnId) ?? "collapsed");
-  const visibleWorkflowActivityModel =
-    workflowActivityViewState === "closed" ? null : workflowActivityModel;
-  const workflowActivityMaxHeight = resolveWorkflowCardMaxHeight(composerInputHeight);
-  const timelineBottomOverlayHeight = composerOverlayHeight + workflowActivityOverlayHeight;
-  const handleActiveWorkflowTurnIdChange = useCallback(
-    (turnId: TurnId | null) => {
-      const nextSelection = { threadKey: activeThreadKey, turnId };
-      setScrollContextWorkflowSelection((current) =>
-        current.threadKey === nextSelection.threadKey && current.turnId === nextSelection.turnId
-          ? current
-          : nextSelection,
-      );
-    },
-    [activeThreadKey],
-  );
-  const handleWorkflowActivityViewStateChange = useCallback(
-    (turnId: TurnId, state: WorkflowActivityCardViewState) => {
-      if (activeThreadKey === null) return;
-      setWorkflowActivityViewStatesByThreadKey((currentByThread) => {
-        const current = currentByThread.get(activeThreadKey) ?? EMPTY_WORKFLOW_ACTIVITY_VIEW_STATES;
-        const next = updateWorkflowActivityViewState(current, turnId, state);
-        if (next === current) return currentByThread;
-        const nextByThread = new Map(currentByThread);
-        nextByThread.set(activeThreadKey, next);
-        return nextByThread;
-      });
-      if (state === "expanded") {
-        setScrollContextWorkflowSelection({ threadKey: activeThreadKey, turnId });
-      }
-    },
-    [activeThreadKey],
   );
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
@@ -3684,11 +3596,11 @@ function ChatViewContent(props: ChatViewProps) {
       return getAnchoredTurnMetrics({
         state,
         anchorIndex,
-        composerOverlayHeight: timelineBottomOverlayHeight,
+        composerOverlayHeight,
         anchorOffset: CHAT_LIST_ANCHOR_OFFSET,
       });
     },
-    [timelineBottomOverlayHeight],
+    [composerOverlayHeight],
   );
   const timelineRealContentOverflowsViewport = useCallback(
     (list?: LegendListRef | null) => {
@@ -3713,26 +3625,12 @@ function ChatViewContent(props: ChatViewProps) {
       const realContentBottom = lastRowTop + Math.max(1, lastRowHeight);
       const visibleScrollLength = Math.max(
         0,
-        (state.scrollLength ?? 0) - timelineBottomOverlayHeight - CHAT_LIST_ANCHOR_OFFSET,
+        (state.scrollLength ?? 0) - composerOverlayHeight - CHAT_LIST_ANCHOR_OFFSET,
       );
       return realContentBottom > visibleScrollLength;
     },
-    [timelineBottomOverlayHeight],
+    [composerOverlayHeight],
   );
-
-  const handleWorkflowCardHeightChange = useCallback((nextHeight: number) => {
-    const measuredHeight = Number.isFinite(nextHeight) ? Math.max(0, Math.ceil(nextHeight)) : 0;
-    setWorkflowActivityOverlayHeight((currentHeight) =>
-      currentHeight === measuredHeight ? currentHeight : measuredHeight,
-    );
-  }, []);
-  // The activity surface is an overlay. Its measured height becomes part of
-  // the list's bottom inset and positions the scroll-to-end affordance above it.
-  useEffect(() => {
-    if (visibleWorkflowActivityModel === null) {
-      handleWorkflowCardHeightChange(0);
-    }
-  }, [handleWorkflowCardHeightChange, visibleWorkflowActivityModel]);
 
   // Live-follow stays active after send/thread-open until an actual list scroll
   // gesture opts out.
@@ -6028,8 +5926,8 @@ function ChatViewContent(props: ChatViewProps) {
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
           {/* The chat column also hosts wheel forwarding: it wraps both the
-              timeline and every surface stacked on top of it (activity card,
-              banners, composer), whose gestures must still scroll the list. */}
+              timeline and every surface stacked on top of it (banners,
+              composer), whose gestures must still scroll the list. */}
           <div
             ref={setTimelineOverlayWheelHost}
             className="relative flex min-h-0 min-w-0 flex-1 flex-col"
@@ -6060,9 +5958,6 @@ function ChatViewContent(props: ChatViewProps) {
                     : null
                 }
                 workflowActivityModelsByTurnId={workflowActivityModelsByTurnId}
-                workflowActivityViewStateByTurnId={workflowActivityViewStateByTurnId}
-                onWorkflowActivityViewStateChange={handleWorkflowActivityViewStateChange}
-                onActiveWorkflowTurnIdChange={handleActiveWorkflowTurnIdChange}
                 turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
                 activeThreadEnvironmentId={activeThread.environmentId}
                 routeThreadKey={routeThreadKey}
@@ -6079,7 +5974,7 @@ function ChatViewContent(props: ChatViewProps) {
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
                 onAnchorSizeChanged={onTimelineAnchorSizeChanged}
-                contentInsetEndAdjustment={timelineBottomOverlayHeight}
+                contentInsetEndAdjustment={composerOverlayHeight}
                 overlayWheelHost={timelineOverlayWheelHost}
                 onIsAtEndChange={onIsAtEndChange}
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
@@ -6091,35 +5986,11 @@ function ChatViewContent(props: ChatViewProps) {
                 onLoadOlderActivities={activityHistory.loadOlder}
               />
 
-              {/* Activity stays directly above the composer without resizing the
-                  timeline. Expanded content grows upward and scrolls internally. */}
-              {visibleWorkflowActivityModel !== null && workflowActivityViewState !== null ? (
-                <div
-                  className="pointer-events-none absolute inset-x-0 z-30"
-                  style={{ bottom: composerOverlayHeight }}
-                  data-workflow-activity-overlay="true"
-                >
-                  <WorkflowActivityCard
-                    key={`${activeThread.id}:${visibleWorkflowActivityModel.turnId}`}
-                    model={visibleWorkflowActivityModel}
-                    viewState={workflowActivityViewState}
-                    pinnedMaxHeight={workflowActivityMaxHeight}
-                    onViewStateChange={(state) =>
-                      handleWorkflowActivityViewStateChange(
-                        visibleWorkflowActivityModel.turnId,
-                        state,
-                      )
-                    }
-                    onHeightChange={handleWorkflowCardHeightChange}
-                  />
-                </div>
-              ) : null}
-
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
               {showScrollToBottom && (
                 <div
                   className="pointer-events-none absolute left-1/2 z-40 flex -translate-x-1/2 justify-center py-1.5"
-                  style={{ bottom: timelineBottomOverlayHeight + 8 }}
+                  style={{ bottom: composerOverlayHeight + 8 }}
                 >
                   <button
                     type="button"

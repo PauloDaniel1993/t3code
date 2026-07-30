@@ -7,10 +7,10 @@
  * already publishes (and one the worker rows add): the per-row
  * `data-native-agent-task-id` and the per-card `data-workflow-activity-turn-id`.
  *
- * A worker row only exists in the DOM while its card is expanded — a closed
- * card renders as just a launcher. When the exact row is absent, the turn's
- * card (or launcher) is the honest fallback: it is where the run lives, and
- * opening it is one click away.
+ * The card renders inline at its turn's terminal response with every worker
+ * row mounted, so the exact row is normally found. When it is absent (the
+ * turn is outside the rendered window), the turn's card is the honest
+ * fallback: it is where the run lives.
  */
 const FLASH_CLASS = "native-agent-jump-flash";
 /** Covers navigating to the parent thread and its timeline mounting first. */
