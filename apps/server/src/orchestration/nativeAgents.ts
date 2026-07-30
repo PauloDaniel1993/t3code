@@ -39,20 +39,31 @@ export function isNativeAgentActivityKind(kind: string): boolean {
  * produced sidebar rows like "Restart the mockup static server", spinning
  * forever because a background server never exits.
  *
- * So membership needs positive evidence that a run is an agent, and the only
- * evidence the payload carries is `subagentType` (the Task tool's agent kind) or
- * `workflowName` (a named fan-out of them). Everything else is some other kind
- * of task and does not belong in this list.
+ * So membership needs positive evidence that a run is an agent. The canonical
+ * evidence is the provider-independent `nativeAgent` marker, which every adapter
+ * sets at its own boundary from whatever its provider actually reports — Claude
+ * from the Task tool's `subagent_type`, Codex from a `collabAgentToolCall`
+ * receiver thread. `subagentType` and `workflowName` are still accepted because
+ * threads projected before the marker existed carry only those, and replaying
+ * them must produce the same rows.
  *
  * This is an allowlist on purpose. A provider that spawns real subagents without
- * labelling them would be missed, which is the safer failure: an absent row is a
- * gap, a mislabelled one is a lie about what the user is looking at.
+ * labelling them is missed, which is the safer failure: an absent row is a gap,
+ * a mislabelled one is a lie about what the user is looking at.
  */
-export function startedActivityDescribesAgent(payload: Record<string, unknown>): boolean {
+export function activityDescribesAgent(payload: Record<string, unknown>): boolean {
   return (
-    readString(payload.subagentType) !== undefined || readString(payload.workflowName) !== undefined
+    payload.nativeAgent === true ||
+    readString(payload.subagentType) !== undefined ||
+    readString(payload.workflowName) !== undefined
   );
 }
+
+/**
+ * @deprecated Use {@link activityDescribesAgent}. Kept as the original name
+ * while callers migrate; the check is no longer specific to `task.started`.
+ */
+export const startedActivityDescribesAgent = activityDescribesAgent;
 
 /**
  * How many finished agents to retain once their turn is over. Running agents are
@@ -107,11 +118,13 @@ function statusForCompletion(value: unknown): ThreadNativeAgentStatus {
  * implementation means an incrementally-built projection and a full replay can
  * never disagree.
  *
- * Only a `task.started` that `startedActivityDescribesAgent` accepts can admit a
- * new entry. `task.progress` and `task.completed` carry just a `taskId` and a
- * `toolUseId` — no evidence of what kind of task they belong to — so admitting
- * on those would let every backgrounded shell back in through its completion
- * event. An unrecognised task id is therefore ignored rather than created.
+ * Any of the three kinds can admit a new entry, but only while carrying evidence
+ * that the run is an agent (see `activityDescribesAgent`) — admitting on an
+ * unmarked `task.completed` would let every backgrounded shell back in through
+ * its completion event. Accepting marked progress and completion events, rather
+ * than `task.started` alone, is what makes the fold tolerate a lifecycle whose
+ * events arrive out of order or whose start was missed entirely (a resumed
+ * thread, a dropped event, an agent already running when T3 attached).
  */
 export function applyNativeAgentActivity(
   agents: ReadonlyArray<ThreadNativeAgent>,
@@ -124,10 +137,7 @@ export function applyNativeAgentActivity(
 
   const index = agents.findIndex((agent) => agent.taskId === taskId);
   const existing = index === -1 ? undefined : agents[index];
-  if (
-    existing === undefined &&
-    !(activity.kind === "task.started" && startedActivityDescribesAgent(payload))
-  ) {
+  if (existing === undefined && !activityDescribesAgent(payload)) {
     return agents;
   }
 
@@ -156,14 +166,23 @@ export function applyNativeAgentActivity(
   const completed = activity.kind === "task.completed";
   const next: ThreadNativeAgent = {
     taskId,
+    // First real turn wins. A row admitted by an event that arrived before its
+    // turn was registered holds `null`, which a later event can still fill in.
     turnId: existing?.turnId ?? activity.turnId,
+    // A settled agent stays settled: a duplicate or late-arriving start must not
+    // put a finished row back into `running`.
     status: completed ? statusForCompletion(payload.status) : (existing?.status ?? "running"),
     description,
     startedAt:
       activity.kind === "task.started"
         ? activity.createdAt
         : (existing?.startedAt ?? activity.createdAt),
-    updatedAt: activity.createdAt,
+    // Monotonic, so an out-of-order event cannot drag the row backwards and
+    // reshuffle the history ordering in `selectVisibleNativeAgents`.
+    updatedAt:
+      existing !== undefined && existing.updatedAt.localeCompare(activity.createdAt) > 0
+        ? existing.updatedAt
+        : activity.createdAt,
     ...(subagentType === undefined ? {} : { subagentType }),
     ...(() => {
       const prompt = readString(payload.prompt) ?? existing?.prompt;

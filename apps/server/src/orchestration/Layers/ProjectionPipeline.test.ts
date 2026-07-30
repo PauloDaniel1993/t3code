@@ -2808,6 +2808,193 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("persists Codex in-session agents, which label no subagent type", () =>
+    Effect.gen(function* () {
+      // The reproduction, at the projection layer: three Codex collab agents,
+      // identified only by the canonical `nativeAgent` marker. Before this
+      // change none of them reached `native_agents_json` at all.
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-codex-native-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-codex-native"),
+        occurredAt: "2026-07-30T10:00:00.000Z",
+        commandId: CommandId.make("cmd-codex-native-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-codex-native-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-codex-native"),
+          title: "Project Codex Native",
+          workspaceRoot: "/tmp/project-codex-native",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-07-30T10:00:00.000Z",
+          updatedAt: "2026-07-30T10:00:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-codex-native-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-codex-native"),
+        occurredAt: "2026-07-30T10:00:01.000Z",
+        commandId: CommandId.make("cmd-codex-native-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-codex-native-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-codex-native"),
+          projectId: ProjectId.make("project-codex-native"),
+          title: "Thread Codex Native",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-07-30T10:00:01.000Z",
+          updatedAt: "2026-07-30T10:00:01.000Z",
+        },
+      });
+
+      let sequence = 2;
+      const codexActivity = (kind: string, payload: Record<string, unknown>, at: string) => {
+        sequence += 1;
+        const suffix = String(sequence);
+        return appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-codex-native-${suffix}`),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-codex-native"),
+          occurredAt: at,
+          commandId: CommandId.make(`cmd-codex-native-${suffix}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-codex-native-${suffix}`),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-codex-native"),
+            activity: {
+              id: EventId.make(`activity-codex-native-${suffix}`),
+              tone: "info",
+              kind,
+              summary: kind,
+              payload,
+              turnId: null,
+              createdAt: at,
+            },
+          },
+        });
+      };
+
+      const readAgents = Effect.map(
+        sql<{ readonly nativeAgents: string | null }>`
+          SELECT native_agents_json AS "nativeAgents"
+          FROM projection_threads
+          WHERE thread_id = 'thread-codex-native'
+        `,
+        (rows) =>
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          rows[0]?.nativeAgents === null || rows[0]?.nativeAgents === undefined
+            ? []
+            : (JSON.parse(rows[0].nativeAgents) as ReadonlyArray<Record<string, unknown>>),
+      );
+
+      const children = ["child-a", "child-b", "child-c"] as const;
+      let at = 2;
+      for (const child of children) {
+        at += 1;
+        yield* codexActivity(
+          "task.started",
+          {
+            taskId: child,
+            taskType: "subagent",
+            nativeAgent: true,
+            description: `Inspect ${child}`,
+          },
+          `2026-07-30T10:00:0${at}.000Z`,
+        );
+      }
+
+      // The parent thread shows three agents while they run.
+      const running = yield* readAgents;
+      assert.equal(running.length, 3);
+      assert.deepEqual(
+        running.map((agent) => agent.taskId),
+        [...children],
+      );
+      assert.isTrue(running.every((agent) => agent.status === "running"));
+
+      // A backgrounded shell on the same channel must not become a fourth row.
+      yield* codexActivity(
+        "task.started",
+        { taskId: "shell-1", taskType: "local_bash", description: "Serve the mockups" },
+        "2026-07-30T10:00:07.000Z",
+      );
+      assert.equal((yield* readAgents).length, 3);
+
+      yield* codexActivity(
+        "task.progress",
+        {
+          taskId: "child-a",
+          description: "reading files",
+          summary: "reading files",
+          nativeAgent: true,
+        },
+        "2026-07-30T10:00:08.000Z",
+      );
+      yield* codexActivity(
+        "task.completed",
+        { taskId: "child-a", status: "completed", nativeAgent: true, summary: "summarized" },
+        "2026-07-30T10:00:09.000Z",
+      );
+      yield* codexActivity(
+        "task.completed",
+        { taskId: "child-b", status: "failed", nativeAgent: true, error: "worker died" },
+        "2026-07-30T10:00:10.000Z",
+      );
+      // Cancelled with the turn rather than reporting its own outcome.
+      yield* codexActivity(
+        "task.completed",
+        { taskId: "child-c", status: "stopped", nativeAgent: true },
+        "2026-07-30T10:00:11.000Z",
+      );
+
+      const settled = yield* readAgents;
+      assert.equal(settled.length, 3);
+      // Every agent reaches a terminal state, and all three stay visible after
+      // the parent response finishes.
+      assert.deepEqual(
+        settled.map((agent) => [agent.taskId, agent.status]),
+        [
+          ["child-a", "finished"],
+          ["child-b", "failed"],
+          ["child-c", "finished"],
+        ],
+      );
+      assert.deepInclude(settled[0], {
+        description: "Inspect child-a",
+        progressSummary: "reading files",
+        resultSummary: "summarized",
+      });
+      assert.deepInclude(settled[1], { errorMessage: "worker died" });
+      // Codex reported no counters, so none are invented.
+      assert.isUndefined(settled[2]?.usage);
+      assert.isUndefined(settled[2]?.subagentType);
+    }),
+  );
+
   it.effect("clears stale pending approvals from projected shell summaries", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

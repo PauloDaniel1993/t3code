@@ -220,6 +220,255 @@ describe("deriveNativeAgents", () => {
   });
 });
 
+describe("deriveNativeAgents: the canonical nativeAgent marker", () => {
+  it("admits a Codex agent, which labels no subagent type at all", () => {
+    // The regression this whole change exists for. Codex names its in-session
+    // agents by child thread id and reports no `subagentType` or `workflowName`,
+    // so the original evidence rule rejected every one of them and the sidebar
+    // stayed empty while three agents ran. The canonical marker is the evidence.
+    expect(
+      deriveNativeAgents([
+        activity(
+          "task.started",
+          {
+            taskId: "01997f3c-child-1",
+            taskType: "subagent",
+            nativeAgent: true,
+            description: "Inspect SidebarV2.tsx",
+          },
+          "2026-07-30T07:00:00.000Z",
+        ),
+      ]),
+    ).toMatchObject([
+      { taskId: "01997f3c-child-1", status: "running", description: "Inspect SidebarV2.tsx" },
+    ]);
+  });
+
+  it("still refuses an unmarked task on every lifecycle kind", () => {
+    // Admitting on progress and completion is what makes out-of-order events
+    // work; it must not become a back door for backgrounded shells.
+    for (const kind of ["task.started", "task.progress", "task.completed"]) {
+      expect(
+        deriveNativeAgents([
+          activity(
+            kind,
+            { taskId: "bma53ubju", taskType: "local_bash", description: "Serve the mockups" },
+            "2026-07-30T07:00:00.000Z",
+          ),
+        ]),
+      ).toEqual([]);
+    }
+  });
+
+  it("admits a marked run from a completion that outran its start", () => {
+    // A resumed thread, or a dropped start, must still settle rather than leave
+    // nothing at all. The completion names the row from what it carries.
+    expect(
+      deriveNativeAgents([
+        activity(
+          "task.completed",
+          {
+            taskId: "child-9",
+            status: "completed",
+            nativeAgent: true,
+            description: "Summarize the contract",
+            summary: "12 fields",
+          },
+          "2026-07-30T07:01:00.000Z",
+        ),
+      ]),
+    ).toMatchObject([
+      {
+        taskId: "child-9",
+        status: "finished",
+        description: "Summarize the contract",
+        resultSummary: "12 fields",
+      },
+    ]);
+  });
+
+  it("keeps a settled agent settled when its start arrives late", () => {
+    const agents = deriveNativeAgents([
+      activity(
+        "task.completed",
+        { taskId: "child-9", status: "failed", nativeAgent: true, error: "worker died" },
+        "2026-07-30T07:01:00.000Z",
+      ),
+      activity(
+        "task.started",
+        { taskId: "child-9", nativeAgent: true, description: "Summarize the contract" },
+        "2026-07-30T07:00:00.000Z",
+      ),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({
+      status: "failed",
+      errorMessage: "worker died",
+      // The start is authoritative for the label and the start time...
+      description: "Summarize the contract",
+      startedAt: "2026-07-30T07:00:00.000Z",
+      // ...but must not drag `updatedAt` backwards behind the completion.
+      updatedAt: "2026-07-30T07:01:00.000Z",
+    });
+  });
+
+  it("fills in a turn id that was not yet known when the agent first appeared", () => {
+    const agents = deriveNativeAgents([
+      activity(
+        "task.started",
+        { taskId: "child-1", nativeAgent: true, description: "Inspect" },
+        "2026-07-30T07:00:00.000Z",
+        null,
+      ),
+      activity(
+        "task.progress",
+        { taskId: "child-1", description: "reading", nativeAgent: true },
+        "2026-07-30T07:00:10.000Z",
+      ),
+    ]);
+    expect(agents[0]?.turnId).toBe(TURN);
+  });
+
+  it("is idempotent across duplicate and repeated events", () => {
+    const events = [
+      activity(
+        "task.started",
+        { taskId: "child-1", nativeAgent: true, description: "Inspect" },
+        "2026-07-30T07:00:00.000Z",
+      ),
+      activity(
+        "task.completed",
+        { taskId: "child-1", status: "completed", nativeAgent: true },
+        "2026-07-30T07:00:20.000Z",
+      ),
+    ];
+    expect(deriveNativeAgents([...events, ...events])).toEqual(deriveNativeAgents(events));
+  });
+
+  it("settles a stopped agent as finished rather than leaving it running", () => {
+    expect(
+      deriveNativeAgents([
+        activity(
+          "task.started",
+          { taskId: "child-1", nativeAgent: true, description: "Inspect" },
+          "2026-07-30T07:00:00.000Z",
+        ),
+        activity(
+          "task.completed",
+          { taskId: "child-1", status: "stopped", nativeAgent: true },
+          "2026-07-30T07:00:20.000Z",
+        ),
+      ]),
+    ).toMatchObject([{ taskId: "child-1", status: "finished" }]);
+  });
+});
+
+describe("deriveNativeAgents: providers converge on equivalent state", () => {
+  // Claude and Codex report the same three-agent fan-out through different
+  // events, and the sidebar reads one shape. These fixtures are the two real
+  // sequences; the assertion is that the derived rows agree on everything the
+  // provider actually reported.
+  const CLAUDE_SEQUENCE = (index: number) => [
+    activity(
+      "task.started",
+      {
+        taskId: `claude-${index}`,
+        taskType: "agent",
+        subagentType: "Explore",
+        nativeAgent: true,
+        description: `Inspect target ${index}`,
+        toolUseId: `toolu_${index}`,
+      },
+      `2026-07-30T07:00:0${index}.000Z`,
+    ),
+    activity(
+      "task.progress",
+      {
+        taskId: `claude-${index}`,
+        description: "reading files",
+        summary: "reading files",
+        subagentType: "Explore",
+        nativeAgent: true,
+      },
+      `2026-07-30T07:00:1${index}.000Z`,
+    ),
+    activity(
+      "task.completed",
+      {
+        taskId: `claude-${index}`,
+        status: "completed",
+        nativeAgent: true,
+        subagentType: "Explore",
+        description: `Inspect target ${index}`,
+      },
+      `2026-07-30T07:00:2${index}.000Z`,
+    ),
+  ];
+
+  const CODEX_SEQUENCE = (index: number) => [
+    activity(
+      "task.started",
+      {
+        taskId: `codex-${index}`,
+        taskType: "subagent",
+        nativeAgent: true,
+        description: `Inspect target ${index}`,
+      },
+      `2026-07-30T07:00:0${index}.000Z`,
+    ),
+    activity(
+      "task.progress",
+      {
+        taskId: `codex-${index}`,
+        description: "reading files",
+        summary: "reading files",
+        nativeAgent: true,
+      },
+      `2026-07-30T07:00:1${index}.000Z`,
+    ),
+    activity(
+      "task.completed",
+      { taskId: `codex-${index}`, status: "completed", nativeAgent: true },
+      `2026-07-30T07:00:2${index}.000Z`,
+    ),
+  ];
+
+  it.each([
+    { provider: "claude", sequence: CLAUDE_SEQUENCE, prefix: "claude" },
+    { provider: "codex", sequence: CODEX_SEQUENCE, prefix: "codex" },
+  ])("$provider: three parallel agents all reach a terminal state", ({ sequence, prefix }) => {
+    const agents = deriveNativeAgents([1, 2, 3].flatMap((index) => sequence(index)));
+
+    expect(agents).toHaveLength(3);
+    expect(agents.map((agent) => agent.taskId)).toEqual([
+      `${prefix}-1`,
+      `${prefix}-2`,
+      `${prefix}-3`,
+    ]);
+    for (const agent of agents) {
+      expect(agent.status).toBe("finished");
+      expect(agent.turnId).toBe(TURN);
+      expect(agent.progressSummary).toBe("reading files");
+      expect(agent.description).toMatch(/^Inspect target [123]$/);
+    }
+  });
+
+  it("shows all three as running before any of them finishes", () => {
+    for (const sequence of [CLAUDE_SEQUENCE, CODEX_SEQUENCE]) {
+      const agents = deriveNativeAgents([1, 2, 3].flatMap((index) => sequence(index).slice(0, 1)));
+      expect(agents).toHaveLength(3);
+      expect(agents.every((agent) => agent.status === "running")).toBe(true);
+    }
+  });
+
+  it("reports no counters when the provider reported none, rather than zeros", () => {
+    const agents = deriveNativeAgents(CODEX_SEQUENCE(1));
+    expect(agents[0]?.usage).toBeUndefined();
+    expect(agents[0]?.subagentType).toBeUndefined();
+    expect(agents[0]?.lastToolName).toBeUndefined();
+  });
+});
+
 describe("selectVisibleNativeAgents", () => {
   const agent = (taskId: string, status: "running" | "finished", at: string) => ({
     taskId,

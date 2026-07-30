@@ -525,14 +525,28 @@ function mapToRuntimeEvents(
     ];
   }
 
-  if (event.method === "t3/task/started" || event.method === "t3/task/completed") {
+  // Codex collab-agent lifecycle. `CodexSessionRuntime` normalizes
+  // `collabAgentToolCall.agentsStates` into these three synthetic notifications;
+  // the adapter's job is only to restate them as canonical runtime events.
+  //
+  // `nativeAgent: true` is the provider-independent marker that says "this
+  // `task.*` run is an in-session agent". Codex reaches this branch only for a
+  // collab receiver thread, so the evidence is unambiguous — ordinary Codex tool
+  // calls arrive as `item/*` and never here.
+  if (
+    event.method === "t3/task/started" ||
+    event.method === "t3/task/progress" ||
+    event.method === "t3/task/completed"
+  ) {
     const payload = event.payload as Record<string, unknown> | undefined;
     const taskId = trimText(typeof payload?.taskId === "string" ? payload.taskId : undefined);
     if (!taskId) return [];
     const description = trimText(
       typeof payload?.description === "string" ? payload.description : undefined,
     );
+    const summary = trimText(typeof payload?.summary === "string" ? payload.summary : undefined);
     const prompt = typeof payload?.prompt === "string" ? payload.prompt : undefined;
+
     if (event.method === "t3/task/started") {
       return [
         {
@@ -541,17 +555,46 @@ function mapToRuntimeEvents(
           payload: {
             taskId: RuntimeTaskId.make(taskId),
             taskType: "subagent",
+            nativeAgent: true,
             ...(description ? { description } : {}),
             ...(prompt !== undefined ? { prompt } : {}),
           },
         },
       ];
     }
+
+    if (event.method === "t3/task/progress") {
+      // `description` is the required progress line on the canonical event, and
+      // Codex only ever reports one via the agent's `message`. No message means
+      // nothing to say, so stay silent rather than emit a placeholder row.
+      if (!summary) return [];
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "task.progress",
+          payload: {
+            taskId: RuntimeTaskId.make(taskId),
+            description: summary,
+            summary,
+            nativeAgent: true,
+          },
+        },
+      ];
+    }
+
+    const status = payload?.status;
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "task.completed",
-        payload: { taskId: RuntimeTaskId.make(taskId), status: "completed" },
+        payload: {
+          taskId: RuntimeTaskId.make(taskId),
+          status: status === "failed" ? "failed" : status === "stopped" ? "stopped" : "completed",
+          nativeAgent: true,
+          ...(description ? { description } : {}),
+          ...(summary ? { summary } : {}),
+          ...(status === "failed" && summary ? { error: summary } : {}),
+        },
       },
     ];
   }
