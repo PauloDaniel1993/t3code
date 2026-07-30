@@ -15,7 +15,6 @@ import {
   deriveWorkflowEmptyWorkersMessage,
   deriveWorkflowSelectionGroups,
   deriveWorkflowStepCounter,
-  deriveWorkerMetricSegments,
 } from "./WorkflowActivityCard";
 
 const TURN_ID = TurnId.make("turn-1");
@@ -214,19 +213,6 @@ describe("usage metric segments", () => {
     );
     expect(deriveUsageMetricSegments({ toolUses: 1 })).toEqual([{ id: "tools", text: "1 tool" }]);
     expect(deriveUsageMetricSegments({})).toEqual([]);
-  });
-
-  it("appends the last tool to worker metrics when present", () => {
-    expect(
-      deriveWorkerMetricSegments({
-        usage: { totalTokens: 950 },
-        lastToolName: "Bash",
-      }),
-    ).toEqual([
-      { id: "tokens", text: "950 tokens" },
-      { id: "lastTool", text: "Last: Bash" },
-    ]);
-    expect(deriveWorkerMetricSegments({})).toEqual([]);
   });
 });
 
