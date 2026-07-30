@@ -69,7 +69,7 @@ describe("deriveNativeAgents", () => {
     const agents = deriveNativeAgents([
       activity(
         "task.started",
-        { taskId: "w3", description: "Find gates" },
+        { taskId: "w3", description: "Find gates", subagentType: "Explore" },
         "2026-07-29T10:00:00.000Z",
       ),
       activity(
@@ -79,7 +79,7 @@ describe("deriveNativeAgents", () => {
       ),
       activity(
         "task.started",
-        { taskId: "w4", description: "Find gates", retryOfTaskId: "w3" },
+        { taskId: "w4", description: "Find gates", subagentType: "Explore", retryOfTaskId: "w3" },
         "2026-07-29T10:00:40.000Z",
       ),
     ]);
@@ -92,19 +92,6 @@ describe("deriveNativeAgents", () => {
       retriedByTaskId: "w4",
     });
     expect(retry).toMatchObject({ taskId: "w4", status: "running", retryOfTaskId: "w3" });
-  });
-
-  it("keeps a run that was only ever reported as in progress", () => {
-    const agents = deriveNativeAgents([
-      activity(
-        "task.progress",
-        { taskId: "w9", description: "Already running" },
-        "2026-07-29T10:00:00.000Z",
-      ),
-    ]);
-    expect(agents).toMatchObject([
-      { taskId: "w9", status: "running", description: "Already running" },
-    ]);
   });
 
   it("never invents data the activities did not carry", () => {
@@ -127,11 +114,98 @@ describe("deriveNativeAgents", () => {
     const agents = deriveNativeAgents([
       activity(
         "task.started",
-        { taskId: "w1", description: "x", usage: {} },
+        { taskId: "w1", description: "x", subagentType: "Explore", usage: {} },
         "2026-07-29T10:00:00.000Z",
       ),
     ]);
     expect(agents[0]?.usage).toBeUndefined();
+  });
+
+  it("excludes backgrounded shells, which arrive on the same task.* channel", () => {
+    // Real payloads observed in the wild: Claude Code reports every
+    // `Bash run_in_background` call as a task, with no subagentType. Folding
+    // these in produced a sidebar row named "Restart the mockup static server"
+    // that span forever, because the server never exits.
+    expect(
+      deriveNativeAgents([
+        activity(
+          "task.started",
+          {
+            taskId: "bma53ubju",
+            taskType: "local_bash",
+            description: "Restart the mockup static server",
+            toolUseId: "toolu_1",
+          },
+          "2026-07-30T07:00:00.000Z",
+        ),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("excludes plan tasks", () => {
+    expect(
+      deriveNativeAgents([
+        activity(
+          "task.started",
+          { taskId: "p1", taskType: "plan", description: "Plan the work" },
+          "2026-07-30T07:00:00.000Z",
+        ),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("admits a workflow-named run even without a subagent type", () => {
+    expect(
+      deriveNativeAgents([
+        activity(
+          "task.started",
+          { taskId: "wf1", workflowName: "review-changes", description: "Review" },
+          "2026-07-30T07:00:00.000Z",
+        ),
+      ]),
+    ).toMatchObject([{ taskId: "wf1", status: "running" }]);
+  });
+
+  it("never admits an unrecognised task id through progress or completion", () => {
+    // These two kinds carry no evidence of what kind of task they belong to, so
+    // a bash task's completion must not create an entry.
+    expect(
+      deriveNativeAgents([
+        activity(
+          "task.progress",
+          { taskId: "bt569t33v", toolUseId: "t" },
+          "2026-07-30T07:00:00.000Z",
+        ),
+        activity(
+          "task.completed",
+          { taskId: "bt569t33v", toolUseId: "t" },
+          "2026-07-30T07:00:01.000Z",
+        ),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("still tracks a real subagent through progress and completion", () => {
+    const agents = deriveNativeAgents([
+      activity(
+        "task.started",
+        { taskId: "w1", subagentType: "Explore", description: "Map handlers", toolUseId: "t" },
+        "2026-07-30T07:00:00.000Z",
+      ),
+      activity(
+        "task.progress",
+        { taskId: "w1", description: "scanning" },
+        "2026-07-30T07:00:10.000Z",
+      ),
+      activity(
+        "task.completed",
+        { taskId: "w1", status: "completed", summary: "done" },
+        "2026-07-30T07:00:20.000Z",
+      ),
+    ]);
+    expect(agents).toMatchObject([
+      { taskId: "w1", status: "finished", description: "Map handlers", resultSummary: "done" },
+    ]);
   });
 
   it("ignores activities that are not in-session agent lifecycle", () => {
