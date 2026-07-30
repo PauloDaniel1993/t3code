@@ -1,17 +1,20 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { ScopedThreadRef, ThreadNativeAgent } from "@t3tools/contracts";
 import { CheckIcon, ChevronDownIcon, LoaderIcon, PlusIcon, XIcon } from "lucide-react";
 import {
   memo,
+  useCallback,
   useMemo,
   useRef,
+  useState,
   type FocusEvent as ReactFocusEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 
 import { cn } from "../lib/utils";
+import { SidebarNativeAgentGroups } from "./SidebarNativeAgentGroups";
 import { formatTaskElapsedLabel, resolveTaskRowPresentation } from "./SidebarTaskRows.logic";
 
 /**
@@ -31,13 +34,18 @@ const VISIBLE_TASK_ROWS = 4;
 export const SidebarTaskGroup = memo(function SidebarTaskGroup(props: {
   parentThreadKey: string;
   tasks: ReadonlyArray<EnvironmentThreadShell>;
+  /** In-session agents projected onto the parent thread, shown under the tasks. */
+  nativeAgents: ReadonlyArray<ThreadNativeAgent>;
   expanded: boolean;
   openTaskKey: string | null;
+  openNativeAgentKey: string | null;
   nowMs: number;
   /** Hovering or focusing a row peeks at it; the row itself navigates. */
   onPeekTask: (threadRef: ScopedThreadRef, anchor: HTMLElement | null) => void;
+  onPeekNativeAgent: (taskId: string, anchor: HTMLElement | null) => void;
   onPeekLeave: () => void;
   onOpenThread: (threadRef: ScopedThreadRef) => void;
+  onNativeAgentClick: (agent: ThreadNativeAgent) => void;
   onContextMenu: (threadRef: ScopedThreadRef, position: { x: number; y: number }) => void;
   renamingTaskKey: string | null;
   renamingTitle: string;
@@ -47,25 +55,43 @@ export const SidebarTaskGroup = memo(function SidebarTaskGroup(props: {
   onNewTask: (parentThreadKey: string) => void;
   /** The mini thread window, rendered anchored to whichever row is open. */
   miniWindow: ReactNode;
+  /** The in-session agent peek, rendered anchored to whichever agent row is open. */
+  nativeAgentMiniWindow: ReactNode;
 }) {
   const {
     expanded,
     miniWindow,
+    nativeAgentMiniWindow,
+    nativeAgents,
     nowMs,
     onCancelRename,
     onCommitRename,
     onContextMenu,
+    onNativeAgentClick,
     onNewTask,
     onOpenThread,
     onPeekLeave,
+    onPeekNativeAgent,
     onPeekTask,
     onRenameTitleChange,
+    openNativeAgentKey,
     openTaskKey,
     parentThreadKey,
     renamingTaskKey,
     renamingTitle,
     tasks,
   } = props;
+
+  // Per-turn group toggles live here, not in the groups component: this
+  // component stays mounted while the group is collapsed (it only renders
+  // nothing), so a user's collapse choice survives the parent group's own
+  // collapse-and-reopen for the session.
+  const [nativeGroupExpandedOverrides, setNativeGroupExpandedOverrides] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
+  const onToggleNativeGroup = useCallback((groupKey: string, nextExpanded: boolean) => {
+    setNativeGroupExpandedOverrides((previous) => new Map(previous).set(groupKey, nextExpanded));
+  }, []);
 
   if (!expanded) {
     return null;
@@ -91,6 +117,18 @@ export const SidebarTaskGroup = memo(function SidebarTaskGroup(props: {
         >
           {renderRows(tasks)}
         </ul>
+        <SidebarNativeAgentGroups
+          parentThreadKey={parentThreadKey}
+          nativeAgents={nativeAgents}
+          nowMs={nowMs}
+          openAgentKey={openNativeAgentKey}
+          expandedOverrides={nativeGroupExpandedOverrides}
+          onToggleGroup={onToggleNativeGroup}
+          onPeekAgent={onPeekNativeAgent}
+          onPeekLeave={onPeekLeave}
+          onAgentClick={onNativeAgentClick}
+          miniWindow={nativeAgentMiniWindow}
+        />
         <button
           type="button"
           data-testid="sidebar-task-new"

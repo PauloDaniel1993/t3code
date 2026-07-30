@@ -406,6 +406,9 @@ function WorkflowWorkerCard({
     <article
       className="min-w-0 rounded-md border border-border/60 bg-background/60 px-2 py-1.5"
       data-slot="workflow-worker-card"
+      // The sidebar's in-session agent rows locate a run here ("Show in
+      // transcript"): the provider's task id is the shared key.
+      data-native-agent-task-id={worker.taskId}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <Badge variant={statusMeta.variant} size="sm">
