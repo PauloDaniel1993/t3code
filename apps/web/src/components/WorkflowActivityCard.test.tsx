@@ -360,7 +360,11 @@ describe("WorkflowActivityCard rendering", () => {
     expect(markup).not.toContain("<img src=x");
   });
 
-  it("keeps complete results in collapsed disclosures by default", () => {
+  // A worker reads as one row: status icon, name, its latest line, then the
+  // status word and its own usage. The summary is shown rather than hidden
+  // behind a "Result" disclosure, and no worker is boxed — five of those read as
+  // five competing cards rather than one list.
+  it("shows a completed worker's result inline with its status word", () => {
     const markup = renderToStaticMarkup(
       <WorkflowActivityCard
         model={makeModel({
@@ -371,28 +375,19 @@ describe("WorkflowActivityCard rendering", () => {
               resultSummary: "Found 3 issues",
               outputFile: "/tmp/review-output.md",
             }),
-            makeWorker({ id: "task-2", taskId: "task-2", description: "Plain worker" }),
           ],
         })}
       />,
     );
-    expect(markup).toContain('data-slot="workflow-worker-result-toggle"');
-    expect(markup).toContain(">Result</span>");
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain("Found 3 issues");
-    expect(markup).toContain("Output:");
+    expect(markup).toContain("Found 3 issues");
+    expect(markup).toContain(">Completed<");
     expect(markup).toContain("/tmp/review-output.md");
-
-    const bare = renderToStaticMarkup(
-      <WorkflowActivityCard
-        model={makeModel({ workers: [makeWorker({ description: "Plain worker" })] })}
-      />,
-    );
-    expect(bare).not.toContain('data-slot="workflow-worker-result-toggle"');
-    expect(bare).not.toContain("Output:");
+    // The old presentation's affordances are gone.
+    expect(markup).not.toContain('data-slot="workflow-worker-result-toggle"');
+    expect(markup).not.toContain("Output:");
   });
 
-  it("keeps completed progress visible before the collapsed result", () => {
+  it("prefers the result over the progress line it superseded", () => {
     const markup = renderToStaticMarkup(
       <WorkflowActivityCard
         model={makeModel({
@@ -407,16 +402,11 @@ describe("WorkflowActivityCard rendering", () => {
         })}
       />,
     );
-
-    const progressToggleIndex = markup.indexOf('data-slot="workflow-worker-progress-toggle"');
-    const resultToggleIndex = markup.indexOf('data-slot="workflow-worker-result-toggle"');
-    expect(progressToggleIndex).toBeGreaterThan(-1);
-    expect(resultToggleIndex).toBeGreaterThan(progressToggleIndex);
+    expect(markup).toContain("Produced the final report.");
     expect(markup).not.toContain("Read the relevant source files.");
-    expect(markup).not.toContain("Produced the final report.");
   });
 
-  it("renders task errors and both sides of a retry relationship", () => {
+  it("shows an error over a result, and names both sides of a retry", () => {
     const markup = renderToStaticMarkup(
       <WorkflowActivityCard
         model={makeModel({
@@ -440,35 +430,41 @@ describe("WorkflowActivityCard rendering", () => {
       />,
     );
 
-    expect(markup).toContain("Error:");
     expect(markup).toContain("Worker connection closed unexpectedly.");
-    expect(markup).toContain("Retried by");
-    expect(markup).toContain("agent task-new");
-    expect(markup).toContain("Retry of");
-    expect(markup).toContain("agent task-old");
-    expect(markup).toContain('data-slot="workflow-worker-result-toggle"');
-    expect(markup).not.toContain("Retry completed successfully.");
+    expect(markup).toContain(">Failed<");
+    // The retry is described where the reader is looking, not as a separate
+    // line referencing an opaque task id.
+    expect(markup).toContain("Retried below");
+    expect(markup).toContain("Retry of the failed run");
+    expect(markup).toContain("Retry completed successfully.");
   });
 
-  it("collapses progress disclosures by default and omits them without a summary", () => {
-    const withProgress = renderToStaticMarkup(
+  it("falls back to the progress line while a worker is still running", () => {
+    const running = renderToStaticMarkup(
       <WorkflowActivityCard
         model={makeModel({
-          workers: [makeWorker({ description: "Chatty worker", progressSummary: "Halfway there" })],
+          workers: [
+            makeWorker({
+              description: "Chatty worker",
+              status: "inProgress",
+              progressSummary: "Halfway there",
+              lastToolName: "Grep",
+            }),
+          ],
         })}
       />,
     );
-    expect(withProgress).toContain('data-slot="workflow-worker-progress-toggle"');
-    expect(withProgress).toContain(">Progress</span>");
-    expect(withProgress).toContain('aria-expanded="false"');
-    expect(withProgress).not.toContain("Halfway there");
+    expect(running).toContain("Halfway there");
+    expect(running).toContain("Last: Grep");
+    expect(running).toContain(">Running<");
 
-    const withoutProgress = renderToStaticMarkup(
+    const quiet = renderToStaticMarkup(
       <WorkflowActivityCard
         model={makeModel({ workers: [makeWorker({ description: "Quiet worker" })] })}
       />,
     );
-    expect(withoutProgress).not.toContain(">Progress</span>");
+    expect(quiet).toContain("Quiet worker");
+    expect(quiet).not.toContain(">Progress</span>");
   });
 
   it("collapses the reasoning disclosure by default and omits it without content", () => {
