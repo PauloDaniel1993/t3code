@@ -132,16 +132,6 @@ export function deriveUsageMetricSegments(usage: {
   return segments;
 }
 
-export function deriveWorkerMetricSegments(
-  worker: Pick<WorkflowActivityWorker, "usage" | "lastToolName">,
-): WorkflowMetricSegment[] {
-  const segments = worker.usage ? deriveUsageMetricSegments(worker.usage) : [];
-  if (worker.lastToolName) {
-    segments.push({ id: "lastTool", text: `Last: ${worker.lastToolName}` });
-  }
-  return segments;
-}
-
 /** Card title: workflow name when the provider supplied one, else a generic heading. */
 export function deriveWorkflowCardTitle(model: WorkflowActivityModel): string {
   const workflowName = model.workers.find((worker) => worker.workflowName)?.workflowName;
@@ -355,9 +345,9 @@ function workerStatusPresentation(status: WorkLogToolLifecycleStatus): {
 } {
   if (status === "completed") {
     return {
-      icon: <CheckIcon className="size-3.5 text-success" aria-hidden />,
+      icon: <CheckIcon className="size-3.5 text-primary" aria-hidden />,
       label: "Completed",
-      labelClass: "text-success",
+      labelClass: "text-primary",
     };
   }
   if (status === "failed") {
@@ -375,9 +365,9 @@ function workerStatusPresentation(status: WorkLogToolLifecycleStatus): {
     };
   }
   return {
-    icon: <LoaderIcon className="size-3.5 animate-spin text-primary" aria-hidden />,
+    icon: <LoaderIcon className="size-3.5 animate-spin text-muted-foreground/70" aria-hidden />,
     label: "Running",
-    labelClass: "text-primary",
+    labelClass: "text-muted-foreground/70",
   };
 }
 
@@ -417,7 +407,7 @@ function WorkflowWorkerCard({
   readonly idPrefix: string;
 }) {
   const presentation = workerStatusPresentation(worker.status);
-  const metrics = deriveWorkerMetricSegments(worker);
+  const metrics = worker.usage ? deriveUsageMetricSegments(worker.usage) : [];
   const label = worker.description ?? worker.subagentType ?? worker.taskType ?? "Task";
   const failed = worker.status === "failed";
   // Newest first: an error explains a finished run better than its last result,
@@ -465,7 +455,7 @@ function WorkflowWorkerCard({
         {subline.length > 0 ? (
           <p
             className={cn(
-              "mt-0.5 line-clamp-3 break-words text-[11px] leading-[1.45]",
+              "mt-0.5 line-clamp-2 break-words text-[11px] leading-[1.45]",
               failed ? "text-destructive/90" : "text-muted-foreground/70",
             )}
             title={subline}
@@ -589,7 +579,7 @@ export const WorkflowActivityCard = memo(function WorkflowActivityCard({
         style={{ maxHeight: "min(26rem, 55vh)" }}
       >
         <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5 pb-1 text-[12px] text-muted-foreground">
-          <ZapIcon className="size-3 shrink-0 text-success/85" aria-hidden />
+          <ZapIcon className="size-3 shrink-0 text-primary/85" aria-hidden />
           <p className="font-medium text-foreground/85">{title}</p>
           {counter ? (
             <span className="tabular-nums text-muted-foreground/70">· {counter}</span>
