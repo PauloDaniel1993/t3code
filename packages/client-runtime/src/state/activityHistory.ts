@@ -57,7 +57,10 @@ function mergeActivities(
   for (const activity of newer) {
     byId.set(activity.id, activity);
   }
-  return Array.from(byId.values()).toSorted(compareThreadActivities);
+  // .sort() on a fresh array, not .toSorted(): this module is shared with the
+  // mobile app and Hermes doesn't ship the ES2023 change-by-copy array methods.
+  // Array.from already copies, so sorting in place mutates nothing shared.
+  return Array.from(byId.values()).sort(compareThreadActivities);
 }
 
 export function createActivityHistoryState(thread: OrchestrationThread): ActivityHistoryState {
