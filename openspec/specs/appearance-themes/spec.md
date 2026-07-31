@@ -136,7 +136,14 @@ The system SHALL support configurable UI, chat, code, and terminal font sizes, c
 #### Scenario: Terminal font application
 
 - **WHEN** terminal font family or terminal font size changes
-- **THEN** open xterm terminals update their options and refit safely
+- **THEN** open terminals are re-fonted in place rather than recreated
+- **AND** the renderer reloads the face, remeasures the cell, and refits safely
+
+#### Scenario: Built-in terminal font family
+
+- **WHEN** the active theme uses the built-in default terminal font family
+- **THEN** no family is forwarded to the renderer, so its own default stack applies
+- **AND** the Nerd Font glyph fallbacks that stack provides stay reachable
 
 ### Requirement: Support light and dark color variants
 
