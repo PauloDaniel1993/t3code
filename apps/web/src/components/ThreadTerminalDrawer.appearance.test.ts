@@ -1,4 +1,5 @@
 import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
   type AppearanceSettings,
   type AppearanceTheme,
   type ResolvedKeybindingsConfig,
@@ -7,15 +8,15 @@ import {
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+type TerminalFont = { family?: string; size?: number };
+
 const testState = vi.hoisted(() => ({
-  fitCalls: 0,
-  fitShouldThrow: false,
   frames: new Map<number, (timestamp: number) => void>(),
   instances: [] as Array<{
-    buffer: { active: { baseY: number; viewportY: number } };
     cols: number;
-    options: Record<string, unknown>;
+    createdFont: { family?: string; size?: number } | undefined;
     rows: number;
+    setFontCalls: Array<{ family?: string; size?: number }>;
   }>,
   mount: null as unknown,
   nextFrameId: 0,
@@ -200,54 +201,51 @@ vi.mock("@effect/atom-react", () => ({
   useAtomValue: () => undefined,
 }));
 
-vi.mock("@xterm/addon-fit", () => {
-  class FitAddon {
-    fit(): void {
-      testState.fitCalls += 1;
-      if (testState.fitShouldThrow) {
-        throw new Error("fit failed");
-      }
-    }
-  }
-  return { FitAddon };
-});
-
-vi.mock("@xterm/xterm", () => {
-  class Terminal {
-    readonly buffer = {
-      active: {
-        baseY: 0,
-        getLine: () => undefined,
-        viewportY: 0,
-      },
-    };
+vi.mock("~/terminal/ghostty/surface", () => {
+  class GhosttyTerminalSurface {
     cols = 80;
-    options: Record<string, unknown>;
     rows = 24;
+    readonly createdFont: TerminalFont | undefined;
+    readonly setFontCalls: TerminalFont[] = [];
 
-    constructor(options: Record<string, unknown>) {
-      this.options = { ...options };
+    constructor(options: { font?: TerminalFont }) {
+      this.createdFont = options.font;
       testState.instances.push(this);
     }
 
-    attachCustomKeyEventHandler(): void {}
+    static create(_mount: unknown, options: { font?: TerminalFont }) {
+      return Promise.resolve(new GhosttyTerminalSurface(options));
+    }
+
     clearSelection(): void {}
     dispose(): void {}
-    loadAddon(): void {}
-    onData() {
-      return { dispose() {} };
+    fit(): void {}
+    focus(): void {}
+    getSelection(): string {
+      return "";
     }
-    onSelectionChange() {
-      return { dispose() {} };
+    getSelectionEndClientRect() {
+      return null;
     }
-    open(): void {}
-    refresh(): void {}
-    registerLinkProvider() {
-      return { dispose() {} };
+    getSelectionPosition() {
+      return null;
     }
+    hasSelection(): boolean {
+      return false;
+    }
+    isAtBottom(): boolean {
+      return true;
+    }
+    resetAndWrite(): void {}
     scrollToBottom(): void {}
+    setFont(font: TerminalFont): Promise<void> {
+      this.setFontCalls.push(font);
+      return Promise.resolve();
+    }
+    setTheme(): void {}
+    write(): void {}
   }
-  return { Terminal };
+  return { GhosttyTerminalSurface };
 });
 
 vi.mock("~/components/ui/popover", () => ({
@@ -372,21 +370,26 @@ function renderViewport(): void {
   hooks.flushEffects();
 }
 
-function mountViewport(): { options: Record<string, unknown> } {
+/** The surface is created asynchronously, so settle the create promise chain. */
+async function settleSetup(): Promise<void> {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+async function mountViewport(): Promise<(typeof testState.instances)[number]> {
   renderViewport();
+  await settleSetup();
   flushAnimationFrames();
   const terminal = testState.instances[0];
   if (!terminal) {
     throw new Error("Expected terminal to be created");
   }
-  testState.fitCalls = 0;
   testState.resize.mockClear();
   return terminal;
 }
 
 beforeEach(() => {
-  testState.fitCalls = 0;
-  testState.fitShouldThrow = false;
   testState.frames.clear();
   testState.instances.length = 0;
   testState.nextFrameId = 0;
@@ -403,6 +406,9 @@ beforeEach(() => {
 
   vi.stubGlobal("document", {
     body: {},
+    // The theme reader probes colors through a canvas; without a 2d context it
+    // falls back to the literal values, which is all these typography tests need.
+    createElement: () => ({ getContext: () => null }),
     documentElement: {
       classList: { contains: () => false },
     },
@@ -439,50 +445,39 @@ afterEach(() => {
 });
 
 describe("TerminalViewport appearance typography", () => {
-  it("creates a terminal with typography from the active custom appearance theme", () => {
-    const terminal = mountViewport();
+  it("creates a terminal with typography from the active custom appearance theme", async () => {
+    const terminal = await mountViewport();
 
-    expect(terminal.options.fontFamily).toBe('"Iosevka", monospace');
-    expect(terminal.options.fontSize).toBe(15);
+    expect(terminal.createdFont).toEqual({ family: '"Iosevka", monospace', size: 15 });
   });
 
-  it("updates the existing terminal options, refits, and resizes after typography changes", () => {
-    const terminal = mountViewport();
+  it("re-fonts the existing terminal after typography changes without recreating it", async () => {
+    const terminal = await mountViewport();
     testState.settings = { appearance: customAppearance('"Fira Code", monospace', 17) };
 
     renderViewport();
 
     expect(testState.instances).toHaveLength(1);
     expect(testState.instances[0]).toBe(terminal);
-    expect(terminal.options.fontFamily).toBe('"Fira Code", monospace');
-    expect(terminal.options.fontSize).toBe(17);
-    expect(testState.fitCalls).toBe(0);
-
-    flushAnimationFrames();
-
-    expect(testState.fitCalls).toBe(1);
-    expect(testState.resize).toHaveBeenCalledWith({
-      environmentId: "environment-local",
-      input: { cols: 80, rows: 24, terminalId: "terminal-1", threadId: "thread-1" },
-    });
+    expect(terminal.setFontCalls).toEqual([{ family: '"Fira Code", monospace', size: 17 }]);
   });
 
-  it("does not refit unchanged typography and safely continues when fitting throws", () => {
-    mountViewport();
+  it("does not re-font unchanged typography", async () => {
+    const terminal = await mountViewport();
 
     renderViewport();
-    expect(testState.frames).toHaveLength(0);
-    expect(testState.fitCalls).toBe(0);
 
-    testState.fitShouldThrow = true;
-    testState.settings = { appearance: customAppearance('"Fira Code", monospace', 17) };
-    renderViewport();
+    expect(terminal.setFontCalls).toEqual([]);
+  });
 
-    expect(() => flushAnimationFrames()).not.toThrow();
-    expect(testState.fitCalls).toBe(1);
-    expect(testState.resize).toHaveBeenCalledWith({
-      environmentId: "environment-local",
-      input: { cols: 80, rows: 24, terminalId: "terminal-1", threadId: "thread-1" },
-    });
+  // The renderer appends Nerd Font glyph fallbacks to any face it is handed, and
+  // the appearance default ends in `monospace`, which would swallow them. Omitting
+  // the family lets the renderer's own stack — fallbacks included — apply.
+  it("omits the built-in default family so the renderer's own stack applies", async () => {
+    testState.settings = { appearance: customAppearance(DEFAULT_TERMINAL_FONT_FAMILY, 12) };
+
+    const terminal = await mountViewport();
+
+    expect(terminal.createdFont).toEqual({ size: 12 });
   });
 });
