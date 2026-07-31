@@ -1,8 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
@@ -10,7 +12,12 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import {
+  CommandAvailability,
+  type CommandAvailabilityChecker,
+  isCommandAvailable,
+  SpawnExecutableResolution,
+} from "@t3tools/shared/shell";
 import * as ExternalLauncher from "./externalLauncher.ts";
 
 function makeMockDetachedHandle(onUnref: () => void = () => undefined) {
@@ -35,6 +42,7 @@ function makeMockDetachedHandle(onUnref: () => void = () => undefined) {
 const testLayer = (input: {
   readonly platform: NodeJS.Platform;
   readonly env?: Record<string, string>;
+  readonly commandAvailable?: CommandAvailabilityChecker;
   readonly resolveExecutable?: (command: string) => string | undefined;
   readonly onSpawn?: (command: ChildProcess.StandardCommand) => void;
   readonly onUnref?: () => void;
@@ -56,6 +64,7 @@ const testLayer = (input: {
   return Layer.mergeAll(
     ExternalLauncher.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, spawnerLayer))),
     Layer.succeed(HostProcessPlatform, input.platform),
+    Layer.succeed(CommandAvailability, input.commandAvailable ?? isCommandAvailable),
     Layer.succeed(
       SpawnExecutableResolution,
       (command) => input.resolveExecutable?.(command) ?? command,
@@ -153,6 +162,93 @@ it.effect("discovers editors through the service API", () =>
     assert.equal(editors.includes("vscode"), true);
     assert.equal(editors.includes("file-manager"), true);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("checks independent editor commands concurrently", () => {
+  let activeChecks = 0;
+  let peakActiveChecks = 0;
+
+  return Effect.gen(function* () {
+    const launcher = yield* ExternalLauncher.ExternalLauncher;
+    const editors = yield* launcher.resolveAvailableEditors();
+
+    assert.isAbove(peakActiveChecks, 1);
+    assert.deepEqual(editors, ["vscode", "file-manager"]);
+  }).pipe(
+    Effect.provide(
+      testLayer({
+        platform: "win32",
+        env: { PATH: "" },
+        commandAvailable: (command) =>
+          Effect.gen(function* () {
+            activeChecks += 1;
+            peakActiveChecks = Math.max(peakActiveChecks, activeChecks);
+            yield* Effect.yieldNow;
+            activeChecks -= 1;
+            return command === "code" || command === "explorer";
+          }),
+      }),
+    ),
+  );
+});
+
+it.effect("reuses successful editor discovery results", () => {
+  let commandChecks = 0;
+
+  return Effect.gen(function* () {
+    const launcher = yield* ExternalLauncher.ExternalLauncher;
+    const firstEditors = yield* launcher.resolveAvailableEditors();
+    const checksAfterFirstDiscovery = commandChecks;
+    const secondEditors = yield* launcher.resolveAvailableEditors();
+
+    assert.isAbove(checksAfterFirstDiscovery, 0);
+    assert.deepEqual(firstEditors, ["vscode", "file-manager"]);
+    assert.deepEqual(secondEditors, firstEditors);
+    assert.equal(commandChecks, checksAfterFirstDiscovery);
+  }).pipe(
+    Effect.provide(
+      testLayer({
+        platform: "win32",
+        env: { PATH: "" },
+        commandAvailable: (command) =>
+          Effect.sync(() => {
+            commandChecks += 1;
+            return command === "code" || command === "explorer";
+          }),
+      }),
+    ),
+  );
+});
+
+it.effect("retries editor discovery after an interrupted attempt", () =>
+  Effect.gen(function* () {
+    const discoveryStarted = yield* Deferred.make<void>();
+    let blockDiscovery = true;
+
+    const editors = yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      const firstAttempt = yield* launcher.resolveAvailableEditors().pipe(Effect.forkChild);
+
+      yield* Deferred.await(discoveryStarted);
+      yield* Fiber.interrupt(firstAttempt);
+      blockDiscovery = false;
+
+      return yield* launcher.resolveAvailableEditors();
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          platform: "win32",
+          env: { PATH: "" },
+          commandAvailable: (command) =>
+            blockDiscovery
+              ? Deferred.succeed(discoveryStarted, undefined).pipe(Effect.andThen(Effect.never))
+              : Effect.succeed(command === "code" || command === "explorer"),
+        }),
+      ),
+    );
+
+    assert.deepEqual(editors, ["vscode", "file-manager"]);
+  }),
 );
 
 it.effect("rejects unknown editors through the service API", () =>

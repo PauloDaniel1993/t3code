@@ -18,7 +18,12 @@ import {
   type LaunchEditorInput,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
+import {
+  CommandAvailability,
+  type CommandAvailabilityChecker,
+  isCommandAvailable,
+  resolveSpawnCommand,
+} from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -27,6 +32,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
@@ -78,6 +84,8 @@ const DETACHED_IGNORE_STDIO_OPTIONS = {
   stdout: "ignore",
   stderr: "ignore",
 } as const satisfies ChildProcess.CommandOptions;
+
+const EDITOR_DISCOVERY_CONCURRENCY = 8;
 
 const compactEnv = (input: Record<string, Option.Option<string>>): NodeJS.ProcessEnv =>
   Object.fromEntries(
@@ -160,9 +168,10 @@ function resolveEditorArgs(
 const resolveAvailableCommand = Effect.fn("externalLauncher.resolveAvailableCommand")(function* (
   commands: ReadonlyArray<string>,
   env: NodeJS.ProcessEnv,
+  commandAvailable: CommandAvailabilityChecker,
 ): Effect.fn.Return<Option.Option<string>, never, FileSystem.FileSystem | Path.Path> {
   for (const command of commands) {
-    if (yield* isCommandAvailable(command, { env })) {
+    if (yield* commandAvailable(command, { env })) {
       return Option.some(command);
     }
   }
@@ -264,24 +273,23 @@ const buildAvailableEditors = Effect.fn("externalLauncher.buildAvailableEditors"
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
 ): Effect.fn.Return<ReadonlyArray<EditorId>, never, FileSystem.FileSystem | Path.Path> {
-  const available: EditorId[] = [];
+  const commandAvailable = yield* CommandAvailability;
+  const available = yield* Effect.forEach(
+    EDITORS,
+    (editor) =>
+      Effect.gen(function* () {
+        if (editor.commands === null) {
+          const command = fileManagerCommandForPlatform(platform);
+          return (yield* commandAvailable(command, { env })) ? editor.id : null;
+        }
 
-  for (const editor of EDITORS) {
-    if (editor.commands === null) {
-      const command = fileManagerCommandForPlatform(platform);
-      if (yield* isCommandAvailable(command, { env })) {
-        available.push(editor.id);
-      }
-      continue;
-    }
+        const command = yield* resolveAvailableCommand(editor.commands, env, commandAvailable);
+        return Option.isSome(command) ? editor.id : null;
+      }),
+    { concurrency: EDITOR_DISCOVERY_CONCURRENCY },
+  );
 
-    const command = yield* resolveAvailableCommand(editor.commands, env);
-    if (Option.isSome(command)) {
-      available.push(editor.id);
-    }
-  }
-
-  return available;
+  return available.filter((editor): editor is EditorId => editor !== null);
 });
 
 const resolveBrowserLaunch = Effect.fn("externalLauncher.resolveBrowserLaunch")(function* (
@@ -325,6 +333,7 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
 ): Effect.fn.Return<EditorLaunch, ExternalLauncherError, FileSystem.FileSystem | Path.Path> {
   const platform = yield* HostProcessPlatform;
   const env = yield* readCommandLookupEnv;
+  const commandAvailable = yield* CommandAvailability;
   yield* Effect.annotateCurrentSpan({
     "externalLauncher.editor": input.editor,
     "externalLauncher.cwd": input.cwd,
@@ -337,7 +346,7 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
 
   if (editorDef.commands) {
     const command = Option.getOrElse(
-      yield* resolveAvailableCommand(editorDef.commands, env),
+      yield* resolveAvailableCommand(editorDef.commands, env, commandAvailable),
       () => editorDef.commands[0],
     );
     return {
@@ -443,8 +452,25 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
 
+  const availableEditorsRef = yield* SynchronizedRef.make<Option.Option<ReadonlyArray<EditorId>>>(
+    Option.none(),
+  );
+  const resolveAvailableEditorsCached = Effect.fn("externalLauncher.resolveAvailableEditorsCached")(
+    function* () {
+      return yield* SynchronizedRef.modifyEffect(availableEditorsRef, (cached) =>
+        Option.match(cached, {
+          onNone: () =>
+            provideCommandResolutionServices(resolveAvailableEditors()).pipe(
+              Effect.map((available) => [available, Option.some(available)] as const),
+            ),
+          onSome: (available) => Effect.succeed([available, cached] as const),
+        }),
+      );
+    },
+  );
+
   return ExternalLauncher.of({
-    resolveAvailableEditors: () => provideCommandResolutionServices(resolveAvailableEditors()),
+    resolveAvailableEditors: resolveAvailableEditorsCached,
     launchBrowser: (target) =>
       launchBrowser(target).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
