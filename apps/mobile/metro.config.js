@@ -7,6 +7,21 @@ const { withUniwindConfig } = require("uniwind/metro");
 const config = getDefaultConfig(__dirname);
 const workspaceRoot = path.resolve(__dirname, "../..");
 const escapedWorkspaceRoot = workspaceRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const IGNORED_WORKSPACE_DIRS = [
+  "\\.git",
+  "\\.repos",
+  "\\.t3-dev",
+  "\\.logs",
+  "\\.plans",
+  "\\.macroscope",
+  "\\.claude-work-test",
+  "\\.idea",
+  "\\.vscode",
+  "output",
+  "experiments",
+  "release",
+  "docs",
+];
 const mobileShikiRoot = path.dirname(require.resolve("shiki/package.json", { paths: [__dirname] }));
 const resolveShikiDependencyRoot = (packageName) => {
   const entryPath = require.resolve(packageName, { paths: [mobileShikiRoot] });
@@ -33,6 +48,16 @@ config.resolver = {
         ? [config.resolver.blockList]
         : []),
     new RegExp(`${escapedWorkspaceRoot}[/\\\\]\\.t3[/\\\\].*`),
+    // Gradle creates and deletes CMake scratch dirs under node_modules while a
+    // native build runs. Watching them crashes the file map with ENOENT.
+    /[/\\]\.cxx[/\\].*/,
+    // watchFolders spans the whole monorepo so workspace packages resolve, but
+    // crawling these trees is pure cost and exhausts file descriptors on
+    // Windows ("EMFILE: too many open files"). None of them are importable.
+    new RegExp(
+      `${escapedWorkspaceRoot}[/\\\\](?:${IGNORED_WORKSPACE_DIRS.join("|")})[/\\\\].*`,
+    ),
+    /[/\\]android[/\\](?:build|\.gradle|\.kotlin)[/\\].*/,
   ],
   extraNodeModules: {
     // oxlint-disable-next-line unicorn/no-useless-fallback-in-spread
