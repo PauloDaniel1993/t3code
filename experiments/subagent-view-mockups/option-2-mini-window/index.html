@@ -1,0 +1,1734 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Subagent mini window — Option 2 · mini-window parity</title>
+    <link rel="stylesheet" href="../mockup.css" />
+    <style>
+      /* ---- Sidebar sub-thread rows (copied from thread-tasks-mockups) ---- */
+      .trow.has-subs {
+        padding-left: 24px;
+      }
+      .disclosure {
+        position: absolute;
+        left: 6px;
+        top: 10px;
+        width: 14px;
+        height: 14px;
+        color: var(--dim);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .tcount {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10.5px;
+        color: var(--muted);
+        background: var(--chip);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0 7px;
+        line-height: 16px;
+      }
+      .subs {
+        margin: 1px 4px 4px 22px;
+        padding-left: 12px;
+        border-left: 1px solid var(--border2);
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .sub {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 8px;
+        font-size: 12.5px;
+      }
+      .sub:hover {
+        background: var(--hover);
+      }
+      .sub .sic {
+        width: 15px;
+        height: 15px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .sub .stitle {
+        flex: 1;
+        min-width: 0;
+        color: #d9dbe1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sub.done .stitle {
+        color: var(--muted);
+      }
+      .sub .smeta {
+        flex: none;
+        font-size: 11px;
+        color: var(--dim);
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .sub .smeta.working {
+        color: var(--info);
+      }
+      .sub-new {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 1px 4px 4px 22px;
+        padding: 5px 8px 5px 20px;
+        border-left: 1px solid var(--border2);
+        font-size: 12px;
+        color: var(--dim);
+        opacity: 0.55;
+      }
+      .trow.has-subs:hover + .subs + .sub-new,
+      .sub-new:hover {
+        opacity: 1;
+      }
+
+      /* ---- Mini window chrome (copied from thread-tasks-mockups) ---- */
+      .mini-win {
+        position: fixed;
+        z-index: 60;
+        width: 352px;
+        display: none;
+        background: rgba(24, 24, 28, 0.94);
+        -webkit-backdrop-filter: blur(16px) saturate(1.1);
+        backdrop-filter: blur(16px) saturate(1.1);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        box-shadow:
+          0 18px 44px -18px rgba(0, 0, 0, 0.8),
+          inset 0 1px rgba(255, 255, 255, 0.04);
+      }
+      .mini-win.show {
+        display: block;
+        animation: mw-in 0.13s cubic-bezier(0.2, 0, 0.2, 1) both;
+      }
+      @keyframes mw-in {
+        from {
+          opacity: 0;
+          transform: translateX(-4px) scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .mini-win::before {
+        content: "";
+        position: absolute;
+        left: -5px;
+        top: 18px;
+        width: 9px;
+        height: 9px;
+        transform: rotate(45deg);
+        background: rgba(24, 24, 28, 0.94);
+        border-left: 1px solid rgba(255, 255, 255, 0.1);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .mw-top {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--dim);
+        padding: 10px 12px 0;
+      }
+      .mw-top.working {
+        color: var(--info);
+      }
+      .mw-top.done {
+        color: var(--success);
+      }
+      .mw-x {
+        margin-left: auto;
+        color: var(--dim);
+        display: flex;
+        padding: 2px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .mw-x:hover {
+        background: var(--hover);
+        color: var(--fg);
+      }
+      .mw-title {
+        font-size: 13.5px;
+        font-weight: 600;
+        line-height: 1.35;
+        padding: 6px 12px 0;
+      }
+      .mw-meta {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: wrap;
+        padding: 7px 12px 0;
+      }
+      .mw-body {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 12px 12px;
+        max-height: 250px;
+        overflow-y: auto;
+      }
+      .mw-msg {
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .mw-msg.user {
+        align-self: flex-end;
+        max-width: 86%;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 6px 10px;
+        color: var(--fg);
+      }
+      .mw-msg.asst {
+        color: var(--muted);
+      }
+      .mw-msg.asst b {
+        color: #d5d7de;
+        font-weight: 550;
+      }
+      .mw-evt {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--info);
+      }
+      .mw-composer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-top: 1px solid var(--border);
+        padding: 9px 12px;
+        font-size: 12px;
+        color: var(--dim);
+      }
+      .mw-open {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10.5px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 2.5px 8px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .mw-open:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--fg);
+      }
+      .mw-top .mw-x {
+        margin-left: 2px;
+      }
+
+      /* ============================================================
+         Option 2 additions — one window anatomy, four positions on
+         what a peek at a provider-native subagent should be.
+         ============================================================ */
+
+      /* Variant sections: one is visible at a time (the app chrome behind
+         is shared — the workflow card is identical in every variant). */
+      .variant {
+        display: none;
+      }
+      .variant.on {
+        display: block;
+      }
+
+      .mw-top.failed {
+        color: var(--danger);
+      }
+      .wrow {
+        cursor: pointer;
+      }
+      .wrow.open {
+        background: var(--selected);
+      }
+
+      /* Failed-run error block + retry linkage (all variants) */
+      .mw-err {
+        font-size: 12px;
+        line-height: 1.5;
+        color: #fecaca;
+        border: 1px solid rgba(248, 113, 113, 0.35);
+        background: rgba(248, 113, 113, 0.08);
+        border-radius: 10px;
+        padding: 7px 10px;
+      }
+      .mw-retry {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        font-size: 11px;
+        color: var(--info);
+        cursor: pointer;
+        user-select: none;
+      }
+      .mw-retry b {
+        font-weight: 600;
+      }
+      .mw-retry:hover .mw-retry-go {
+        text-decoration: underline;
+      }
+      .mw-retry svg {
+        flex: none;
+      }
+      .mw-dim {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--dim);
+      }
+
+      /* Disabled steer composer (V1, V3) — present but inert, reason stated */
+      .mw-composer-col {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .mw-lock {
+        margin-left: auto;
+        color: var(--dim);
+        display: flex;
+        flex: none;
+      }
+
+      /* V2 — receipt card */
+      .rc-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px 0;
+      }
+      .rc-eyebrow {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        font-weight: 600;
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .rc-status {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .rc-status.done {
+        color: var(--success);
+      }
+      .rc-status.working {
+        color: var(--info);
+      }
+      .rc-status.failed {
+        color: var(--danger);
+      }
+      .rc-stats {
+        display: flex;
+        gap: 6px;
+        padding: 8px 12px 0;
+      }
+      .rc-stat {
+        flex: 1;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 10px;
+        padding: 6px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+      }
+      .rc-stat b {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--fg);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .rc-stat span {
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .rc-label {
+        font-size: 10px;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--dim);
+        font-weight: 600;
+      }
+      .rc-prompt {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .rc-result {
+        font-size: 12px;
+        line-height: 1.55;
+        color: var(--muted);
+        border-left: 2px solid rgba(52, 211, 153, 0.5);
+        padding-left: 10px;
+      }
+      .rc-pending {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--dim);
+        font-style: italic;
+      }
+      .rc-foot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        border-top: 1px solid var(--border);
+        padding: 9px 12px;
+      }
+      .rc-foot .mw-open {
+        margin-left: 0;
+      }
+      .rc-file {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
+        color: var(--dim);
+        padding: 0 12px 10px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* V3 — promote block above the (disabled) composer */
+      .promote {
+        border-top: 1px solid var(--border);
+        padding: 10px 12px 4px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .promote-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        font-size: 12.5px;
+        font-weight: 550;
+        color: #fff;
+        background: var(--primary);
+        border-radius: 9px;
+        padding: 7px 10px;
+        cursor: pointer;
+      }
+      .promote-btn:hover {
+        filter: brightness(1.12);
+      }
+      .promote-btn svg {
+        width: 13px;
+        height: 13px;
+      }
+      .promote-note {
+        font-size: 11px;
+        color: var(--dim);
+        line-height: 1.45;
+        padding-bottom: 6px;
+      }
+
+      /* V4 — live ticker */
+      .lv-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px 0;
+      }
+      .lv-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--info);
+        flex: none;
+        box-shadow: 0 0 6px rgba(96, 165, 250, 0.8);
+        animation: lv-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes lv-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+      .lv-hero {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 8px 12px 0;
+      }
+      .tick {
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        font-variant-numeric: tabular-nums;
+        color: var(--info);
+      }
+      .lv-hero.done .tick {
+        color: var(--success);
+      }
+      .lv-hero.failed .tick {
+        color: var(--danger);
+      }
+      .lv-sub {
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .chip.pulse {
+        color: var(--info);
+        border-color: rgba(96, 165, 250, 0.4);
+        background: rgba(96, 165, 250, 0.1);
+        animation: lv-pulse 1.6s ease-in-out infinite;
+      }
+      .beats {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .beat {
+        display: flex;
+        gap: 8px;
+        font-size: 11.5px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+      .beat .bt {
+        flex: none;
+        width: 32px;
+        text-align: right;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10.5px;
+        color: var(--dim);
+        padding-top: 1px;
+      }
+      .lv-foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        border-top: 1px solid var(--border);
+        padding: 9px 12px;
+      }
+      .lv-foot .mw-open {
+        margin-left: 0;
+      }
+      .lv-note {
+        font-size: 10.5px;
+        color: var(--dim);
+        line-height: 1.4;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="backlink" href="../index.html">← Subagent-view options</a>
+
+    <!-- ================= Sidebar ================= -->
+    <nav class="sidebar">
+      <div class="sb-top">
+        <div class="brand"><span class="logo">t3</span>T3 Code</div>
+        <div class="search">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+          Search <span class="kbd">Ctrl+K</span>
+          <span class="new"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L16 11l-4 1 1-4Z" /></svg
+          ></span>
+        </div>
+        <div class="allproj">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path
+              d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+            />
+          </svg>
+          All projects
+          <span class="chev"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m6 9 6 6 6-6" /></svg
+          ></span>
+          <span class="new"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12h14" /></svg
+          ></span>
+        </div>
+      </div>
+
+      <div class="sb-list">
+        <div class="trow">
+          <span class="picon" style="--h: 225">WH</span>
+          <div class="tbody">
+            <div class="tmeta">
+              WorkflowHarness<span class="st working"><span class="spin"></span>Working 3m</span>
+            </div>
+            <div class="ttitle">Verify Durable Chat Runtime Acceptance</div>
+            <div class="tbranch">feature/durable-chat</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 225">WH</span>
+          <div class="tbody">
+            <div class="tmeta">
+              WorkflowHarness<span class="st working"><span class="spin"></span>Working 3m</span>
+            </div>
+            <div class="ttitle">Static Durable Chat Conformance Review</div>
+            <div class="tbranch">feature/durable-chat</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 0">W</span>
+          <div class="tbody">
+            <div class="tmeta">
+              Whisper<span class="st working"><span class="spin"></span>Working 19m</span>
+            </div>
+            <div class="ttitle">Test Windows Dictation Client</div>
+            <div class="tbranch">main</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+          ></span>
+        </div>
+
+        <!-- The selected parent thread: two real thread tasks nested under it.
+             The native subagents in this mockup live in the transcript's
+             workflow card — not in the sidebar. -->
+        <div id="parentWrap">
+          <div class="trow selected has-subs" id="parentRow">
+            <span class="disclosure" title="Collapse tasks">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </span>
+            <span class="picon" style="--h: 150">t3</span>
+            <div class="tbody">
+              <div class="tmeta">
+                t3code
+                <span class="st"
+                  ><span
+                    class="dot-blue"
+                    title="A task returned results and resumed this thread"
+                  ></span
+                  >33m</span
+                >
+              </div>
+              <div class="ttitle">Audit Kimi ACP Integration Gaps</div>
+              <div class="tbranch" style="display: flex; align-items: center; gap: 6px">
+                dev
+                <span class="tcount" title="2 sub-thread tasks">
+                  <svg
+                    style="width: 10px; height: 10px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="m3 17 2 2 4-4" />
+                    <path d="m3 7 2 2 4-4" />
+                    <path d="M13 6h8" />
+                    <path d="M13 12h8" />
+                    <path d="M13 18h8" />
+                  </svg>
+                  2 tasks
+                </span>
+              </div>
+            </div>
+            <span class="tprov"
+              ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+            ></span>
+          </div>
+
+          <div class="subs">
+            <div
+              class="sub done"
+              title="Thread task (own session) · done 8m ago · 4 findings returned, woke the parent"
+            >
+              <span class="sic ok"
+                ><svg
+                  class="ic"
+                  style="width: 13px; height: 13px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <path d="M20 6 9 17l-5-5" /></svg
+              ></span>
+              <span class="stitle">Inventory t3code ACP client handlers</span>
+              <span class="smeta">
+                <svg
+                  style="width: 11px; height: 11px; color: var(--info)"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M9 14 4 9l5-5" />
+                  <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                </svg>
+                8m
+              </span>
+            </div>
+            <div class="sub" title="Thread task (own session) · created by the agent · working 3m">
+              <span class="sic"><span class="spin"></span></span>
+              <span class="stitle">Sweep ACP session lifecycle gaps</span>
+              <span class="smeta working">3m</span>
+            </div>
+          </div>
+          <div class="sub-new" title="Create a task (sub-thread) from this thread">
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            New task
+          </div>
+        </div>
+
+        <div class="sec-head">
+          Settled
+          <svg
+            class="ic"
+            style="width: 12px; height: 12px; margin-left: auto"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="m18 15-6-6-6 6" />
+          </svg>
+        </div>
+        <div class="trow settled">
+          <span class="picon" style="--h: 0">C</span>
+          <div class="tbody"><div class="ttitle">Create HTML CV from cvs Folder</div></div>
+          <span style="align-self: center; font-size: 11px; color: var(--dim)">2m</span>
+        </div>
+        <div class="trow settled">
+          <span class="picon" style="--h: 0">A</span>
+          <div class="tbody"><div class="ttitle">Apply Agent Chat Integration G…</div></div>
+          <span style="align-self: center; font-size: 11px; color: var(--dim)">3m</span>
+        </div>
+        <div class="trow settled">
+          <span class="picon" style="--h: 0">G</span>
+          <div class="tbody"><div class="ttitle">Build GPU Transcription Backen…</div></div>
+          <span style="align-self: center; font-size: 11px; color: var(--dim)">46m</span>
+        </div>
+      </div>
+
+      <div class="sb-foot">
+        <div class="settings">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82.33l.06.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+            />
+          </svg>
+          Settings
+        </div>
+      </div>
+    </nav>
+
+    <!-- ================= Main ================= -->
+    <div class="main">
+      <div class="topbar">
+        <div class="crumbs">
+          t3code <span style="color: var(--dim)">/</span> <b>Audit Kimi ACP Integration Gaps</b>
+        </div>
+        <div class="top-actions">
+          <span class="btn"
+            ><svg
+              class="ic"
+              style="width: 12px; height: 12px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M12 5v14M5 12h14" /></svg
+            >Add action</span
+          >
+          <span class="btn"
+            ><svg
+              class="ic"
+              style="width: 11px; height: 11px"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <polygon points="6 3 20 12 6 21 6 3" /></svg
+            >Open</span
+          >
+          <span class="btn"
+            ><svg
+              class="ic"
+              style="width: 12px; height: 12px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="6" cy="6" r="2.5" />
+              <circle cx="6" cy="18" r="2.5" />
+              <circle cx="18" cy="8" r="2.5" />
+              <path d="M6 8.5v7" />
+              <path d="M18 10.5c0 4-4 4-9 4" /></svg
+            >Commit, push &amp; PR</span
+          >
+        </div>
+      </div>
+
+      <div class="tl">
+        <div class="col">
+          <div class="msg user">
+            Audit the Kimi ACP integration for gaps against the ACP spec. Focus on session
+            lifecycle, pairing, and tool-call routing.
+          </div>
+
+          <div class="msg asst">
+            I'll split this into two focused sub-threads so each runs with its own context, then
+            merge the findings here. Starting them now — I'll be resumed automatically as each one
+            reports back.
+          </div>
+
+          <div class="evt" title="The agent created a sub-thread; it appears nested in the sidebar">
+            <svg
+              class="ic"
+              style="width: 13px; height: 13px; color: #8f9cf5"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+            </svg>
+            Agent created task ·
+            <b style="font-weight: 550; color: #d5d7de">Inventory t3code ACP client handlers</b>
+            <span class="open">Open thread →</span>
+          </div>
+          <div class="evt" title="The agent created a sub-thread; it appears nested in the sidebar">
+            <svg
+              class="ic"
+              style="width: 13px; height: 13px; color: #8f9cf5"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+            </svg>
+            Agent created task ·
+            <b style="font-weight: 550; color: #d5d7de">Sweep ACP session lifecycle gaps</b>
+            <span class="open">Open thread →</span>
+          </div>
+
+          <div class="evt wake" title="t3code resumed the parent thread with the task's results">
+            <svg
+              class="ic"
+              style="width: 13px; height: 13px; color: var(--info)"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M9 14 4 9l5-5" />
+              <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+            </svg>
+            Task finished · <b style="font-weight: 550">Inventory t3code ACP client handlers</b> — 4
+            findings returned. Main thread resumed.
+          </div>
+
+          <div class="msg asst">
+            First results are in. The client implements
+            <code style="font-family: monospace; font-size: 12.5px">session/new</code>,
+            <code style="font-family: monospace; font-size: 12.5px">session/prompt</code> and
+            <code style="font-family: monospace; font-size: 12.5px">session/update</code>, but never
+            answers <code style="font-family: monospace; font-size: 12.5px">session/resume</code> —
+            that's gap #1, and it explains why restored sessions can't stream late events. One task
+            still running; I'll fold its findings into the audit when it lands.
+          </div>
+
+          <div class="msg user">
+            Also map the fs/* capability gates — that's where I suspect the silent denials.
+          </div>
+
+          <div class="msg asst">
+            Going wide inside this session — spawning explorers per subsystem while the lifecycle
+            sweep keeps running in its own thread.
+          </div>
+
+          <!-- Workflow card: provider-native subagents, exactly as rendered
+               today. This is the launch surface — clicking a worker row opens
+               the mini window on that worker. -->
+          <div class="wcard" id="wcard">
+            <div class="wcard-head">
+              <svg
+                class="ic"
+                style="width: 13px; height: 13px; color: #8f9cf5"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+              </svg>
+              <b>4 workers</b> · Task tool, this turn
+              <span class="usage">68.4k tokens · 30 tools · 4m 12s</span>
+            </div>
+            <div
+              class="wrow"
+              data-worker="w1"
+              id="wrow-w1"
+              title="In-session agent · finished 1m ago · click to open the peek window"
+            >
+              <span class="sic ok"
+                ><svg
+                  class="ic"
+                  style="width: 12px; height: 12px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <path d="M20 6 9 17l-5-5" /></svg
+              ></span>
+              <span class="wname">Map session/* handler coverage</span>
+              <span class="wtype">Explore</span>
+              <span class="wmeta"
+                ><span class="usage">38.2k tok · 14 tools</span><span>2m 14s</span></span
+              >
+            </div>
+            <div
+              class="wrow"
+              data-worker="w2"
+              id="wrow-w2"
+              title="In-session agent · running 1m 6s · click to open the peek window"
+            >
+              <span class="sic"><span class="spin"></span></span>
+              <span class="wname">Trace pairing token refresh flow</span>
+              <span class="wtype">general-purpose</span>
+              <span class="wmeta"
+                ><span class="wsub">Last: Grep</span><span class="usage">21.7k tok · 9 tools</span
+                ><span style="color: var(--info)">1m 6s</span></span
+              >
+            </div>
+            <div
+              class="wrow failed"
+              data-worker="w3"
+              id="wrow-w3"
+              title="In-session agent · failed after 34s · click to open the peek window"
+            >
+              <span class="sic xfail"
+                ><svg
+                  class="ic"
+                  style="width: 12px; height: 12px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="m15 9-6 6M9 9l6 6" /></svg
+              ></span>
+              <span class="wname">Locate fs capability gates</span>
+              <span class="wtype">Explore</span>
+              <span class="wmeta"
+                ><span class="wsub" style="color: var(--danger)">tool-use budget exceeded</span
+                ><span class="usage">6.1k tok · 5 tools</span
+                ><span style="color: var(--danger)">34s</span></span
+              >
+            </div>
+            <div
+              class="wrow"
+              data-worker="w4"
+              id="wrow-w4"
+              title="In-session agent · retry of the failed run · running 18s · click to open the peek window"
+            >
+              <span class="sic"><span class="spin"></span></span>
+              <span class="wname">Locate fs capability gates</span>
+              <span class="wtype">Explore</span>
+              <span class="wmeta"
+                ><span class="wsub">↺ retry of the failed run</span
+                ><span class="usage">2.4k tok · 2 tools</span
+                ><span style="color: var(--info)">18s</span></span
+              >
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <div class="ph">Ask for follow-up changes or attach images</div>
+          <div class="bar">
+            <span class="chipbtn"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                /></svg
+            ></span>
+            <span class="chipbtn"
+              ><svg
+                class="ic"
+                style="width: 12px; height: 12px; color: #8f9cf5"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+              >Claude Code</span
+            >
+            <span class="chipbtn"
+              >Opus 4.7<svg
+                class="ic"
+                style="width: 11px; height: 11px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" /></svg
+            ></span>
+            <span class="chipbtn"
+              >Full access<svg
+                class="ic"
+                style="width: 11px; height: 11px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" /></svg
+            ></span>
+            <span class="chipbtn">Build</span>
+            <span class="send"
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                <path d="M12 19V5M5 12l7-7 7 7" /></svg
+            ></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= Variants (mini window only; app chrome is shared) ================= -->
+    <section class="variant" data-variant="1" aria-label="V1 — Same anatomy, honest composer">
+      <div class="mini-win"></div>
+    </section>
+    <section class="variant" data-variant="2" aria-label="V2 — Receipt card">
+      <div class="mini-win"></div>
+    </section>
+    <section class="variant" data-variant="3" aria-label="V3 — Peek → promote">
+      <div class="mini-win"></div>
+    </section>
+    <section class="variant" data-variant="4" aria-label="V4 — Live ticker">
+      <div class="mini-win"></div>
+    </section>
+
+    <div class="switcher">
+      <a href="?v=1&amp;w=w2" data-v="1">V1 Anatomy</a>
+      <a href="?v=2&amp;w=w2" data-v="2">V2 Receipt</a>
+      <a href="?v=3&amp;w=w2" data-v="3">V3 Promote</a>
+      <a href="?v=4&amp;w=w2" data-v="4">V4 Live</a>
+    </div>
+
+    <div class="concept" id="conceptPill"></div>
+
+    <script>
+      /* ---- Data: the four provider-native subagents ("workers") of the
+         canonical scenario. Mirrors WorkflowActivityWorker: description,
+         subagentType, status, prompt, progressSummary/beats, resultSummary,
+         errorMessage, outputFile, usage snapshot, retry linkage. ---- */
+      const WORKERS = {
+        w1: {
+          id: "w1",
+          type: "Explore",
+          desc: "Map session/* handler coverage",
+          status: "finished",
+          ago: "1m ago",
+          dur: "2m 14s",
+          tokens: "38.2k",
+          tools: 14,
+          prompt:
+            "Map every session/* ACP method to its client handler in apps/web and packages/contracts; list spec methods with no handler and quote the file:line where each handled method is dispatched.",
+          result:
+            "12 client methods mapped; session/resume, session/fork, session/cancel have no handler — the missing session/resume blocks late-event streaming.",
+          file: "~/.claude/tasks/audit-8f3a/w1.output.md",
+        },
+        w2: {
+          id: "w2",
+          type: "general-purpose",
+          desc: "Trace pairing token refresh flow",
+          status: "running",
+          elapsed: "1m 6s",
+          elapsedBig: "1m 06s",
+          elapsedSec: 66,
+          tokens: "21.7k",
+          tools: 9,
+          lastTool: "Grep",
+          prompt:
+            "Trace the pairing-token refresh path end to end: where the token is stored, where refresh is scheduled, and what happens on a 401 during refresh. Report retry behaviour with file:line references.",
+          beats: [
+            ["0:12", "Located token store in apps/server/src/auth/pairing-token.ts"],
+            ["0:41", "Refresh scheduled via setInterval in session bootstrap; no jitter"],
+            [
+              "1:02",
+              "Following the 401 path through auth/store; retry-gap candidates in pairing-token.ts",
+            ],
+          ],
+          file: "~/.claude/tasks/audit-8f3a/w2.output.md",
+        },
+        w3: {
+          id: "w3",
+          type: "Explore",
+          desc: "Locate fs capability gates",
+          status: "failed",
+          dur: "34s",
+          tokens: "6.1k",
+          tools: 5,
+          prompt:
+            "Find every fs/* capability gate in the server and how a denial surfaces to the client.",
+          error: "Tool-use budget exceeded before the sweep converged.",
+          retriedBy: "w4",
+          file: "~/.claude/tasks/audit-8f3a/w3.output.md",
+        },
+        w4: {
+          id: "w4",
+          type: "Explore",
+          desc: "Locate fs capability gates",
+          status: "running",
+          elapsed: "18s",
+          elapsedBig: "18s",
+          elapsedSec: 18,
+          tokens: "2.4k",
+          tools: 2,
+          lastTool: "Read",
+          retryOf: "w3",
+          prompt:
+            "Find every fs/* capability gate in the server and how a denial surfaces to the client.",
+          file: "~/.claude/tasks/audit-8f3a/w4.output.md",
+        },
+      };
+
+      const VARIANTS = {
+        1: "Same anatomy, honest composer",
+        2: "Receipt card",
+        3: "Peek → promote",
+        4: "Live ticker",
+      };
+
+      /* ---- Icons (reused from the existing mockup set) ---- */
+      const CHECK =
+        '<svg class="ic" style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>';
+      const X =
+        '<svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+      const XFAIL =
+        '<svg class="ic" style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>';
+      const LOCK =
+        '<svg style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+      const RETRY =
+        '<svg style="width:11px;height:11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>';
+      const LOCATE =
+        '<svg style="width:10px;height:10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+      const BRANCH =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7"/><path d="M18 10.5c0 4-4 4-9 4"/></svg>';
+      const RETURN =
+        '<svg style="width:11px;height:11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>';
+
+      function esc(s) {
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+      function usageChip(w) {
+        return w.tokens + " tok · " + w.tools + " tools";
+      }
+      function statusMeta(w) {
+        if (w.status === "finished")
+          return { cls: "done", icon: CHECK, text: "Finished · " + w.ago + " · ran " + w.dur };
+        if (w.status === "running")
+          return {
+            cls: "working",
+            icon: '<span class="spin"></span>',
+            text: "Running · " + w.elapsed,
+          };
+        return { cls: "failed", icon: XFAIL, text: "Failed · after " + w.dur };
+      }
+      /* Retry linkage, visible on both sides of the W3 → W4 retry. */
+      function retryLink(targetId, text) {
+        const t = WORKERS[targetId];
+        return (
+          '<div class="mw-retry" data-act="open" data-w="' +
+          targetId +
+          '" title="Open this agent">' +
+          RETRY +
+          "<span>" +
+          text +
+          " · <b>" +
+          esc(t.desc) +
+          "</b></span>" +
+          '<span class="mw-retry-go">open →</span></div>'
+        );
+      }
+      function showBtn() {
+        return (
+          '<span class="mw-open" data-act="show" title="Scroll to this agent’s row in the transcript’s workflow card">' +
+          LOCATE +
+          "Show in transcript</span>"
+        );
+      }
+      function closeBtn() {
+        return '<span class="mw-x" data-act="close" title="Close">' + X + "</span>";
+      }
+      /* The disabled steer composer shared by V1 and V3: present but inert,
+         with the reason stated in words (affordance honesty). */
+      function composerDisabled() {
+        return (
+          '<div class="mw-composer disabled">' +
+          '<div class="mw-composer-col">' +
+          "<div>Steer this agent…</div>" +
+          '<div class="composer-note">Runs inside the parent session — to stop it, interrupt the parent turn.</div>' +
+          "</div>" +
+          '<span class="mw-lock" title="This agent runs inside the parent session and can’t be steered">' +
+          LOCK +
+          "</span>" +
+          "</div>"
+        );
+      }
+      /* Peek body shared by V1 and V3: prompt bubble + latest state. */
+      function peekBody(w) {
+        let h = '<div class="mw-msg user">' + esc(w.prompt) + "</div>";
+        if (w.status === "finished") {
+          h += '<div class="mw-msg asst"><b>Result:</b> ' + esc(w.result) + "</div>";
+          h +=
+            '<div class="mw-evt">' +
+            RETURN +
+            "Result returned to the parent agent automatically</div>";
+        } else if (w.status === "running") {
+          if (w.beats) {
+            h +=
+              '<div class="mw-msg asst"><b>Working…</b> ' +
+              esc(w.beats[w.beats.length - 1][1]) +
+              ".</div>";
+          } else {
+            h +=
+              '<div class="mw-msg asst"><b>Working…</b> Re-running the fs/* capability-gate sweep after the first attempt hit its tool-use budget.</div>';
+          }
+          h +=
+            '<div class="mw-dim">Last: ' +
+            esc(w.lastTool) +
+            " · " +
+            w.tools +
+            " tools so far</div>";
+          if (w.retryOf)
+            h += retryLink(w.retryOf, "Retry of the failed run — tool-use budget exceeded");
+        } else {
+          h += '<div class="mw-err">' + esc(w.error) + "</div>";
+          if (w.retriedBy)
+            h += retryLink(w.retriedBy, "Retried automatically by the parent agent — running now");
+        }
+        return h;
+      }
+
+      /* ---- V1 — Same anatomy, honest composer ---- */
+      function renderV1(w) {
+        const s = statusMeta(w);
+        return (
+          '<div class="mw-top ' +
+          s.cls +
+          '">' +
+          s.icon +
+          "<span>" +
+          s.text +
+          "</span>" +
+          showBtn() +
+          closeBtn() +
+          "</div>" +
+          '<div class="mw-title">' +
+          esc(w.desc) +
+          "</div>" +
+          '<div class="mw-meta">' +
+          '<span class="chip native">in-session agent</span>' +
+          '<span class="chip">' +
+          esc(w.type) +
+          "</span>" +
+          '<span class="chip">' +
+          usageChip(w) +
+          "</span>" +
+          "</div>" +
+          '<div class="mw-body">' +
+          peekBody(w) +
+          "</div>" +
+          composerDisabled()
+        );
+      }
+
+      /* ---- V2 — Receipt card: read-only, no composer at all ---- */
+      function renderV2(w) {
+        const s = statusMeta(w);
+        const durText = w.status === "running" ? w.elapsedBig : w.dur;
+        const durLabel =
+          w.status === "finished" ? "duration" : w.status === "running" ? "elapsed" : "ran";
+        let h =
+          '<div class="rc-head">' +
+          '<span class="rc-eyebrow">AGENT RECEIPT</span>' +
+          '<span class="rc-status ' +
+          s.cls +
+          '">' +
+          s.icon +
+          s.text +
+          "</span>" +
+          closeBtn() +
+          "</div>" +
+          '<div class="mw-title">' +
+          esc(w.desc) +
+          "</div>" +
+          '<div class="mw-meta"><span class="chip">' +
+          esc(w.type) +
+          "</span></div>" +
+          '<div class="rc-stats">' +
+          '<div class="rc-stat"><b>' +
+          w.tokens +
+          "</b><span>tokens</span></div>" +
+          '<div class="rc-stat"><b>' +
+          w.tools +
+          "</b><span>tools</span></div>" +
+          '<div class="rc-stat"><b>' +
+          durText +
+          "</b><span>" +
+          durLabel +
+          "</span></div>" +
+          "</div>" +
+          '<div class="mw-body">' +
+          '<div class="rc-label">Prompt</div>' +
+          '<div class="rc-prompt">' +
+          esc(w.prompt) +
+          "</div>";
+        if (w.status === "finished") {
+          h +=
+            '<div class="rc-label">Result</div><div class="rc-result">' + esc(w.result) + "</div>";
+        } else if (w.status === "running") {
+          h += '<div class="rc-label">Latest progress</div>';
+          if (w.beats) {
+            h += '<div class="rc-prompt">' + esc(w.beats[w.beats.length - 1][1]) + ".</div>";
+          } else {
+            h += '<div class="rc-pending">No progress updates yet — started 18s ago.</div>';
+          }
+          h +=
+            '<div class="rc-label">Result</div><div class="rc-pending">Still running — the result returns to the parent agent automatically when it finishes.</div>';
+        } else {
+          h +=
+            '<div class="rc-label" style="color:var(--danger)">Failed</div><div class="mw-err">' +
+            esc(w.error) +
+            "</div>";
+          if (w.retriedBy)
+            h += retryLink(w.retriedBy, "Retried automatically by the parent agent — running now");
+        }
+        if (w.retryOf)
+          h += retryLink(w.retryOf, "Retry of the failed run — tool-use budget exceeded");
+        h += "</div>"; // .mw-body
+        h += '<div class="rc-foot">' + showBtn();
+        if (w.status === "finished")
+          h +=
+            '<span class="mw-open" data-act="copy" title="Copy the result summary">Copy result</span>';
+        if (w.status === "failed")
+          h +=
+            '<span class="mw-open" data-act="copy" title="Copy the error message">Copy error</span>';
+        h += "</div>";
+        if (w.status !== "running")
+          h +=
+            '<div class="rc-file" title="' +
+            esc(w.file) +
+            '">Full output: ' +
+            esc(w.file) +
+            "</div>";
+        return h;
+      }
+
+      /* ---- V3 — Peek → promote: V1 anatomy + a re-run escape hatch ---- */
+      function renderV3(w) {
+        const s = statusMeta(w);
+        return (
+          '<div class="mw-top ' +
+          s.cls +
+          '">' +
+          s.icon +
+          "<span>" +
+          s.text +
+          "</span>" +
+          showBtn() +
+          closeBtn() +
+          "</div>" +
+          '<div class="mw-title">' +
+          esc(w.desc) +
+          "</div>" +
+          '<div class="mw-meta">' +
+          '<span class="chip native">subagent</span>' +
+          '<span class="chip">' +
+          esc(w.type) +
+          "</span>" +
+          '<span class="chip">' +
+          usageChip(w) +
+          "</span>" +
+          "</div>" +
+          '<div class="mw-body">' +
+          peekBody(w) +
+          "</div>" +
+          '<div class="promote">' +
+          '<span class="promote-btn" title="Create a new sub-thread task from this prompt">' +
+          BRANCH +
+          "Promote to task thread</span>" +
+          '<div class="promote-note">Re-runs this prompt as a steerable sub-thread task with its own session.' +
+          (w.status === "failed"
+            ? " (This run was retried automatically by the parent agent.)"
+            : "") +
+          "</div>" +
+          "</div>" +
+          composerDisabled()
+        );
+      }
+
+      /* ---- V4 — Live ticker: a monitor first, a receipt second ---- */
+      function fmtTick(sec) {
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return m > 0 ? m + "m " + (s < 10 ? "0" : "") + s + "s" : s + "s";
+      }
+      function renderV4(w) {
+        const eyebrow =
+          w.status === "running"
+            ? "LIVE WORKER"
+            : w.status === "finished"
+              ? "WORKER SUMMARY"
+              : "WORKER FAILED";
+        const headIcon =
+          w.status === "running"
+            ? '<span class="lv-dot"></span>'
+            : w.status === "finished"
+              ? '<span style="color:var(--success);display:flex">' + CHECK + "</span>"
+              : '<span style="color:var(--danger);display:flex">' + XFAIL + "</span>";
+        const heroCls = w.status === "finished" ? "done" : w.status === "failed" ? "failed" : "";
+        const heroTime = w.status === "running" ? fmtTick(w.elapsedSec) : w.dur;
+        const heroSub =
+          w.status === "running"
+            ? "elapsed · in the parent session"
+            : w.status === "finished"
+              ? "total · finished " + w.ago
+              : "before it failed";
+        let chips = '<span class="chip">' + esc(w.type) + "</span>";
+        if (w.status === "running")
+          chips += '<span class="chip pulse">Last: ' + esc(w.lastTool) + "</span>";
+        if (w.status === "failed") chips += '<span class="chip danger">failed</span>';
+        chips += '<span class="chip">' + usageChip(w) + "</span>";
+
+        let body = "";
+        if (w.status === "running") {
+          if (w.beats) {
+            body +=
+              '<div class="rc-label">Progress log</div><div class="beats">' +
+              w.beats
+                .map(
+                  (b) =>
+                    '<div class="beat"><span class="bt">' +
+                    b[0] +
+                    "</span><span>" +
+                    esc(b[1]) +
+                    "</span></div>",
+                )
+                .join("") +
+              "</div>";
+          } else {
+            body +=
+              '<div class="rc-label">Progress log</div><div class="rc-pending">No progress updates yet — started 18s ago.</div>';
+          }
+          if (w.retryOf)
+            body += retryLink(w.retryOf, "Retry of the failed run — tool-use budget exceeded");
+        } else if (w.status === "finished") {
+          body +=
+            '<div class="rc-label">Result</div><div class="rc-result">' + esc(w.result) + "</div>";
+          body +=
+            '<div class="mw-evt">' +
+            RETURN +
+            "Result returned to the parent agent automatically</div>";
+        } else {
+          body += '<div class="mw-err">' + esc(w.error) + "</div>";
+          if (w.retriedBy)
+            body += retryLink(
+              w.retriedBy,
+              "Retried automatically by the parent agent — running now",
+            );
+        }
+
+        const footNote =
+          w.status === "running"
+            ? "Runs in the parent session — to stop it, interrupt the parent turn."
+            : w.status === "finished"
+              ? "Result already returned to the parent agent."
+              : "Failure already reported to the parent agent.";
+
+        return (
+          '<div class="lv-head">' +
+          headIcon +
+          '<span class="rc-eyebrow">' +
+          eyebrow +
+          "</span>" +
+          closeBtn() +
+          "</div>" +
+          '<div class="lv-hero ' +
+          heroCls +
+          '">' +
+          '<span class="tick" data-tick>' +
+          heroTime +
+          "</span>" +
+          '<span class="lv-sub">' +
+          heroSub +
+          "</span>" +
+          "</div>" +
+          '<div class="mw-title">' +
+          esc(w.desc) +
+          "</div>" +
+          '<div class="mw-meta">' +
+          chips +
+          "</div>" +
+          '<div class="mw-body">' +
+          body +
+          "</div>" +
+          '<div class="lv-foot">' +
+          showBtn() +
+          '<span class="lv-note">' +
+          footNote +
+          "</span>" +
+          "</div>"
+        );
+      }
+
+      const RENDER = { 1: renderV1, 2: renderV2, 3: renderV3, 4: renderV4 };
+
+      /* ---- State, deep links: ?v=1..4 picks the variant, ?w=w1..w4 picks
+         the worker the mini window is open on. ---- */
+      const q = new URLSearchParams(location.search);
+      let curV = VARIANTS[+q.get("v")] ? +q.get("v") : 1;
+      let curW = WORKERS[q.get("w")] ? q.get("w") : "w2";
+      let tickTimer = null;
+
+      function activeWin() {
+        return document.querySelector('section[data-variant="' + curV + '"] .mini-win');
+      }
+
+      function place(win, wid) {
+        const anchor = document.getElementById("wrow-" + wid) || document.getElementById("wcard");
+        if (!anchor) return;
+        const r = anchor.getBoundingClientRect();
+        const ww = win.offsetWidth;
+        const wh = win.offsetHeight;
+        let left = r.right + 14;
+        if (left + ww > window.innerWidth - 12) left = window.innerWidth - ww - 12;
+        if (left < 8) left = 8;
+        const maxTop = Math.max(52, window.innerHeight - wh - 16);
+        const top = Math.min(Math.max(r.top - 8, 52), maxTop);
+        win.style.left = left + "px";
+        win.style.top = top + "px";
+      }
+
+      function renderActive() {
+        if (tickTimer) {
+          clearInterval(tickTimer);
+          tickTimer = null;
+        }
+        const w = WORKERS[curW];
+        const win = activeWin();
+        win.innerHTML = RENDER[curV](w);
+        win.classList.add("show");
+        place(win, curW);
+        document
+          .querySelectorAll(".wrow")
+          .forEach((r) => r.classList.toggle("open", r.dataset.worker === curW));
+        /* V4's live ticker: advance the elapsed readout once a second while
+           the worker is running. Cosmetic only. */
+        if (curV === 4 && w.status === "running") {
+          const el = win.querySelector("[data-tick]");
+          if (el) {
+            let sec = w.elapsedSec;
+            tickTimer = setInterval(() => {
+              sec += 1;
+              el.textContent = fmtTick(sec);
+            }, 1000);
+          }
+        }
+      }
+
+      function syncChrome() {
+        document.title = "Option 2 · V" + curV + " " + VARIANTS[curV] + " — " + WORKERS[curW].desc;
+        document.getElementById("conceptPill").innerHTML =
+          "<b>Option 2 · Mini-window parity</b> — V" + curV + " · " + VARIANTS[curV];
+        document.querySelectorAll(".switcher a").forEach((a) => {
+          a.classList.toggle("on", +a.dataset.v === curV);
+          a.href = "?v=" + a.dataset.v + "&w=" + curW;
+        });
+        try {
+          history.replaceState(null, "", "?v=" + curV + "&w=" + curW);
+        } catch (e) {}
+      }
+
+      function selectVariant(v) {
+        if (!VARIANTS[v]) return;
+        curV = v;
+        document
+          .querySelectorAll("section.variant")
+          .forEach((s) => s.classList.toggle("on", +s.dataset.variant === v));
+        renderActive();
+        syncChrome();
+      }
+
+      function selectWorker(wid) {
+        if (!WORKERS[wid]) return;
+        curW = wid;
+        renderActive();
+        syncChrome();
+      }
+
+      function hideWin() {
+        document.querySelectorAll(".mini-win.show").forEach((m) => m.classList.remove("show"));
+        document.querySelectorAll(".wrow.open").forEach((r) => r.classList.remove("open"));
+        if (tickTimer) {
+          clearInterval(tickTimer);
+          tickTimer = null;
+        }
+      }
+
+      /* "Show in transcript": scroll the workflow card into view and flash
+         this worker's row. */
+      function flashRow(wid) {
+        const row = document.getElementById("wrow-" + wid);
+        const card = document.getElementById("wcard");
+        if (!row || !card) return;
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        row.classList.remove("hl-flash");
+        void row.offsetWidth;
+        row.classList.add("hl-flash");
+      }
+
+      /* Mini-window actions (delegated; windows re-render on every switch). */
+      document.querySelectorAll(".mini-win").forEach((win) => {
+        win.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const actEl = e.target.closest("[data-act]");
+          if (!actEl) return;
+          const act = actEl.dataset.act;
+          if (act === "close") {
+            hideWin();
+          } else if (act === "show") {
+            flashRow(curW);
+          } else if (act === "open") {
+            selectWorker(actEl.dataset.w);
+          } else if (act === "copy") {
+            const w = WORKERS[curW];
+            const text = w.status === "failed" ? w.error : w.result || "";
+            try {
+              if (navigator.clipboard) navigator.clipboard.writeText(text);
+            } catch (err) {}
+            const label = actEl.textContent;
+            actEl.textContent = "Copied ✓";
+            setTimeout(() => {
+              actEl.textContent = label;
+            }, 1200);
+          }
+        });
+      });
+
+      /* Workflow card rows are the launch surface. */
+      document.querySelectorAll(".wrow[data-worker]").forEach((row) => {
+        row.addEventListener("click", (e) => {
+          e.stopPropagation();
+          selectWorker(row.dataset.worker);
+        });
+      });
+
+      document.querySelectorAll(".switcher a").forEach((a) => {
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          selectVariant(+a.dataset.v);
+        });
+      });
+
+      document.addEventListener("click", (e) => {
+        if (!e.target.closest(".mini-win") && !e.target.closest(".wrow")) hideWin();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") hideWin();
+      });
+      window.addEventListener("resize", () => {
+        const win = activeWin();
+        if (win && win.classList.contains("show")) place(win, curW);
+      });
+
+      /* Init: show the requested variant, bring the workflow card into view,
+         open the window on the requested worker. */
+      document
+        .querySelectorAll("section.variant")
+        .forEach((s) => s.classList.toggle("on", +s.dataset.variant === curV));
+      document.getElementById("wcard").scrollIntoView({ block: "center" });
+      renderActive();
+      syncChrome();
+    </script>
+  </body>
+</html>

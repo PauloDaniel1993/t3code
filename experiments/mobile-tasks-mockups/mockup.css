@@ -1,0 +1,1185 @@
+/* T3 Code — mobile tasks mockups. Design tokens reused verbatim from
+   ../thread-tasks-mockups/mockup.css and ../subagent-view-mockups/mockup.css
+   (apps/web dark theme: neutral-950, white/8 borders, blue-400 working
+   status, DM Sans). Phone frame and chrome follow the real Android app
+   (reference-mobile.png): 11:31 status bar, "T3 Code · ALPHA" header with
+   circular filter/settings buttons, "Search threads" field, hairline-
+   separated thread rows, white compose FAB, gesture bar. The tasks/agents
+   row anatomy (disclosure chips, guide-line sub-rows, ✓/× turn counters,
+   ↩ returned markers, Settle pill) follows the desktop sidebar's accepted
+   tasks/agents visual language. */
+:root {
+  --bg: #0a0a0a;
+  --sb: #000;
+  --fg: #f1f3f7;
+  --muted: #a3a3a3;
+  --dim: #6b7280;
+  --border: rgba(255, 255, 255, 0.08);
+  --border2: rgba(255, 255, 255, 0.14);
+  --hover: rgba(255, 255, 255, 0.055);
+  --selected: rgba(255, 255, 255, 0.075);
+  --card: #101013;
+  --chip: rgba(255, 255, 255, 0.05);
+  --primary: #6478f0;
+  --info: #60a5fa;
+  --success: #34d399;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --teal: #2dd4bf;
+  --violet: #c084fc;
+  --coral: #e0764e;
+}
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html,
+body {
+  min-height: 100%;
+}
+body {
+  font-family:
+    "DM Sans",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+  background: #050506;
+  color: var(--fg);
+  font-size: 14px;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+svg.ic {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+/* ============================================================
+   Stage + phone frame (Android)
+   ============================================================ */
+.stage {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 56px;
+  flex-wrap: wrap;
+  padding: 44px 24px 60px;
+  background:
+    radial-gradient(60% 45% at 20% 0%, rgba(124, 92, 255, 0.07), transparent 60%),
+    radial-gradient(55% 40% at 85% 10%, rgba(47, 107, 255, 0.06), transparent 60%);
+}
+.device {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.phone {
+  width: 390px;
+  height: min(844px, calc(100vh - 130px));
+  min-height: 620px;
+  flex: none;
+  border-radius: 34px;
+  padding: 8px;
+  background: #141416;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 40px 90px -40px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 2px #000;
+}
+.screen {
+  position: relative;
+  height: 100%;
+  border-radius: 26px;
+  overflow: hidden;
+  background: var(--sb);
+  display: flex;
+  flex-direction: column;
+}
+.devicecap {
+  max-width: 340px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.devicecap b {
+  color: var(--muted);
+  font-weight: 550;
+}
+
+/* Android status bar: time + notification icons left, radios/battery right */
+.statusbar {
+  flex: none;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 18px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.statusbar .sicons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+}
+.statusbar .notif {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #d5d7de;
+  margin-left: 8px;
+  font-weight: 400;
+}
+
+/* Gesture home bar */
+.gesturebar {
+  flex: none;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gesturebar::after {
+  content: "";
+  width: 108px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* ============================================================
+   App home header: T3 Code · ALPHA, filter/settings, search
+   ============================================================ */
+.appbar {
+  flex: none;
+  padding: 10px 14px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+.brand-name {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.brand-name .thin {
+  font-weight: 400;
+  color: #9a9aa0;
+}
+.alpha {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #8a8a90;
+  background: #1b1b1f;
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+.brand-row .spacer {
+  flex: 1;
+}
+.circlebtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #17171a;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: #c9c9cf;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.searchbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  height: 44px;
+  padding: 0 14px;
+  background: #121215;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 13px;
+  color: var(--dim);
+  font-size: 14px;
+}
+
+/* Content scroll region */
+.mscroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* ============================================================
+   Thread list rows (matches reference-mobile.png anatomy)
+   ============================================================ */
+.mlist {
+  padding: 2px 0 90px;
+  display: flex;
+  flex-direction: column;
+}
+.trow {
+  position: relative;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: default;
+}
+.trow:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+.trow-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.picon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 7.5px;
+  font-weight: 800;
+  color: #fff;
+  background: hsl(var(--h, 215) 65% 45% / 1);
+}
+.repo {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tago {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.tago .working {
+  color: var(--info);
+  font-weight: 600;
+}
+.ttitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-top: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trow-bot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--dim);
+  min-height: 18px;
+}
+.tbranch {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tbadge {
+  margin-left: auto;
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--success);
+}
+.tprov {
+  flex: none;
+  display: flex;
+  margin-left: auto;
+}
+.tbadge + .tprov {
+  margin-left: 0;
+}
+
+/* Settle pill + clock on an expanded parent row */
+.settle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: #c9c9cf;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.settle:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.clk {
+  color: var(--dim);
+  display: flex;
+}
+
+/* Disclosure chip: "⌄ 1 task · 10 agents" */
+.dchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--chip);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+  flex: none;
+}
+
+/* Sub-rows: tasks (and a task's turn) nested under a guide line */
+.subs {
+  margin: 0 14px 0 22px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border2);
+  display: flex;
+  flex-direction: column;
+  background: var(--sb);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 2px;
+  padding-bottom: 6px;
+}
+.sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 2px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.sub:hover {
+  background: var(--hover);
+}
+.sub .sic {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sub .stitle {
+  flex: 1;
+  min-width: 0;
+  color: #d9dbe1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sub.done .stitle {
+  color: var(--muted);
+}
+.sub.failed .stitle {
+  color: var(--dim);
+}
+.sub .smeta {
+  flex: none;
+  font-size: 11px;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sub .smeta.working {
+  color: var(--info);
+}
+.sub .smeta.failed,
+.smeta.failed {
+  color: var(--danger);
+}
+.sub.picked {
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.35);
+}
+/* A task's turn, nested one level deeper */
+.sub.lvl2 {
+  margin-left: 18px;
+}
+.cnt-ok {
+  color: var(--success);
+  font-weight: 600;
+}
+.cnt-fail {
+  color: var(--danger);
+  font-weight: 600;
+}
+.ret {
+  color: var(--info);
+  display: flex;
+}
+
+/* Compose FAB */
+.fab {
+  position: absolute;
+  right: 18px;
+  bottom: 34px;
+  z-index: 20;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: #f2f2f4;
+  color: #111113;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 26px -8px rgba(0, 0, 0, 0.8);
+}
+
+/* ============================================================
+   Detail header (thread/task views): back arrow + title
+   ============================================================ */
+.tbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.tbar-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--fg);
+  flex: none;
+}
+.tbar-back:hover {
+  background: var(--hover);
+}
+.tbar-titles {
+  flex: 1;
+  min-width: 0;
+}
+.tbar-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tbar-sub {
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tbar-act {
+  color: var(--dim);
+  display: flex;
+  flex: none;
+}
+
+/* ============================================================
+   Timeline (thread feed)
+   ============================================================ */
+.tl {
+  padding: 16px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.msg.user {
+  align-self: flex-end;
+  max-width: 84%;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.msg.asst {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: #e8eaef;
+  max-width: 96%;
+}
+.msg.asst .who {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.msg.asst code {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #c7d0ff;
+}
+
+/* Quiet lifecycle event rows */
+.evt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.025);
+  border-radius: 10px;
+  padding: 8px 12px;
+  max-width: 100%;
+}
+.evt b {
+  font-weight: 550;
+  color: #d5d7de;
+}
+.evt .open {
+  color: var(--dim);
+  margin-left: auto;
+  flex: none;
+  font-size: 11.5px;
+}
+.evt.wake {
+  color: #cfe0ff;
+  border-color: rgba(96, 165, 250, 0.35);
+  background: rgba(96, 165, 250, 0.08);
+}
+.evt.wake b {
+  color: #e3edff;
+}
+
+/* ============================================================
+   Composer
+   ============================================================ */
+.composer-wrap {
+  flex: none;
+  padding: 8px 12px 4px;
+}
+.composer {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  padding: 12px 12px 8px;
+  box-shadow: 0 12px 30px -18px rgba(0, 0, 0, 0.65);
+}
+.composer .ph {
+  color: var(--dim);
+  font-size: 13.5px;
+  padding: 2px 4px 12px;
+}
+.composer .bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.chipbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 5px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.chipbtn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.send {
+  margin-left: auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex: none;
+}
+.send svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ============================================================
+   Chips
+   ============================================================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--chip);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.chip.agent {
+  color: #c7d0ff;
+  border-color: rgba(100, 120, 240, 0.4);
+  background: rgba(100, 120, 240, 0.12);
+}
+.chip.you {
+  color: #d7d9e0;
+}
+.chip.returned {
+  color: var(--info);
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.1);
+}
+.chip.native {
+  color: #99f0e4;
+  border-color: rgba(45, 212, 191, 0.4);
+  background: rgba(45, 212, 191, 0.1);
+}
+.chip.danger {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+/* Segmented control */
+.seg {
+  display: flex;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+.seg a,
+.seg span {
+  flex: 1;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 5px 11px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+.seg .on {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--fg);
+}
+.seg .cnt {
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0 5px;
+  line-height: 15px;
+}
+
+/* Status bits */
+.spin {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex: none;
+  border: 1.5px solid rgba(96, 165, 250, 0.25);
+  border-top-color: var(--info);
+  animation: rot 0.9s linear infinite;
+}
+@keyframes rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ok {
+  color: var(--success);
+  flex: none;
+  display: flex;
+}
+.xfail {
+  color: var(--danger);
+  flex: none;
+  display: flex;
+}
+.working-ic {
+  color: var(--info);
+  flex: none;
+  display: flex;
+}
+
+/* Usage metrics: "38.2k tokens · 14 tools · 2m 14s" */
+.usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Agent card — the per-turn card in a transcript listing the
+   turn's agents (workflow card in the desktop mockups).
+   ============================================================ */
+.wcard {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 14px;
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+.wcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 5px;
+}
+.wcard-head b {
+  color: #d5d7de;
+  font-weight: 550;
+}
+.wcard-head .usage {
+  margin-left: auto;
+}
+.wrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+.wrow:hover {
+  background: var(--hover);
+}
+.wrow .sic {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wrow .wname {
+  color: #d9dbe1;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wrow .wtype {
+  font-size: 10.5px;
+  color: var(--dim);
+  flex: none;
+}
+.wrow .wmeta {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wrow.failed .wname {
+  color: var(--dim);
+}
+.wrow .wsub {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Jump-target highlight — tapping an agent row flashes its transcript card */
+@keyframes hl-flash {
+  0% {
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.55);
+    background: rgba(96, 165, 250, 0.12);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background: transparent;
+  }
+}
+.hl-flash {
+  animation: hl-flash 1.4s ease-out 2;
+}
+
+/* ============================================================
+   Bottom sheet — the mobile replacement for the mini peek window
+   ============================================================ */
+.sheet-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: none;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.sheet-wrap.show {
+  display: flex;
+}
+.sheet-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  animation: dim-in 0.16s ease-out both;
+}
+@keyframes dim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.sheet {
+  position: relative;
+  max-height: 84%;
+  display: flex;
+  flex-direction: column;
+  background: rgba(23, 23, 26, 0.96);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  backdrop-filter: blur(18px) saturate(1.1);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 24px 24px 0 0;
+  box-shadow: 0 -18px 44px -18px rgba(0, 0, 0, 0.8);
+  animation: sheet-in 0.22s cubic-bezier(0.2, 0, 0.2, 1) both;
+}
+@keyframes sheet-in {
+  from {
+    transform: translateY(40px);
+    opacity: 0.6;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.sheet-grab {
+  flex: none;
+  padding: 7px 0 3px;
+  display: flex;
+  justify-content: center;
+}
+.sheet-grab::after {
+  content: "";
+  width: 36px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.28);
+}
+.sheet-scroll {
+  overflow-y: auto;
+  min-height: 0;
+}
+.sh-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim);
+  padding: 6px 14px 0;
+}
+.sh-top.working {
+  color: var(--info);
+}
+.sh-top.done {
+  color: var(--success);
+}
+.sh-top.failed {
+  color: var(--danger);
+}
+.sh-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  padding: 6px 14px 0;
+}
+.sh-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 8px 14px 0;
+}
+.sh-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+}
+.sh-msg {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sh-msg.user {
+  align-self: flex-end;
+  max-width: 88%;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 6px 10px;
+  color: var(--fg);
+}
+.sh-msg.asst {
+  color: var(--muted);
+}
+.sh-msg.asst b {
+  color: #d5d7de;
+  font-weight: 550;
+}
+.sh-evt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--info);
+}
+.sh-evt.failed {
+  color: var(--danger);
+}
+/* Agents block inside a task sheet */
+.sh-agents {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 7px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sh-agents-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding-bottom: 4px;
+}
+.sh-agents-head .right {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 7px;
+  font-size: 11px;
+}
+.sh-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 10px;
+}
+.sh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px 11px;
+  white-space: nowrap;
+}
+.sh-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+.sh-btn.danger {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.08);
+}
+.sh-btn.primary {
+  background: var(--primary);
+  border-color: transparent;
+  color: #fff;
+}
+.sh-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: var(--dim);
+  flex: none;
+}
+.sh-composer .grow {
+  flex: 1;
+  min-width: 0;
+}
+.sh-composer.disabled {
+  opacity: 0.65;
+}
+.composer-note {
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.45;
+}
+.sh-send {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.sh-composer.disabled .sh-send {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--dim);
+}
+
+/* ============================================================
+   Collapsible "Parallel work" card (pinned above the composer)
+   ============================================================ */
+.pcard {
+  margin: 0 12px 8px;
+  border: 1px solid var(--border);
+  background: rgba(16, 16, 19, 0.92);
+  backdrop-filter: blur(12px);
+  border-radius: 14px;
+  overflow: hidden;
+  flex: none;
+}
+.pcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: default;
+}
+.pcard-head b {
+  color: #d5d7de;
+  font-weight: 550;
+}
+.pcard-head .chev {
+  margin-left: auto;
+  color: var(--dim);
+  display: flex;
+  transition: transform 0.12s;
+}
+.pcard.closed .chev {
+  transform: rotate(-90deg);
+}
+.pcard.closed .pcard-body {
+  display: none;
+}
+.pcard-body {
+  border-top: 1px solid var(--border);
+  padding: 4px 6px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pcard-body .sub {
+  padding-left: 6px;
+}
+
+/* Toast — tiny action confirmation in mockups */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 34px;
+  transform: translateX(-50%);
+  z-index: 60;
+  font-size: 11.5px;
+  color: var(--fg);
+  background: rgba(24, 24, 28, 0.96);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  padding: 7px 14px;
+  white-space: nowrap;
+  max-width: 92%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.toast.show {
+  opacity: 1;
+}
+
+/* ============================================================
+   Mockup furniture
+   ============================================================ */
+.concept {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 50;
+  font-size: 11.5px;
+  color: var(--dim);
+  background: rgba(10, 10, 10, 0.8);
+  border: 1px solid var(--border);
+  padding: 5px 11px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+.concept b {
+  color: var(--muted);
+  font-weight: 550;
+}
+.backlink {
+  position: fixed;
+  left: 14px;
+  top: 12px;
+  z-index: 60;
+  font-size: 11.5px;
+  color: var(--dim);
+  background: rgba(10, 10, 10, 0.8);
+  border: 1px solid var(--border);
+  padding: 5px 11px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+.backlink:hover {
+  color: var(--fg);
+  border-color: var(--border2);
+}

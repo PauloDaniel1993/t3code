@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Thread tasks — sidebar sub-threads · mini thread window</title>
+    <link rel="stylesheet" href="mockup.css" />
+    <style>
+      /* A thread row can own sub-threads (tasks) in the sidebar. */
+      .trow.has-subs {
+        padding-left: 24px;
+      }
+      .disclosure {
+        position: absolute;
+        left: 6px;
+        top: 10px;
+        width: 14px;
+        height: 14px;
+        color: var(--dim);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.12s;
+      }
+      .subs-closed .disclosure {
+        transform: rotate(-90deg);
+      }
+      .tcount {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10.5px;
+        color: var(--muted);
+        background: var(--chip);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0 7px;
+        line-height: 16px;
+      }
+      .subs {
+        margin: 1px 4px 4px 22px;
+        padding-left: 12px;
+        border-left: 1px solid var(--border2);
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .subs-closed .subs,
+      .subs-closed .sub-new {
+        display: none;
+      }
+      .sub {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 8px;
+        font-size: 12.5px;
+      }
+      .sub:hover {
+        background: var(--hover);
+      }
+      .sub .sic {
+        width: 15px;
+        height: 15px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .sub .stitle {
+        flex: 1;
+        min-width: 0;
+        color: #d9dbe1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sub.done .stitle {
+        color: var(--muted);
+      }
+      .sub .smeta {
+        flex: none;
+        font-size: 11px;
+        color: var(--dim);
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .sub .smeta.working {
+        color: var(--info);
+      }
+      .sub-new {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 1px 4px 4px 22px;
+        padding: 5px 8px 5px 20px;
+        border-left: 1px solid var(--border2);
+        font-size: 12px;
+        color: var(--dim);
+        opacity: 0.55;
+      }
+      .trow.has-subs:hover + .subs + .sub-new,
+      .sub-new:hover {
+        opacity: 1;
+      }
+      .sub.picked {
+        background: var(--selected);
+      }
+
+      /* The mini card IS a tiny thread — status, chips, a mini timeline with
+     the task prompt and latest activity, and a steer box. */
+      .mini-win {
+        position: fixed;
+        z-index: 60;
+        width: 352px;
+        display: none;
+        background: rgba(24, 24, 28, 0.94);
+        -webkit-backdrop-filter: blur(16px) saturate(1.1);
+        backdrop-filter: blur(16px) saturate(1.1);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        box-shadow:
+          0 18px 44px -18px rgba(0, 0, 0, 0.8),
+          inset 0 1px rgba(255, 255, 255, 0.04);
+      }
+      .mini-win.show {
+        display: block;
+        animation: mw-in 0.13s cubic-bezier(0.2, 0, 0.2, 1) both;
+      }
+      @keyframes mw-in {
+        from {
+          opacity: 0;
+          transform: translateX(-4px) scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .mini-win::before {
+        content: "";
+        position: absolute;
+        left: -5px;
+        top: 18px;
+        width: 9px;
+        height: 9px;
+        transform: rotate(45deg);
+        background: rgba(24, 24, 28, 0.94);
+        border-left: 1px solid rgba(255, 255, 255, 0.1);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .mw-top {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--dim);
+        padding: 10px 12px 0;
+      }
+      .mw-top.working {
+        color: var(--info);
+      }
+      .mw-top.done {
+        color: var(--success);
+      }
+      .mw-x {
+        margin-left: auto;
+        color: var(--dim);
+        display: flex;
+        padding: 2px;
+        border-radius: 6px;
+      }
+      .mw-x:hover {
+        background: var(--hover);
+        color: var(--fg);
+      }
+      .mw-title {
+        font-size: 13.5px;
+        font-weight: 600;
+        line-height: 1.35;
+        padding: 6px 12px 0;
+      }
+      .mw-meta {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: wrap;
+        padding: 7px 12px 0;
+      }
+      .mw-body {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 12px 12px;
+        max-height: 250px;
+        overflow-y: auto;
+      }
+      .mw-msg {
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .mw-msg.user {
+        align-self: flex-end;
+        max-width: 86%;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 6px 10px;
+        color: var(--fg);
+      }
+      .mw-msg.asst {
+        color: var(--muted);
+      }
+      .mw-msg.asst b {
+        color: #d5d7de;
+        font-weight: 550;
+      }
+      .mw-evt {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--info);
+      }
+      .mw-composer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-top: 1px solid var(--border);
+        padding: 9px 12px;
+        font-size: 12px;
+        color: var(--dim);
+      }
+      .mw-send {
+        margin-left: auto;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: var(--primary);
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: none;
+      }
+      .mw-open {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10.5px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 2.5px 8px;
+        white-space: nowrap;
+      }
+      .mw-open:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--fg);
+      }
+      .mw-top .mw-x {
+        margin-left: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ================= Sidebar ================= -->
+    <nav class="sidebar">
+      <div class="sb-top">
+        <div class="brand"><span class="logo">t3</span>T3 Code</div>
+        <div class="search">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+          Search <span class="kbd">Ctrl+K</span>
+          <span class="new"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L16 11l-4 1 1-4Z" /></svg
+          ></span>
+        </div>
+        <div class="allproj">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path
+              d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+            />
+          </svg>
+          All projects
+          <span class="chev"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m6 9 6 6 6-6" /></svg
+          ></span>
+          <span class="new"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12h14" /></svg
+          ></span>
+        </div>
+      </div>
+
+      <div class="sb-list">
+        <div class="trow">
+          <span class="picon" style="--h: 225">WH</span>
+          <div class="tbody">
+            <div class="tmeta">
+              WorkflowHarness<span class="st working"><span class="spin"></span>Working 3m</span>
+            </div>
+            <div class="ttitle">Verify Durable Chat Runtime Acceptance</div>
+            <div class="tbranch">feature/durable-chat</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 225">WH</span>
+          <div class="tbody">
+            <div class="tmeta">
+              WorkflowHarness<span class="st working"><span class="spin"></span>Working 3m</span>
+            </div>
+            <div class="ttitle">Static Durable Chat Conformance Review</div>
+            <div class="tbranch">feature/durable-chat</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 0">W</span>
+          <div class="tbody">
+            <div class="tmeta">
+              Whisper<span class="st working"><span class="spin"></span>Working 19m</span>
+            </div>
+            <div class="ttitle">Test Windows Dictation Client</div>
+            <div class="tbranch">main</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+          ></span>
+        </div>
+
+        <!-- The selected thread, with tasks. This is the only block that changes. -->
+        <div id="parentWrap">
+          <div class="trow selected has-subs" id="parentRow">
+            <span class="disclosure" id="disclosure" title="Collapse tasks">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </span>
+            <span class="picon" style="--h: 150">t3</span>
+            <div class="tbody">
+              <div class="tmeta">
+                t3code
+                <span class="st"
+                  ><span
+                    class="dot-blue"
+                    title="A task returned results and resumed this thread"
+                  ></span
+                  >33m</span
+                >
+              </div>
+              <div class="ttitle">Audit Kimi ACP Integration Gaps</div>
+              <div class="tbranch" style="display: flex; align-items: center; gap: 6px">
+                dev
+                <span class="tcount" title="3 sub-thread tasks">
+                  <svg
+                    style="width: 10px; height: 10px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="m3 17 2 2 4-4" />
+                    <path d="m3 7 2 2 4-4" />
+                    <path d="M13 6h8" />
+                    <path d="M13 12h8" />
+                    <path d="M13 18h8" />
+                  </svg>
+                  3 tasks
+                </span>
+              </div>
+            </div>
+            <span class="tprov"
+              ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+            ></span>
+          </div>
+
+          <div class="subs" id="subs">
+            <div
+              class="sub done"
+              data-task="t1"
+              title="Sub-thread · done 8m ago · results returned to the parent thread · click to peek"
+            >
+              <span class="sic ok"
+                ><svg
+                  class="ic"
+                  style="width: 13px; height: 13px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <path d="M20 6 9 17l-5-5" /></svg
+              ></span>
+              <span class="stitle">Inventory t3code ACP client handlers</span>
+              <span class="smeta">
+                <svg
+                  style="width: 11px; height: 11px; color: var(--info)"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M9 14 4 9l5-5" />
+                  <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                </svg>
+                8m
+              </span>
+            </div>
+            <div
+              class="sub"
+              data-task="t2"
+              title="Sub-thread · created by the agent · working · click to peek"
+            >
+              <span class="sic"><span class="spin"></span></span>
+              <span class="stitle">Sweep ACP session lifecycle gaps</span>
+              <span class="smeta working">3m</span>
+            </div>
+            <div
+              class="sub"
+              data-task="t3"
+              title="Sub-thread · created by you · context: 3 selected messages · working · click to peek"
+            >
+              <span class="sic"><span class="spin"></span></span>
+              <span class="stitle">Compare tool surface vs Codex app-server</span>
+              <span class="smeta working">40s</span>
+            </div>
+          </div>
+          <div class="sub-new" title="Create a task (sub-thread) from this thread">
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            New task
+          </div>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 170">J</span>
+          <div class="tbody">
+            <div class="tmeta">
+              jobs<span class="st working"><span class="spin"></span>Working 46s</span>
+            </div>
+            <div class="ttitle">Search Remote Tech Jobs Worldwide</div>
+            <div class="tbranch">feat/build-applyos-linkedin-importer</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 0">W</span>
+          <div class="tbody">
+            <div class="tmeta">Whisper<span class="st">3h</span></div>
+            <div class="ttitle">Review WhisperWorkflows OpenSpec Dec…</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 225">WH</span>
+          <div class="tbody">
+            <div class="tmeta">WorkflowHarness<span class="st">6m</span></div>
+            <div class="ttitle">Analyze Backend Foundation Execution Pl…</div>
+            <div class="tbranch">feature/durable-chat</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 45">KC</span>
+          <div class="tbody">
+            <div class="tmeta">KafkaConnect<span class="st">1d</span></div>
+            <div class="ttitle">Download OpenTelemetry Java Agent</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 280">CS</span>
+          <div class="tbody">
+            <div class="tmeta">CustomerServiceBackend-Data<span class="st">2d</span></div>
+            <div class="ttitle">Fix Unit Test Errors</div>
+            <div class="tbranch">feature/1433863</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 200">ip</span>
+          <div class="tbody">
+            <div class="tmeta">ipl-concurtosun-api<span class="st">2d</span></div>
+            <div class="ttitle">Update US Allocation Marker Mapping</div>
+            <div class="tbranch">feature/updateAllocationMarkerMapping</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+          ></span>
+        </div>
+
+        <div class="trow">
+          <span class="picon" style="--h: 20">EU</span>
+          <div class="tbody">
+            <div class="tmeta">EUWEOIPRDFXROI-FXREPORT<span class="st">1d</span></div>
+            <div class="ttitle">Infer workspace goal</div>
+          </div>
+          <span class="tprov"
+            ><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+          ></span>
+        </div>
+
+        <div class="sec-head">
+          Settled
+          <svg
+            class="ic"
+            style="width: 12px; height: 12px; margin-left: auto"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="m18 15-6-6-6 6" />
+          </svg>
+        </div>
+        <div class="trow settled">
+          <span class="picon" style="--h: 0">C</span>
+          <div class="tbody"><div class="ttitle">Create HTML CV from cvs Folder</div></div>
+          <span class="smeta" style="align-self: center; font-size: 11px; color: var(--dim)"
+            >2m</span
+          >
+        </div>
+        <div class="trow settled">
+          <span class="picon" style="--h: 0">A</span>
+          <div class="tbody"><div class="ttitle">Apply Agent Chat Integration G…</div></div>
+          <span style="align-self: center; font-size: 11px; color: var(--dim)">3m</span>
+        </div>
+        <div class="trow settled">
+          <span class="picon" style="--h: 0">G</span>
+          <div class="tbody"><div class="ttitle">Build GPU Transcription Backen…</div></div>
+          <span style="align-self: center; font-size: 11px; color: var(--dim)">46m</span>
+        </div>
+        <div class="trow settled">
+          <span class="picon" style="--h: 0">W</span>
+          <div class="tbody"><div class="ttitle">Build Windows Dictation Client</div></div>
+          <span style="align-self: center; font-size: 11px; color: var(--dim)">46m</span>
+        </div>
+        <div class="trow settled">
+          <span class="picon" style="--h: 0">R</span>
+          <div class="tbody"><div class="ttitle">Rebase Dev and Audit Changes</div></div>
+          <span style="align-self: center; font-size: 11px; color: var(--dim)">2h</span>
+        </div>
+        <div class="trow settled faded">
+          <span class="picon" style="--h: 0">A</span>
+          <div class="tbody"><div class="ttitle">Analyze Notification Disappear</div></div>
+          <span style="align-self: center; font-size: 11px; color: var(--dim)">2h</span>
+        </div>
+      </div>
+
+      <div class="sb-foot">
+        <div class="settings">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+            />
+          </svg>
+          Settings
+        </div>
+      </div>
+    </nav>
+
+    <!-- ================= Main ================= -->
+    <div class="main">
+      <div class="topbar">
+        <div class="crumbs">
+          t3code <span style="color: var(--dim)">/</span> <b>Audit Kimi ACP Integration Gaps</b>
+        </div>
+        <div class="top-actions">
+          <span class="btn"
+            ><svg
+              class="ic"
+              style="width: 12px; height: 12px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M12 5v14M5 12h14" /></svg
+            >Add action</span
+          >
+          <span class="btn"
+            ><svg
+              class="ic"
+              style="width: 11px; height: 11px"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <polygon points="6 3 20 12 6 21 6 3" /></svg
+            >Open</span
+          >
+          <span class="btn"
+            ><svg
+              class="ic"
+              style="width: 12px; height: 12px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="6" cy="6" r="2.5" />
+              <circle cx="6" cy="18" r="2.5" />
+              <circle cx="18" cy="8" r="2.5" />
+              <path d="M6 8.5v7" />
+              <path d="M18 10.5c0 4-4 4-9 4" /></svg
+            >Commit, push &amp; PR</span
+          >
+        </div>
+      </div>
+
+      <div class="tl">
+        <div class="col">
+          <div class="msg user">
+            Audit the Kimi ACP integration for gaps against the ACP spec. Focus on session
+            lifecycle, pairing, and tool-call routing.
+          </div>
+
+          <div class="msg asst">
+            I'll split this into two focused sub-threads so each runs with its own context, then
+            merge the findings here. Starting them now — I'll be resumed automatically as each one
+            reports back.
+          </div>
+
+          <div class="evt" title="The agent created a sub-thread; it appears nested in the sidebar">
+            <svg
+              class="ic"
+              style="width: 13px; height: 13px; color: var(--primary2, #8f9cf5)"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+            </svg>
+            Agent created task ·
+            <b style="font-weight: 550; color: #d5d7de">Inventory t3code ACP client handlers</b>
+            <span class="open">Open thread →</span>
+          </div>
+          <div class="evt">
+            <svg
+              class="ic"
+              style="width: 13px; height: 13px; color: #8f9cf5"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+            </svg>
+            Agent created task ·
+            <b style="font-weight: 550; color: #d5d7de">Sweep ACP session lifecycle gaps</b>
+            <span class="open">Open thread →</span>
+          </div>
+
+          <!-- Wake-up: the finished task resumes the parent thread -->
+          <div class="evt wake" title="t3code resumed the parent thread with the task's results">
+            <svg
+              class="ic"
+              style="width: 13px; height: 13px; color: var(--info)"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M9 14 4 9l5-5" />
+              <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+            </svg>
+            Task finished · <b style="font-weight: 550">Inventory t3code ACP client handlers</b> — 4
+            findings returned. Main thread resumed.
+          </div>
+
+          <div class="msg asst">
+            First results are in. The client implements
+            <code style="font-family: monospace; font-size: 12.5px">session/new</code>,
+            <code style="font-family: monospace; font-size: 12.5px">session/prompt</code> and
+            <code style="font-family: monospace; font-size: 12.5px">session/update</code>, but never
+            answers <code style="font-family: monospace; font-size: 12.5px">session/resume</code> —
+            that's gap #1, and it explains why restored sessions can't stream late events. One task
+            still running; I'll fold its findings into the audit when it lands.
+          </div>
+
+          <div class="msg user">
+            While that runs, also compare the tool surface against the Codex app-server — use the
+            three messages above as context.
+          </div>
+
+          <div class="evt" title="Created manually, with a specific context">
+            <svg
+              class="ic"
+              style="width: 13px; height: 13px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M20 21a8 8 0 0 0-16 0" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+            You created task ·
+            <b style="font-weight: 550; color: #d5d7de">Compare tool surface vs Codex app-server</b>
+            · context: 3 selected messages
+            <span class="open">Open thread →</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <div class="ph">Ask for follow-up changes or attach images</div>
+          <div class="bar">
+            <span class="chipbtn"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                /></svg
+            ></span>
+            <span class="chipbtn"
+              ><svg
+                class="ic"
+                style="width: 12px; height: 12px; color: #8f9cf5"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+              >K3</span
+            >
+            <span class="chipbtn"
+              >Max<svg
+                class="ic"
+                style="width: 11px; height: 11px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" /></svg
+            ></span>
+            <span class="chipbtn"
+              >Full access<svg
+                class="ic"
+                style="width: 11px; height: 11px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" /></svg
+            ></span>
+            <span class="chipbtn">Build</span>
+            <span class="send"
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                <path d="M12 19V5M5 12l7-7 7 7" /></svg
+            ></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="concept">
+      <b>Thread tasks</b> · Click a sub-thread to peek — read, steer, or open the full thread
+    </div>
+
+    <!-- Mini thread window: the peek card IS a tiny thread -->
+    <div class="mini-win" id="miniWin">
+      <div class="mw-top" id="mwTop"></div>
+      <div class="mw-title" id="mwTitle"></div>
+      <div class="mw-meta" id="mwMeta"></div>
+      <div class="mw-body" id="mwBody"></div>
+      <div class="mw-composer">
+        <span>Steer this task…</span>
+        <span class="mw-send"
+          ><svg
+            style="width: 11px; height: 11px"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+          >
+            <path d="M12 19V5M5 12l7-7 7 7" /></svg
+        ></span>
+      </div>
+    </div>
+
+    <script>
+      const wrap = document.getElementById("parentWrap");
+      document.getElementById("disclosure").addEventListener("click", () => {
+        wrap.classList.toggle("subs-closed");
+        hideMini();
+      });
+
+      /* ---- Mini thread window ---- */
+      const TASKS = {
+        t1: {
+          state: "done",
+          statusText: "Done · 8m ago",
+          title: "Inventory t3code ACP client handlers",
+          chips: [
+            { cls: "agent", label: "✦ agent" },
+            { cls: "", label: "full thread context" },
+            { cls: "returned", label: "↩ returned · woke parent" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Inventory every ACP session method the t3code client implements, and list the spec methods with no handler.",
+            },
+            {
+              role: "asst",
+              html: "<b>4 findings:</b> client never answers session/resume (gap #1); restored sessions can't stream late events; pairing token refresh has no retry; fs/read_text_file caps at 64 KB.",
+            },
+            { role: "evt", text: "↩ Returned to parent — main thread resumed" },
+          ],
+        },
+        t2: {
+          state: "working",
+          statusText: "Working · 3m",
+          title: "Sweep ACP session lifecycle gaps",
+          chips: [
+            { cls: "agent", label: "✦ agent" },
+            { cls: "", label: "full thread context" },
+            { cls: "", label: "K3 · Max" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Walk every ACP session method the client sends or receives; flag anything in the spec that has no handler.",
+            },
+            {
+              role: "asst",
+              html: "Scanning session/* against the spec… 7 of 12 methods checked so far, 2 candidate gaps.",
+            },
+          ],
+        },
+        t3: {
+          state: "working",
+          statusText: "Working · 40s",
+          title: "Compare tool surface vs Codex app-server",
+          chips: [
+            { cls: "you", label: "you" },
+            { cls: "", label: "3 selected messages" },
+            { cls: "", label: "K3 · Max" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Diff the tool-call surface this client exposes against the Codex app-server reference.",
+            },
+            {
+              role: "asst",
+              html: "Comparing initialize, session/*, fs/* and terminal/* against the app-server surface…",
+            },
+          ],
+        },
+      };
+      const CHECK =
+        '<svg class="ic" style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>';
+      const X =
+        '<svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+      const mini = document.getElementById("miniWin");
+      const mcHead = document.getElementById("mwTop");
+      let openFor = null;
+
+      function showMini(id, row) {
+        const t = TASKS[id];
+        if (!t) return;
+        mcHead.className = "mw-top " + t.state;
+        mcHead.innerHTML =
+          (t.state === "working" ? '<span class="spin"></span>' : CHECK) +
+          "<span>" +
+          t.statusText +
+          "</span>" +
+          '<span class="mw-open" id="mwOpen" title="Open this sub-thread in the main view">Open thread' +
+          '<svg style="width:10px;height:10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></span>' +
+          '<span class="mw-x" id="mwClose">' +
+          X +
+          "</span>";
+        document.getElementById("mwTitle").textContent = t.title;
+        document.getElementById("mwMeta").innerHTML = t.chips
+          .map((c) => '<span class="chip' + (c.cls ? " " + c.cls : "") + '">' + c.label + "</span>")
+          .join("");
+        document.getElementById("mwBody").innerHTML = t.convo
+          .map((m) => {
+            if (m.role === "user") return '<div class="mw-msg user">' + m.text + "</div>";
+            if (m.role === "evt") return '<div class="mw-evt">' + m.text + "</div>";
+            return '<div class="mw-msg asst">' + m.html + "</div>";
+          })
+          .join("");
+        document.getElementById("mwClose").addEventListener("click", (e) => {
+          e.stopPropagation();
+          hideMini();
+        });
+
+        document.querySelectorAll(".sub").forEach((s) => s.classList.toggle("picked", s === row));
+        mini.classList.add("show");
+        const r = row.getBoundingClientRect();
+        const h = mini.offsetHeight;
+        mini.style.left = r.right + 14 + "px";
+        mini.style.top = Math.max(10, Math.min(r.top - 8, innerHeight - h - 12)) + "px";
+        openFor = row;
+      }
+
+      function hideMini() {
+        mini.classList.remove("show");
+        document.querySelectorAll(".sub.picked").forEach((s) => s.classList.remove("picked"));
+        openFor = null;
+      }
+
+      document.querySelectorAll(".sub[data-task]").forEach((row) => {
+        row.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (openFor === row) {
+            hideMini();
+            return;
+          }
+          showMini(row.dataset.task, row);
+        });
+      });
+      mini.addEventListener("click", (e) => e.stopPropagation());
+      document.addEventListener("click", hideMini);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") hideMini();
+      });
+
+      // ?peek=t1|t2|t3 opens a task's mini window on load (deep links, screenshots)
+      const peek = new URLSearchParams(location.search).get("peek");
+      if (peek) {
+        const peekRow = document.querySelector('.sub[data-task="' + peek + '"]');
+        if (peekRow) showMini(peek, peekRow);
+      }
+    </script>
+  </body>
+</html>

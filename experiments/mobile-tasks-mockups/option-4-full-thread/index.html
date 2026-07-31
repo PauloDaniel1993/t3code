@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks · Option 4 — task as full thread + parent Agents tab</title>
+    <link rel="stylesheet" href="../mockup.css" />
+    <style>
+      /* Agents tab rows: read-only, grouped under their task's turn */
+      .arow {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 13px;
+      }
+      .arow-top {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 13px;
+      }
+      .arow-top .sic {
+        width: 15px;
+        height: 15px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .arow-name {
+        flex: 1;
+        min-width: 0;
+        font-weight: 550;
+        color: #d9dbe1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .arow.failed .arow-name {
+        color: var(--dim);
+      }
+      .arow-sub {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        padding-left: 24px;
+      }
+      .arow .locate {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .arow .locate:hover {
+        color: var(--info);
+      }
+      .turn-group {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .turn-group-head {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11.5px;
+        color: var(--muted);
+        padding: 2px 4px;
+      }
+      .turn-group-head .right {
+        margin-left: auto;
+        display: inline-flex;
+        gap: 7px;
+        font-size: 11px;
+      }
+      .agents-note {
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: var(--dim);
+        padding: 2px 4px 4px;
+      }
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="backlink" href="../index.html">← all mobile options</a>
+
+    <div class="stage">
+      <div class="device">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg style="width: 12px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M7 16v4M12 13v7M17 10v10" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="currentColor" opacity="0.4" />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- ============ VIEW: parent thread ============ -->
+            <div id="viewParent" class="hidden" style="display: flex; flex-direction: column; flex: 1; min-height: 0">
+              <div class="tbar" style="flex-direction: column; align-items: stretch; gap: 8px">
+                <div style="display: flex; align-items: center; gap: 10px">
+                  <span class="tbar-back" title="Back to the thread list">
+                    <svg class="ic" style="width: 19px; height: 19px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                      <path d="M19 12H5M12 19l-7-7 7-7" />
+                    </svg>
+                  </span>
+                  <div class="tbar-titles">
+                    <div class="tbar-title">Add Wayfinder Constellation Sidebar View</div>
+                    <div class="tbar-sub">pingdotgg/t3code · dev · Claude Code · Opus 4.7</div>
+                  </div>
+                  <span class="tbar-act">
+                    <svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                      <circle cx="12" cy="5" r="1.6" />
+                      <circle cx="12" cy="12" r="1.6" />
+                      <circle cx="12" cy="19" r="1.6" />
+                    </svg>
+                  </span>
+                </div>
+                <div class="seg" id="seg">
+                  <span data-tab="chat">Chat</span>
+                  <span data-tab="agents">Agents <span class="cnt">10</span></span>
+                </div>
+              </div>
+
+              <!-- Chat tab -->
+              <div class="mscroll hidden" id="tabChat">
+                <div class="tl">
+                  <div class="msg user">
+                    Add a wayfinder constellation sidebar view to the app — start by drafting the
+                    mobile mockups from the screenshot I attached.
+                  </div>
+                  <div class="msg asst">
+                    I'll spin up a task for the mockups so it runs with its own context, then fold
+                    the winning variant into the sidebar work here.
+                  </div>
+                  <div class="evt">
+                    <svg class="ic" style="width: 13px; height: 13px; color: #8f9cf5" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+                    </svg>
+                    <span>Agent created task · <b>Create 4 mockups for the mobile app based on
+                    the image</b></span>
+                    <span class="open" id="openTask">Open →</span>
+                  </div>
+                  <div class="msg asst">
+                    The task is running — its latest turn fanned out 10 agents (6 back, 4 hit the
+                    tool-use budget; retrying). I'll resume here when it returns the set.
+                  </div>
+                </div>
+              </div>
+
+              <!-- Agents tab: the 10 agents, grouped under their task's turn -->
+              <div class="mscroll hidden" id="tabAgents">
+                <div class="tl" style="gap: 10px">
+                  <div class="agents-note">
+                    Agents run <b style="color: var(--muted)">inside their task's session</b> —
+                    they inherit its model (Opus 4.7), can't be steered or cancelled
+                    independently, and report back to the task's agent automatically. To stop one,
+                    interrupt the task's turn.
+                  </div>
+
+                  <div class="turn-group">
+                    <div class="turn-group-head">
+                      <svg style="width: 12px; height: 12px; color: var(--info)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                      <span><b style="color: #d5d7de">Create 4 mockups for the mobile app…</b> · Latest turn</span>
+                      <span class="right"><span class="cnt-ok">✓ 6</span><span class="cnt-fail">× 4</span></span>
+                    </div>
+
+                    <div class="arow">
+                      <div class="arow-top">
+                        <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                        <span class="arow-name">Map screenshot chrome regions</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">Explore · done · 4.1k tokens · 3 tools · 3s</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow">
+                      <div class="arow-top">
+                        <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                        <span class="arow-name">Extract thread-row anatomy</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">Explore · done · 5.6k tokens · 4 tools · 4s</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow">
+                      <div class="arow-top">
+                        <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                        <span class="arow-name">Draft status bar + app header markup</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">general-purpose · done · 9.8k tokens · 6 tools · 5s</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow failed">
+                      <div class="arow-top">
+                        <span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span>
+                        <span class="arow-name">Reproduce provider glyph set</span>
+                        <span class="chip danger">failed</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">Explore · 6.8k tokens · 5 tools · 9s · budget exceeded</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow">
+                      <div class="arow-top">
+                        <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                        <span class="arow-name">Draft list-row CSS tokens</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">Explore · done · 3.9k tokens · 3 tools · 4s</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow failed">
+                      <div class="arow-top">
+                        <span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span>
+                        <span class="arow-name">Fit expanded task group into 390px</span>
+                        <span class="chip danger">failed</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">general-purpose · 8.2k tokens · 6 tools · 7s · budget exceeded</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow failed">
+                      <div class="arow-top">
+                        <span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span>
+                        <span class="arow-name">Bottom-sheet layout pass</span>
+                        <span class="chip danger">failed</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">general-purpose · 5.4k tokens · 4 tools · 6s</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow">
+                      <div class="arow-top">
+                        <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                        <span class="arow-name">Compose thread-list variant</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">general-purpose · done · 11.3k tokens · 7 tools · 5s</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow failed">
+                      <div class="arow-top">
+                        <span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span>
+                        <span class="arow-name">In-thread card layout pass</span>
+                        <span class="chip danger">failed</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">general-purpose · 7.7k tokens · 6 tools · 8s · budget exceeded</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                    <div class="arow">
+                      <div class="arow-top">
+                        <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                        <span class="arow-name">Assemble full-thread variant</span>
+                      </div>
+                      <div class="arow-sub">
+                        <span class="usage">general-purpose · done · 10.5k tokens · 7 tools · 6s</span>
+                        <span class="locate">
+                          <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                          Show in transcript
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="composer-wrap" id="parentComposer">
+                <div class="composer">
+                  <div class="ph">Message the thread…</div>
+                  <div class="bar">
+                    <span class="chipbtn">
+                      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                      </svg>
+                    </span>
+                    <span class="chipbtn">
+                      <svg class="ic" style="width: 12px; height: 12px; color: #8f9cf5" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+                      </svg>
+                      Opus 4.7
+                    </span>
+                    <span class="send">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ============ VIEW: task as a full thread ============ -->
+            <div id="viewTask" class="hidden" style="flex-direction: column; flex: 1; min-height: 0">
+              <div class="tbar">
+                <span class="tbar-back" id="taskBack" title="Back to Add Wayfinder Constellation Sidebar View">
+                  <svg class="ic" style="width: 19px; height: 19px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                </span>
+                <div class="tbar-titles">
+                  <div class="tbar-title">Create 4 mockups for the mobile app based on the image</div>
+                  <div class="tbar-sub">Task · created by the agent · full thread context · Opus 4.7</div>
+                </div>
+                <span class="tbar-act">
+                  <svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="1.6" />
+                    <circle cx="12" cy="12" r="1.6" />
+                    <circle cx="12" cy="19" r="1.6" />
+                  </svg>
+                </span>
+              </div>
+
+              <div class="mscroll">
+                <div class="tl">
+                  <div class="msg user">
+                    Create 4 mockups for the mobile app based on the reference image: thread list,
+                    bottom sheet, in-thread, full thread.
+                  </div>
+                  <div class="msg asst">
+                    I'll fan out ten agents over the chrome, the list-row anatomy, and the four
+                    variants, then assemble the set.
+                  </div>
+                  <div class="msg asst">
+                    Six agents are back; four hit the tool-use budget and are retrying with
+                    narrower scopes. Assembling the four variants now — the thread-list one
+                    matches the screenshot's chrome exactly.
+                  </div>
+                </div>
+              </div>
+
+              <div class="composer-wrap">
+                <div class="composer">
+                  <div class="ph">Steer this task…</div>
+                  <div class="bar">
+                    <span class="chipbtn">
+                      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                      </svg>
+                    </span>
+                    <span class="chipbtn">
+                      <svg class="ic" style="width: 12px; height: 12px; color: #8f9cf5" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+                      </svg>
+                      Opus 4.7
+                    </span>
+                    <span class="send">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="gesturebar"></div>
+            <div class="toast" id="toast"></div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>4 — Full thread + Agents tab.</b> Tasks navigate as real threads; agents get a
+          read-only tab grouped by turn. <code>?view=parent|task</code> ·
+          <code>?tab=chat|agents</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="concept">
+      <b>Option 4</b> · Navigation stack — tasks are pushable views; agents are a read-only tab
+    </div>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const viewParent = document.getElementById("viewParent");
+      const viewTask = document.getElementById("viewTask");
+      const tabChat = document.getElementById("tabChat");
+      const tabAgents = document.getElementById("tabAgents");
+      const parentComposer = document.getElementById("parentComposer");
+
+      function apply() {
+        const view = params.get("view") === "task" ? "task" : "parent";
+        const tab = params.get("tab") === "agents" ? "agents" : "chat";
+        viewParent.classList.toggle("hidden", view !== "parent");
+        viewParent.style.display = view === "parent" ? "flex" : "none";
+        viewTask.classList.toggle("hidden", view !== "task");
+        viewTask.style.display = view === "task" ? "flex" : "none";
+        tabChat.classList.toggle("hidden", tab !== "chat");
+        tabAgents.classList.toggle("hidden", tab !== "agents");
+        parentComposer.style.visibility = tab === "chat" ? "visible" : "hidden";
+        document.querySelectorAll("#seg [data-tab]").forEach((el) => {
+          el.classList.toggle("on", el.dataset.tab === tab);
+        });
+      }
+
+      function go(next) {
+        for (const k of Object.keys(next)) params.set(k, next[k]);
+        history.replaceState(null, "", "?" + params.toString());
+        apply();
+      }
+
+      document.querySelectorAll("#seg [data-tab]").forEach((el) => {
+        el.addEventListener("click", () => go({ view: "parent", tab: el.dataset.tab }));
+      });
+      document.getElementById("openTask").addEventListener("click", () => go({ view: "task" }));
+      document.getElementById("taskBack").addEventListener("click", () => go({ view: "parent" }));
+
+      /* "Show in transcript" returns to the chat tab (the jump itself is
+         option 3's flash interaction, inside the task's own feed) */
+      const toast = document.getElementById("toast");
+      let toastTimer = null;
+      document.querySelectorAll(".arow .locate").forEach((el) => {
+        el.addEventListener("click", () => {
+          go({ view: "task" });
+          toast.textContent = "Jumps to the agent's turn card in the task's transcript";
+          toast.classList.add("show");
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+        });
+      });
+
+      apply();
+    </script>
+  </body>
+</html>

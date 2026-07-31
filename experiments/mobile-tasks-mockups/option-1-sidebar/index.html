@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks · Option 1 — thread list with task/agent groups</title>
+    <link rel="stylesheet" href="../mockup.css" />
+    <style>
+      /* Deep-link highlight for ?peek=task|turn|apk|local|login */
+      .sub.picked {
+        animation: peek-pulse 1.6s ease-out 2;
+      }
+      @keyframes peek-pulse {
+        0% {
+          box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.9);
+        }
+        100% {
+          box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.35);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="backlink" href="../index.html">← all mobile options</a>
+
+    <div class="stage">
+      <div class="device">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z" />
+                  </svg>
+                  <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg style="width: 12px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="currentColor" opacity="0.4" />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Thread list -->
+            <div class="mscroll">
+              <div class="mlist">
+                <!-- Expanded parent: 1 task whose latest turn has 10 agents -->
+                <div class="trow selected">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="clk" title="Snooze / reminders">
+                        <svg style="width: 14px; height: 14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7v5l3 2" />
+                        </svg>
+                      </span>
+                      <span class="settle" title="Settle this thread">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        Settle
+                      </span>
+                    </span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="1 task · 10 agents in this thread">
+                      <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      1 task · 10 agents
+                    </span>
+                    <span class="tprov" title="Claude Code">
+                      <svg class="ic" style="color: var(--coral)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub" data-unit="task" title="Task · working · tap to peek">
+                    <span class="sic working-ic">
+                      <svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Create 4 mockups for the mobile app based on th…</span>
+                    <span class="smeta working">8s</span>
+                  </div>
+                  <div class="sub lvl2" data-unit="turn" title="The task's latest turn — 10 agents: 6 completed, 4 failed">
+                    <span class="sic" style="color: var(--dim)">
+                      <svg class="ic" style="width: 12px; height: 12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle" style="color: var(--muted)">Latest turn · 10 agents</span>
+                    <span class="smeta">
+                      <span class="cnt-ok">✓ 6</span>
+                      <span class="cnt-fail">× 4</span>
+                      <span class="ret" title="Results returned to the task">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Build Standalone Android APK</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--dim)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">11h</span>
+                  </div>
+                  <div class="ttitle">Add Task Transformation to Threads</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--coral)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">14h</span>
+                  </div>
+                  <div class="ttitle">Assess Local Build Feasibility</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--coral)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 255">
+                      <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="3" y="3" width="8" height="8" rx="1.5" />
+                        <rect x="13" y="3" width="8" height="8" rx="1.5" />
+                        <rect x="3" y="13" width="8" height="8" rx="1.5" />
+                        <rect x="13" y="13" width="8" height="8" rx="1.5" />
+                      </svg>
+                    </span>
+                    <span class="repo">paulodaniel1993/workflowharness</span>
+                    <span class="tago">15h</span>
+                  </div>
+                  <div class="ttitle">Finish Durable Chat Server Fixes</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">feature/durable-chat</span>
+                    <span class="tbadge">#10</span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--dim)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 255">
+                      <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="3" y="3" width="8" height="8" rx="1.5" />
+                        <rect x="13" y="3" width="8" height="8" rx="1.5" />
+                        <rect x="3" y="13" width="8" height="8" rx="1.5" />
+                        <rect x="13" y="13" width="8" height="8" rx="1.5" />
+                      </svg>
+                    </span>
+                    <span class="repo">paulodaniel1993/workflowharness</span>
+                    <span class="tago">15h</span>
+                  </div>
+                  <div class="ttitle">Finish Durable Chat Branch Work</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">feature/durable-chat</span>
+                    <span class="tbadge">#10</span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--dim)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago"><span class="working">Working</span></span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Login</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--coral)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Second expanded thread: 3 tasks -->
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Redirect Error</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="3 tasks in this thread">
+                      <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      3 tasks
+                    </span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--dim)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub" data-unit="apk" title="Task · returned results · has a nested turn · tap to peek">
+                    <span class="sic" style="color: var(--dim)">
+                      <svg class="ic" style="width: 12px; height: 12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Build a standalone, installable Android APK of t…</span>
+                    <span class="smeta">
+                      19m
+                      <span class="ret" title="Returned results">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="sub done" data-unit="local" title="Task · done · returned results · tap to peek">
+                    <span class="sic ok">
+                      <svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </span>
+                    <span class="stitle">is it possible to build locally?</span>
+                    <span class="smeta">
+                      59s
+                      <span class="ret" title="Returned results">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="sub" data-unit="login" title="Task · working · tap to peek">
+                    <span class="sic working-ic">
+                      <svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">the t3 connect is not letting log in</span>
+                    <span class="smeta">
+                      <span class="working">24s</span>
+                      <span class="ret" title="Returned results">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg style="width: 21px; height: 21px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast" id="toast"></div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>1 — Thread list.</b> Expanded rows carry the disclosure chip; sub-rows nest
+          tasks → turn → agents. <code>?peek=task|turn|apk|local|login</code> highlights a row.
+        </div>
+      </div>
+    </div>
+
+    <div class="concept">
+      <b>Option 1</b> · Thread list — tasks open; a turn's agents are view only
+    </div>
+
+    <script>
+      const toast = document.getElementById("toast");
+      let toastTimer = null;
+      function say(msg) {
+        toast.textContent = msg;
+        toast.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+      }
+      /* Taps state the honest outcome in words. Tasks open (sheet / thread);
+         a turn row can only be located — its agents run inside the task's
+         session and are view only. */
+      document.querySelectorAll(".sub[data-unit]").forEach((row) => {
+        row.addEventListener("click", () => {
+          say(
+            row.dataset.unit === "turn"
+              ? "View only — 10 agents run inside the task's session; tap to locate them"
+              : "Opens the task — peek sheet (option 2) or full thread (option 4)",
+          );
+        });
+      });
+
+      /* ?peek=task|turn|apk|local|login highlights that row on load */
+      const peek = new URLSearchParams(location.search).get("peek");
+      if (peek) {
+        const row = document.querySelector('.sub[data-unit="' + peek + '"]');
+        if (row) {
+          row.classList.add("picked");
+          row.scrollIntoView({ block: "center" });
+        }
+      }
+    </script>
+  </body>
+</html>

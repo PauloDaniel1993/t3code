@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Subagent views — mockups</title>
+    <link rel="stylesheet" href="mockup.css" />
+    <style>
+      body {
+        display: block;
+        overflow: auto;
+        height: auto;
+      }
+      .page {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 56px 32px 80px;
+      }
+      .kicker {
+        font-size: 11.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-bottom: 10px;
+      }
+      h1 {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        margin-bottom: 12px;
+      }
+      .lede {
+        font-size: 14px;
+        line-height: 1.65;
+        color: var(--muted);
+        max-width: 720px;
+      }
+      .lede b {
+        color: #d5d7de;
+        font-weight: 550;
+      }
+      .opt {
+        margin-top: 44px;
+      }
+      .opt-head {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+      }
+      .opt-head h2 {
+        font-size: 17px;
+        font-weight: 600;
+      }
+      .opt-head .open-all {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--dim);
+      }
+      .opt-head .open-all:hover {
+        color: var(--info);
+      }
+      .opt-desc {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+        margin-top: 8px;
+        max-width: 720px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .vcard {
+        display: block;
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 14px;
+        padding: 13px 15px;
+      }
+      .vcard:hover {
+        border-color: var(--border2);
+        background: #131318;
+      }
+      .vcard .vname {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--fg);
+      }
+      .vcard .vid {
+        font-size: 10.5px;
+        font-weight: 700;
+        color: var(--dim);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 1px 6px;
+        flex: none;
+      }
+      .vcard .vrec {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--success);
+        border: 1px solid rgba(52, 211, 153, 0.4);
+        background: rgba(52, 211, 153, 0.1);
+        border-radius: 999px;
+        padding: 1px 7px;
+        flex: none;
+      }
+      .vcard .vline {
+        font-size: 12.5px;
+        line-height: 1.55;
+        color: var(--muted);
+        margin-top: 6px;
+      }
+      .foot {
+        margin-top: 52px;
+        font-size: 12px;
+        color: var(--dim);
+        border-top: 1px solid var(--border);
+        padding-top: 14px;
+        line-height: 1.7;
+      }
+      .foot a {
+        color: var(--muted);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .foot a:hover {
+        color: var(--fg);
+      }
+      code {
+        font-family: ui-monospace, monospace;
+        font-size: 11.5px;
+        color: #c7d0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="kicker">T3 Code · design exploration</div>
+      <h1>Subagent views — twelve mockups</h1>
+      <p class="lede">
+        A parent thread can fan out work two ways. <b>Thread tasks</b> are real threads — own
+        session, own model, steerable, durable. <b>Provider-native subagents</b> (e.g. Claude Code's
+        Task tool) run <b>inside the parent's session</b> — they cannot be steered or cancelled,
+        have no model of their own, and today surface only as a workflow card buried in the
+        transcript. These mockups explore three ways to close that gap, four variants each. Sibling
+        mockup: <code>../thread-tasks-mockups/</code>.
+      </p>
+
+      <!-- ============ Option 1 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Option 1 — Sidebar parity</h2>
+          <a class="open-all" href="option-1-sidebar/index.html">open option →</a>
+        </div>
+        <p class="opt-desc">
+          Native subagents appear as rows inside the parent's sidebar task group, next to real task
+          threads. Hovering a row peeks it: a task row shows the standard mini thread window (steer,
+          cancel, open thread); a native row shows option 2's honest window with the disabled
+          composer. Clicking acts — a task row opens its thread, a native row jumps to its run in
+          the transcript. Add <code>&amp;peek=t1|t2|w1..w4</code> to open a row's peek directly.
+        </p>
+        <div class="grid">
+          <a class="vcard" href="option-1-sidebar/index.html?v=1">
+            <span class="vname"
+              ><span class="vid">1A</span>Split section <span class="vrec">rec</span></span
+            >
+            <span class="vline">
+              Two labelled sub-sections — "Tasks" and "In-session agents" — so the capability
+              difference is structural, not iconographic. Costs vertical space; the two kinds can
+              never interleave by recency.
+            </span>
+          </a>
+          <a class="vcard" href="option-1-sidebar/index.html?v=2">
+            <span class="vname"><span class="vid">1B</span>Merged, icon-coded</span>
+            <span class="vline">
+              One flat start-time-ordered list; kind shown only by a leading icon plus tooltip, with
+              a "view only" tag on hover. Densest and smallest change — but the tooltip does all the
+              honesty work.
+            </span>
+          </a>
+          <a class="vcard" href="option-1-sidebar/index.html?v=3">
+            <span class="vname"><span class="vid">1C</span>Turn-grouped</span>
+            <span class="vline">
+              Natives nested under a collapsible "Turn 4 · 4 workers" header mirroring the workflow
+              card 1:1. Teaches <em>when</em> agents ran; scales poorly across many turns.
+            </span>
+          </a>
+          <a class="vcard" href="option-1-sidebar/index.html?v=4">
+            <span class="vname"><span class="vid">1D</span>Metrics-forward</span>
+            <span class="vline">
+              Merged running-first list with tokens · tools · duration at rest on every row. Best
+              for "what is this costing me"; noisiest, and usage data isn't guaranteed.
+            </span>
+          </a>
+        </div>
+      </div>
+
+      <!-- ============ Option 2 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Option 2 — Mini-window parity</h2>
+          <a class="open-all" href="option-2-mini-window/index.html">open option →</a>
+        </div>
+        <p class="opt-desc">
+          The existing task peek window also opens on a native subagent, launched from the
+          transcript's workflow card. Steering is impossible, so the composer is disabled with a
+          stated reason — or removed entirely. Add <code>&amp;w=w1..w4</code> to pick the worker (w2
+          running, w3 failed).
+        </p>
+        <div class="grid">
+          <a class="vcard" href="option-2-mini-window/index.html?v=1">
+            <span class="vname"
+              ><span class="vid">2A</span>Same anatomy, honest composer
+              <span class="vrec">rec</span></span
+            >
+            <span class="vline">
+              Pixel-faithful to the task mini window; the composer is present but disabled with the
+              reason spelled out, and "Open thread ↗" becomes "Show in transcript". One window to
+              learn for both kinds.
+            </span>
+          </a>
+          <a class="vcard" href="option-2-mini-window/index.html?v=2">
+            <span class="vname"><span class="vid">2B</span>Receipt card</span>
+            <span class="vline">
+              No composer at all — a read-only "agent receipt": stat cells, result block, copy
+              button, full-output file path. Honesty by subtraction; dead-ends the user on failures.
+            </span>
+          </a>
+          <a class="vcard" href="option-2-mini-window/index.html?v=3">
+            <span class="vname"><span class="vid">2C</span>Peek → promote</span>
+            <span class="vline">
+              Adds a primary "Promote to task thread" action that re-runs the prompt as a real,
+              steerable task. The only variant that adds a capability — and sells a bridge that
+              doesn't exist yet.
+            </span>
+          </a>
+          <a class="vcard" href="option-2-mini-window/index.html?v=4">
+            <span class="vname"><span class="vid">2D</span>Live ticker</span>
+            <span class="vline">
+              A monitor for running workers: ticking elapsed readout, timestamped progress beats,
+              pulsing last-tool chip. Great for watching; the data model can't feed the beat log
+              today.
+            </span>
+          </a>
+        </div>
+      </div>
+
+      <!-- ============ Option 3 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Option 3 — Mirror threads</h2>
+          <a class="open-all" href="option-3-mirror-threads/index.html">open option →</a>
+        </div>
+        <p class="opt-desc">
+          Each native subagent is mirrored into a read-only thread: a real sidebar row, normal
+          navigation, a thread view of whatever the provider actually streamed — permanently
+          read-only. The tension: the mirror promises "thread" but can't deliver thread
+          capabilities, and the transcript may be partial.
+        </p>
+        <div class="grid">
+          <a class="vcard" href="option-3-mirror-threads/index.html?v=1">
+            <span class="vname"><span class="vid">3A</span>Locked chrome</span>
+            <span class="vline">
+              Full task-thread chrome with the composer replaced by a lock banner. Lowest learning
+              curve — and the most credible-looking, which makes it the most dishonest about partial
+              data.
+            </span>
+          </a>
+          <a class="vcard" href="option-3-mirror-threads/index.html?v=2">
+            <span class="vname"><span class="vid">3B</span>Ghost rows</span>
+            <span class="vline">
+              Sidebar mirrors dimmed and italicised, thread view drops the composer zone entirely.
+              Calm and cheap; honesty carried entirely by styling is honesty carried weakly.
+            </span>
+          </a>
+          <a class="vcard" href="option-3-mirror-threads/index.html?v=3">
+            <span class="vname"
+              ><span class="vid">3C</span>Provenance &amp; gaps <span class="vrec">rec</span></span
+            >
+            <span class="vline">
+              Every beat tagged with its source, every unstreamed span drawn as an explicit gap row.
+              The only variant where a partial replay can never pass as a complete transcript;
+              noisiest, and needs per-beat stream data that doesn't exist yet.
+            </span>
+          </a>
+          <a class="vcard" href="option-3-mirror-threads/index.html?v=4">
+            <span class="vname"><span class="vid">3D</span>Completion archive</span>
+            <span class="vline">
+              Mirrors created only when a subagent finishes or fails — running natives stay in the
+              turn card. No fake live threads; the sidebar stops being the one place to see all
+              parallel work.
+            </span>
+          </a>
+        </div>
+      </div>
+
+      <div class="foot">
+        Everything here is static HTML over <code>file://</code> — no server, no build. Deep links:
+        <code>?v=1..4</code> picks a variant inside an option (option 1 also takes
+        <code>&amp;peek=t1|t2|w1..w4</code> to open a row's peek; option 2 also takes
+        <code>&amp;w=w1..w4</code>). Per-variant trade-offs and the data-gap analysis are in
+        <a href="README.md">README.md</a> and each option's <code>NOTES.md</code>.
+      </div>
+    </div>
+  </body>
+</html>

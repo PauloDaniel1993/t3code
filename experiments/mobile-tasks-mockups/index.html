@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks — mockups</title>
+    <link rel="stylesheet" href="mockup.css" />
+    <style>
+      body {
+        background: var(--bg);
+      }
+      .page {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 56px 32px 80px;
+      }
+      .kicker {
+        font-size: 11.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-bottom: 10px;
+      }
+      h1 {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        margin-bottom: 12px;
+      }
+      .lede {
+        font-size: 14px;
+        line-height: 1.65;
+        color: var(--muted);
+        max-width: 720px;
+      }
+      .lede b {
+        color: #d5d7de;
+        font-weight: 550;
+      }
+      .opt {
+        margin-top: 44px;
+      }
+      .opt-head {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+      }
+      .opt-head h2 {
+        font-size: 17px;
+        font-weight: 600;
+      }
+      .opt-head .vrec {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--success);
+        border: 1px solid rgba(52, 211, 153, 0.4);
+        background: rgba(52, 211, 153, 0.1);
+        border-radius: 999px;
+        padding: 1px 7px;
+        flex: none;
+      }
+      .opt-head .open-all {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--dim);
+      }
+      .opt-head .open-all:hover {
+        color: var(--info);
+      }
+      .opt-desc {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+        margin-top: 8px;
+        max-width: 720px;
+      }
+      .ref {
+        margin-top: 20px;
+        display: flex;
+        gap: 18px;
+        align-items: flex-start;
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 14px;
+        padding: 14px 16px;
+      }
+      .ref img {
+        width: 130px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        flex: none;
+      }
+      .ref .ref-copy {
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .ref .ref-copy b {
+        color: #d5d7de;
+        font-weight: 550;
+      }
+      .foot {
+        margin-top: 52px;
+        font-size: 12px;
+        color: var(--dim);
+        border-top: 1px solid var(--border);
+        padding-top: 14px;
+        line-height: 1.7;
+      }
+      .foot a {
+        color: var(--muted);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .foot a:hover {
+        color: var(--fg);
+      }
+      code {
+        font-family: ui-monospace, monospace;
+        font-size: 11.5px;
+        color: #c7d0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="kicker">T3 Code · design exploration</div>
+      <h1>Mobile tasks — four mockups</h1>
+      <p class="lede">
+        How <b>tasks</b> (real sub-threads — steerable, cancellable, durable) and their turns'
+        <b>agents</b> (provider-native, run inside the task's session — view only) surface in the
+        T3 Code mobile app. The chrome and thread list are traced from the real Android app; the
+        expanded tasks/agents rows follow the desktop sidebar's accepted visual language
+        (disclosure chips, guide-line sub-rows, ✓/× turn counters, ↩ returned markers). Sibling
+        mockups: <code>../thread-tasks-mockups/</code>, <code>../subagent-view-mockups/</code>.
+      </p>
+
+      <div class="ref">
+        <img src="reference-mobile.png" alt="Reference screenshot of the T3 Code Android app thread list" />
+        <span class="ref-copy">
+          <b>References.</b> <code>reference-mobile.png</code> — the real Android app (dark):
+          status bar, "T3 Code · ALPHA" header with filter/settings buttons, "Search threads",
+          hairline-separated thread rows, compose FAB. Second reference (not embeddable): the
+          desktop/web sidebar's expanded tasks/agents UI — parent row with clock + "✓ Settle"
+          pill, "⌄ 1 task · 10 agents" disclosure chip, blue-asterisk task rows, a task's
+          "› Latest turn · 10 agents" row with green ✓ 6 / red × 4 counters and a blue ↩
+          returned marker.
+        </span>
+      </div>
+
+      <!-- ============ Option 1 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Option 1 — Thread list, expanded groups</h2>
+          <span class="vrec">rec · navigation</span>
+          <a class="open-all" href="option-1-sidebar/index.html">open →</a>
+        </div>
+        <p class="opt-desc">
+          The app's real thread list. Expanded parent rows gain a clock + <b>✓ Settle</b> pill
+          and a disclosure chip ("⌄ 1 task · 10 agents"); sub-rows nest <b>thread → tasks → a
+          task's turn → that turn's agents</b> under a guide line, with blue-asterisk (working),
+          ✓ (done), chevron (expandable), ↩ (returned) markers and ✓/× turn counters. Deep link
+          <code>?peek=task|turn|apk|local|login</code> highlights a row.
+        </p>
+      </div>
+
+      <!-- ============ Option 2 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Option 2 — Bottom-sheet peek</h2>
+          <span class="vrec">rec · preview</span>
+          <a class="open-all" href="option-2-bottom-sheet/index.html">open →</a>
+        </div>
+        <p class="opt-desc">
+          Tapping a task row slides up a glass bottom sheet: status, chips, prompt, latest
+          activity, the task's turn with its agents (✓ 6 × 4), Cancel, an enabled steer
+          composer, "Open thread". An agent's sheet keeps the same anatomy but disables the
+          composer with the reason in words and swaps in "Show in transcript". Deep link
+          <code>?sheet=task|apk|local|login|a4</code> (a4 is a failed agent).
+        </p>
+      </div>
+
+      <!-- ============ Option 3 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Option 3 — In-thread agent card + parallel-work card</h2>
+          <a class="open-all" href="option-3-in-thread/index.html">open →</a>
+        </div>
+        <p class="opt-desc">
+          The task thread's feed: a provenance event row, the turn's <b>agent card</b> (10
+          agents, ✓ 6 × 4) inline in the conversation, and a collapsible <b>Parallel work</b>
+          card pinned above the composer. Agent rows are view only — tapping one scrolls the
+          feed and flashes its card row. Deep link <code>?open=1</code> expands the card.
+        </p>
+      </div>
+
+      <!-- ============ Option 4 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Option 4 — Full task thread + Agents tab</h2>
+          <a class="open-all" href="option-4-full-thread/index.html">open →</a>
+        </div>
+        <p class="opt-desc">
+          Navigation-stack honesty: a task opens as a normal pushed thread view (own transcript,
+          steer composer, parent as back target); the parent thread gains a Chat / Agents
+          segmented control, where Agents lists the 10 agents read-only, grouped under their
+          task's turn, each linking "Show in transcript". Deep links
+          <code>?view=parent|task</code> and <code>?tab=chat|agents</code>.
+        </p>
+      </div>
+
+      <div class="foot">
+        Everything here is static HTML over <code>file://</code> — no server, no build, no
+        dependencies. Per-variant trade-offs, recommendations, and the data-gap analysis are in
+        <a href="README.md">README.md</a> and each option's <code>NOTES.md</code>;
+        <a href="HANDOFF.md">HANDOFF.md</a> is the planning input.
+      </div>
+    </div>
+  </body>
+</html>

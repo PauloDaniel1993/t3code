@@ -1,0 +1,2384 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mirror threads — V1 · Locked chrome · T3 Code mockup</title>
+    <link rel="stylesheet" href="../mockup.css" />
+    <style>
+      /* ---- Sidebar sub-thread block (copied from thread-tasks-mockups) ---- */
+      .trow.has-subs {
+        padding-left: 24px;
+      }
+      .disclosure {
+        position: absolute;
+        left: 6px;
+        top: 10px;
+        width: 14px;
+        height: 14px;
+        color: var(--dim);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.12s;
+      }
+      .subs-closed .disclosure {
+        transform: rotate(-90deg);
+      }
+      .tcount {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10.5px;
+        color: var(--muted);
+        background: var(--chip);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0 7px;
+        line-height: 16px;
+      }
+      .subs {
+        margin: 1px 4px 4px 22px;
+        padding-left: 12px;
+        border-left: 1px solid var(--border2);
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .subs-closed .subs,
+      .subs-closed .sub-new {
+        display: none;
+      }
+      .sub {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 8px;
+        font-size: 12.5px;
+      }
+      .sub:hover {
+        background: var(--hover);
+      }
+      .sub .sic {
+        width: 15px;
+        height: 15px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .sub .stitle {
+        flex: 1;
+        min-width: 0;
+        color: #d9dbe1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sub.done .stitle {
+        color: var(--muted);
+      }
+      .sub .smeta {
+        flex: none;
+        font-size: 11px;
+        color: var(--dim);
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .sub .smeta.working {
+        color: var(--info);
+      }
+      .sub-new {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 1px 4px 4px 22px;
+        padding: 5px 8px 5px 20px;
+        border-left: 1px solid var(--border2);
+        font-size: 12px;
+        color: var(--dim);
+        opacity: 0.55;
+      }
+      .trow.has-subs:hover + .subs + .sub-new,
+      .sub-new:hover {
+        opacity: 1;
+      }
+      .sub.picked {
+        background: var(--selected);
+      }
+
+      /* ---- Variant sections: one visible at a time ---- */
+      section[data-variant] {
+        display: none;
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+      }
+      section[data-variant].on {
+        display: flex;
+      }
+
+      /* ---- Mirror rows (all variants) ---- */
+      .chip.micro {
+        font-size: 9px;
+        padding: 0 5px;
+        line-height: 14px;
+        gap: 3px;
+      }
+      .chip.micro svg {
+        width: 9px;
+        height: 9px;
+      }
+      .sub .smeta .chip {
+        flex: none;
+      }
+
+      /* V2 — ghost rows: mirrors can never be mistaken for real tasks */
+      .sub.ghost {
+        opacity: 0.48;
+      }
+      .sub.ghost:hover {
+        opacity: 0.85;
+      }
+      .sub.ghost.picked {
+        opacity: 0.9;
+      }
+      .sub.ghost .stitle {
+        font-style: italic;
+      }
+
+      /* V3 — partial-transcript marker on sidebar mirror rows */
+      .pmark {
+        color: var(--warn);
+        display: flex;
+        flex: none;
+      }
+      .pmark svg {
+        width: 10px;
+        height: 10px;
+      }
+
+      /* V4 — dim policy note row inside the subs group */
+      .sub.policy {
+        opacity: 0.55;
+        font-size: 12px;
+      }
+      .sub.policy .stitle {
+        color: var(--dim);
+        font-style: italic;
+      }
+
+      /* Middle crumb links back to the parent thread */
+      .crumb-parent {
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .crumb-parent:hover {
+        color: var(--info);
+      }
+
+      /* Full-width lock banner replacing the composer (V1, V3, V4) */
+      .lockbanner.full {
+        max-width: 740px;
+        width: 100%;
+        margin: 0 auto;
+      }
+      .lockbanner b {
+        font-weight: 600;
+      }
+      .lockbanner .lic {
+        flex: none;
+        display: flex;
+      }
+      .lockbanner .lic svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      /* V2 — quiet provenance note pinned under the topbar */
+      .provnote {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 16px;
+        font-size: 11.5px;
+        color: var(--dim);
+        border-bottom: 1px solid var(--border);
+      }
+      .provnote svg {
+        width: 11px;
+        height: 11px;
+        flex: none;
+      }
+
+      /* V3 — provenance tags on every mirrored beat + explicit gap rows */
+      .prov {
+        font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+        font-size: 10px;
+        color: var(--dim);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 0 5px;
+        white-space: nowrap;
+      }
+      .prov.under {
+        align-self: flex-end;
+        margin-top: -12px;
+      }
+      .gaprow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--dim);
+        font-size: 11px;
+      }
+      .gaprow::before,
+      .gaprow::after {
+        content: "";
+        flex: 1;
+        border-top: 1px dashed var(--border2);
+      }
+
+      /* V4 — archive receipt grid */
+      .rc-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 14px;
+        font-size: 12px;
+        padding: 2px 0;
+      }
+      .rc-grid .k {
+        color: var(--dim);
+      }
+      .rc-grid .v {
+        color: #d5d7de;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="backlink" href="../index.html">← Subagent-view options</a>
+
+    <!-- ============================================================
+         V1 — LOCKED CHROME
+         The mirror looks exactly like a real task thread view, but the
+         composer is replaced by a full-width lock banner. Sidebar mirror
+         rows look like task rows with a clone glyph + "mirrored" chip.
+         ============================================================ -->
+    <section data-variant="1">
+      <nav class="sidebar">
+        <div class="sb-top">
+          <div class="brand"><span class="logo">t3</span>T3 Code</div>
+          <div class="search">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            Search <span class="kbd">Ctrl+K</span>
+            <span class="new"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L16 11l-4 1 1-4Z" /></svg
+            ></span>
+          </div>
+          <div class="allproj">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+              />
+            </svg>
+            All projects
+            <span class="chev"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" /></svg
+            ></span>
+            <span class="new"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" /></svg
+            ></span>
+          </div>
+        </div>
+
+        <div class="sb-list">
+          <div class="trow">
+            <span class="picon" style="--h: 225">WH</span>
+            <div class="tbody">
+              <div class="tmeta">
+                WorkflowHarness<span class="st working"><span class="spin"></span>Working 3m</span>
+              </div>
+              <div class="ttitle">Verify Durable Chat Runtime Acceptance</div>
+              <div class="tbranch">feature/durable-chat</div>
+            </div>
+            <span class="tprov"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+            ></span>
+          </div>
+
+          <div class="trow">
+            <span class="picon" style="--h: 0">W</span>
+            <div class="tbody">
+              <div class="tmeta">
+                Whisper<span class="st working"><span class="spin"></span>Working 19m</span>
+              </div>
+              <div class="ttitle">Test Windows Dictation Client</div>
+              <div class="tbranch">main</div>
+            </div>
+            <span class="tprov"
+              ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+            ></span>
+          </div>
+
+          <div class="trow">
+            <span class="picon" style="--h: 170">J</span>
+            <div class="tbody">
+              <div class="tmeta">
+                jobs<span class="st working"><span class="spin"></span>Working 46s</span>
+              </div>
+              <div class="ttitle">Search Remote Tech Jobs Worldwide</div>
+              <div class="tbranch">feat/build-applyos-linkedin-importer</div>
+            </div>
+            <span class="tprov"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+            ></span>
+          </div>
+
+          <!-- Parent thread: 2 real thread tasks + 4 mirrored subagents -->
+          <div class="pwrap">
+            <div class="trow has-subs">
+              <span class="disclosure" title="Collapse children">
+                <svg
+                  class="ic"
+                  style="width: 12px; height: 12px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </span>
+              <span class="picon" style="--h: 150">t3</span>
+              <div class="tbody">
+                <div class="tmeta">
+                  t3code
+                  <span class="st"
+                    ><span
+                      class="dot-blue"
+                      title="A task returned results and resumed this thread"
+                    ></span
+                    >33m</span
+                  >
+                </div>
+                <div class="ttitle">Audit Kimi ACP Integration Gaps</div>
+                <div class="tbranch" style="display: flex; align-items: center; gap: 6px">
+                  dev
+                  <span class="tcount" title="2 thread tasks · 4 mirrored subagents (read-only)">
+                    <svg
+                      style="width: 10px; height: 10px"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path d="m3 17 2 2 4-4" />
+                      <path d="m3 7 2 2 4-4" />
+                      <path d="M13 6h8" />
+                      <path d="M13 12h8" />
+                      <path d="M13 18h8" />
+                    </svg>
+                    2 tasks · 4 mirrors
+                  </span>
+                </div>
+              </div>
+              <span class="tprov"
+                ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+              ></span>
+            </div>
+
+            <div class="subs">
+              <span class="turnhdr">Thread tasks</span>
+              <div
+                class="sub done"
+                title="Thread task · done 8m ago · results returned to the parent thread"
+              >
+                <span class="sic ok"
+                  ><svg
+                    class="ic"
+                    style="width: 13px; height: 13px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="stitle">Inventory t3code ACP client handlers</span>
+                <span class="smeta">
+                  <svg
+                    style="width: 11px; height: 11px; color: var(--info)"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M9 14 4 9l5-5" />
+                    <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                  </svg>
+                  8m
+                </span>
+              </div>
+              <div class="sub" title="Thread task · created by the agent · working">
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Sweep ACP session lifecycle gaps</span>
+                <span class="smeta working">3m</span>
+              </div>
+
+              <span class="turnhdr">Mirrored subagents · read-only</span>
+              <div
+                class="sub mirror done picked"
+                title="Mirrored subagent · finished 1m ago · read-only — ran inside the parent session"
+              >
+                <span class="sic ok"
+                  ><svg
+                    class="ic"
+                    style="width: 13px; height: 13px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="stitle">Map session/* handler coverage</span>
+                <span class="smeta">
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirrored</span
+                  >
+                  1m
+                </span>
+              </div>
+              <div
+                class="sub mirror"
+                title="Mirrored subagent · running 1m 6s · read-only — runs inside the parent session"
+              >
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Trace pairing token refresh flow</span>
+                <span class="smeta working">
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirrored</span
+                  >
+                  1m
+                </span>
+              </div>
+              <div
+                class="sub mirror failed"
+                title="Mirrored subagent · failed after 34s · read-only — tool-use budget exceeded"
+              >
+                <span class="sic xfail"
+                  ><svg
+                    class="ic"
+                    style="width: 12px; height: 12px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M18 6 6 18M6 6l12 12" /></svg
+                ></span>
+                <span class="stitle">Locate fs capability gates</span>
+                <span class="smeta failed">
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirrored</span
+                  >
+                  34s
+                </span>
+              </div>
+              <div
+                class="sub mirror"
+                title="Mirrored subagent · running 18s · read-only — retry of the failed sweep"
+              >
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Locate fs capability gates</span>
+                <span class="smeta working">
+                  <svg
+                    style="width: 10px; height: 10px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    aria-label="retry of the failed subagent"
+                  >
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirrored</span
+                  >
+                  18s
+                </span>
+              </div>
+            </div>
+            <div class="sub-new" title="Create a task (sub-thread) from this thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              New task
+            </div>
+          </div>
+
+          <div class="sec-head">
+            Settled
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px; margin-left: auto"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="m18 15-6-6-6 6" />
+            </svg>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">C</span>
+            <div class="tbody"><div class="ttitle">Create HTML CV from cvs Folder</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">2m</span>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">A</span>
+            <div class="tbody"><div class="ttitle">Apply Agent Chat Integration G…</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">3m</span>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">G</span>
+            <div class="tbody"><div class="ttitle">Build GPU Transcription Backen…</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">46m</span>
+          </div>
+        </div>
+
+        <div class="sb-foot">
+          <div class="settings">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0-4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              />
+            </svg>
+            Settings
+          </div>
+        </div>
+      </nav>
+
+      <!-- V1 main: mirrored thread view of W1 — full thread chrome, locked composer -->
+      <div class="main">
+        <div class="topbar">
+          <div class="crumbs">
+            t3code <span style="color: var(--dim)">/</span>
+            <span class="crumb-parent" title="Open parent thread"
+              >Audit Kimi ACP Integration Gaps</span
+            >
+            <span style="color: var(--dim)">/</span>
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px; color: var(--violet); flex: none"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="12" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+            <b>Map session/* handler coverage</b>
+          </div>
+          <div class="top-actions">
+            <span class="btn" title="Back to the parent thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+              </svg>
+              Parent thread
+            </span>
+          </div>
+        </div>
+
+        <div class="subheader">
+          <span
+            class="chip mirrorc"
+            title="Mirrored subagent — a read-only copy of a subagent that ran inside the parent session"
+          >
+            <svg
+              style="width: 10px; height: 10px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="12" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+            mirrored
+          </span>
+          <span class="chip">Explore</span>
+          <span
+            class="chip"
+            title="Subagents run on the parent session's model — not selectable here"
+          >
+            inherits parent · Claude Opus 4.7
+          </span>
+          <span class="chip">38.2k tokens · 14 tools · 2m 14s</span>
+          <span class="usage" style="margin-left: auto">finished 1m ago</span>
+        </div>
+
+        <div class="tl">
+          <div class="col">
+            <div class="msg user">
+              Map every session/* ACP method to its client handler in apps/web and
+              packages/contracts; list spec methods with no handler and quote the file:line where
+              each handled method is dispatched.
+            </div>
+
+            <div class="msg asst">
+              <div class="who">Mirrored subagent · Explore — replayed from the parent session</div>
+              Reading packages/contracts/src/acp.ts…
+            </div>
+
+            <div class="msg asst">Grep: session/ across apps/web → 31 hits</div>
+
+            <div class="msg asst">Cross-referencing 12 handlers against the spec method list…</div>
+
+            <div class="msg asst">
+              <div class="who">Result</div>
+              12 client methods mapped;
+              <code style="font-family: monospace; font-size: 12.5px">session/resume</code>,
+              <code style="font-family: monospace; font-size: 12.5px">session/fork</code>,
+              <code style="font-family: monospace; font-size: 12.5px">session/cancel</code> have no
+              handler — the missing
+              <code style="font-family: monospace; font-size: 12.5px">session/resume</code> blocks
+              late-event streaming.
+            </div>
+
+            <div
+              class="evt wake"
+              title="task.completed — the parent session received this result automatically"
+            >
+              <svg
+                class="ic"
+                style="width: 13px; height: 13px; color: var(--info)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+              </svg>
+              Result delivered to parent — received automatically; the parent agent continued from
+              here.
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="lockbanner full">
+            <span class="lic">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="4" y="11" width="16" height="10" rx="2" />
+                <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+              </svg>
+            </span>
+            <span>
+              <b>Mirrored from the parent session — read-only.</b> This subagent ran inside the
+              parent session; its result was delivered to the parent automatically.
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         V2 — GHOST ROWS
+         Sidebar mirror rows are ghosted (dimmed, italic, "mirror" chip);
+         the thread view has no composer area at all — only a quiet
+         one-line provenance note pinned under the topbar.
+         ============================================================ -->
+    <section data-variant="2">
+      <nav class="sidebar">
+        <div class="sb-top">
+          <div class="brand"><span class="logo">t3</span>T3 Code</div>
+          <div class="search">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            Search <span class="kbd">Ctrl+K</span>
+            <span class="new"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L16 11l-4 1 1-4Z" /></svg
+            ></span>
+          </div>
+          <div class="allproj">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+              />
+            </svg>
+            All projects
+            <span class="chev"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" /></svg
+            ></span>
+            <span class="new"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" /></svg
+            ></span>
+          </div>
+        </div>
+
+        <div class="sb-list">
+          <div class="trow">
+            <span class="picon" style="--h: 225">WH</span>
+            <div class="tbody">
+              <div class="tmeta">
+                WorkflowHarness<span class="st working"><span class="spin"></span>Working 3m</span>
+              </div>
+              <div class="ttitle">Verify Durable Chat Runtime Acceptance</div>
+              <div class="tbranch">feature/durable-chat</div>
+            </div>
+            <span class="tprov"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+            ></span>
+          </div>
+
+          <div class="trow">
+            <span class="picon" style="--h: 0">W</span>
+            <div class="tbody">
+              <div class="tmeta">
+                Whisper<span class="st working"><span class="spin"></span>Working 19m</span>
+              </div>
+              <div class="ttitle">Test Windows Dictation Client</div>
+              <div class="tbranch">main</div>
+            </div>
+            <span class="tprov"
+              ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+            ></span>
+          </div>
+
+          <div class="trow">
+            <span class="picon" style="--h: 170">J</span>
+            <div class="tbody">
+              <div class="tmeta">
+                jobs<span class="st working"><span class="spin"></span>Working 46s</span>
+              </div>
+              <div class="ttitle">Search Remote Tech Jobs Worldwide</div>
+              <div class="tbranch">feat/build-applyos-linkedin-importer</div>
+            </div>
+            <span class="tprov"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+            ></span>
+          </div>
+
+          <!-- Parent thread: 2 real thread tasks + 4 ghosted mirrors -->
+          <div class="pwrap">
+            <div class="trow has-subs">
+              <span class="disclosure" title="Collapse children">
+                <svg
+                  class="ic"
+                  style="width: 12px; height: 12px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </span>
+              <span class="picon" style="--h: 150">t3</span>
+              <div class="tbody">
+                <div class="tmeta">
+                  t3code
+                  <span class="st"
+                    ><span
+                      class="dot-blue"
+                      title="A task returned results and resumed this thread"
+                    ></span
+                    >33m</span
+                  >
+                </div>
+                <div class="ttitle">Audit Kimi ACP Integration Gaps</div>
+                <div class="tbranch" style="display: flex; align-items: center; gap: 6px">
+                  dev
+                  <span
+                    class="tcount"
+                    title="2 thread tasks · 4 mirrors of in-session subagents (read-only)"
+                  >
+                    <svg
+                      style="width: 10px; height: 10px"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path d="m3 17 2 2 4-4" />
+                      <path d="m3 7 2 2 4-4" />
+                      <path d="M13 6h8" />
+                      <path d="M13 12h8" />
+                      <path d="M13 18h8" />
+                    </svg>
+                    2 tasks · 4 mirrors
+                  </span>
+                </div>
+              </div>
+              <span class="tprov"
+                ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+              ></span>
+            </div>
+
+            <div class="subs">
+              <span class="turnhdr">Thread tasks</span>
+              <div
+                class="sub done"
+                title="Thread task · done 8m ago · results returned to the parent thread"
+              >
+                <span class="sic ok"
+                  ><svg
+                    class="ic"
+                    style="width: 13px; height: 13px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="stitle">Inventory t3code ACP client handlers</span>
+                <span class="smeta">
+                  <svg
+                    style="width: 11px; height: 11px; color: var(--info)"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M9 14 4 9l5-5" />
+                    <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                  </svg>
+                  8m
+                </span>
+              </div>
+              <div class="sub" title="Thread task · created by the agent · working">
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Sweep ACP session lifecycle gaps</span>
+                <span class="smeta working">3m</span>
+              </div>
+
+              <span class="turnhdr">Mirrors · read-only</span>
+              <div
+                class="sub mirror ghost done picked"
+                title="Mirror · finished 1m ago · read-only — result already delivered to the parent"
+              >
+                <span class="sic ok"
+                  ><svg
+                    class="ic"
+                    style="width: 13px; height: 13px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="stitle">Map session/* handler coverage</span>
+                <span class="smeta">
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirror</span
+                  >
+                  1m
+                </span>
+              </div>
+              <div
+                class="sub mirror ghost"
+                title="Mirror · running 1m 6s · read-only — runs inside the parent session"
+              >
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Trace pairing token refresh flow</span>
+                <span class="smeta working">
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirror</span
+                  >
+                  1m
+                </span>
+              </div>
+              <div
+                class="sub mirror ghost failed"
+                title="Mirror · failed after 34s · read-only — tool-use budget exceeded"
+              >
+                <span class="sic xfail"
+                  ><svg
+                    class="ic"
+                    style="width: 12px; height: 12px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M18 6 6 18M6 6l12 12" /></svg
+                ></span>
+                <span class="stitle">Locate fs capability gates</span>
+                <span class="smeta failed">
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirror</span
+                  >
+                  34s
+                </span>
+              </div>
+              <div
+                class="sub mirror ghost"
+                title="Mirror · running 18s · read-only — retry of the failed sweep"
+              >
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Locate fs capability gates</span>
+                <span class="smeta working">
+                  <svg
+                    style="width: 10px; height: 10px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    aria-label="retry of the failed subagent"
+                  >
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirror</span
+                  >
+                  18s
+                </span>
+              </div>
+            </div>
+            <div class="sub-new" title="Create a task (sub-thread) from this thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              New task
+            </div>
+          </div>
+
+          <div class="sec-head">
+            Settled
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px; margin-left: auto"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="m18 15-6-6-6 6" />
+            </svg>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">C</span>
+            <div class="tbody"><div class="ttitle">Create HTML CV from cvs Folder</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">2m</span>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">A</span>
+            <div class="tbody"><div class="ttitle">Apply Agent Chat Integration G…</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">3m</span>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">G</span>
+            <div class="tbody"><div class="ttitle">Build GPU Transcription Backen…</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">46m</span>
+          </div>
+        </div>
+
+        <div class="sb-foot">
+          <div class="settings">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0-4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              />
+            </svg>
+            Settings
+          </div>
+        </div>
+      </nav>
+
+      <!-- V2 main: no composer area at all — timeline runs to the bottom edge -->
+      <div class="main">
+        <div class="topbar">
+          <div class="crumbs">
+            t3code <span style="color: var(--dim)">/</span>
+            <span class="crumb-parent" title="Open parent thread"
+              >Audit Kimi ACP Integration Gaps</span
+            >
+            <span style="color: var(--dim)">/</span>
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px; color: var(--violet); flex: none"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="12" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+            <b>Map session/* handler coverage</b>
+          </div>
+          <div class="top-actions">
+            <span class="btn" title="Back to the parent thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+              </svg>
+              Parent thread
+            </span>
+          </div>
+        </div>
+
+        <div class="provnote">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="4" y="11" width="16" height="10" rx="2" />
+            <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+          </svg>
+          Mirrored from the parent session · result already delivered · read-only
+        </div>
+
+        <div class="tl">
+          <div class="col">
+            <div class="msg user">
+              Map every session/* ACP method to its client handler in apps/web and
+              packages/contracts; list spec methods with no handler and quote the file:line where
+              each handled method is dispatched.
+            </div>
+
+            <div class="msg asst">
+              <div class="who">Mirror · Explore</div>
+              Reading packages/contracts/src/acp.ts…
+            </div>
+
+            <div class="msg asst">Grep: session/ across apps/web → 31 hits</div>
+
+            <div class="msg asst">Cross-referencing 12 handlers against the spec method list…</div>
+
+            <div class="msg asst">
+              <div class="who">Result · 38.2k tokens · 14 tools · 2m 14s</div>
+              12 client methods mapped;
+              <code style="font-family: monospace; font-size: 12.5px">session/resume</code>,
+              <code style="font-family: monospace; font-size: 12.5px">session/fork</code>,
+              <code style="font-family: monospace; font-size: 12.5px">session/cancel</code> have no
+              handler — the missing
+              <code style="font-family: monospace; font-size: 12.5px">session/resume</code> blocks
+              late-event streaming.
+            </div>
+
+            <div
+              class="evt wake"
+              title="task.completed — the parent session received this result automatically"
+            >
+              <svg
+                class="ic"
+                style="width: 13px; height: 13px; color: var(--info)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+              </svg>
+              Result delivered to parent — received automatically; the parent agent continued from
+              here.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         V3 — PROVENANCE & GAPS
+         Every mirrored beat carries a provenance tag; spans the provider
+         didn't stream are explicit gap rows. Sidebar rows are V1-style
+         plus a "partial" marker. Distrust by default.
+         ============================================================ -->
+    <section data-variant="3">
+      <nav class="sidebar">
+        <div class="sb-top">
+          <div class="brand"><span class="logo">t3</span>T3 Code</div>
+          <div class="search">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            Search <span class="kbd">Ctrl+K</span>
+            <span class="new"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L16 11l-4 1 1-4Z" /></svg
+            ></span>
+          </div>
+          <div class="allproj">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+              />
+            </svg>
+            All projects
+            <span class="chev"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" /></svg
+            ></span>
+            <span class="new"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" /></svg
+            ></span>
+          </div>
+        </div>
+
+        <div class="sb-list">
+          <div class="trow">
+            <span class="picon" style="--h: 225">WH</span>
+            <div class="tbody">
+              <div class="tmeta">
+                WorkflowHarness<span class="st working"><span class="spin"></span>Working 3m</span>
+              </div>
+              <div class="ttitle">Verify Durable Chat Runtime Acceptance</div>
+              <div class="tbranch">feature/durable-chat</div>
+            </div>
+            <span class="tprov"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+            ></span>
+          </div>
+
+          <div class="trow">
+            <span class="picon" style="--h: 0">W</span>
+            <div class="tbody">
+              <div class="tmeta">
+                Whisper<span class="st working"><span class="spin"></span>Working 19m</span>
+              </div>
+              <div class="ttitle">Test Windows Dictation Client</div>
+              <div class="tbranch">main</div>
+            </div>
+            <span class="tprov"
+              ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+            ></span>
+          </div>
+
+          <div class="trow">
+            <span class="picon" style="--h: 170">J</span>
+            <div class="tbody">
+              <div class="tmeta">
+                jobs<span class="st working"><span class="spin"></span>Working 46s</span>
+              </div>
+              <div class="ttitle">Search Remote Tech Jobs Worldwide</div>
+              <div class="tbranch">feat/build-applyos-linkedin-importer</div>
+            </div>
+            <span class="tprov"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+            ></span>
+          </div>
+
+          <!-- Parent thread: 2 real thread tasks + 4 mirrors, all marked partial -->
+          <div class="pwrap">
+            <div class="trow has-subs">
+              <span class="disclosure" title="Collapse children">
+                <svg
+                  class="ic"
+                  style="width: 12px; height: 12px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </span>
+              <span class="picon" style="--h: 150">t3</span>
+              <div class="tbody">
+                <div class="tmeta">
+                  t3code
+                  <span class="st"
+                    ><span
+                      class="dot-blue"
+                      title="A task returned results and resumed this thread"
+                    ></span
+                    >33m</span
+                  >
+                </div>
+                <div class="ttitle">Audit Kimi ACP Integration Gaps</div>
+                <div class="tbranch" style="display: flex; align-items: center; gap: 6px">
+                  dev
+                  <span
+                    class="tcount"
+                    title="2 thread tasks · 4 mirrored subagents (read-only, partial transcripts)"
+                  >
+                    <svg
+                      style="width: 10px; height: 10px"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path d="m3 17 2 2 4-4" />
+                      <path d="m3 7 2 2 4-4" />
+                      <path d="M13 6h8" />
+                      <path d="M13 12h8" />
+                      <path d="M13 18h8" />
+                    </svg>
+                    2 tasks · 4 mirrors
+                  </span>
+                </div>
+              </div>
+              <span class="tprov"
+                ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+              ></span>
+            </div>
+
+            <div class="subs">
+              <span class="turnhdr">Thread tasks</span>
+              <div
+                class="sub done"
+                title="Thread task · done 8m ago · results returned to the parent thread"
+              >
+                <span class="sic ok"
+                  ><svg
+                    class="ic"
+                    style="width: 13px; height: 13px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="stitle">Inventory t3code ACP client handlers</span>
+                <span class="smeta">
+                  <svg
+                    style="width: 11px; height: 11px; color: var(--info)"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M9 14 4 9l5-5" />
+                    <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                  </svg>
+                  8m
+                </span>
+              </div>
+              <div class="sub" title="Thread task · created by the agent · working">
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Sweep ACP session lifecycle gaps</span>
+                <span class="smeta working">3m</span>
+              </div>
+
+              <span class="turnhdr">Mirrored subagents · read-only · partial</span>
+              <div
+                class="sub mirror done picked"
+                title="Mirrored subagent · finished 1m ago · read-only — transcript is partial: the provider did not stream everything"
+              >
+                <span class="sic ok"
+                  ><svg
+                    class="ic"
+                    style="width: 13px; height: 13px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="stitle">Map session/* handler coverage</span>
+                <span
+                  class="smeta"
+                  title="Partial transcript — the provider did not stream everything"
+                >
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirrored</span
+                  >
+                  <span class="pmark" title="Partial transcript">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path
+                        d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
+                      />
+                      <path d="M12 9v4" />
+                      <path d="M12 17h.01" />
+                    </svg>
+                  </span>
+                  1m
+                </span>
+              </div>
+              <div
+                class="sub mirror"
+                title="Mirrored subagent · running 1m 6s · read-only — transcript is partial"
+              >
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Trace pairing token refresh flow</span>
+                <span
+                  class="smeta working"
+                  title="Partial transcript — the provider did not stream everything"
+                >
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirrored</span
+                  >
+                  <span class="pmark" title="Partial transcript">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path
+                        d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
+                      />
+                      <path d="M12 9v4" />
+                      <path d="M12 17h.01" />
+                    </svg>
+                  </span>
+                  1m
+                </span>
+              </div>
+              <div
+                class="sub mirror failed"
+                title="Mirrored subagent · failed after 34s · read-only — tool-use budget exceeded"
+              >
+                <span class="sic xfail"
+                  ><svg
+                    class="ic"
+                    style="width: 12px; height: 12px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M18 6 6 18M6 6l12 12" /></svg
+                ></span>
+                <span class="stitle">Locate fs capability gates</span>
+                <span
+                  class="smeta failed"
+                  title="Partial transcript — the provider did not stream everything"
+                >
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirrored</span
+                  >
+                  <span class="pmark" title="Partial transcript">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path
+                        d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
+                      />
+                      <path d="M12 9v4" />
+                      <path d="M12 17h.01" />
+                    </svg>
+                  </span>
+                  34s
+                </span>
+              </div>
+              <div
+                class="sub mirror"
+                title="Mirrored subagent · running 18s · read-only — retry of the failed sweep · transcript is partial"
+              >
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Locate fs capability gates</span>
+                <span
+                  class="smeta working"
+                  title="Partial transcript — the provider did not stream everything"
+                >
+                  <svg
+                    style="width: 10px; height: 10px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    aria-label="retry of the failed subagent"
+                  >
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >mirrored</span
+                  >
+                  <span class="pmark" title="Partial transcript">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path
+                        d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
+                      />
+                      <path d="M12 9v4" />
+                      <path d="M12 17h.01" />
+                    </svg>
+                  </span>
+                  18s
+                </span>
+              </div>
+            </div>
+            <div class="sub-new" title="Create a task (sub-thread) from this thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              New task
+            </div>
+          </div>
+
+          <div class="sec-head">
+            Settled
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px; margin-left: auto"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="m18 15-6-6-6 6" />
+            </svg>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">C</span>
+            <div class="tbody"><div class="ttitle">Create HTML CV from cvs Folder</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">2m</span>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">A</span>
+            <div class="tbody"><div class="ttitle">Apply Agent Chat Integration G…</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">3m</span>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">G</span>
+            <div class="tbody"><div class="ttitle">Build GPU Transcription Backen…</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">46m</span>
+          </div>
+        </div>
+
+        <div class="sb-foot">
+          <div class="settings">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0-4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              />
+            </svg>
+            Settings
+          </div>
+        </div>
+      </nav>
+
+      <!-- V3 main: every beat tagged with provenance; unstreamed spans are gap rows -->
+      <div class="main">
+        <div class="topbar">
+          <div class="crumbs">
+            t3code <span style="color: var(--dim)">/</span>
+            <span class="crumb-parent" title="Open parent thread"
+              >Audit Kimi ACP Integration Gaps</span
+            >
+            <span style="color: var(--dim)">/</span>
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px; color: var(--violet); flex: none"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="12" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+            <b>Map session/* handler coverage</b>
+          </div>
+          <div class="top-actions">
+            <span class="btn" title="Back to the parent thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+              </svg>
+              Parent thread
+            </span>
+          </div>
+        </div>
+
+        <div class="subheader">
+          <span
+            class="chip mirrorc"
+            title="Mirrored subagent — the transcript below is partial: only what the provider streamed"
+          >
+            <svg
+              style="width: 10px; height: 10px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="12" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+            Mirror (partial)
+          </span>
+          <span class="chip">Explore</span>
+          <span
+            class="chip"
+            title="Subagents run on the parent session's model — not selectable here"
+          >
+            inherits parent · Claude Opus 4.7
+          </span>
+          <span class="chip">38.2k tokens · 14 tools · 2m 14s</span>
+          <span class="usage" style="margin-left: auto">finished 1m ago</span>
+        </div>
+
+        <div class="tl">
+          <div class="col">
+            <div class="msg user">
+              Map every session/* ACP method to its client handler in apps/web and
+              packages/contracts; list spec methods with no handler and quote the file:line where
+              each handled method is dispatched.
+            </div>
+            <span class="prov under">via parent session · task.started</span>
+
+            <div class="msg asst">
+              <div class="who">
+                Mirrored subagent · Explore
+                <span class="prov">via parent session · tool_use 8f3a</span>
+              </div>
+              Reading packages/contracts/src/acp.ts…
+            </div>
+
+            <div class="gaprow">— 14s not streamed by provider —</div>
+
+            <div class="msg asst">
+              <div class="who">
+                Mirrored subagent · Explore
+                <span class="prov">via parent session · tool_use 91c2</span>
+              </div>
+              Grep: session/ across apps/web → 31 hits
+            </div>
+
+            <div class="msg asst">
+              <div class="who">
+                Mirrored subagent · Explore
+                <span class="prov">via parent session · tool_use 4d7e</span>
+              </div>
+              Cross-referencing 12 handlers against the spec method list…
+            </div>
+
+            <div class="gaprow">— 47s not streamed by provider —</div>
+
+            <div class="msg asst">
+              <div class="who">
+                Result
+                <span class="prov">via parent session · task.completed</span>
+              </div>
+              12 client methods mapped;
+              <code style="font-family: monospace; font-size: 12.5px">session/resume</code>,
+              <code style="font-family: monospace; font-size: 12.5px">session/fork</code>,
+              <code style="font-family: monospace; font-size: 12.5px">session/cancel</code> have no
+              handler — the missing
+              <code style="font-family: monospace; font-size: 12.5px">session/resume</code> blocks
+              late-event streaming.
+            </div>
+
+            <div
+              class="evt wake"
+              title="task.completed — the parent session received this result automatically"
+            >
+              <svg
+                class="ic"
+                style="width: 13px; height: 13px; color: var(--info)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+              </svg>
+              Result delivered to parent — received automatically; the parent agent continued from
+              here.
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="lockbanner full">
+            <span class="lic">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="4" y="11" width="16" height="10" rx="2" />
+                <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+              </svg>
+            </span>
+            <span>
+              <b>Mirrored from the parent session — read-only.</b> Beats are replayed as the
+              provider streamed them and unstreamed spans are marked as gaps; the result was
+              delivered to the parent automatically.
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         V4 — COMPLETION ARCHIVE
+         Mirrors are created only when a native subagent finishes or
+         fails; running natives (W2, W4) never get sidebar rows — they
+         stay in the parent's workflow card. The W1 view is an archive
+         receipt, not a live thread.
+         ============================================================ -->
+    <section data-variant="4">
+      <nav class="sidebar">
+        <div class="sb-top">
+          <div class="brand"><span class="logo">t3</span>T3 Code</div>
+          <div class="search">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            Search <span class="kbd">Ctrl+K</span>
+            <span class="new"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L16 11l-4 1 1-4Z" /></svg
+            ></span>
+          </div>
+          <div class="allproj">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+              />
+            </svg>
+            All projects
+            <span class="chev"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m6 9 6 6 6-6" /></svg
+            ></span>
+            <span class="new"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" /></svg
+            ></span>
+          </div>
+        </div>
+
+        <div class="sb-list">
+          <div class="trow">
+            <span class="picon" style="--h: 225">WH</span>
+            <div class="tbody">
+              <div class="tmeta">
+                WorkflowHarness<span class="st working"><span class="spin"></span>Working 3m</span>
+              </div>
+              <div class="ttitle">Verify Durable Chat Runtime Acceptance</div>
+              <div class="tbranch">feature/durable-chat</div>
+            </div>
+            <span class="tprov"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+            ></span>
+          </div>
+
+          <div class="trow">
+            <span class="picon" style="--h: 0">W</span>
+            <div class="tbody">
+              <div class="tmeta">
+                Whisper<span class="st working"><span class="spin"></span>Working 19m</span>
+              </div>
+              <div class="ttitle">Test Windows Dictation Client</div>
+              <div class="tbranch">main</div>
+            </div>
+            <span class="tprov"
+              ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+            ></span>
+          </div>
+
+          <div class="trow">
+            <span class="picon" style="--h: 170">J</span>
+            <div class="tbody">
+              <div class="tmeta">
+                jobs<span class="st working"><span class="spin"></span>Working 46s</span>
+              </div>
+              <div class="ttitle">Search Remote Tech Jobs Worldwide</div>
+              <div class="tbranch">feat/build-applyos-linkedin-importer</div>
+            </div>
+            <span class="tprov"
+              ><svg
+                class="ic"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z" /></svg
+            ></span>
+          </div>
+
+          <!-- Parent thread: 2 real thread tasks + 2 archived agents (finished/failed only) -->
+          <div class="pwrap">
+            <div class="trow has-subs">
+              <span class="disclosure" title="Collapse children">
+                <svg
+                  class="ic"
+                  style="width: 12px; height: 12px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </span>
+              <span class="picon" style="--h: 150">t3</span>
+              <div class="tbody">
+                <div class="tmeta">
+                  t3code
+                  <span class="st"
+                    ><span
+                      class="dot-blue"
+                      title="A task returned results and resumed this thread"
+                    ></span
+                    >33m</span
+                  >
+                </div>
+                <div class="ttitle">Audit Kimi ACP Integration Gaps</div>
+                <div class="tbranch" style="display: flex; align-items: center; gap: 6px">
+                  dev
+                  <span
+                    class="tcount"
+                    title="2 thread tasks · 2 archived agents (read-only) · 2 subagents still running in the turn card"
+                  >
+                    <svg
+                      style="width: 10px; height: 10px"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path d="m3 17 2 2 4-4" />
+                      <path d="m3 7 2 2 4-4" />
+                      <path d="M13 6h8" />
+                      <path d="M13 12h8" />
+                      <path d="M13 18h8" />
+                    </svg>
+                    2 tasks · 2 archived
+                  </span>
+                </div>
+              </div>
+              <span class="tprov"
+                ><svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" /></svg
+              ></span>
+            </div>
+
+            <div class="subs">
+              <span class="turnhdr">Thread tasks</span>
+              <div
+                class="sub done"
+                title="Thread task · done 8m ago · results returned to the parent thread"
+              >
+                <span class="sic ok"
+                  ><svg
+                    class="ic"
+                    style="width: 13px; height: 13px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="stitle">Inventory t3code ACP client handlers</span>
+                <span class="smeta">
+                  <svg
+                    style="width: 11px; height: 11px; color: var(--info)"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M9 14 4 9l5-5" />
+                    <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                  </svg>
+                  8m
+                </span>
+              </div>
+              <div class="sub" title="Thread task · created by the agent · working">
+                <span class="sic"><span class="spin"></span></span>
+                <span class="stitle">Sweep ACP session lifecycle gaps</span>
+                <span class="smeta working">3m</span>
+              </div>
+
+              <span class="turnhdr">Archived agents · read-only</span>
+              <div
+                class="sub mirror done picked"
+                title="Archived agent · finished 1m ago · read-only — archived when the subagent finished"
+              >
+                <span class="sic ok"
+                  ><svg
+                    class="ic"
+                    style="width: 13px; height: 13px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="stitle">Map session/* handler coverage</span>
+                <span class="smeta">
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >archived</span
+                  >
+                  1m
+                </span>
+              </div>
+              <div
+                class="sub mirror failed"
+                title="Archived agent · failed after 34s · read-only — tool-use budget exceeded · retried by a new subagent (still running)"
+              >
+                <span class="sic xfail"
+                  ><svg
+                    class="ic"
+                    style="width: 12px; height: 12px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M18 6 6 18M6 6l12 12" /></svg
+                ></span>
+                <span class="stitle">Locate fs capability gates</span>
+                <span class="smeta failed">
+                  <span class="chip mirrorc micro"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="12" height="12" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg
+                    >archived</span
+                  >
+                  34s
+                </span>
+              </div>
+              <div
+                class="sub policy"
+                title="Running subagents are never mirrored — watch them live in the parent thread's turn card"
+              >
+                <span class="sic"
+                  ><svg
+                    class="ic"
+                    style="width: 12px; height: 12px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 16v-4" />
+                    <path d="M12 8h.01" /></svg
+                ></span>
+                <span class="stitle">2 agents still running — see the turn card</span>
+              </div>
+            </div>
+            <div class="sub-new" title="Create a task (sub-thread) from this thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              New task
+            </div>
+          </div>
+
+          <div class="sec-head">
+            Settled
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px; margin-left: auto"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="m18 15-6-6-6 6" />
+            </svg>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">C</span>
+            <div class="tbody"><div class="ttitle">Create HTML CV from cvs Folder</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">2m</span>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">A</span>
+            <div class="tbody"><div class="ttitle">Apply Agent Chat Integration G…</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">3m</span>
+          </div>
+          <div class="trow settled">
+            <span class="picon" style="--h: 0">G</span>
+            <div class="tbody"><div class="ttitle">Build GPU Transcription Backen…</div></div>
+            <span style="align-self: center; font-size: 11px; color: var(--dim)">46m</span>
+          </div>
+        </div>
+
+        <div class="sb-foot">
+          <div class="settings">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0-4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              />
+            </svg>
+            Settings
+          </div>
+        </div>
+      </nav>
+
+      <!-- V4 main: archive receipt — no live beats, no composer, no pretense -->
+      <div class="main">
+        <div class="topbar">
+          <div class="crumbs">
+            t3code <span style="color: var(--dim)">/</span>
+            <span class="crumb-parent" title="Open parent thread"
+              >Audit Kimi ACP Integration Gaps</span
+            >
+            <span style="color: var(--dim)">/</span>
+            <svg
+              class="ic"
+              style="width: 12px; height: 12px; color: var(--violet); flex: none"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="12" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+            <b>Map session/* handler coverage</b>
+          </div>
+          <div class="top-actions">
+            <span class="btn" title="Open the workflow card in the parent thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="m3 17 2 2 4-4" />
+                <path d="m3 7 2 2 4-4" />
+                <path d="M13 6h8" />
+                <path d="M13 12h8" />
+                <path d="M13 18h8" />
+              </svg>
+              Turn card
+            </span>
+            <span class="btn" title="Back to the parent thread">
+              <svg
+                class="ic"
+                style="width: 12px; height: 12px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+              </svg>
+              Parent thread
+            </span>
+          </div>
+        </div>
+
+        <div class="subheader">
+          <span
+            class="chip mirrorc"
+            title="Archived agent — created when the subagent finished; never a live thread"
+          >
+            <svg
+              style="width: 10px; height: 10px"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="12" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+            archived
+          </span>
+          <span class="chip">Explore</span>
+          <span
+            class="chip"
+            title="Subagents ran on the parent session's model — not selectable here"
+          >
+            ran in parent session · Claude Opus 4.7
+          </span>
+          <span class="chip">38.2k tokens · 14 tools · 2m 14s</span>
+          <span class="usage" style="margin-left: auto">archived 1m ago</span>
+        </div>
+
+        <div class="tl">
+          <div class="col">
+            <div class="msg user">
+              Map every session/* ACP method to its client handler in apps/web and
+              packages/contracts; list spec methods with no handler and quote the file:line where
+              each handled method is dispatched.
+            </div>
+
+            <div class="tcard" style="max-width: 95%">
+              <div class="tc-top">
+                <span class="ok"
+                  ><svg
+                    class="ic"
+                    style="width: 14px; height: 14px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M20 6 9 17l-5-5" /></svg
+                ></span>
+                <span class="tc-title">Archive receipt — subagent finished 1m ago</span>
+                <span class="tc-time">2m 14s</span>
+              </div>
+              <div class="rc-grid">
+                <span class="k">Status</span>
+                <span class="v">Finished · archived at completion</span>
+                <span class="k">Tokens</span>
+                <span class="v">38.2k</span>
+                <span class="k">Tool calls</span>
+                <span class="v">14</span>
+                <span class="k">Type</span>
+                <span class="v">Explore</span>
+                <span class="k">Model</span>
+                <span class="v">Inherited from parent · Claude Opus 4.7</span>
+                <span class="k">Live activity</span>
+                <span class="v">Not archived — running agents stay in the turn card</span>
+              </div>
+            </div>
+
+            <div class="msg asst">
+              <div class="who">Result</div>
+              12 client methods mapped;
+              <code style="font-family: monospace; font-size: 12.5px">session/resume</code>,
+              <code style="font-family: monospace; font-size: 12.5px">session/fork</code>,
+              <code style="font-family: monospace; font-size: 12.5px">session/cancel</code> have no
+              handler — the missing
+              <code style="font-family: monospace; font-size: 12.5px">session/resume</code> blocks
+              late-event streaming.
+            </div>
+
+            <div
+              class="evt wake"
+              title="task.completed — the parent session received this result automatically"
+            >
+              <svg
+                class="ic"
+                style="width: 13px; height: 13px; color: var(--info)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+              </svg>
+              Result delivered to parent — received automatically; the parent agent continued from
+              here.
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="lockbanner full">
+            <span class="lic">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="4" y="11" width="16" height="10" rx="2" />
+                <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+              </svg>
+            </span>
+            <span>
+              <b>Archived when the subagent finished · read-only.</b> Its result was delivered to
+              the parent automatically — subagents still running stay in the parent thread's turn
+              card.
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Variant switcher -->
+    <div class="switcher">
+      <a href="?v=1" data-v="1" title="Locked chrome">1 · Locked chrome</a>
+      <a href="?v=2" data-v="2" title="Ghost rows">2 · Ghost rows</a>
+      <a href="?v=3" data-v="3" title="Provenance and gaps">3 · Provenance &amp; gaps</a>
+      <a href="?v=4" data-v="4" title="Completion archive">4 · Completion archive</a>
+    </div>
+
+    <div class="concept" id="concept"><b>Option 3 · Mirror threads</b> — V1 · Locked chrome</div>
+
+    <script>
+      const VARIANTS = {
+        1: "V1 · Locked chrome",
+        2: "V2 · Ghost rows",
+        3: "V3 · Provenance & gaps",
+        4: "V4 · Completion archive",
+      };
+      const sections = Array.from(document.querySelectorAll("section[data-variant]"));
+      const links = Array.from(document.querySelectorAll(".switcher a"));
+      const concept = document.getElementById("concept");
+
+      function currentFromUrl() {
+        const v = new URLSearchParams(location.search).get("v");
+        return VARIANTS[v] ? v : "1";
+      }
+
+      function show(v) {
+        sections.forEach((s) => s.classList.toggle("on", s.dataset.variant === v));
+        links.forEach((a) => a.classList.toggle("on", a.dataset.v === v));
+        concept.innerHTML =
+          "<b>Option 3 · Mirror threads</b> — " + VARIANTS[v].replace(/&/g, "&amp;");
+        document.title = "Mirror threads — " + VARIANTS[v] + " · T3 Code mockup";
+      }
+
+      links.forEach((a) =>
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          const v = a.dataset.v;
+          show(v);
+          try {
+            history.replaceState(null, "", "?v=" + v);
+          } catch (_) {
+            /* file:// may reject replaceState in some browsers — switching still works */
+          }
+        }),
+      );
+
+      // Disclosure chevrons collapse each variant's child group independently.
+      document.querySelectorAll(".disclosure").forEach((d) =>
+        d.addEventListener("click", () => {
+          const wrap = d.closest(".pwrap");
+          if (wrap) wrap.classList.toggle("subs-closed");
+        }),
+      );
+
+      show(currentFromUrl());
+    </script>
+  </body>
+</html>

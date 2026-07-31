@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks · Option 2 — bottom sheet peek</title>
+    <link rel="stylesheet" href="../mockup.css" />
+  </head>
+  <body>
+    <a class="backlink" href="../index.html">← all mobile options</a>
+
+    <div class="stage">
+      <div class="device">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg style="width: 12px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M7 16v4M12 13v7M17 10v10" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="currentColor" opacity="0.4" />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn">
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn">
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Behind the sheet: the option-1 thread list (static backdrop) -->
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow selected">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="clk">
+                        <svg style="width: 14px; height: 14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7v5l3 2" />
+                        </svg>
+                      </span>
+                      <span class="settle">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        Settle
+                      </span>
+                    </span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip">
+                      <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      1 task · 10 agents
+                    </span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--coral)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub" data-unit="task">
+                    <span class="sic working-ic">
+                      <svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Create 4 mockups for the mobile app based on th…</span>
+                    <span class="smeta working">8s</span>
+                  </div>
+                  <div class="sub lvl2" data-unit="turn">
+                    <span class="sic" style="color: var(--dim)">
+                      <svg class="ic" style="width: 12px; height: 12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle" style="color: var(--muted)">Latest turn · 10 agents</span>
+                    <span class="smeta">
+                      <span class="cnt-ok">✓ 6</span>
+                      <span class="cnt-fail">× 4</span>
+                      <span class="ret">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Build Standalone Android APK</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--dim)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Redirect Error</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip">
+                      <svg style="width: 10px; height: 10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      3 tasks
+                    </span>
+                    <span class="tprov">
+                      <svg class="ic" style="color: var(--dim)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub" data-unit="apk">
+                    <span class="sic" style="color: var(--dim)">
+                      <svg class="ic" style="width: 12px; height: 12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Build a standalone, installable Android APK of t…</span>
+                    <span class="smeta">
+                      19m
+                      <span class="ret">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="sub done" data-unit="local">
+                    <span class="sic ok">
+                      <svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </span>
+                    <span class="stitle">is it possible to build locally?</span>
+                    <span class="smeta">
+                      59s
+                      <span class="ret">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="sub" data-unit="login">
+                    <span class="sic working-ic">
+                      <svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">the t3 connect is not letting log in</span>
+                    <span class="smeta">
+                      <span class="working">24s</span>
+                      <span class="ret">
+                        <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab">
+              <svg style="width: 21px; height: 21px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+
+            <!-- Bottom sheet: the mobile peek -->
+            <div class="sheet-wrap" id="sheetWrap">
+              <div class="sheet-dim" id="sheetDim"></div>
+              <div class="sheet" id="sheet">
+                <div class="sheet-grab" id="sheetGrab" title="Drag down to dismiss"></div>
+                <div class="sheet-scroll" id="sheetScroll"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>2 — Bottom sheet.</b> Tap any task / turn row.
+          <code>?sheet=task|apk|local|login|a4</code> opens one on load (a4 is a failed agent).
+        </div>
+      </div>
+    </div>
+
+    <div class="concept">
+      <b>Option 2</b> · Bottom-sheet peek — task sheets steer; agent sheets say why they can't
+    </div>
+
+    <script>
+      /* ---- Sheet data ----
+         Task sheets: status, title, chips (creator · context · model ·
+         returned), prompt, latest activity, the task's turn with its agents
+         (✓/× counters), Cancel while running, enabled steer composer,
+         "Open thread". Agent sheets carry only what a native run has (type,
+         status, prompt, usage, result/error) — the model is derived from the
+         session ("inherits task · Opus 4.7"), the composer is disabled with
+         the reason spelled out, and the header action is "Show in
+         transcript". */
+      const AGENTS_10 = [
+        { id: "a1", ok: 1, name: "Map screenshot chrome regions", t: "3s" },
+        { id: "a2", ok: 1, name: "Extract thread-row anatomy", t: "4s" },
+        { id: "a3", ok: 1, name: "Draft status bar + app header markup", t: "5s" },
+        { id: "a4", ok: 0, name: "Reproduce provider glyph set", t: "9s" },
+        { id: "a5", ok: 1, name: "Draft list-row CSS tokens", t: "4s" },
+        { id: "a6", ok: 0, name: "Fit expanded task group into 390px", t: "7s" },
+        { id: "a7", ok: 0, name: "Bottom-sheet layout pass", t: "6s" },
+        { id: "a8", ok: 1, name: "Compose thread-list variant", t: "5s" },
+        { id: "a9", ok: 0, name: "In-thread card layout pass", t: "8s" },
+        { id: "a10", ok: 1, name: "Assemble full-thread variant", t: "6s" },
+      ];
+      const AGENTS_APK = [
+        { id: "apk1", ok: 1, name: "Locate Gradle wrapper + signing config", t: "4m" },
+        { id: "apk2", ok: 1, name: "Assemble release APK locally", t: "11m" },
+        { id: "apk3", ok: 0, name: "Verify install on emulator", t: "3m" },
+      ];
+
+      const UNITS = {
+        task: {
+          kind: "task",
+          state: "working",
+          statusText: "Working · 8s",
+          title: "Create 4 mockups for the mobile app based on the image",
+          chips: [
+            { cls: "agent", label: "✦ agent" },
+            { cls: "", label: "full thread context" },
+            { cls: "", label: "Opus 4.7" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Create 4 mockups for the mobile app based on the reference image: thread list, bottom sheet, in-thread, full thread.",
+            },
+            {
+              role: "asst",
+              html: "Fanned out <b>10 agents</b> over chrome, rows and variants — 6 back already, 4 hit the tool-use budget. Retrying the failures, then assembling.",
+            },
+          ],
+          agents: { label: "Latest turn · 10 agents", list: AGENTS_10, ok: 6, fail: 4 },
+          cancellable: true,
+        },
+        apk: {
+          kind: "task",
+          state: "done",
+          statusText: "Done · 19m",
+          title: "Build a standalone, installable Android APK of the app",
+          chips: [
+            { cls: "agent", label: "✦ agent" },
+            { cls: "", label: "full thread context" },
+            { cls: "", label: "Opus 4.7" },
+            { cls: "returned", label: "↩ returned · woke parent" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Build a standalone, installable Android APK of the app.",
+            },
+            {
+              role: "asst",
+              html: "<b>Result:</b> release APK assembles locally; emulator install blocked on SDK license acceptance — flagged for the parent thread.",
+            },
+            { role: "evt", text: "↩ Returned to parent — main thread resumed" },
+          ],
+          agents: { label: "Turn · 3 agents", list: AGENTS_APK, ok: 2, fail: 1 },
+        },
+        local: {
+          kind: "task",
+          state: "done",
+          statusText: "Done · 59s",
+          title: "is it possible to build locally?",
+          chips: [
+            { cls: "you", label: "you" },
+            { cls: "", label: "2 selected messages" },
+            { cls: "", label: "Opus 4.7" },
+            { cls: "returned", label: "↩ returned · woke parent" },
+          ],
+          convo: [
+            { role: "user", text: "is it possible to build locally?" },
+            {
+              role: "asst",
+              html: "<b>Yes</b> — Gradle wrapper is checked in; needs a local keystore and the Android SDK platform 35.",
+            },
+            { role: "evt", text: "↩ Returned to parent — main thread resumed" },
+          ],
+        },
+        login: {
+          kind: "task",
+          state: "working",
+          statusText: "Working · 24s",
+          title: "the t3 connect is not letting log in",
+          chips: [
+            { cls: "you", label: "you" },
+            { cls: "", label: "full thread context" },
+            { cls: "", label: "Opus 4.7" },
+          ],
+          convo: [
+            { role: "user", text: "the t3 connect is not letting log in" },
+            {
+              role: "asst",
+              html: "Tracing the pairing-token exchange… the redirect lands on /oauth/callback but the state param doesn't round-trip.",
+            },
+          ],
+          cancellable: true,
+        },
+        a4: {
+          kind: "agent",
+          state: "failed",
+          statusText: "Failed · tool-use budget exceeded",
+          title: "Reproduce provider glyph set",
+          chips: [
+            { cls: "native", label: "agent · runs in the task session" },
+            { cls: "", label: "Explore" },
+            { cls: "", label: "inherits task · Opus 4.7" },
+            { cls: "danger", label: "6.8k tokens · 5 tools · 9s" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Reproduce the provider glyphs from the screenshot (coral asterisk, gray swirl) as inline SVGs.",
+            },
+            {
+              role: "evt",
+              cls: "failed",
+              text: "✕ Tool-use budget exceeded before the sweep converged",
+            },
+            { role: "evt", text: "The task's agent decides whether to retry — you can't restart it from here" },
+          ],
+        },
+      };
+
+      const CHECK =
+        '<svg style="width:12px;height:12px;flex:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>';
+      const XFAIL =
+        '<svg style="width:12px;height:12px;flex:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>';
+      const AST =
+        '<svg style="width:12px;height:12px;flex:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9"/></svg>';
+      const X =
+        '<svg style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+      const EXT =
+        '<svg style="width:10px;height:10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>';
+      const LOCATE =
+        '<svg style="width:10px;height:10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+      const SEND =
+        '<svg style="width:11px;height:11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+
+      const wrap = document.getElementById("sheetWrap");
+      const scroll = document.getElementById("sheetScroll");
+
+      function agentsBlock(a) {
+        const rows = a.list
+          .map(
+            (g) =>
+              '<div class="wrow' +
+              (g.ok ? "" : " failed") +
+              '"><span class="sic ' +
+              (g.ok ? "ok" : "xfail") +
+              '">' +
+              (g.ok ? CHECK : XFAIL) +
+              '</span><span class="wname">' +
+              g.name +
+              '</span><span class="wmeta"><span class="wsub">' +
+              g.t +
+              "</span></span></div>",
+          )
+          .join("");
+        return (
+          '<div class="sh-agents"><div class="sh-agents-head"><span style="color:var(--dim)">' +
+          AST +
+          '</span><span><b style="color:#d5d7de">' +
+          a.label +
+          '</b></span><span class="right"><span class="cnt-ok">✓ ' +
+          a.ok +
+          '</span><span class="cnt-fail">× ' +
+          a.fail +
+          "</span></span></div>" +
+          rows +
+          "</div>"
+        );
+      }
+
+      function renderSheet(u) {
+        const icon =
+          u.state === "working" ? AST : u.state === "failed" ? XFAIL : CHECK;
+        const headAction =
+          u.kind === "task"
+            ? '<span class="sh-btn" style="margin-left:auto" title="Open this task as a full thread">Open thread ' +
+              EXT +
+              "</span>"
+            : '<span class="sh-btn" style="margin-left:auto" title="Jump to this run in the transcript">Show in transcript ' +
+              LOCATE +
+              "</span>";
+        let h =
+          '<div class="sh-top ' +
+          u.state +
+          '">' +
+          icon +
+          "<span>" +
+          u.statusText +
+          "</span>" +
+          headAction +
+          '<span class="sh-btn" id="shClose" style="padding:6px 7px" title="Dismiss">' +
+          X +
+          "</span></div>";
+        h += '<div class="sh-title">' + u.title + "</div>";
+        h +=
+          '<div class="sh-meta">' +
+          u.chips
+            .map((c) => '<span class="chip' + (c.cls ? " " + c.cls : "") + '">' + c.label + "</span>")
+            .join("") +
+          "</div>";
+        h += '<div class="sh-body">';
+        h += u.convo
+          .map((m) => {
+            if (m.role === "user") return '<div class="sh-msg user">' + m.text + "</div>";
+            if (m.role === "evt")
+              return '<div class="sh-evt' + (m.cls ? " " + m.cls : "") + '">' + m.text + "</div>";
+            return '<div class="sh-msg asst">' + m.html + "</div>";
+          })
+          .join("");
+        if (u.agents) h += agentsBlock(u.agents);
+        h += "</div>";
+        if (u.cancellable) {
+          h +=
+            '<div class="sh-actions"><span class="sh-btn danger" title="Cancel this task">Cancel task</span></div>';
+        }
+        if (u.kind === "task") {
+          h +=
+            '<div class="sh-composer"><span class="grow">Steer this task…</span><span class="sh-send">' +
+            SEND +
+            "</span></div>";
+        } else {
+          h +=
+            '<div class="sh-composer disabled"><span class="grow"><span class="composer-note">Runs inside the task\u2019s session \u2014 to stop it, interrupt the task\u2019s turn.</span></span><span class="sh-send">' +
+            SEND +
+            "</span></div>";
+        }
+        scroll.innerHTML = h;
+        document.getElementById("shClose").addEventListener("click", hideSheet);
+      }
+
+      function showSheet(id) {
+        const u = UNITS[id];
+        if (!u) return;
+        renderSheet(u);
+        wrap.classList.add("show");
+        document
+          .querySelectorAll(".sub")
+          .forEach((s) => s.classList.toggle("picked", s.dataset.unit === id));
+      }
+      function hideSheet() {
+        wrap.classList.remove("show");
+        document.querySelectorAll(".sub.picked").forEach((s) => s.classList.remove("picked"));
+      }
+
+      document.querySelectorAll(".sub[data-unit]").forEach((row) => {
+        row.addEventListener("click", () => {
+          /* The turn row peeks its owning task; agent sheets are reachable
+             via deep link (?sheet=a4) since agents are nested in the sheet */
+          const id = row.dataset.unit === "turn" ? "task" : row.dataset.unit;
+          showSheet(id);
+        });
+      });
+      document.getElementById("sheetDim").addEventListener("click", hideSheet);
+      document.getElementById("sheetGrab").addEventListener("click", hideSheet);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") hideSheet();
+      });
+
+      /* ?sheet=task|apk|local|login|a4 opens that sheet on load */
+      const sheet = new URLSearchParams(location.search).get("sheet");
+      showSheet(sheet && UNITS[sheet] ? sheet : "task");
+    </script>
+  </body>
+</html>

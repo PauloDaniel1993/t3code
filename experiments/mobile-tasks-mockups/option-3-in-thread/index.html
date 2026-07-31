@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks · Option 3 — in-thread agent card + parallel-work card</title>
+    <link rel="stylesheet" href="../mockup.css" />
+  </head>
+  <body>
+    <a class="backlink" href="../index.html">← all mobile options</a>
+
+    <div class="stage">
+      <div class="device">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg style="width: 11px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg style="width: 12px; height: 11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M7 16v4M12 13v7M17 10v10" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="currentColor" opacity="0.4" />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- Detail header: the task thread, back to its parent -->
+            <div class="tbar">
+              <span class="tbar-back" title="Back to Add Wayfinder Constellation Sidebar View">
+                <svg class="ic" style="width: 19px; height: 19px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M19 12H5M12 19l-7-7 7-7" />
+                </svg>
+              </span>
+              <div class="tbar-titles">
+                <div class="tbar-title">Create 4 mockups for the mobile app based on the image</div>
+                <div class="tbar-sub">Task of “Add Wayfinder Constellation Sidebar View” · ✦ agent · full thread context</div>
+              </div>
+              <span class="tbar-act">
+                <svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="5" r="1.6" />
+                  <circle cx="12" cy="12" r="1.6" />
+                  <circle cx="12" cy="19" r="1.6" />
+                </svg>
+              </span>
+            </div>
+
+            <!-- Task thread feed -->
+            <div class="mscroll" id="feed">
+              <div class="tl">
+                <div class="evt" title="This thread is a task owned by a parent thread">
+                  <svg class="ic" style="width: 13px; height: 13px; color: #8f9cf5" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+                  </svg>
+                  <span>Created as a task by <b>Add Wayfinder Constellation Sidebar View</b> ·
+                  context: full thread</span>
+                </div>
+
+                <div class="msg user">
+                  Create 4 mockups for the mobile app based on the reference image: thread list,
+                  bottom sheet, in-thread, full thread.
+                </div>
+
+                <div class="msg asst">
+                  I'll fan out ten agents over the chrome, the list-row anatomy, and the four
+                  variants, then assemble the set. The screenshot is the source of truth for
+                  chrome; the desktop sidebar's tasks/agents UI is the source of truth for the
+                  expanded rows.
+                </div>
+
+                <!-- The turn's agent card: where agents live in the feed -->
+                <div class="wcard" id="wcard">
+                  <div class="wcard-head">
+                    <svg class="ic" style="width: 13px; height: 13px; color: var(--info)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                      <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                    </svg>
+                    <span><b>Latest turn · 10 agents</b></span>
+                    <span class="usage"><span class="cnt-ok">✓ 6</span>&nbsp;&nbsp;<span class="cnt-fail">× 4</span></span>
+                  </div>
+                  <div class="wrow" id="wrow-a1">
+                    <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                    <span class="wname">Map screenshot chrome regions</span>
+                    <span class="wmeta"><span class="wsub">3s</span></span>
+                  </div>
+                  <div class="wrow" id="wrow-a2">
+                    <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                    <span class="wname">Extract thread-row anatomy</span>
+                    <span class="wmeta"><span class="wsub">4s</span></span>
+                  </div>
+                  <div class="wrow" id="wrow-a3">
+                    <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                    <span class="wname">Draft status bar + app header markup</span>
+                    <span class="wmeta"><span class="wsub">5s</span></span>
+                  </div>
+                  <div class="wrow failed" id="wrow-a4">
+                    <span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span>
+                    <span class="wname">Reproduce provider glyph set</span>
+                    <span class="wmeta"><span class="wsub">budget · 9s</span></span>
+                  </div>
+                  <div class="wrow" id="wrow-a5">
+                    <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                    <span class="wname">Draft list-row CSS tokens</span>
+                    <span class="wmeta"><span class="wsub">4s</span></span>
+                  </div>
+                  <div class="wrow failed" id="wrow-a6">
+                    <span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span>
+                    <span class="wname">Fit expanded task group into 390px</span>
+                    <span class="wmeta"><span class="wsub">budget · 7s</span></span>
+                  </div>
+                  <div class="wrow failed" id="wrow-a7">
+                    <span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span>
+                    <span class="wname">Bottom-sheet layout pass</span>
+                    <span class="wmeta"><span class="wsub">6s</span></span>
+                  </div>
+                  <div class="wrow" id="wrow-a8">
+                    <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                    <span class="wname">Compose thread-list variant</span>
+                    <span class="wmeta"><span class="wsub">5s</span></span>
+                  </div>
+                  <div class="wrow failed" id="wrow-a9">
+                    <span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span>
+                    <span class="wname">In-thread card layout pass</span>
+                    <span class="wmeta"><span class="wsub">budget · 8s</span></span>
+                  </div>
+                  <div class="wrow" id="wrow-a10">
+                    <span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span>
+                    <span class="wname">Assemble full-thread variant</span>
+                    <span class="wmeta"><span class="wsub">6s</span></span>
+                  </div>
+                </div>
+
+                <div class="msg asst">
+                  Six agents are back with the chrome and row anatomy; four hit the tool-use
+                  budget. Retrying those with narrower scopes, then I'll assemble the four
+                  variants and return the set to the parent thread.
+                </div>
+              </div>
+            </div>
+
+            <!-- Collapsible "Parallel work" card, pinned above the composer -->
+            <div class="pcard closed" id="pcard">
+              <div class="pcard-head" id="pcardHead">
+                <svg class="ic" style="width: 13px; height: 13px; color: var(--info)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                </svg>
+                <span><b>Parallel work</b> · 10 agents · <span class="cnt-ok">✓ 6</span>
+                <span class="cnt-fail">× 4</span></span>
+                <span class="chev">
+                  <svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </span>
+              </div>
+              <div class="pcard-body" id="pcardBody">
+                <div class="sub done" data-agent="a1"><span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span><span class="stitle">Map screenshot chrome regions</span><span class="smeta">3s</span></div>
+                <div class="sub done" data-agent="a2"><span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span><span class="stitle">Extract thread-row anatomy</span><span class="smeta">4s</span></div>
+                <div class="sub done" data-agent="a3"><span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span><span class="stitle">Draft status bar + app header markup</span><span class="smeta">5s</span></div>
+                <div class="sub failed" data-agent="a4"><span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span><span class="stitle">Reproduce provider glyph set</span><span class="smeta failed">failed</span></div>
+                <div class="sub done" data-agent="a5"><span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span><span class="stitle">Draft list-row CSS tokens</span><span class="smeta">4s</span></div>
+                <div class="sub failed" data-agent="a6"><span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span><span class="stitle">Fit expanded task group into 390px</span><span class="smeta failed">failed</span></div>
+                <div class="sub failed" data-agent="a7"><span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span><span class="stitle">Bottom-sheet layout pass</span><span class="smeta failed">failed</span></div>
+                <div class="sub done" data-agent="a8"><span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span><span class="stitle">Compose thread-list variant</span><span class="smeta">5s</span></div>
+                <div class="sub failed" data-agent="a9"><span class="sic xfail"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6M9 9l6 6" /></svg></span><span class="stitle">In-thread card layout pass</span><span class="smeta failed">failed</span></div>
+                <div class="sub done" data-agent="a10"><span class="sic ok"><svg class="ic" style="width: 13px; height: 13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5" /></svg></span><span class="stitle">Assemble full-thread variant</span><span class="smeta">6s</span></div>
+              </div>
+            </div>
+
+            <div class="composer-wrap">
+              <div class="composer">
+                <div class="ph">Steer this task…</div>
+                <div class="bar">
+                  <span class="chipbtn">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                    </svg>
+                  </span>
+                  <span class="chipbtn">
+                    <svg class="ic" style="width: 12px; height: 12px; color: #8f9cf5" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" />
+                    </svg>
+                    Opus 4.7
+                  </span>
+                  <span class="send">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                      <path d="M12 19V5M5 12l7-7 7 7" />
+                    </svg>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="gesturebar"></div>
+            <div class="toast" id="toast"></div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>3 — In-thread.</b> The turn's agent card sits in the feed; the pinned
+          <b>Parallel work</b> card collapses to one line. <code>?open=1</code> expands it.
+        </div>
+      </div>
+    </div>
+
+    <div class="concept">
+      <b>Option 3</b> · In-thread — agents are view only; tap one to find it in the feed
+    </div>
+
+    <script>
+      const pcard = document.getElementById("pcard");
+      document.getElementById("pcardHead").addEventListener("click", () => {
+        pcard.classList.toggle("closed");
+      });
+
+      /* Agent rows are view only — flash the matching row in the feed's card */
+      document.querySelectorAll(".sub[data-agent]").forEach((row) => {
+        row.addEventListener("click", () => {
+          const target = document.getElementById("wrow-" + row.dataset.agent);
+          if (!target) return;
+          target.scrollIntoView({ block: "center", behavior: "smooth" });
+          target.classList.remove("hl-flash");
+          void target.offsetWidth;
+          target.classList.add("hl-flash");
+        });
+      });
+
+      /* ?open=1 shows the parallel-work card expanded on load */
+      if (new URLSearchParams(location.search).get("open") === "1") {
+        pcard.classList.remove("closed");
+      }
+    </script>
+  </body>
+</html>
