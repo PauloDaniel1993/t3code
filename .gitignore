@@ -38,3 +38,9 @@ node_modules/
 *.log
 .env*
 !.env.example
+
+# Local debugging and build artifacts.
+output/
+devscreen*.png
+logcat*.txt
+apps/mobile/b2_view.json
