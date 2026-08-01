@@ -9,6 +9,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import { LegendList } from "@legendapp/list/react-native";
 import type { MenuAction } from "@react-native-menu/menu";
+import { useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -71,12 +72,14 @@ import {
 } from "./thread-list-items";
 import { ThreadListV2PendingRow, ThreadListV2Row } from "./thread-list-v2-items";
 import { buildTaskAgentModel } from "./task-agent-surface/taskAgentModel";
+import type { TaskPeekAgentRouteParams } from "./task-agent-surface/taskAgentPeek.logic";
 import type { TaskDestination } from "./task-agent-surface/taskAgentNavigation";
 import {
   buildTaskAgentSurfaceRows,
   taskAgentListPresentationStateEqual,
   type TaskAgentListPresentationState,
   type TaskAgentRowViewModel,
+  type TaskAgentSurfaceViewModel,
 } from "./task-agent-surface/taskAgentSurface.logic";
 import {
   buildThreadListV2Items,
@@ -167,6 +170,70 @@ interface ThreadNavigationSidebarProps {
   readonly searchQuery: string;
 }
 
+type TaskAgentPeekParamsByRow = ReadonlyMap<TaskAgentRowViewModel, TaskPeekAgentRouteParams>;
+type OpenTaskAgentPeek = (params: TaskPeekAgentRouteParams) => void;
+
+function buildTaskAgentPeekParamsByRow(
+  surface: TaskAgentSurfaceViewModel | null,
+): TaskAgentPeekParamsByRow {
+  const paramsByRow = new Map<TaskAgentRowViewModel, TaskPeekAgentRouteParams>();
+  if (surface === null) return paramsByRow;
+
+  for (const thread of surface.threads) {
+    if (thread.kind !== "rollup-thread") continue;
+    const environmentId = thread.thread.environmentId;
+    const threadId = thread.thread.id;
+    if (
+      typeof environmentId !== "string" ||
+      environmentId.trim().length === 0 ||
+      typeof threadId !== "string" ||
+      threadId.trim().length === 0
+    ) {
+      continue;
+    }
+
+    for (const turn of thread.rollup.nativeAgentTurns) {
+      for (const agent of turn.agents) {
+        if (agent.kind !== "native-agent") continue;
+        const agentId = agent.nativeAgent?.id;
+        if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+        paramsByRow.set(agent, {
+          environmentId,
+          threadId,
+          agentId,
+        });
+      }
+    }
+
+    for (const task of thread.rollup.tasks) {
+      if (!("tap" in task.navigation)) continue;
+      const taskIdentity = task.navigation.tap.params;
+      if (
+        typeof taskIdentity.environmentId !== "string" ||
+        taskIdentity.environmentId.trim().length === 0 ||
+        typeof taskIdentity.threadId !== "string" ||
+        taskIdentity.threadId.trim().length === 0
+      ) {
+        continue;
+      }
+      for (const turn of task.turns) {
+        for (const agent of turn.agents) {
+          if (agent.kind !== "native-agent") continue;
+          const agentId = agent.nativeAgent?.id;
+          if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+          paramsByRow.set(agent, {
+            environmentId: taskIdentity.environmentId,
+            threadId: taskIdentity.threadId,
+            agentId,
+          });
+        }
+      }
+    }
+  }
+
+  return paramsByRow;
+}
+
 /**
  * iPad/large-width sidebar column.
  *
@@ -177,13 +244,29 @@ interface ThreadNavigationSidebarProps {
  * column gets. Other platforms keep the custom header chrome.
  */
 export function ThreadNavigationSidebar(props: ThreadNavigationSidebarProps) {
+  const navigation = useNavigation();
+  const openTaskAgentPeek = useCallback(
+    (params: TaskPeekAgentRouteParams) => {
+      navigation.navigate("TaskAgentPeek", params);
+    },
+    [navigation],
+  );
+
   if (Platform.OS !== "ios") {
-    return <ThreadNavigationSidebarPane {...props} nativeChrome={false} />;
+    return (
+      <ThreadNavigationSidebarPane
+        {...props}
+        nativeChrome={false}
+        onOpenTaskAgentPeek={openTaskAgentPeek}
+      />
+    );
   }
-  return <NativeSidebarContainer {...props} />;
+  return <NativeSidebarContainer {...props} onOpenTaskAgentPeek={openTaskAgentPeek} />;
 }
 
-function NativeSidebarContainer(props: ThreadNavigationSidebarProps) {
+function NativeSidebarContainer(
+  props: ThreadNavigationSidebarProps & { readonly onOpenTaskAgentPeek: OpenTaskAgentPeek },
+) {
   const backgroundColor = useThemeColor("--color-drawer");
   const borderColor = useThemeColor("--color-border");
 
@@ -206,7 +289,10 @@ function NativeSidebarContainer(props: ThreadNavigationSidebarProps) {
 }
 
 function ThreadNavigationSidebarPane(
-  props: ThreadNavigationSidebarProps & { readonly nativeChrome: boolean },
+  props: ThreadNavigationSidebarProps & {
+    readonly nativeChrome: boolean;
+    readonly onOpenTaskAgentPeek: OpenTaskAgentPeek;
+  },
 ) {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme() === "dark" ? "dark" : "light";
@@ -590,6 +676,12 @@ function ThreadNavigationSidebarPane(
   }, [taskAgentSurface]);
   const taskAgentParentThreadIdByTaskThreadKeyRef = useRef(taskAgentParentThreadIdByTaskThreadKey);
   taskAgentParentThreadIdByTaskThreadKeyRef.current = taskAgentParentThreadIdByTaskThreadKey;
+  const taskAgentPeekParamsByRow = useMemo(
+    () => buildTaskAgentPeekParamsByRow(taskAgentSurface),
+    [taskAgentSurface],
+  );
+  const taskAgentPeekParamsByRowRef = useRef(taskAgentPeekParamsByRow);
+  taskAgentPeekParamsByRowRef.current = taskAgentPeekParamsByRow;
   const handleTaskAgentExpandedChange = useCallback((threadKey: string, expanded: boolean) => {
     setTaskAgentExpandedByThreadKey((current) => {
       if (current.get(threadKey) === expanded) return current;
@@ -600,7 +692,13 @@ function ThreadNavigationSidebarPane(
   }, []);
   const handleTaskAgentRowPress = useCallback(
     (row: TaskAgentRowViewModel) => {
-      if (row.kind !== "task" || !("tap" in row.navigation)) return;
+      if (row.kind === "native-agent") {
+        const params = taskAgentPeekParamsByRowRef.current.get(row);
+        if (params === undefined) return;
+        props.onOpenTaskAgentPeek(params);
+        return;
+      }
+      if (!("tap" in row.navigation)) return;
 
       const destination = row.navigation.tap;
       const parentThreadId = taskAgentParentThreadIdByTaskThreadKeyRef.current.get(
@@ -615,7 +713,7 @@ function ThreadNavigationSidebarPane(
       }
       props.onOpenTaskAgentDestination(destination);
     },
-    [markThreadsVisited, props.onOpenTaskAgentDestination],
+    [markThreadsVisited, props.onOpenTaskAgentDestination, props.onOpenTaskAgentPeek],
   );
   const listItems = useMemo<readonly SidebarListItem[]>(() => {
     if (!threadListV2Enabled) return listLayout.items;

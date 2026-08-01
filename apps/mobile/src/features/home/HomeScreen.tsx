@@ -3,6 +3,7 @@ import {
   type LegendListRef,
   type LegendListRenderItemProps,
 } from "@legendapp/list/react-native";
+import { useNavigation } from "@react-navigation/native";
 import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
@@ -48,11 +49,13 @@ import {
 } from "../threads/thread-list-items";
 import { ThreadListV2PendingRow, ThreadListV2Row } from "../threads/thread-list-v2-items";
 import { buildTaskAgentModel } from "../threads/task-agent-surface/taskAgentModel";
+import type { TaskPeekAgentRouteParams } from "../threads/task-agent-surface/taskAgentPeek.logic";
 import type { TaskDestination } from "../threads/task-agent-surface/taskAgentNavigation";
 import {
   buildTaskAgentSurfaceRows,
   type TaskAgentListPresentationState,
   type TaskAgentRowViewModel,
+  type TaskAgentSurfaceViewModel,
 } from "../threads/task-agent-surface/taskAgentSurface.logic";
 import {
   buildThreadListV2Items,
@@ -117,6 +120,69 @@ interface HomeScreenProps {
   readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
+}
+
+type TaskAgentPeekParamsByRow = ReadonlyMap<TaskAgentRowViewModel, TaskPeekAgentRouteParams>;
+
+function buildTaskAgentPeekParamsByRow(
+  surface: TaskAgentSurfaceViewModel | null,
+): TaskAgentPeekParamsByRow {
+  const paramsByRow = new Map<TaskAgentRowViewModel, TaskPeekAgentRouteParams>();
+  if (surface === null) return paramsByRow;
+
+  for (const thread of surface.threads) {
+    if (thread.kind !== "rollup-thread") continue;
+    const environmentId = thread.thread.environmentId;
+    const threadId = thread.thread.id;
+    if (
+      typeof environmentId !== "string" ||
+      environmentId.trim().length === 0 ||
+      typeof threadId !== "string" ||
+      threadId.trim().length === 0
+    ) {
+      continue;
+    }
+
+    for (const turn of thread.rollup.nativeAgentTurns) {
+      for (const agent of turn.agents) {
+        if (agent.kind !== "native-agent") continue;
+        const agentId = agent.nativeAgent?.id;
+        if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+        paramsByRow.set(agent, {
+          environmentId,
+          threadId,
+          agentId,
+        });
+      }
+    }
+
+    for (const task of thread.rollup.tasks) {
+      if (!("tap" in task.navigation)) continue;
+      const taskIdentity = task.navigation.tap.params;
+      if (
+        typeof taskIdentity.environmentId !== "string" ||
+        taskIdentity.environmentId.trim().length === 0 ||
+        typeof taskIdentity.threadId !== "string" ||
+        taskIdentity.threadId.trim().length === 0
+      ) {
+        continue;
+      }
+      for (const turn of task.turns) {
+        for (const agent of turn.agents) {
+          if (agent.kind !== "native-agent") continue;
+          const agentId = agent.nativeAgent?.id;
+          if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+          paramsByRow.set(agent, {
+            environmentId: taskIdentity.environmentId,
+            threadId: taskIdentity.threadId,
+            agentId,
+          });
+        }
+      }
+    }
+  }
+
+  return paramsByRow;
 }
 
 /* ─── Layout constants ───────────────────────────────────────────────── */
@@ -204,6 +270,7 @@ export function HomeScreen(props: HomeScreenProps) {
     ReadonlyMap<string, HomeGroupDisplayState>
   >(() => new Map());
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const navigation = useNavigation();
   const threadListV2Enabled = useThreadListV2Enabled();
   const threadTasksEnabled = useThreadTasksEnabled();
   const { readState: taskAgentReadState, markThreadsVisited } = useTaskAgentReadState();
@@ -594,6 +661,12 @@ export function HomeScreen(props: HomeScreenProps) {
   }, [taskAgentSurface]);
   const taskAgentParentThreadIdByTaskThreadKeyRef = useRef(taskAgentParentThreadIdByTaskThreadKey);
   taskAgentParentThreadIdByTaskThreadKeyRef.current = taskAgentParentThreadIdByTaskThreadKey;
+  const taskAgentPeekParamsByRow = useMemo(
+    () => buildTaskAgentPeekParamsByRow(taskAgentSurface),
+    [taskAgentSurface],
+  );
+  const taskAgentPeekParamsByRowRef = useRef(taskAgentPeekParamsByRow);
+  taskAgentPeekParamsByRowRef.current = taskAgentPeekParamsByRow;
   const handleTaskAgentExpandedChange = useCallback((threadKey: string, expanded: boolean) => {
     setTaskAgentExpandedByThreadKey((current) => {
       if (current.get(threadKey) === expanded) return current;
@@ -604,7 +677,13 @@ export function HomeScreen(props: HomeScreenProps) {
   }, []);
   const handleTaskAgentRowPress = useCallback(
     (row: TaskAgentRowViewModel) => {
-      if (row.kind !== "task" || !("tap" in row.navigation)) return;
+      if (row.kind === "native-agent") {
+        const params = taskAgentPeekParamsByRowRef.current.get(row);
+        if (params === undefined) return;
+        navigation.navigate("TaskAgentPeek", params);
+        return;
+      }
+      if (!("tap" in row.navigation)) return;
 
       const destination = row.navigation.tap;
       const parentThreadId = taskAgentParentThreadIdByTaskThreadKeyRef.current.get(
@@ -621,7 +700,7 @@ export function HomeScreen(props: HomeScreenProps) {
       }
       props.onOpenTaskAgentDestination(destination);
     },
-    [markThreadsVisited, props.onOpenTaskAgentDestination],
+    [markThreadsVisited, navigation, props.onOpenTaskAgentDestination],
   );
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
