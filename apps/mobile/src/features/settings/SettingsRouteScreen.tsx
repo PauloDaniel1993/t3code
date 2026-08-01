@@ -578,8 +578,9 @@ function BetaSettingsSection() {
         />
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
-        Thread List v2 uses one flat list in creation order. Thread Tasks enables the mobile
-        task-agent beta. Switch either off any time.
+        Thread List v2 uses one flat list in creation order. Thread Tasks enables the task-thread
+        surface; task groups appear in Thread List v2 only when both switches are on. Switch either
+        off any time.
       </Text>
     </View>
   );

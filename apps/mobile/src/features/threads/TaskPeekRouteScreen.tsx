@@ -1,4 +1,4 @@
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useMemo } from "react";
 
 import { useThreadShells } from "../../state/entities";
@@ -43,7 +43,7 @@ function TaskAgentPeekRouteContent<TParams>(props: {
 }) {
   const navigation = useNavigation();
   const threads = useThreadShells();
-  const { readState } = useTaskAgentReadState();
+  const { readState, markThreadsVisited } = useTaskAgentReadState();
   const surface = useMemo(
     () =>
       buildTaskAgentSurfaceRows(
@@ -64,10 +64,24 @@ function TaskAgentPeekRouteContent<TParams>(props: {
     () => (resolution === null ? null : buildTaskAgentPeek(resolution)),
     [resolution],
   );
+  const visitedTaskThreadId = resolution?.kind === "task" ? resolution.route.threadId : null;
+  const visitedParentThreadId = resolution?.kind === "task" ? resolution.parentThreadId : null;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (visitedParentThreadId === null || visitedTaskThreadId === null) return;
+      markThreadsVisited({
+        parentThreadId: visitedParentThreadId,
+        taskThreadId: visitedTaskThreadId,
+        visitedAt: new Date().toISOString(),
+      });
+    }, [markThreadsVisited, visitedParentThreadId, visitedTaskThreadId]),
+  );
+
   const handleClose = useCallback(() => navigation.goBack(), [navigation]);
   const handleAction = useCallback(
     (action: TaskAgentPeekAction) => {
-      // Both sheet actions use the destination projected for this exact task;
+      // The sheet action uses the destination projected for this exact task;
       // no task id is reconstructed or defaulted at this forwarding boundary.
       navigation.navigate("Thread", action.destination.params);
     },

@@ -28,6 +28,28 @@ export interface TaskAgentListGroupProps {
   readonly onPressRow: (row: TaskAgentRowViewModel) => void;
 }
 
+const NATIVE_AGENT_WINDOW_LABEL = "Latest turn plus anything still running";
+const NATIVE_AGENT_WINDOW_HINT = "agents from the latest turn plus anything still running";
+
+function taskAgentDisclosureLabel(row: TaskAgentRollupThreadRowViewModel): string {
+  // Keep the projected count verbatim; the suffix only scopes what the agent
+  // count means so it cannot be read as a full thread history.
+  return row.rollup.nativeAgentCount === 0
+    ? row.rollup.chipLabel
+    : `${row.rollup.chipLabel} · Agents: ${NATIVE_AGENT_WINDOW_LABEL}`;
+}
+
+function taskAgentDisclosureHint(
+  row: TaskAgentRollupThreadRowViewModel,
+  expanded: boolean,
+): string {
+  const action = expanded ? "Collapses" : "Shows";
+  const contents: string[] = [];
+  if (row.rollup.taskCount > 0) contents.push("this thread's tasks");
+  if (row.rollup.nativeAgentCount > 0) contents.push(NATIVE_AGENT_WINDOW_HINT);
+  return `${action} ${contents.join(" and ")}`;
+}
+
 function toneColor(theme: TaskAgentTheme, tone: TaskAgentRowTone): string {
   switch (tone) {
     case "active":
@@ -204,12 +226,8 @@ function TaskAgentListGroupComponent(props: TaskAgentListGroupProps) {
         ]}
       >
         <Pressable
-          accessibilityHint={
-            props.expanded
-              ? "Collapses this thread's tasks and agents"
-              : "Shows this thread's tasks and agents"
-          }
-          accessibilityLabel={props.row.rollup.chipLabel}
+          accessibilityHint={taskAgentDisclosureHint(props.row, props.expanded)}
+          accessibilityLabel={taskAgentDisclosureLabel(props.row)}
           accessibilityRole="button"
           accessibilityState={{ expanded: props.expanded }}
           hitSlop={8}
@@ -228,7 +246,7 @@ function TaskAgentListGroupComponent(props: TaskAgentListGroupProps) {
             tintColor={theme.text.muted}
           />
           <Text style={[styles.disclosureLabel, { color: theme.text.muted }]}>
-            {props.row.rollup.chipLabel}
+            {taskAgentDisclosureLabel(props.row)}
           </Text>
         </Pressable>
         {props.row.unread ? (

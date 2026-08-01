@@ -182,15 +182,19 @@ function TaskAgentPeekControlView(props: {
 
 function PeekSheetChrome(props: {
   readonly children: React.ReactNode;
+  readonly closeLabel: string;
   readonly onClose: () => void;
   readonly theme: TaskAgentTheme;
+  readonly title: string;
 }) {
   return (
     <View style={[styles.screen, { backgroundColor: props.theme.background }]}>
       <View style={styles.topBar}>
-        <Text style={[styles.sheetTitle, { color: props.theme.text.foreground }]}>Task peek</Text>
+        <Text style={[styles.sheetTitle, { color: props.theme.text.foreground }]}>
+          {props.title}
+        </Text>
         <Pressable
-          accessibilityLabel="Close task peek"
+          accessibilityLabel={props.closeLabel}
           accessibilityRole="button"
           hitSlop={8}
           onPress={props.onClose}
@@ -212,7 +216,12 @@ export function TaskAgentPeekUnavailableSheet(props: TaskAgentPeekUnavailableShe
   const theme = getTaskAgentTheme(colorScheme);
 
   return (
-    <PeekSheetChrome onClose={props.onClose} theme={theme}>
+    <PeekSheetChrome
+      closeLabel="Close peek"
+      onClose={props.onClose}
+      theme={theme}
+      title="Peek unavailable"
+    >
       <View style={styles.unavailableScreen}>
         <Text style={[styles.unavailableTitle, { color: theme.text.foreground }]}>
           Peek unavailable
@@ -232,7 +241,12 @@ export function TaskAgentPeekSheet(props: TaskAgentPeekSheetProps) {
   const { peek } = props;
 
   return (
-    <PeekSheetChrome onClose={props.onClose} theme={theme}>
+    <PeekSheetChrome
+      closeLabel={peek.closeLabel}
+      onClose={props.onClose}
+      theme={theme}
+      title={peek.title}
+    >
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         contentInsetAdjustmentBehavior="automatic"
@@ -250,10 +264,23 @@ export function TaskAgentPeekSheet(props: TaskAgentPeekSheetProps) {
         </View>
 
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: theme.text.foreground }]}>Turn agents</Text>
-          {peek.turns.map((turn) => (
-            <TaskAgentPeekTurn key={turn.key} borderColor={borderColor} theme={theme} turn={turn} />
-          ))}
+          <Text style={[styles.sectionTitle, { color: theme.text.foreground }]}>
+            {peek.turnAgents.title}
+          </Text>
+          {peek.turnAgents.emptyMessage !== null ? (
+            <Text style={[styles.emptyTurns, { color: theme.text.muted }]}>
+              {peek.turnAgents.emptyMessage}
+            </Text>
+          ) : (
+            peek.turns.map((turn) => (
+              <TaskAgentPeekTurn
+                key={turn.key}
+                borderColor={borderColor}
+                theme={theme}
+                turn={turn}
+              />
+            ))
+          )}
         </View>
 
         <View style={styles.controlList}>
@@ -379,6 +406,10 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 14,
     fontWeight: "800",
+  },
+  emptyTurns: {
+    fontSize: 13,
+    lineHeight: 19,
   },
   turnSection: {
     borderRadius: 14,

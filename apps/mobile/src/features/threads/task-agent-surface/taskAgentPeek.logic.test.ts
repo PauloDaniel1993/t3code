@@ -16,6 +16,7 @@ import {
   buildTaskAgentPeek,
   resolveTaskAgentPeekRoute,
   resolveTaskPeekRoute,
+  taskAgentPeekLabels,
   type TaskPeekAgentRouteParams,
   type TaskPeekTaskRouteParams,
 } from "./taskAgentPeek.logic";
@@ -125,10 +126,21 @@ function surface() {
     readState: { lastVisitedAtByThreadId: new Map() },
   });
 
-  return { agentId, surface: buildTaskAgentSurfaceRows(model), taskAId, taskBId };
+  return { agentId, parentId, surface: buildTaskAgentSurfaceRows(model), taskAId, taskBId };
 }
 
 describe("task-agent peek logic", () => {
+  it("projects distinct subject-specific sheet and close labels", () => {
+    expect(taskAgentPeekLabels("task")).toEqual({
+      title: "Task peek",
+      closeLabel: "Close task peek",
+    });
+    expect(taskAgentPeekLabels("native-agent")).toEqual({
+      title: "Agent peek",
+      closeLabel: "Close agent peek",
+    });
+  });
+
   it("builds a task peek with the shared task and agent row anatomy", () => {
     const fixture = surface();
     const params = {
@@ -144,6 +156,8 @@ describe("task-agent peek logic", () => {
 
     expect(peek.row).toBe(resolved.row);
     expect(peek.row.kind).toBe("task");
+    expect(peek.title).toBe("Task peek");
+    expect(peek.closeLabel).toBe("Close task peek");
     expect(agent.kind).toBe("native-agent");
     expect(Object.keys(peek.row).sort()).toEqual(Object.keys(agent).sort());
     expect(peek.turns[0]?.outcome.counters).toEqual(resolved.row.turns[0]?.outcome.counters);
@@ -169,6 +183,8 @@ describe("task-agent peek logic", () => {
 
     expect(peek.row).toBe(resolved.row);
     expect(peek.row.kind).toBe("native-agent");
+    expect(peek.title).toBe("Agent peek");
+    expect(peek.closeLabel).toBe("Close agent peek");
     expect(Object.keys(peek.row).sort()).toEqual(
       Object.keys(peek.turns[0]?.agents[0] ?? {}).sort(),
     );
@@ -220,6 +236,7 @@ describe("task-agent peek logic", () => {
     }
 
     expect(resolvedTaskB.row.id).toBe(fixture.taskBId);
+    expect(resolvedTaskB.parentThreadId).toBe(fixture.parentId);
     expect(resolvedTaskB.row.id).not.toBe(fixture.taskAId);
     expect(resolvedTaskB.row.title).toBe("Task B");
     expect(
@@ -239,5 +256,50 @@ describe("task-agent peek logic", () => {
       threadId: fixture.taskBId,
     };
     expect(missingAgentIdentity).toBeDefined();
+  });
+
+  it("projects bounded empty wording instead of an empty turn-agent section", () => {
+    const fixture = surface();
+    const resolved = resolveTaskPeekRoute({
+      surface: fixture.surface,
+      params: { environmentId, threadId: fixture.taskAId },
+    });
+    if (resolved === null || resolved.kind !== "task") throw new Error("expected task A");
+
+    const peek = buildTaskAgentPeek(resolved);
+    expect(peek.turns).toHaveLength(0);
+    expect(peek.turnAgents).toEqual({
+      title: "Turn agents",
+      emptyMessage: "No provider-native agents are available in this bounded window.",
+    });
+  });
+
+  it("uses one honest task destination control while retaining the row alternative", () => {
+    const fixture = surface();
+    const resolved = resolveTaskPeekRoute({
+      surface: fixture.surface,
+      params: { environmentId, threadId: fixture.taskAId },
+    });
+    if (resolved === null || resolved.kind !== "task") throw new Error("expected task A");
+    if (!("alternative" in resolved.row.navigation)) {
+      throw new Error("expected the task row alternative affordance");
+    }
+
+    const peek = buildTaskAgentPeek(resolved);
+    expect(resolved.row.navigation.alternative.label).toBe("Open thread");
+    expect(peek.controls.map((control) => control.id)).toEqual(["open-task"]);
+    expect(peek.controls[0]).toEqual(
+      expect.objectContaining({
+        id: "open-task",
+        label: "Open task",
+        availability: {
+          kind: "action",
+          action: {
+            kind: "open-task-thread",
+            destination: resolved.row.navigation.alternative.destination,
+          },
+        },
+      }),
+    );
   });
 });

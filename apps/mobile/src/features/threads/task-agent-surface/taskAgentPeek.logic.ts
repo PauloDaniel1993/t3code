@@ -22,7 +22,7 @@ export type TaskPeekAgentRouteParams = Readonly<{
 }>;
 
 export type TaskAgentPeekAction = Readonly<{
-  readonly kind: "open-task-thread" | "steer-task";
+  readonly kind: "open-task-thread";
   /** Always the exact task destination projected by taskAgentNavigation. */
   readonly destination: Extract<TaskDestination, { readonly kind: "thread" }>;
 }>;
@@ -45,6 +45,7 @@ export type TaskAgentPeekResolution =
       Readonly<{
         readonly kind: "task";
         readonly route: TaskPeekTaskRouteParams;
+        readonly parentThreadId: TaskPeekTaskRouteParams["threadId"];
         readonly turns: ReadonlyArray<TaskAgentTurnRowViewModel>;
       }>)
   | (TaskPeekResolutionBase &
@@ -54,12 +55,42 @@ export type TaskAgentPeekResolution =
         readonly turns: readonly [TaskAgentTurnRowViewModel];
       }>);
 
+export type TaskAgentPeekLabels = Readonly<{
+  readonly title: "Task peek" | "Agent peek";
+  readonly closeLabel: "Close task peek" | "Close agent peek";
+}>;
+
+export function taskAgentPeekLabels(kind: TaskAgentPeekResolution["kind"]): TaskAgentPeekLabels {
+  return kind === "task"
+    ? { title: "Task peek", closeLabel: "Close task peek" }
+    : { title: "Agent peek", closeLabel: "Close agent peek" };
+}
+
+export type TaskAgentPeekTurnSection = Readonly<{
+  readonly title: "Turn agents";
+  readonly emptyMessage: string | null;
+}>;
+
+const NO_TURN_AGENTS_MESSAGE = "No provider-native agents are available in this bounded window.";
+
+function taskAgentPeekTurnSection(
+  turns: ReadonlyArray<TaskAgentTurnRowViewModel>,
+): TaskAgentPeekTurnSection {
+  return {
+    title: "Turn agents",
+    emptyMessage: turns.length === 0 ? NO_TURN_AGENTS_MESSAGE : null,
+  };
+}
+
 export type TaskAgentPeekViewModel = Readonly<{
   readonly kind: TaskAgentPeekResolution["kind"];
+  readonly title: TaskAgentPeekLabels["title"];
+  readonly closeLabel: TaskAgentPeekLabels["closeLabel"];
   /** The common row is rendered unchanged for task and native-agent peeks. */
   readonly row: TaskAgentRowViewModel;
   /** These are projected turns, not a locally re-derived rollup. */
   readonly turns: ReadonlyArray<TaskAgentTurnRowViewModel>;
+  readonly turnAgents: TaskAgentPeekTurnSection;
   /** Makes the bounded native-agent window explicit rather than implying history. */
   readonly nativeAgentWindow: TaskAgentSurfaceViewModel["nativeAgentWindow"];
   readonly controls: ReadonlyArray<TaskAgentPeekControl>;
@@ -131,19 +162,10 @@ function taskControls(row: TaskAgentRowViewModel): ReadonlyArray<TaskAgentPeekCo
     ];
   }
 
-  return [
-    openTask,
-    {
-      id: "steer",
-      label: "Steer in task",
-      availability: {
-        kind: "action",
-        // The task thread owns the real composer. Opening it is the available
-        // steering action; the sheet does not pretend to send independently.
-        action: { kind: "steer-task", destination },
-      },
-    },
-  ];
+  // The task row's primary tap already brought the user here. Keep its
+  // projected alternative (the full task thread) discoverable as one honest
+  // control instead of presenting two labels for the same destination.
+  return [openTask];
 }
 
 function nativeAgentControls(row: TaskAgentRowViewModel): ReadonlyArray<TaskAgentPeekControl> {
@@ -206,6 +228,7 @@ function resolveTaskPeek(
     return {
       kind: "task",
       route: params,
+      parentThreadId: thread.thread.id,
       row,
       turns: row.turns,
       nativeAgentWindow: surface.nativeAgentWindow,
@@ -269,10 +292,13 @@ export function resolveTaskAgentPeekRoute(input: {
 
 /** Build the thin sheet model from the shared row and projected turn anatomy. */
 export function buildTaskAgentPeek(resolution: TaskAgentPeekResolution): TaskAgentPeekViewModel {
+  const labels = taskAgentPeekLabels(resolution.kind);
   return {
     kind: resolution.kind,
+    ...labels,
     row: resolution.row,
     turns: resolution.turns,
+    turnAgents: taskAgentPeekTurnSection(resolution.turns),
     nativeAgentWindow: resolution.nativeAgentWindow,
     controls:
       resolution.kind === "task"
