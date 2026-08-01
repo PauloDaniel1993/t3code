@@ -1,25 +1,53 @@
-## Delivery status
+## Delivery status — closed 2026-08-02
 
-This change is being delivered in three PRs. The evaluated leaf graph was too large for one
-reviewable diff — roughly twenty leaves spanning the v2 list, the legacy list, HomeScreen, the
-iPad sidebar, the thread detail screen, the feed, the composer, and a new unread-persistence
-layer.
+This change was delivered in two PRs, both merged to `dev`. The evaluated leaf graph was too
+large for one reviewable diff — roughly twenty leaves spanning the v2 list, the legacy list,
+HomeScreen, the iPad sidebar, the thread detail screen, the feed, the composer, and a new
+unread-persistence layer.
 
-- **PR 1 — foundation (this PR).** The shared rollup rules and the entire pure mobile logic
+- **PR 1 — foundation (#40, merged).** The shared rollup rules and the entire pure mobile logic
   layer. No UI, no React components. Sections 1, 2, 6.1, 6.3 and the logic-level parts of 7.
-- **PR 2 — UI surfaces.** Sections 3, 4, 5, the unread lifecycle, and 6.2 on a device.
-- **PR 3 — remainder**, if PR 2 does not absorb it.
+- **PR 2 — UI surfaces (#41, merged).** Sections 3, 4, 5, the unread lifecycle, and 6.2.
+  14 commits, 32 files, +6444/−110. Two independent reviews, no blockers, ten findings, eight
+  fixed. Mobile suite 740 passing, up from 681.
+- **PR 3 — not required.** PR 2 absorbed the remaining sections. A third PR was scoped only as a
+  device-verification pass; the owner closed the change without it (see Waived below).
 
-Scope decisions taken during PR 1, recorded here so they are not rediscovered as surprises:
+### Waived at closure — accepted risk, not verification
+
+The owner closed this change on 2026-08-02 without the device pass. These items are **not
+verified**, and are recorded as accepted rather than marked done, so nothing here reads as a
+confirmation that did not happen:
+
+- **7.6 — the seven-state device matrix was never run.** The delivery host had no Expo web
+  target (`react-native-web` absent), no Android emulator binary, system image or AVD, and Expo
+  Go is unsupported because of native modules. Layout, dynamic nested height, scroll anchoring,
+  keyboard insets, and tap-versus-swipe arbitration have not been seen on a real device.
+- **2.1 — `nativeAgents` has never been observed in a runtime payload.** It is derived
+  server-side from real provider events and the public dispatch endpoint accepts no injection
+  path, so agent rows cannot be seeded without a real provider turn. The contract declares the
+  field and the type flows through to `apps/mobile`, but that is a reading, not an observation.
+- **6.2 — the gesture was settled by shipping the default, not by feel.** Tap resolves to the
+  peek sheet everywhere. That is a real decision and it is applied consistently, but the
+  device comparison the spec envisaged did not happen.
+- **7.5 — contrast was measured on the composed token stack, not sampled on a rendered device.**
+
+The surface ships behind `threadTasksEnabled`, a device-local beta flag defaulting to **off**,
+which is what makes closing on unverified layout a reasonable risk rather than an unreasonable
+one.
+
+Scope decisions taken during delivery, recorded so they are not rediscovered as surprises:
 
 - **Legacy list is out of scope.** Mobile can opt out of the v2 thread list, and the legacy
   `ThreadListRow` remains live in Home and the iPad sidebar. This change targets
   `thread-list-v2-items.tsx` only, so **the surface is absent in legacy-list mode**.
-- **React Native component-test infrastructure does not exist** — `apps/mobile` has 99 vitest
+- **React Native component-test infrastructure does not exist** — `apps/mobile` had 99 vitest
   tests and zero `.test.tsx`, with no `@testing-library/react-native` and no
-  `react-test-renderer`. PR 1 follows the repository's established pure-logic pattern, which is
-  also what Requirement 2 asks for ("verifiable without rendering a component"). Adding a
+  `react-test-renderer`. Both PRs follow the repository's established pure-logic pattern, which
+  is also what Requirement 2 asks for ("verifiable without rendering a component"). Adding a
   component-test harness is an open follow-up, not a silent omission.
+- **The spec carries 26 scenarios across 10 requirements**, not the 24 an early brief claimed.
+  Corrected during PR 2 by counting.
 
 ## 1. Share the Rollup Rules
 
@@ -49,11 +77,14 @@ Scope decisions taken during PR 1, recorded here so they are not rediscovered as
 
 ## 2. Mobile Data Access and Theme
 
-- [ ] 2.1 Confirm at runtime that `EnvironmentThreadShell` on mobile actually carries `nativeAgents`, `task`, `taskSummary`, and `parentThreadId` — the contract says it does; verify it against a real payload before building on it.
-  - **Still open.** The contract declares it and both reviewers confirmed the type flows through
-    to `apps/mobile`, but no real payload carrying `nativeAgents` was observed at runtime. The
-    browser pass surfaced task groups, not native agents, because seeding those needs a real
-    provider turn. Verify this before or during PR 2.
+- [~] 2.1 Confirm at runtime that `EnvironmentThreadShell` on mobile actually carries `nativeAgents`, `task`, `taskSummary`, and `parentThreadId` — the contract says it does; verify it against a real payload before building on it.
+  - **Never observed. Waived at closure** — see Waived above. `task`, `taskSummary` and
+    `parentThreadId` were seen indirectly via the desktop sidebar rendering seeded task groups
+    from the same shell payload. `nativeAgents` was not: it is derived server-side from real
+    provider events and the public dispatch endpoint accepts no injection path, so agent rows
+    cannot be seeded without a real provider turn. The contract declares the field and both
+    reviewers confirmed the type reaches `apps/mobile` — but that is a reading of the contract,
+    not an observation of a payload, and the whole agent surface rests on it.
 - [x] 2.2 Add mobile-side selectors that read those fields and apply the shared rules from section 1. No new subscription, no new RPC, no duplicated counting.
   - `taskAgentModel.ts`. Counts come from `groupNativeAgentsByTurn`; a test asserts parity with
     the shared function for every running/finished/failed count.
@@ -74,50 +105,72 @@ Scope decisions taken during PR 1, recorded here so they are not rediscovered as
 
 ## 3. Thread List Entry
 
-Deferred to PR 2.
+Delivered in PR 2 (#41). Not verified on a device — see Waived above.
 
-- [ ] 3.1 Nest task rows under their parent in `features/threads/thread-list-v2-items.tsx`, following the anatomy in `experiments/mobile-tasks-mockups-v2/flow-1-list/`.
-- [ ] 3.2 Add the disclosure chip carrying the rollup, and the guide-line sub-rows beneath an expanded thread.
-- [ ] 3.3 Present the per-turn agent rollup on the turn row.
-- [ ] 3.4 Surface the unread-result indication on the parent thread, so it is visible without expanding.
-- [ ] 3.5 **Regression gate:** a thread that owns no tasks and no agents renders exactly as it does today. This list already works and users rely on it.
-  - The projection already enforces the model half: a thread owning neither projects to
-    `kind: "plain-thread"` with no `rollup` key, so an ordinary thread cannot structurally
-    acquire a rollup. The render half is PR 2's.
+- [x] 3.1 Nest task rows under their parent in `features/threads/thread-list-v2-items.tsx`, following the anatomy in `experiments/mobile-tasks-mockups-v2/flow-1-list/`.
+- [x] 3.2 Add the disclosure chip carrying the rollup, and the guide-line sub-rows beneath an expanded thread.
+- [x] 3.3 Present the per-turn agent rollup on the turn row.
+  - A review finding corrected the collapsed state, which had implied thread-wide agent totals
+    rather than the bounded latest-turn window.
+- [x] 3.4 Surface the unread-result indication on the parent thread, so it is visible without expanding.
+  - Both reviewers independently caught a parent marker that cleared while a sibling task was
+    still unread. Fixed, with a regression test confirmed non-vacuous — it fails against the
+    old aggregation and passes against the new.
+- [x] 3.5 **Regression gate:** a thread that owns no tasks and no agents renders exactly as it does today. This list already works and users rely on it.
+  - Structural on both halves. The projection gives a thread owning neither `kind:
+"plain-thread"` with no `rollup` key. The view binds the existing v2 row tree to a variable
+    and early-returns it whenever there is no rollup, so an ordinary thread renders the _same_
+    tree rather than an equivalent-looking one. `ThreadRouteScreen` keeps ordinary threads inert
+    — no task-shell subscription, no projection build.
 
 ## 4. Peek
 
-Deferred to PR 2.
+Delivered in PR 2 (#41). Not verified on a device — see Waived above.
 
-- [ ] 4.1 Build the peek presentation from `experiments/mobile-tasks-mockups-v2/flow-2-peek/`.
-- [ ] 4.2 Use identical row anatomy for tasks and for agents — an agent must not get a degraded or structurally different treatment.
-- [ ] 4.3 Render the composer as unavailable **with the reason in words** wherever the subject cannot be steered, including every provider-native in-session agent.
-  - The reasons already exist in `taskAgentNavigation.ts` and are carried on every projected
-    row; PR 2 renders them.
-- [ ] 4.4 Provide the route from an agent to where it ran in the transcript, or state plainly why it is unavailable if the lookup cannot be supported yet.
-  - **Resolved as unavailable-with-reason.** `ThreadNativeAgent` carries `taskId` and `turnId`
-    but no transcript message or card identifier, and the contract states these agents have no
-    transcript. Modelled as a discriminated result that must carry a non-empty reason; routing
-    to the owning task instead was rejected as overclaiming.
+- [x] 4.1 Build the peek presentation from `experiments/mobile-tasks-mockups-v2/flow-2-peek/`.
+  - `TaskAgentPeekSheet.tsx` plus `TaskPeekRouteScreen.tsx`.
+- [x] 4.2 Use identical row anatomy for tasks and for agents — an agent must not get a degraded or structurally different treatment.
+- [x] 4.3 Render the composer as unavailable **with the reason in words** wherever the subject cannot be steered, including every provider-native in-session agent.
+  - Opaque tokens, no ancestor opacity over the text. Measures 4.66:1 dark / 5.28:1 light.
+- [x] 4.4 Provide the route from an agent to where it ran in the transcript, or state plainly why it is unavailable if the lookup cannot be supported yet.
+  - **Resolved as unavailable-with-reason, a deliberate deviation from normative text.**
+    Requirement 3 says the peek "SHALL offer a route to the agent's place in the transcript".
+    `ThreadNativeAgent` carries `taskId` and `turnId` but no transcript message or card
+    identifier, and the contract states these agents have no transcript, so the route cannot
+    exist. Routing to the owning task instead was rejected as overclaiming. Recorded rather
+    than hidden.
 
 ## 5. Full Task View
 
-Deferred to PR 2.
+Delivered in PR 2 (#41). Not verified on a device — see Waived above.
 
-- [ ] 5.1 Build the full task view from `experiments/mobile-tasks-mockups-v2/flow-3-task/` — the task's identity, its turns, the agents inside a turn with their outcomes, and a composer.
-- [ ] 5.2 Ensure the route resolves to the task that was tapped, never to a default. This exact defect appeared in the mockups: three forward hops silently dropped their payload and always rendered the default.
-  - Made unconstructible at the type level: task destinations require branded ids with no
-    optional or defaulted identity fields. A test proves resolving task B never yields task A.
-- [ ] 5.3 Ensure no dead affordances — every control either acts or states why it cannot.
+- [x] 5.1 Build the full task view from `experiments/mobile-tasks-mockups-v2/flow-3-task/` — the task's identity, its turns, the agents inside a turn with their outcomes, and a composer.
+  - `TaskAgentTaskSurface.tsx` with its `.logic.ts` sibling.
+- [x] 5.2 Ensure the route resolves to the task that was tapped, never to a default. This exact defect appeared in the mockups: three forward hops silently dropped their payload and always rendered the default.
+  - Unconstructible at the type level: destinations require branded ids with no optional or
+    defaulted identity fields. `TaskPeek` and `TaskAgentPeek` are separate routes so a dropped
+    `agentId` cannot silently degrade into the owning task; a stale or incomplete identity
+    resolves to nothing rather than to a default.
+- [x] 5.3 Ensure no dead affordances — every control either acts or states why it cannot.
+  - One known exception, accepted deliberately: a failed or cancelled task's reason text says
+    "retry it", but no retry control exists. Implementing retry means issuing orchestration
+    turns from mobile, which `design.md` lists as a non-goal. The wording, not the control, is
+    the residue — worth revisiting when retry lands.
 
 ## 6. Settle the Gesture
 
 - [x] 6.1 Build both mappings for the task-row tap — peek and push — behind a switch, since this is a feel question and the mockups deliberately left it open.
   - `resolveTaskRowTapDestination` takes **no context argument**, so it is structurally
     impossible for the same gesture to peek in one place and push in another.
-- [ ] 6.2 Decide one, apply it everywhere a task row appears, and record the decision and its reasoning.
-  - **Provisional, not settled.** Default is `peek`, per the mockups. PR 1 ships no UI, so
-    deciding a feel question here would be guessing. Settle it on a device in PR 2.
+- [x] 6.2 Decide one, apply it everywhere a task row appears, and record the decision and its reasoning.
+  - **Decision: tap opens the peek sheet.** Applied everywhere by construction —
+    `resolveTaskRowTapDestination` takes no context argument, so one switch changes it
+    globally and no call site can diverge. The explicit "Open thread" affordance pushes the
+    full task route.
+  - **Reasoning, stated honestly:** this is the mockups' default, shipped as-is. The spec
+    envisaged trying both on a device and choosing by feel; no device was available, so the
+    default was accepted rather than compared. Revisit if the sheet feels wrong in use — the
+    switch makes that a one-line change.
 - [x] 6.3 Keep the losing destination reachable through a different, discoverable affordance.
   - Every task row projects an `alternative-affordance` labelled "Open thread" (or "Peek at
     task" under the inverse mapping), tested to exist for every row.
@@ -128,6 +181,10 @@ Deferred to PR 2.
   - All seven states are covered as **pure view-model tests** rather than component tests, since
     no RN component-test harness exists (see Delivery status). Each case asserts its honesty
     rule and every case additionally walks the whole projection asserting no `"0 of 0"` string.
+  - PR 2 added view-model tests for the rendering decisions on top of PR 1's projection tests.
+    Mobile suite: **740 passing**, up from 681 on `dev`. The 5 failures in
+    `src/lib/threadActivity.test.ts` are pre-existing on untouched `dev` and unrelated.
+    `tsc --noEmit` exit 0; `threadListV2`'s 19 tests unchanged.
 - [x] 7.2 Assert no rollup renders "0 of 0", no count of one is pluralised, and no failure styling appears where nothing has failed.
   - Enforced by the type, not only asserted: the outcome rollup is a discriminated union where
     `success-only` has no `failedCount` field, `failure-only` has no `finishedCount`, and
@@ -138,12 +195,17 @@ Deferred to PR 2.
     with no reachable reasons is unrepresentable.
 - [x] 7.4 Assert every unavailable control carries its reason in words.
 - [~] 7.5 Measure contrast on the built surface in both themes, against effective composited colour rather than token values — specifically including the stated-reason text, which is the only thing distinguishing an explained control from a broken one.
-  - The helper and the token table are verified in both themes, with the stated-reason role
-    asserted explicitly by name. **Measuring the built surface is PR 2's** — the unit runner
-    cannot prove that the real React Native tree carries no unintended ancestor opacity.
-- [ ] 7.6 Run the surface on a real device or simulator in both themes and confirm each of the seven states renders as designed.
-  - Deferred to PR 2; PR 1 renders nothing. Note `apps/mobile` has no web target
-    (`react-native-web` is not installed), so this needs a simulator or device.
+  - Measured on the composed token stack: the unavailable-composer explanation is 4.66:1 dark
+    and 5.28:1 light, and no ancestor `opacity` sits over any text on the new surface, which is
+    what makes the token figure the effective figure. **Not sampled on a rendered device**, so
+    an unintended opacity introduced by a parent at runtime would not have been caught.
+  - One known pre-existing exception: the iPad sidebar applies an ancestor opacity fade over all
+    its content. That is on `dev` already and affects every sidebar surface, not just this one.
+- [~] 7.6 Run the surface on a real device or simulator in both themes and confirm each of the seven states renders as designed.
+  - **Never run. Waived at closure** — see Waived above. No Expo web target, no Android
+    emulator or AVD, Expo Go unsupported due to native modules. This is the single largest
+    unverified area in the change: nothing has been seen rendering. The `threadTasksEnabled`
+    flag defaults off, which bounds the exposure.
 - [x] 7.7 Confirm the desktop sidebar is unchanged from before section 1, by test and by inspection.
   - By test: the moved tests pass unedited. By inspection: browser-verified, see 1.5.
 - [x] 7.8 Record which of v1's data gaps remain open — cross-level rollup, turn identity beyond the latest turn, push-notification parity, agent-to-transcript lookup — so shipping this surface does not read as having resolved them.
