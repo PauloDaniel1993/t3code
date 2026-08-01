@@ -1,4 +1,9 @@
-import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  StackActions,
+  useFocusEffect,
+  useNavigation,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import { useCallback, useMemo } from "react";
 
 import { useThreadShells } from "../../state/entities";
@@ -9,6 +14,7 @@ import {
 } from "./task-agent-surface/TaskAgentPeekSheet";
 import {
   buildTaskAgentPeek,
+  resolveTaskAgentPeekCloseAction,
   resolveTaskAgentPeekRoute,
   resolveTaskPeekRoute,
   type TaskAgentPeekAction,
@@ -78,7 +84,17 @@ function TaskAgentPeekRouteContent<TParams>(props: {
     }, [markThreadsVisited, visitedParentThreadId, visitedTaskThreadId]),
   );
 
-  const handleClose = useCallback(() => navigation.goBack(), [navigation]);
+  const handleClose = useCallback(() => {
+    const closeAction = resolveTaskAgentPeekCloseAction(navigation.canGoBack());
+    if (closeAction.kind === "go-back") {
+      navigation.goBack();
+      return;
+    }
+
+    // A deep-linked/cold-started peek has no route to pop; return to the
+    // thread list and remove the dead peek route from the stack.
+    navigation.dispatch(StackActions.replace(closeAction.route));
+  }, [navigation]);
   const handleAction = useCallback(
     (action: TaskAgentPeekAction) => {
       // The sheet action uses the destination projected for this exact task;

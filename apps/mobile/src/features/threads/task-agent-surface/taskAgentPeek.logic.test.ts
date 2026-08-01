@@ -14,6 +14,7 @@ import { buildTaskAgentModel } from "./taskAgentModel";
 import { buildTaskAgentSurfaceRows } from "./taskAgentSurface.logic";
 import {
   buildTaskAgentPeek,
+  resolveTaskAgentPeekCloseAction,
   resolveTaskAgentPeekRoute,
   resolveTaskPeekRoute,
   taskAgentPeekLabels,
@@ -130,6 +131,14 @@ function surface() {
 }
 
 describe("task-agent peek logic", () => {
+  it("pops when history exists and returns to Home when it does not", () => {
+    expect(resolveTaskAgentPeekCloseAction(true)).toEqual({ kind: "go-back" });
+    expect(resolveTaskAgentPeekCloseAction(false)).toEqual({
+      kind: "navigate",
+      route: "Home",
+    });
+  });
+
   it("projects distinct subject-specific sheet and close labels", () => {
     expect(taskAgentPeekLabels("task")).toEqual({
       title: "Task peek",

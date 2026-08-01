@@ -60,6 +60,15 @@ export type TaskAgentPeekLabels = Readonly<{
   readonly closeLabel: "Close task peek" | "Close agent peek";
 }>;
 
+export type TaskAgentPeekCloseAction =
+  | Readonly<{ readonly kind: "go-back" }>
+  | Readonly<{ readonly kind: "navigate"; readonly route: "Home" }>;
+
+/** Choose a close destination without depending on a navigator or renderer. */
+export function resolveTaskAgentPeekCloseAction(canGoBack: boolean): TaskAgentPeekCloseAction {
+  return canGoBack ? { kind: "go-back" } : { kind: "navigate", route: "Home" };
+}
+
 export function taskAgentPeekLabels(kind: TaskAgentPeekResolution["kind"]): TaskAgentPeekLabels {
   return kind === "task"
     ? { title: "Task peek", closeLabel: "Close task peek" }
