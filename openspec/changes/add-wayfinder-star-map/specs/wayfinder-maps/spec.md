@@ -121,7 +121,7 @@ The system SHALL assign each node a rank derived from its blocker depth using a 
 
 ### Requirement: Derive frontier and undermined state from blocker status
 
-The system SHALL mark a node as frontier when it is not resolved or out of scope and every one of its blockers is resolved or out of scope. The system SHALL mark a node as undermined when it is the target of an `undermines` edge from a node that is not resolved. Frontier and undermined state MUST be recomputed whenever any blocker's derived status changes.
+The system SHALL mark a node as frontier when it is open and every one of its blockers is resolved or out of scope. A claimed node is NOT frontier: the frontier answers "what can I pick up right now", and a ticket someone has already claimed is not takeable. This matches the wayfinder skill, which defines the frontier as the open, unblocked, and unclaimed children. The system SHALL mark a node as undermined when it is the target of an `undermines` edge from a node that is not resolved. Frontier and undermined state MUST be recomputed whenever any blocker's derived status changes.
 
 #### Scenario: Unblocked open ticket is frontier
 
@@ -137,6 +137,11 @@ The system SHALL mark a node as frontier when it is not resolved or out of scope
 
 - **WHEN** a ticket is resolved or out of scope
 - **THEN** the system does not mark it as frontier
+
+#### Scenario: Claimed ticket is not frontier
+
+- **WHEN** a ticket is claimed and every one of its blockers is resolved or out of scope
+- **THEN** the system does not mark it as frontier, because someone is already working it
 
 ### Requirement: Bound every read and report truncation
 

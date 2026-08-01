@@ -996,6 +996,73 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --sidebar-stage-fade: var(--card);
 }
 
+/* Star map tokens (design decision 15). The starfield is intrinsically dark,
+   so the map panel scopes its own token block with light and dark variants —
+   the same technique as [data-sidebar-version] above. The engine's canvas
+   carries this attribute and reads the tokens once per theme change.
+   Status hues bind to --success / --warning / --info / --destructive because
+   APPEARANCE_MANAGED_SEMANTIC_PROPERTIES does not manage them: they are
+   theme-invariant, so a custom appearance theme cannot turn the status
+   palette into mush. Keep values in sync with DEFAULT_STAR_MAP_THEME in
+   apps/web/src/components/map/starMapTheme.ts. */
+[data-star-map] {
+  --star-map-background: #10141d;
+  --star-map-star: #eef2f9;
+  --star-map-starfield-far: rgb(168 180 205 / 0.45);
+  --star-map-starfield-near: rgb(214 224 240 / 0.7);
+  --star-map-edge: rgb(148 163 184 / 0.38);
+  --star-map-label: rgb(226 232 240 / 0.9);
+  --star-map-selection: var(--ring);
+  --star-map-status-open: var(--info);
+  --star-map-status-claimed: var(--warning);
+  --star-map-status-resolved: var(--success);
+  --star-map-status-out-of-scope: var(--destructive);
+  background-color: var(--star-map-background);
+}
+
+.dark [data-star-map] {
+  --star-map-background: #05070c;
+  --star-map-star: #f6f8fc;
+  --star-map-starfield-far: rgb(176 188 214 / 0.5);
+  --star-map-starfield-near: rgb(226 234 246 / 0.8);
+  --star-map-edge: rgb(148 163 184 / 0.42);
+  --star-map-label: rgb(235 240 248 / 0.92);
+}
+
+/* Star map split (design decision 13). Below the breakpoint the ticket detail
+   replaces the map; above it the two sit side by side. This MUST be a
+   container query, not a viewport media query: PreviewPanelShell sizes the
+   panel in explicit pixels independent of the viewport, so a viewport query
+   would split at the wrong times. The 720px value mirrors
+   STAR_MAP_SPLIT_BREAKPOINT_PX in apps/web/src/components/map/starMapInteraction.ts.
+   A query cannot style its own container, so [data-star-map-container] only
+   establishes containment and the rules target the split inside it. */
+[data-star-map-container] {
+  container-type: inline-size;
+}
+
+[data-star-map-split][data-level="ticket"] > [data-star-map-mapside] {
+  display: none;
+}
+
+@container (min-width: 720px) {
+  [data-star-map-split][data-level="ticket"] {
+    flex-direction: row;
+  }
+
+  [data-star-map-split][data-level="ticket"] > [data-star-map-mapside] {
+    display: flex;
+    flex: 1 1 55%;
+    min-width: 0;
+  }
+
+  [data-star-map-split][data-level="ticket"] > [data-star-map-detail] {
+    flex: 1 1 45%;
+    min-width: 0;
+    border-inline-start: 1px solid var(--border);
+  }
+}
+
 body {
   font-family: var(--app-ui-font-family);
   margin: 0;

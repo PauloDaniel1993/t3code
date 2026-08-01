@@ -228,6 +228,62 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("opens the map surface as a singleton", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "map",
+      surfaces: [{ id: "map", kind: "map" }],
+    });
+  });
+
+  it("reopening the map surface activates the existing surface instead of duplicating it", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().open(refA, "map");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "map",
+      surfaces: [
+        { id: "map", kind: "map" },
+        { id: "plan", kind: "plan" },
+      ],
+    });
+  });
+
+  it("closes the map surface like any other singleton", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().closeSurface(refA, "map");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
+  });
+
+  it("round-trips the map surface through persistence migration", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().open(refA, "plan");
+
+    const persisted = JSON.parse(
+      JSON.stringify({ byThreadKey: useRightPanelStore.getState().byThreadKey }),
+    );
+    expect(migratePersistedRightPanelState(persisted)).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "plan",
+          surfaces: [
+            { id: "map", kind: "map" },
+            { id: "plan", kind: "plan" },
+          ],
+        },
+      },
+    });
+  });
+
   it("replaces the standalone explorer with peer file surfaces", () => {
     useRightPanelStore.getState().open(refA, "files");
     useRightPanelStore.getState().openFile(refA, "src/index.ts");

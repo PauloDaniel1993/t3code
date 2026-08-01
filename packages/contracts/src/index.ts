@@ -18,6 +18,7 @@ export * from "./maintenance.ts";
 export * from "./settings.ts";
 export * from "./git.ts";
 export * from "./vcs.ts";
+export * from "./wayfinder.ts";
 export * from "./sourceControl.ts";
 export * from "./orchestration.ts";
 export * from "./threadTasks.ts";
