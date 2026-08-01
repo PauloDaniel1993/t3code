@@ -1,0 +1,275 @@
+import type { TaskDestination, TaskRowAffordances, ThreadRouteParams } from "./taskAgentNavigation";
+import type {
+  TaskAgentRowViewModel,
+  TaskAgentSurfaceViewModel,
+  TaskAgentTurnRowViewModel,
+} from "./taskAgentSurface.logic";
+
+/**
+ * The task branch deliberately reuses the existing task destination shape:
+ * a task is a thread, so its required threadId is the exact task id.
+ */
+export type TaskPeekTaskRouteParams = ThreadRouteParams;
+
+/**
+ * Native agents need both their owning thread and their provider-native id.
+ * Each identity field is required; there is no default subject to fall back to.
+ */
+export type TaskPeekAgentRouteParams = Readonly<{
+  readonly environmentId: ThreadRouteParams["environmentId"];
+  readonly threadId: ThreadRouteParams["threadId"];
+  readonly agentId: string;
+}>;
+
+export type TaskPeekRouteParams = TaskPeekTaskRouteParams | TaskPeekAgentRouteParams;
+
+export type TaskAgentPeekAction = Readonly<{
+  readonly kind: "open-task-thread" | "steer-task";
+  /** Always the exact task destination projected by taskAgentNavigation. */
+  readonly destination: Extract<TaskDestination, { readonly kind: "thread" }>;
+}>;
+
+export type TaskAgentPeekControl = Readonly<{
+  readonly id: "open-task" | "steer" | "show-in-transcript";
+  readonly label: string;
+  readonly availability:
+    | Readonly<{ readonly kind: "action"; readonly action: TaskAgentPeekAction }>
+    | Readonly<{ readonly kind: "unavailable"; readonly reason: string }>;
+}>;
+
+type TaskPeekResolutionBase = Readonly<{
+  readonly row: TaskAgentRowViewModel;
+  readonly nativeAgentWindow: TaskAgentSurfaceViewModel["nativeAgentWindow"];
+}>;
+
+export type TaskAgentPeekResolution =
+  | (TaskPeekResolutionBase &
+      Readonly<{
+        readonly kind: "task";
+        readonly route: TaskPeekTaskRouteParams;
+        readonly turns: ReadonlyArray<TaskAgentTurnRowViewModel>;
+      }>)
+  | (TaskPeekResolutionBase &
+      Readonly<{
+        readonly kind: "native-agent";
+        readonly route: TaskPeekAgentRouteParams;
+        readonly turns: readonly [TaskAgentTurnRowViewModel];
+      }>);
+
+export type TaskAgentPeekViewModel = Readonly<{
+  readonly kind: TaskAgentPeekResolution["kind"];
+  /** The common row is rendered unchanged for task and native-agent peeks. */
+  readonly row: TaskAgentRowViewModel;
+  /** These are projected turns, not a locally re-derived rollup. */
+  readonly turns: ReadonlyArray<TaskAgentTurnRowViewModel>;
+  /** Makes the bounded native-agent window explicit rather than implying history. */
+  readonly nativeAgentWindow: TaskAgentSurfaceViewModel["nativeAgentWindow"];
+  readonly controls: ReadonlyArray<TaskAgentPeekControl>;
+}>;
+
+function taskAffordances(row: TaskAgentRowViewModel): TaskRowAffordances {
+  if ("tap" in row.navigation && "alternative" in row.navigation) {
+    return row.navigation;
+  }
+
+  throw new Error("Task peek expected task navigation affordances.");
+}
+
+function taskThreadDestination(
+  affordances: TaskRowAffordances,
+): Extract<TaskDestination, { readonly kind: "thread" }> {
+  const destination =
+    affordances.tap.kind === "thread" ? affordances.tap : affordances.alternative.destination;
+
+  if (destination.kind !== "thread") {
+    throw new Error("Task peek expected an exact thread destination for this task.");
+  }
+
+  return destination;
+}
+
+function unavailableReason(
+  availability: TaskAgentRowViewModel["steering"],
+  control: string,
+): string {
+  if (availability.kind === "unavailable") return availability.reason;
+
+  throw new Error(`${control} was unexpectedly available for a provider-native agent.`);
+}
+
+function agentTranscriptReason(row: TaskAgentRowViewModel): string {
+  if (
+    "kind" in row.navigation &&
+    row.navigation.kind === "unavailable" &&
+    row.navigation.reason.trim().length > 0
+  ) {
+    return row.navigation.reason;
+  }
+
+  // The current provider contract has no transcript identifier. Refusing to
+  // render an imprecise route is preferable to silently opening its owner.
+  throw new Error("Task peek expected an explicit unavailable agent transcript affordance.");
+}
+
+function taskControls(row: TaskAgentRowViewModel): ReadonlyArray<TaskAgentPeekControl> {
+  const destination = taskThreadDestination(taskAffordances(row));
+  const openTask: TaskAgentPeekControl = {
+    id: "open-task",
+    label: "Open task",
+    availability: {
+      kind: "action",
+      action: { kind: "open-task-thread", destination },
+    },
+  };
+
+  if (row.steering.kind === "unavailable") {
+    return [
+      openTask,
+      {
+        id: "steer",
+        label: "Steering unavailable",
+        availability: { kind: "unavailable", reason: row.steering.reason },
+      },
+    ];
+  }
+
+  return [
+    openTask,
+    {
+      id: "steer",
+      label: "Steer in task",
+      availability: {
+        kind: "action",
+        // The task thread owns the real composer. Opening it is the available
+        // steering action; the sheet does not pretend to send independently.
+        action: { kind: "steer-task", destination },
+      },
+    },
+  ];
+}
+
+function nativeAgentControls(row: TaskAgentRowViewModel): ReadonlyArray<TaskAgentPeekControl> {
+  return [
+    {
+      id: "steer",
+      label: "Steering unavailable",
+      availability: {
+        kind: "unavailable",
+        reason: unavailableReason(row.steering, "Steering"),
+      },
+    },
+    {
+      id: "show-in-transcript",
+      label: "Transcript location unavailable",
+      availability: {
+        kind: "unavailable",
+        reason: agentTranscriptReason(row),
+      },
+    },
+  ];
+}
+
+function resolveUniqueAgentInTurns(
+  turns: ReadonlyArray<TaskAgentTurnRowViewModel>,
+  agentId: string,
+): Readonly<{
+  readonly row: TaskAgentRowViewModel;
+  readonly turn: TaskAgentTurnRowViewModel;
+}> | null {
+  let match: Readonly<{
+    readonly row: TaskAgentRowViewModel;
+    readonly turn: TaskAgentTurnRowViewModel;
+  }> | null = null;
+
+  for (const turn of turns) {
+    for (const agent of turn.agents) {
+      if (agent.id !== agentId) continue;
+      // Do not pick an arbitrary match if a provider ever reuses an id.
+      if (match !== null) return null;
+      match = { row: agent, turn };
+    }
+  }
+
+  return match;
+}
+
+function resolveTaskPeek(
+  surface: TaskAgentSurfaceViewModel,
+  params: TaskPeekTaskRouteParams,
+): TaskAgentPeekResolution | null {
+  for (const thread of surface.threads) {
+    if (thread.kind !== "rollup-thread" || thread.thread.environmentId !== params.environmentId) {
+      continue;
+    }
+
+    const row = thread.rollup.tasks.find((task) => task.id === params.threadId);
+    if (row === undefined) continue;
+
+    return {
+      kind: "task",
+      route: params,
+      row,
+      turns: row.turns,
+      nativeAgentWindow: surface.nativeAgentWindow,
+    };
+  }
+
+  return null;
+}
+
+function resolveAgentPeek(
+  surface: TaskAgentSurfaceViewModel,
+  params: TaskPeekAgentRouteParams,
+): TaskAgentPeekResolution | null {
+  if (params.agentId.length === 0) return null;
+
+  for (const thread of surface.threads) {
+    if (thread.kind !== "rollup-thread" || thread.thread.environmentId !== params.environmentId) {
+      continue;
+    }
+
+    const ownerTurns =
+      thread.thread.id === params.threadId
+        ? thread.rollup.nativeAgentTurns
+        : (thread.rollup.tasks.find((task) => task.id === params.threadId)?.turns ?? []);
+    const match = resolveUniqueAgentInTurns(ownerTurns, params.agentId);
+    if (match === null) continue;
+
+    return {
+      kind: "native-agent",
+      route: params,
+      row: match.row,
+      turns: [match.turn],
+      nativeAgentWindow: surface.nativeAgentWindow,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Resolve only the identity supplied by the route. An absent or stale id has
+ * no substitute target, so a task B route cannot silently render task A.
+ */
+export function resolveTaskAgentPeekRoute(input: {
+  readonly surface: TaskAgentSurfaceViewModel;
+  readonly params: TaskPeekRouteParams;
+}): TaskAgentPeekResolution | null {
+  return "agentId" in input.params
+    ? resolveAgentPeek(input.surface, input.params)
+    : resolveTaskPeek(input.surface, input.params);
+}
+
+/** Build the thin sheet model from the shared row and projected turn anatomy. */
+export function buildTaskAgentPeek(resolution: TaskAgentPeekResolution): TaskAgentPeekViewModel {
+  return {
+    kind: resolution.kind,
+    row: resolution.row,
+    turns: resolution.turns,
+    nativeAgentWindow: resolution.nativeAgentWindow,
+    controls:
+      resolution.kind === "task"
+        ? taskControls(resolution.row)
+        : nativeAgentControls(resolution.row),
+  };
+}

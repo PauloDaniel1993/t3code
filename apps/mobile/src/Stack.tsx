@@ -31,6 +31,7 @@ import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
 import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
+import { TaskPeekRouteScreen } from "./features/threads/TaskPeekRouteScreen";
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
@@ -400,6 +401,16 @@ export const RootStack = createNativeStackNavigator({
       screen: ThreadRouteScreen,
       linking: THREAD_LINKING_PREFIX,
       options: GLASS_HEADER_OPTIONS,
+    }),
+    TaskPeek: createNativeStackScreen({
+      screen: TaskPeekRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/peek`,
+      options: {
+        // Keep the thread list visually present behind this inspection surface.
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.55, 0.92],
+        sheetGrabberVisible: true,
+      },
     }),
     ThreadTerminal: createNativeStackScreen({
       screen: ThreadTerminalRouteScreen,
