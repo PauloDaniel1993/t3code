@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks v2 · shared Android chrome</title>
+    <link rel="stylesheet" href="mockup.css" />
+  </head>
+  <body>
+    <a class="backlink" href="index.html">← v2 index</a>
+
+    <!-- The two phones render byte-identical chrome markup; only the
+         wrapper's data-theme differs. The theme lives entirely in the
+         mockup.css tokens — screen pages copy ONE block, never two. -->
+    <div class="stage">
+      <div class="device" data-theme="dark">
+        <div class="phone">
+          <div class="screen">
+            <!-- ═══════════ CHROME-BEGIN ═══════════
+                 Copy everything between CHROME-BEGIN and CHROME-END into
+                 every v2 screen page (also mirrored in CONVENTIONS.md).
+                 Replace only the contents of .mlist — and, on detail
+                 screens, swap .appbar for .tbar and .fab for .composer-wrap. -->
+
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Thread list — sample rows; screen pages replace these -->
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">3h</span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Build Standalone Android APK</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 255">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                      >
+                        <rect x="3" y="3" width="8" height="8" rx="1.5" />
+                        <rect x="13" y="3" width="8" height="8" rx="1.5" />
+                        <rect x="3" y="13" width="8" height="8" rx="1.5" />
+                        <rect x="13" y="13" width="8" height="8" rx="1.5" />
+                      </svg>
+                    </span>
+                    <span class="repo">paulodaniel1993/workflowharness</span>
+                    <span class="tago">15h</span>
+                  </div>
+                  <div class="ttitle">Finish Durable Chat Server Fixes</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">feature/durable-chat</span>
+                    <span class="tbadge">#10</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago"><span class="working">Working</span></span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Login</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+            <!-- ═══════════ CHROME-END ═══════════ -->
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Shared chrome · dark (default).</b> Traced from
+          <code>../mobile-tasks-mockups/reference-mobile.png</code>: status bar, T3 Code · ALPHA
+          header, search field, thread-row anatomy, compose FAB, gesture bar. Markup identical to
+          the light phone — only the wrapper's <code>data-theme</code> differs.
+        </div>
+      </div>
+
+      <div class="device" data-theme="light">
+        <div class="phone">
+          <div class="screen">
+            <!-- ═══════════ CHROME-BEGIN ═══════════ -->
+
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Thread list — sample rows; screen pages replace these -->
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">3h</span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Build Standalone Android APK</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 255">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                      >
+                        <rect x="3" y="3" width="8" height="8" rx="1.5" />
+                        <rect x="13" y="3" width="8" height="8" rx="1.5" />
+                        <rect x="3" y="13" width="8" height="8" rx="1.5" />
+                        <rect x="13" y="13" width="8" height="8" rx="1.5" />
+                      </svg>
+                    </span>
+                    <span class="repo">paulodaniel1993/workflowharness</span>
+                    <span class="tago">15h</span>
+                  </div>
+                  <div class="ttitle">Finish Durable Chat Server Fixes</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">feature/durable-chat</span>
+                    <span class="tbadge">#10</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago"><span class="working">Working</span></span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Login</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+            <!-- ═══════════ CHROME-END ═══════════ -->
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Shared chrome · light.</b> The reference is dark-only, so the light theme is our
+          translation, not a trace: same tokens, light values. Every v2 page must render both —
+          <code>?theme=dark|light</code> pins a page, no parameter follows the OS.
+        </div>
+      </div>
+    </div>
+
+    <div class="concept">
+      <b>v2 chrome</b> · one shared block — copy-paste from <code>CONVENTIONS.md</code>
+    </div>
+
+    <script>
+      /* v2 theme convention — required verbatim at the top of every v2
+         page's script: ?theme=dark|light pins the page on <html>; no
+         parameter follows the OS via the prefers-color-scheme block in
+         mockup.css. */
+      const params = new URLSearchParams(location.search);
+      const theme = params.get("theme");
+      if (theme === "dark" || theme === "light") {
+        document.documentElement.dataset.theme = theme;
+      }
+
+      /* Tap feedback so the furniture demonstrably works; each phone
+         wires its own toast. */
+      document.querySelectorAll(".device").forEach((dev) => {
+        const toast = dev.querySelector(".toast");
+        let timer = null;
+        const say = (msg) => {
+          toast.textContent = msg;
+          toast.classList.add("show");
+          clearTimeout(timer);
+          timer = setTimeout(() => toast.classList.remove("show"), 1800);
+        };
+        const [filterBtn, settingsBtn] = dev.querySelectorAll(".circlebtn");
+        filterBtn.addEventListener("click", () => say("Filter threads (mock)"));
+        settingsBtn.addEventListener("click", () => say("Settings (mock)"));
+        dev
+          .querySelector(".searchbar")
+          .addEventListener("click", () => say("Search threads (mock)"));
+        dev.querySelector(".fab").addEventListener("click", () => say("New thread (mock)"));
+        dev
+          .querySelectorAll(".trow")
+          .forEach((row) =>
+            row.addEventListener("click", () =>
+              say("Opens the thread — flow-1-list owns this tap"),
+            ),
+          );
+      });
+    </script>
+  </body>
+</html>

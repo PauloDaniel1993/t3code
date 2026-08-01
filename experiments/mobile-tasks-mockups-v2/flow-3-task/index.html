@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks v2 · Flow 3 — full task view</title>
+    <link rel="stylesheet" href="../mockup.css" />
+    <style>
+      /* Per-task view wrapper: one of four tasks renders at a time (?task=).
+         display:contents keeps .tbar / .mscroll / .composer-wrap direct
+         participants in .screen's flex layout. .taskview.hidden must beat the
+         shared .hidden utility in the cascade (page styles load after the
+         shared sheet), so it gets its own higher-specificity rule. */
+      .taskview {
+        display: contents;
+      }
+      .taskview.hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="backlink" href="../index.html" data-to="../index.html">← v2 index</a>
+
+    <div class="stage">
+      <div class="device">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- One .taskview per modelled task (?task= selects one; the
+                 other three stay hidden). This is the mockups task — the only
+                 one that also carries ?state= lifecycle tails. -->
+            <div class="taskview" id="view-task">
+              <!-- Detail header (CONVENTIONS.md §4): back → the sheet this
+                   thread was opened from; state word + provenance in the sub -->
+              <div class="tbar">
+                <a
+                  class="tbar-back"
+                  href="../flow-2-peek/index.html?sheet=task"
+                  data-to="../flow-2-peek/index.html?sheet=task"
+                  title="Back to the task sheet"
+                >
+                  <svg
+                    class="ic"
+                    style="width: 19px; height: 19px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                  >
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                </a>
+                <div class="tbar-titles">
+                  <div class="tbar-title">
+                    Create 4 mockups for the mobile app based on the image
+                  </div>
+                  <div class="tbar-sub" id="tbarSub">
+                    <span style="color: var(--info); font-weight: 600">Working</span> · task · runs
+                    in its own thread · Opus 4.7
+                  </div>
+                </div>
+                <span class="tbar-act js-menu" title="Task actions">
+                  <svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="1.6" />
+                    <circle cx="12" cy="12" r="1.6" />
+                    <circle cx="12" cy="19" r="1.6" />
+                  </svg>
+                </span>
+              </div>
+
+              <div class="mscroll">
+                <div class="tl">
+                  <!-- Provenance — quiet lifecycle row (CONVENTIONS.md §5) -->
+                  <div class="evt">
+                    <svg
+                      class="ic"
+                      style="width: 13px; height: 13px; color: var(--info)"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.2"
+                    >
+                      <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                    </svg>
+                    <span
+                      >Created as a task by the agent in
+                      <b>Add Wayfinder Constellation Sidebar View</b> · full thread context</span
+                    >
+                    <a
+                      class="open"
+                      href="../flow-1-list/index.html?peek=task"
+                      data-to="../flow-1-list/index.html?peek=task"
+                      title="The task's row under its parent in the thread list"
+                      >See in list →</a
+                    >
+                  </div>
+
+                  <div class="msg user">
+                    Create 4 mockups for the mobile app based on the reference image: thread list,
+                    bottom sheet, in-thread, full thread.
+                  </div>
+                  <div class="msg asst">
+                    I'll fan out ten agents over the chrome, the list-row anatomy, and the four
+                    variants, then assemble the set.
+                  </div>
+
+                  <!-- The turn's agents, inline in the transcript (.wcard —
+                     the only agent row anatomy; CONVENTIONS.md §5). Every
+                     failure carries its reason in words (.wsub). -->
+                  <div class="wcard">
+                    <div class="wcard-head">
+                      <svg
+                        style="width: 12px; height: 12px; color: var(--info)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                      <span>Latest turn · <b>10 agents</b></span>
+                      <span class="usage">38.2k tokens · 14 tools · 2m 14s</span>
+                    </div>
+                    <div class="wrow">
+                      <span class="sic ok"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" /></svg
+                      ></span>
+                      <span class="wname">Map screenshot chrome regions</span>
+                      <span class="wtype">Explore</span>
+                      <span class="wmeta"
+                        ><span class="usage">4.1k tokens · 3 tools · 3s</span></span
+                      >
+                    </div>
+                    <div class="wrow">
+                      <span class="sic ok"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" /></svg
+                      ></span>
+                      <span class="wname">Extract thread-row anatomy</span>
+                      <span class="wtype">Explore</span>
+                      <span class="wmeta"
+                        ><span class="usage">5.6k tokens · 4 tools · 4s</span></span
+                      >
+                    </div>
+                    <div class="wrow">
+                      <span class="sic ok"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" /></svg
+                      ></span>
+                      <span class="wname">Draft status bar + app header markup</span>
+                      <span class="wtype">general-purpose</span>
+                      <span class="wmeta"
+                        ><span class="usage">9.8k tokens · 6 tools · 5s</span></span
+                      >
+                    </div>
+                    <div class="wrow failed">
+                      <span class="sic xfail"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="m15 9-6 6M9 9l6 6" /></svg
+                      ></span>
+                      <span class="wname">Reproduce provider glyph set</span>
+                      <span class="wtype">Explore</span>
+                      <span class="wmeta"
+                        ><span class="wsub">failed — tool-use budget exceeded</span></span
+                      >
+                    </div>
+                    <div class="wrow">
+                      <span class="sic ok"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" /></svg
+                      ></span>
+                      <span class="wname">Draft list-row CSS tokens</span>
+                      <span class="wtype">Explore</span>
+                      <span class="wmeta"
+                        ><span class="usage">3.9k tokens · 3 tools · 4s</span></span
+                      >
+                    </div>
+                    <div class="wrow failed">
+                      <span class="sic xfail"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="m15 9-6 6M9 9l6 6" /></svg
+                      ></span>
+                      <span class="wname">Fit expanded task group into 390px</span>
+                      <span class="wtype">general-purpose</span>
+                      <span class="wmeta"
+                        ><span class="wsub">failed — tool-use budget exceeded</span></span
+                      >
+                    </div>
+                    <div class="wrow failed">
+                      <span class="sic xfail"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="m15 9-6 6M9 9l6 6" /></svg
+                      ></span>
+                      <span class="wname">Bottom-sheet layout pass</span>
+                      <span class="wtype">general-purpose</span>
+                      <span class="wmeta"
+                        ><span class="wsub">failed — tool-use budget exceeded</span></span
+                      >
+                    </div>
+                    <div class="wrow">
+                      <span class="sic ok"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" /></svg
+                      ></span>
+                      <span class="wname">Compose thread-list variant</span>
+                      <span class="wtype">general-purpose</span>
+                      <span class="wmeta"
+                        ><span class="usage">11.3k tokens · 7 tools · 5s</span></span
+                      >
+                    </div>
+                    <div class="wrow failed">
+                      <span class="sic xfail"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="m15 9-6 6M9 9l6 6" /></svg
+                      ></span>
+                      <span class="wname">In-thread card layout pass</span>
+                      <span class="wtype">general-purpose</span>
+                      <span class="wmeta"
+                        ><span class="wsub">failed — tool-use budget exceeded</span></span
+                      >
+                    </div>
+                    <div class="wrow">
+                      <span class="sic ok"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" /></svg
+                      ></span>
+                      <span class="wname">Assemble full-thread variant</span>
+                      <span class="wtype">general-purpose</span>
+                      <span class="wmeta"
+                        ><span class="usage">10.5k tokens · 7 tools · 6s</span></span
+                      >
+                    </div>
+                  </div>
+
+                  <!-- ── State tails: exactly one visible, switched by ?state= ── -->
+                  <div id="tailRunning" class="tail">
+                    <div class="msg asst">
+                      Six agents are back; four hit the tool-use budget and are retrying with
+                      narrower scopes. Assembling the four variants now — the thread-list one
+                      matches the screenshot's chrome exactly.
+                    </div>
+                    <div class="evt">
+                      <span class="spin"></span>
+                      <span
+                        ><b>Working</b> — retrying the 4 failed agents with narrower scopes…</span
+                      >
+                    </div>
+                  </div>
+
+                  <div id="tailComplete" class="tail hidden">
+                    <div class="msg asst">
+                      Six agents are back; four hit the tool-use budget and are retrying with
+                      narrower scopes. Assembling the four variants now — the thread-list one
+                      matches the screenshot's chrome exactly.
+                    </div>
+                    <div class="msg asst">
+                      Done — the retries stayed over the tool-use budget, so the four failed sweeps
+                      stand (reasons above). The set is assembled from the six completed passes.
+                    </div>
+                    <div class="evt wake">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M9 14 4 9l5-5" />
+                        <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                      </svg>
+                      <span
+                        ><b>Returned to the parent</b> — woke Add Wayfinder Constellation Sidebar
+                        View</span
+                      >
+                    </div>
+                  </div>
+
+                  <div id="tailFailed" class="tail hidden">
+                    <div class="msg asst">
+                      Six agents are back; four hit the tool-use budget and are retrying with
+                      narrower scopes. Assembling the four variants now — the thread-list one
+                      matches the screenshot's chrome exactly.
+                    </div>
+                    <div class="msg asst">
+                      The retry turn hit the same budget before the sweep converged. I can't finish
+                      the four remaining passes — stopping here.
+                    </div>
+                    <div class="evt failed">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="m15 9-6 6M9 9l6 6" />
+                      </svg>
+                      <span
+                        ><b>Task failed</b> — the retry turn exhausted its tool-use budget before
+                        the sweep converged</span
+                      >
+                    </div>
+                    <div style="display: flex; gap: 8px">
+                      <span
+                        class="sh-btn primary"
+                        id="retryBtn"
+                        title="Retry the task with the same brief"
+                      >
+                        <svg
+                          class="ic"
+                          style="width: 12px; height: 12px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M3 12a9 9 0 1 0 3-6.7" />
+                          <path d="M3 4v5h5" />
+                        </svg>
+                        Retry task
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Composers, one per state. Failed is disabled with the reason
+                 in words (honesty rule 2); complete stays enabled because the
+                 thread is durable (v1 showed a finished task steerable). -->
+              <div class="composer-wrap">
+                <div class="composer" id="composerRunning">
+                  <div class="ph">Steer this task…</div>
+                  <div class="bar">
+                    <span class="chipbtn attachBtn">
+                      <svg
+                        class="ic"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path
+                          d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                        />
+                      </svg>
+                      Attach
+                    </span>
+                    <span class="send" id="sendRunning">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="composer hidden" id="composerComplete">
+                  <div class="ph">Message this task…</div>
+                  <div class="bar">
+                    <span class="chipbtn attachBtn">
+                      <svg
+                        class="ic"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path
+                          d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                        />
+                      </svg>
+                      Attach
+                    </span>
+                    <span class="send" id="sendComplete">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="composer disabled hidden" id="composerFailed">
+                  <div class="ph">
+                    <span class="composer-note"
+                      >The task stopped — steering only reaches a task mid-turn. Use Retry task
+                      above to continue.</span
+                    >
+                  </div>
+                  <div class="bar">
+                    <span class="chipbtn">
+                      <svg
+                        class="ic"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path
+                          d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                        />
+                      </svg>
+                      Attach
+                    </span>
+                    <span class="send">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ═══ view-apk · Done · 19m · agent-created · turn of 3 (✓ 2 × 1) ═══ -->
+            <div class="taskview hidden" id="view-apk">
+              <div class="tbar">
+                <a
+                  class="tbar-back"
+                  href="../flow-2-peek/index.html?sheet=apk"
+                  data-to="../flow-2-peek/index.html?sheet=apk"
+                  title="Back to the task sheet"
+                >
+                  <svg
+                    class="ic"
+                    style="width: 19px; height: 19px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                  >
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                </a>
+                <div class="tbar-titles">
+                  <div class="tbar-title">
+                    Build a standalone, installable Android APK of the app
+                  </div>
+                  <div class="tbar-sub">
+                    <span style="color: var(--success); font-weight: 600">Done</span> · task · runs
+                    in its own thread · Opus 4.7
+                  </div>
+                </div>
+                <span class="tbar-act js-menu" title="Task actions">
+                  <svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="1.6" />
+                    <circle cx="12" cy="12" r="1.6" />
+                    <circle cx="12" cy="19" r="1.6" />
+                  </svg>
+                </span>
+              </div>
+
+              <div class="mscroll">
+                <div class="tl">
+                  <div class="evt">
+                    <svg
+                      class="ic"
+                      style="width: 13px; height: 13px; color: var(--info)"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.2"
+                    >
+                      <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                    </svg>
+                    <span
+                      >Created as a task by the agent in <b>Fix T3 Connect Redirect Error</b> · full
+                      thread context</span
+                    >
+                    <a
+                      class="open"
+                      href="../flow-1-list/index.html?peek=apk"
+                      data-to="../flow-1-list/index.html?peek=apk"
+                      title="The task's row under its parent in the thread list"
+                      >See in list →</a
+                    >
+                  </div>
+
+                  <div class="msg user">
+                    Build a standalone, installable Android APK of the app.
+                  </div>
+                  <div class="msg asst">
+                    I'll fan out three agents over the build: locate the Gradle wrapper and signing
+                    config, assemble the release APK, then verify the install on an emulator.
+                  </div>
+
+                  <!-- The turn's agents — durations only (the scenario carries no
+                       usage figures for this turn); the failure carries its
+                       reason in words. -->
+                  <div class="wcard">
+                    <div class="wcard-head">
+                      <svg
+                        style="width: 12px; height: 12px; color: var(--info)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                      <span>Latest turn · <b>3 agents</b></span>
+                    </div>
+                    <div class="wrow">
+                      <span class="sic ok"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" /></svg
+                      ></span>
+                      <span class="wname">Locate Gradle wrapper + signing config</span>
+                      <span class="wmeta"><span class="wsub">4m</span></span>
+                    </div>
+                    <div class="wrow">
+                      <span class="sic ok"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" /></svg
+                      ></span>
+                      <span class="wname">Assemble release APK locally</span>
+                      <span class="wmeta"><span class="wsub">11m</span></span>
+                    </div>
+                    <div class="wrow failed">
+                      <span class="sic xfail"
+                        ><svg
+                          class="ic"
+                          style="width: 13px; height: 13px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="m15 9-6 6M9 9l6 6" /></svg
+                      ></span>
+                      <span class="wname">Verify install on emulator</span>
+                      <span class="wmeta"
+                        ><span class="wsub">failed — tool-use budget exceeded</span></span
+                      >
+                    </div>
+                  </div>
+
+                  <div class="msg asst">
+                    <b>Result:</b> release APK assembles locally; emulator install blocked on SDK
+                    license acceptance — flagged for the parent thread.
+                  </div>
+                  <div class="evt wake">
+                    <svg
+                      class="ic"
+                      style="width: 13px; height: 13px"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path d="M9 14 4 9l5-5" />
+                      <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                    </svg>
+                    <span><b>Returned to the parent</b> — woke Fix T3 Connect Redirect Error</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="composer-wrap">
+                <div class="composer">
+                  <div class="ph">Message this task…</div>
+                  <div class="bar">
+                    <span class="chipbtn attachBtn">
+                      <svg
+                        class="ic"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path
+                          d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                        />
+                      </svg>
+                      Attach
+                    </span>
+                    <span class="send" id="sendApk">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ═══ view-local · Done · 59s · you-created · no agents ran ═══ -->
+            <div class="taskview hidden" id="view-local">
+              <div class="tbar">
+                <a
+                  class="tbar-back"
+                  href="../flow-2-peek/index.html?sheet=local"
+                  data-to="../flow-2-peek/index.html?sheet=local"
+                  title="Back to the task sheet"
+                >
+                  <svg
+                    class="ic"
+                    style="width: 19px; height: 19px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                  >
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                </a>
+                <div class="tbar-titles">
+                  <div class="tbar-title">is it possible to build locally?</div>
+                  <div class="tbar-sub">
+                    <span style="color: var(--success); font-weight: 600">Done</span> · task · runs
+                    in its own thread · Opus 4.7
+                  </div>
+                </div>
+                <span class="tbar-act js-menu" title="Task actions">
+                  <svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="1.6" />
+                    <circle cx="12" cy="12" r="1.6" />
+                    <circle cx="12" cy="19" r="1.6" />
+                  </svg>
+                </span>
+              </div>
+
+              <div class="mscroll">
+                <div class="tl">
+                  <div class="evt">
+                    <span
+                      >Created as a task by <b>you</b> in <b>Fix T3 Connect Redirect Error</b> · 2
+                      selected messages</span
+                    >
+                    <a
+                      class="open"
+                      href="../flow-1-list/index.html?peek=local"
+                      data-to="../flow-1-list/index.html?peek=local"
+                      title="The task's row under its parent in the thread list"
+                      >See in list →</a
+                    >
+                  </div>
+
+                  <div class="msg user">is it possible to build locally?</div>
+                  <div class="msg asst">
+                    <b>Yes</b> — Gradle wrapper is checked in; needs a local keystore and the
+                    Android SDK platform 35.
+                  </div>
+                  <div class="evt wake">
+                    <svg
+                      class="ic"
+                      style="width: 13px; height: 13px"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path d="M9 14 4 9l5-5" />
+                      <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                    </svg>
+                    <span><b>Returned to the parent</b> — woke Fix T3 Connect Redirect Error</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="composer-wrap">
+                <div class="composer">
+                  <div class="ph">Message this task…</div>
+                  <div class="bar">
+                    <span class="chipbtn attachBtn">
+                      <svg
+                        class="ic"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path
+                          d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                        />
+                      </svg>
+                      Attach
+                    </span>
+                    <span class="send" id="sendLocal">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ═══ view-login · Working · 24s · you-created ═══ -->
+            <div class="taskview hidden" id="view-login">
+              <div class="tbar">
+                <a
+                  class="tbar-back"
+                  href="../flow-2-peek/index.html?sheet=login"
+                  data-to="../flow-2-peek/index.html?sheet=login"
+                  title="Back to the task sheet"
+                >
+                  <svg
+                    class="ic"
+                    style="width: 19px; height: 19px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                  >
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                </a>
+                <div class="tbar-titles">
+                  <div class="tbar-title">the t3 connect is not letting log in</div>
+                  <div class="tbar-sub">
+                    <span style="color: var(--info); font-weight: 600">Working</span> · task · runs
+                    in its own thread · Opus 4.7
+                  </div>
+                </div>
+                <span class="tbar-act js-menu" title="Task actions">
+                  <svg class="ic" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="1.6" />
+                    <circle cx="12" cy="12" r="1.6" />
+                    <circle cx="12" cy="19" r="1.6" />
+                  </svg>
+                </span>
+              </div>
+
+              <div class="mscroll">
+                <div class="tl">
+                  <div class="evt">
+                    <span
+                      >Created as a task by <b>you</b> in <b>Fix T3 Connect Redirect Error</b> ·
+                      full thread context</span
+                    >
+                    <a
+                      class="open"
+                      href="../flow-1-list/index.html?peek=login"
+                      data-to="../flow-1-list/index.html?peek=login"
+                      title="The task's row under its parent in the thread list"
+                      >See in list →</a
+                    >
+                  </div>
+
+                  <div class="msg user">the t3 connect is not letting log in</div>
+                  <div class="msg asst">
+                    Tracing the pairing-token exchange… the redirect lands on /oauth/callback but
+                    the state param doesn't round-trip.
+                  </div>
+                  <div class="evt">
+                    <span class="spin"></span>
+                    <span><b>Working</b> — tracing the pairing-token exchange…</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="composer-wrap">
+                <div class="composer">
+                  <div class="ph">Steer this task…</div>
+                  <div class="bar">
+                    <span class="chipbtn attachBtn">
+                      <svg
+                        class="ic"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path
+                          d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                        />
+                      </svg>
+                      Attach
+                    </span>
+                    <span class="send" id="sendLogin">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="gesturebar"></div>
+            <div class="toast" id="toast"></div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Flow 3 — full task view.</b> A task is a real pushed thread: provenance, transcript,
+          the turn's agents with outcomes, steer composer.
+          <code>?task=task|apk|local|login</code> picks the task ·
+          <code>?state=running|complete|failed</code> (the mockups task's lifecycle) ·
+          <code>?view=parent</code> → the list · <code>?theme=dark|light</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="concept"><b>Flow 3</b> · full task view — where “Open thread” lands</div>
+
+    <script>
+      /* v2 theme convention: ?theme=dark|light pins the page on <html>;
+         no parameter follows the OS via the prefers-color-scheme block in
+         mockup.css. */
+      const params = new URLSearchParams(location.search);
+      const theme = params.get("theme");
+      if (theme === "dark" || theme === "light") {
+        document.documentElement.dataset.theme = theme;
+      }
+
+      /* ?task=task|apk|local|login — which task this view renders. flow-1's
+         ↗ "Open thread" links and flow-2's sheet buttons emit this param
+         (CONVENTIONS.md §3); unknown values fall back to the mockups task. */
+      const TASK_IDS = ["task", "apk", "local", "login"];
+      const taskId = TASK_IDS.includes(params.get("task")) ? params.get("task") : "task";
+
+      /* ?view=parent — v2 builds no parent-thread page; the parent lives in
+         the flow-1 thread list. Redirect there, highlighting this task's row
+         (theme preserved), rather than silently showing the task view. */
+      const view = params.get("view");
+      if (view === "parent") {
+        const p = new URLSearchParams({ peek: taskId });
+        if (theme === "dark" || theme === "light") p.set("theme", theme);
+        location.replace("../flow-1-list/index.html?" + p.toString());
+      }
+
+      TASK_IDS.forEach((id) => {
+        document.getElementById("view-" + id).classList.toggle("hidden", id !== taskId);
+      });
+
+      /* ?state=running|complete|failed — the mockups task's lifecycle states.
+         Unknown values (queued, cancelled, …) are state-matrix's
+         cardinalities and fall back to the default running state. Only the
+         mockups task models lifecycle tails; for the other three tasks this
+         toggle is inert (their single canonical state is always shown). */
+      const state = ["running", "complete", "failed"].includes(params.get("state"))
+        ? params.get("state")
+        : "running";
+
+      const subs = {
+        running:
+          '<span style="color: var(--info); font-weight: 600">Working</span> · task · runs in its own thread · Opus 4.7',
+        complete:
+          '<span style="color: var(--success); font-weight: 600">Done</span> · task · runs in its own thread · Opus 4.7',
+        failed:
+          '<span style="color: var(--danger); font-weight: 600">Failed</span> · task · runs in its own thread · Opus 4.7',
+      };
+      const caps = { running: "Running", complete: "Complete", failed: "Failed" };
+      ["tailRunning", "tailComplete", "tailFailed"].forEach((id) =>
+        document.getElementById(id).classList.add("hidden"),
+      );
+      ["composerRunning", "composerComplete", "composerFailed"].forEach((id) =>
+        document.getElementById(id).classList.add("hidden"),
+      );
+      document.getElementById("tail" + caps[state]).classList.remove("hidden");
+      document.getElementById("composer" + caps[state]).classList.remove("hidden");
+      document.getElementById("tbarSub").innerHTML = subs[state];
+
+      /* Internal links keep the pinned theme across the flow (static hrefs
+         remain as the no-JS fallback). */
+      document.querySelectorAll("a[data-to]").forEach((a) => {
+        const [base, query] = a.dataset.to.split("?");
+        const p = new URLSearchParams(query || "");
+        if (theme === "dark" || theme === "light") p.set("theme", theme);
+        const q = p.toString();
+        a.href = base + (q ? "?" + q : "");
+      });
+
+      /* Explained mock affordances (chrome.html precedent). */
+      const toast = document.getElementById("toast");
+      let toastTimer = null;
+      const say = (msg) => {
+        toast.textContent = msg;
+        toast.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+      };
+      document
+        .querySelectorAll(".js-menu")
+        .forEach((el) =>
+          el.addEventListener("click", () => say("Task actions — cancel, rename, archive (mock)")),
+        );
+      document
+        .querySelectorAll(".attachBtn")
+        .forEach((el) => el.addEventListener("click", () => say("Attach to the task (mock)")));
+      document
+        .getElementById("sendRunning")
+        .addEventListener("click", () => say("Steers the running task (mock)"));
+      document
+        .getElementById("sendLogin")
+        .addEventListener("click", () => say("Steers the running task (mock)"));
+      document
+        .getElementById("sendComplete")
+        .addEventListener("click", () =>
+          say("Messages the task — a follow-up starts a new turn (mock)"),
+        );
+      document
+        .getElementById("sendApk")
+        .addEventListener("click", () =>
+          say("Messages the task — a follow-up starts a new turn (mock)"),
+        );
+      document
+        .getElementById("sendLocal")
+        .addEventListener("click", () =>
+          say("Messages the task — a follow-up starts a new turn (mock)"),
+        );
+      document
+        .getElementById("retryBtn")
+        .addEventListener("click", () => say("Retries the task with the same brief (mock)"));
+    </script>
+  </body>
+</html>
