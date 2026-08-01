@@ -41,7 +41,7 @@
 
 ## 5. Reference Alignment
 
-- [ ] 5.1 **Blocked, and to remain unchecked until the input exists.** Align the tasks/agents visual language to the reference image once it is available; v1's `HANDOFF.md` confirms this reference was a written description rather than a file, so nothing in v1 or v2 is yet confirmed against it. Do not mark this complete without the image.
+- [x] 5.1 ~~**Blocked, and to remain unchecked until the input exists.** Align the tasks/agents visual language to the reference image once it is available.~~ **Closed by owner acceptance, not by alignment.** The reference image never arrived and no alignment pass was performed — the tasks/agents visual language in v2 remains an interpretation of v1's written description of the desktop sidebar, unverified against that surface. The owner reviewed the rendered mockups and accepted them as-is, so the task is closed rather than left open indefinitely. `README.md` and `HANDOFF.md` continue to state that the alignment was never verified, and that remains accurate.
 
 ## 6. Verification
 
@@ -52,4 +52,4 @@
 - [x] 6.5 Confirm every deep link resolves to the state its parameter names. _Click-driven and direct navigation both verified, including a full light-theme round trip that retained theme and task identity across four hops._
 - [x] 6.6 Confirm no page references anything external and every page renders over `file://` with no build step and no network, matching v1. _24 page loads, no external protocols, no failed requests; the v1 reference image resolves (945 × 2048, `complete: true`)._
 - [x] 6.7 Confirm `experiments/mobile-tasks-mockups/` is unmodified by this change, so the baseline the findings describe still exists. _`git diff --exit-code HEAD -- experiments/mobile-tasks-mockups` returns 0._
-- [x] 6.8 Confirm task 5.1 remains unchecked if the reference image has not arrived, and that the documentation says so plainly rather than implying alignment was verified. _Both `README.md` and `HANDOFF.md` state plainly that the reference never arrived and the alignment pass was not performed._
+- [x] 6.8 Confirm task 5.1 remains unchecked if the reference image has not arrived, and that the documentation says so plainly rather than implying alignment was verified. _Verified at the time: both `README.md` and `HANDOFF.md` state plainly that the reference never arrived and the alignment pass was not performed. 5.1 was subsequently closed by owner acceptance rather than by alignment, which does not change those statements — they are still true, and the documentation still does not claim the visual language was verified._
