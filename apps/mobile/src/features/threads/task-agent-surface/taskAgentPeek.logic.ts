@@ -21,8 +21,6 @@ export type TaskPeekAgentRouteParams = Readonly<{
   readonly agentId: string;
 }>;
 
-export type TaskPeekRouteParams = TaskPeekTaskRouteParams | TaskPeekAgentRouteParams;
-
 export type TaskAgentPeekAction = Readonly<{
   readonly kind: "open-task-thread" | "steer-task";
   /** Always the exact task destination projected by taskAgentNavigation. */
@@ -248,16 +246,25 @@ function resolveAgentPeek(
 }
 
 /**
- * Resolve only the identity supplied by the route. An absent or stale id has
- * no substitute target, so a task B route cannot silently render task A.
+ * Resolve only the task identity supplied by the TaskPeek route. An absent or
+ * stale id has no substitute target, so task B cannot silently render task A.
+ */
+export function resolveTaskPeekRoute(input: {
+  readonly surface: TaskAgentSurfaceViewModel;
+  readonly params: TaskPeekTaskRouteParams;
+}): TaskAgentPeekResolution | null {
+  return resolveTaskPeek(input.surface, input.params);
+}
+
+/**
+ * Resolve only the native-agent identity supplied by the TaskAgentPeek route.
+ * Its required agentId cannot be dropped and reinterpreted as an owning task.
  */
 export function resolveTaskAgentPeekRoute(input: {
   readonly surface: TaskAgentSurfaceViewModel;
-  readonly params: TaskPeekRouteParams;
+  readonly params: TaskPeekAgentRouteParams;
 }): TaskAgentPeekResolution | null {
-  return "agentId" in input.params
-    ? resolveAgentPeek(input.surface, input.params)
-    : resolveTaskPeek(input.surface, input.params);
+  return resolveAgentPeek(input.surface, input.params);
 }
 
 /** Build the thin sheet model from the shared row and projected turn anatomy. */

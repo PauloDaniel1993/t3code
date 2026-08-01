@@ -10,28 +10,40 @@ import {
 import {
   buildTaskAgentPeek,
   resolveTaskAgentPeekRoute,
+  resolveTaskPeekRoute,
   type TaskAgentPeekAction,
-  type TaskPeekRouteParams,
+  type TaskAgentPeekResolution,
+  type TaskPeekAgentRouteParams,
+  type TaskPeekTaskRouteParams,
 } from "./task-agent-surface/taskAgentPeek.logic";
 import { buildTaskAgentModel } from "./task-agent-surface/taskAgentModel";
-import { buildTaskAgentSurfaceRows } from "./task-agent-surface/taskAgentSurface.logic";
+import {
+  buildTaskAgentSurfaceRows,
+  type TaskAgentSurfaceViewModel,
+} from "./task-agent-surface/taskAgentSurface.logic";
 
-type TaskPeekRouteScreenProps = StaticScreenProps<TaskPeekRouteParams>;
+type TaskPeekRouteScreenProps = StaticScreenProps<TaskPeekTaskRouteParams>;
+type TaskAgentPeekRouteScreenProps = StaticScreenProps<TaskPeekAgentRouteParams>;
 
-const MISSING_PEEK_TARGET_REASON =
-  "The task or agent target was not supplied, so no other item was opened.";
 const STALE_PEEK_TARGET_REASON =
   "This exact task or agent is not available in the current mobile snapshot.";
 
+type PeekResolver<TParams> = (input: {
+  readonly surface: TaskAgentSurfaceViewModel;
+  readonly params: TParams;
+}) => TaskAgentPeekResolution | null;
+
 /**
- * A form-sheet route over the list. It resolves only the required route
- * identity and intentionally never substitutes another task or agent.
+ * Shared form-sheet content. The route wrapper supplies a fully required,
+ * route-specific identity; this component has no default target branch.
  */
-export function TaskPeekRouteScreen(props: TaskPeekRouteScreenProps) {
+function TaskAgentPeekRouteContent<TParams>(props: {
+  readonly params: TParams;
+  readonly resolve: PeekResolver<TParams>;
+}) {
   const navigation = useNavigation();
   const threads = useThreadShells();
   const { readState } = useTaskAgentReadState();
-  const routeParams = props.route.params as TaskPeekRouteParams | undefined;
   const surface = useMemo(
     () =>
       buildTaskAgentSurfaceRows(
@@ -45,11 +57,8 @@ export function TaskPeekRouteScreen(props: TaskPeekRouteScreenProps) {
     [readState, threads],
   );
   const resolution = useMemo(
-    () =>
-      routeParams === undefined
-        ? null
-        : resolveTaskAgentPeekRoute({ surface, params: routeParams }),
-    [routeParams, surface],
+    () => props.resolve({ surface, params: props.params }),
+    [props.params, props.resolve, surface],
   );
   const peek = useMemo(
     () => (resolution === null ? null : buildTaskAgentPeek(resolution)),
@@ -67,12 +76,21 @@ export function TaskPeekRouteScreen(props: TaskPeekRouteScreenProps) {
 
   if (peek === null) {
     return (
-      <TaskAgentPeekUnavailableSheet
-        onClose={handleClose}
-        reason={routeParams === undefined ? MISSING_PEEK_TARGET_REASON : STALE_PEEK_TARGET_REASON}
-      />
+      <TaskAgentPeekUnavailableSheet onClose={handleClose} reason={STALE_PEEK_TARGET_REASON} />
     );
   }
 
   return <TaskAgentPeekSheet onAction={handleAction} onClose={handleClose} peek={peek} />;
+}
+
+/** A task route carries the task's exact required thread id. */
+export function TaskPeekRouteScreen(props: TaskPeekRouteScreenProps) {
+  return <TaskAgentPeekRouteContent params={props.route.params} resolve={resolveTaskPeekRoute} />;
+}
+
+/** A native-agent route carries both its owner and exact required agent id. */
+export function TaskAgentPeekRouteScreen(props: TaskAgentPeekRouteScreenProps) {
+  return (
+    <TaskAgentPeekRouteContent params={props.route.params} resolve={resolveTaskAgentPeekRoute} />
+  );
 }

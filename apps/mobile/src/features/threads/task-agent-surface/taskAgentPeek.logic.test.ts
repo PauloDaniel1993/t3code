@@ -15,6 +15,7 @@ import { buildTaskAgentSurfaceRows } from "./taskAgentSurface.logic";
 import {
   buildTaskAgentPeek,
   resolveTaskAgentPeekRoute,
+  resolveTaskPeekRoute,
   type TaskPeekAgentRouteParams,
   type TaskPeekTaskRouteParams,
 } from "./taskAgentPeek.logic";
@@ -134,7 +135,7 @@ describe("task-agent peek logic", () => {
       environmentId,
       threadId: fixture.taskBId,
     } as const satisfies TaskPeekTaskRouteParams;
-    const resolved = resolveTaskAgentPeekRoute({ surface: fixture.surface, params });
+    const resolved = resolveTaskPeekRoute({ surface: fixture.surface, params });
     if (resolved === null || resolved.kind !== "task") throw new Error("expected task B");
 
     const peek = buildTaskAgentPeek(resolved);
@@ -185,7 +186,7 @@ describe("task-agent peek logic", () => {
 
   it("gives every rendered control either an action or a non-empty refusal reason", () => {
     const fixture = surface();
-    const task = resolveTaskAgentPeekRoute({
+    const task = resolveTaskPeekRoute({
       surface: fixture.surface,
       params: { environmentId, threadId: fixture.taskBId },
     });
@@ -210,7 +211,7 @@ describe("task-agent peek logic", () => {
       environmentId,
       threadId: fixture.taskBId,
     } as const satisfies TaskPeekTaskRouteParams;
-    const resolvedTaskB = resolveTaskAgentPeekRoute({
+    const resolvedTaskB = resolveTaskPeekRoute({
       surface: fixture.surface,
       params: taskBParams,
     });
@@ -222,7 +223,7 @@ describe("task-agent peek logic", () => {
     expect(resolvedTaskB.row.id).not.toBe(fixture.taskAId);
     expect(resolvedTaskB.row.title).toBe("Task B");
     expect(
-      resolveTaskAgentPeekRoute({
+      resolveTaskPeekRoute({
         surface: fixture.surface,
         params: { environmentId, threadId: ThreadId.make("unknown-task") },
       }),
@@ -231,5 +232,12 @@ describe("task-agent peek logic", () => {
     // @ts-expect-error A task peek cannot be constructed without its exact task id.
     const missingIdentity: TaskPeekTaskRouteParams = { environmentId };
     expect(missingIdentity).toBeDefined();
+
+    // @ts-expect-error A native-agent peek cannot be constructed without its exact agent id.
+    const missingAgentIdentity: TaskPeekAgentRouteParams = {
+      environmentId,
+      threadId: fixture.taskBId,
+    };
+    expect(missingAgentIdentity).toBeDefined();
   });
 });
