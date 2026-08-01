@@ -21,6 +21,7 @@ import {
   Image,
   Platform,
   Pressable,
+  StyleSheet,
   useColorScheme,
   View,
   type ViewStyle,
@@ -69,6 +70,8 @@ import {
 } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
+import type { TaskAgentTaskComposerPresentation } from "./task-agent-surface/taskAgentTaskSurface.logic";
+import { getTaskAgentTheme } from "./task-agent-surface/taskAgentTheme";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -115,6 +118,7 @@ export interface ThreadComposerProps {
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onReconnectEnvironment: () => void;
   readonly onExpandedChange?: (expanded: boolean) => void;
+  readonly taskComposer?: TaskAgentTaskComposerPresentation;
 }
 
 /**
@@ -265,7 +269,7 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
   );
 });
 
-export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
+const AvailableThreadComposer = memo(function AvailableThreadComposer(props: ThreadComposerProps) {
   const isDarkMode = useColorScheme() === "dark";
   const foregroundColor = useThemeColor("--color-foreground");
   const bodyText = useScaledTextRole("body");
@@ -932,4 +936,85 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       />
     </Animated.View>
   );
+});
+
+function UnavailableTaskComposer(props: {
+  readonly bottomInset?: number;
+  readonly contentMaxWidth?: number;
+  readonly reason: string;
+}) {
+  const colorScheme = useColorScheme() === "light" ? "light" : "dark";
+  const theme = getTaskAgentTheme(colorScheme);
+
+  return (
+    <View
+      style={[
+        unavailableTaskComposerStyles.backdrop,
+        {
+          backgroundColor: theme.background,
+          paddingBottom: (props.bottomInset ?? 0) + 6,
+        },
+      ]}
+    >
+      <View
+        style={[unavailableTaskComposerStyles.widthConstraint, { maxWidth: props.contentMaxWidth }]}
+      >
+        <View
+          accessibilityLabel={`Composer unavailable. ${props.reason}`}
+          accessibilityRole="text"
+          style={[unavailableTaskComposerStyles.card, { backgroundColor: theme.card }]}
+        >
+          <Text style={[unavailableTaskComposerStyles.label, { color: theme.text.foreground }]}>
+            Composer unavailable
+          </Text>
+          {/* This card is opaque, and this branch applies no ancestor opacity
+              multiplier to the mandatory refusal reason. */}
+          <Text style={[unavailableTaskComposerStyles.reason, { color: theme.text.statedReason }]}>
+            {props.reason}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/** The ordinary and steerable-task branch is the existing composer implementation unchanged. */
+export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
+  if (props.taskComposer?.kind === "unavailable") {
+    return (
+      <UnavailableTaskComposer
+        bottomInset={props.bottomInset}
+        contentMaxWidth={props.contentMaxWidth}
+        reason={props.taskComposer.reason}
+      />
+    );
+  }
+
+  return <AvailableThreadComposer {...props} />;
+});
+
+const unavailableTaskComposerStyles = StyleSheet.create({
+  backdrop: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+  },
+  widthConstraint: {
+    alignSelf: "center",
+    width: "100%",
+  },
+  card: {
+    borderRadius: 16,
+    gap: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
+  },
+  reason: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
 });

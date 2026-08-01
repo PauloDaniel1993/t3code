@@ -13,6 +13,9 @@ import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { useEnvironmentQuery } from "../../state/query";
+import { useThreadShells } from "../../state/entities";
+import { useThreadTasksEnabled } from "../../state/preferences";
+import { useTaskAgentReadState } from "../../state/use-task-agent-read-state";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
 import { vcsEnvironment } from "../../state/vcs";
 
@@ -71,6 +74,13 @@ import {
   ThreadInspectorContentStack,
   type ThreadInspectorMode,
 } from "./thread-inspector-content-stack";
+import { buildTaskAgentModel } from "./task-agent-surface/taskAgentModel";
+import { buildTaskAgentSurfaceRows } from "./task-agent-surface/taskAgentSurface.logic";
+import {
+  buildUnavailableTaskAgentTaskSurface,
+  resolveTaskAgentTaskSurface,
+  type TaskAgentTaskSurfacePresentation,
+} from "./task-agent-surface/taskAgentTaskSurface.logic";
 
 interface ThreadInspectorSelection {
   readonly routeThreadIdentity: string | null;
@@ -156,7 +166,14 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   // loading placeholder while messages fetch, and the composer's connection
   // pill reports connecting/reconnecting/syncing status.
   if (selectedThread !== null && selectedThreadKey === routeThreadKey) {
-    return <ThreadRouteContent {...props} selectedThreadDetailState={selectedThreadDetailState} />;
+    return (
+      <ThreadRouteContent
+        {...props}
+        selectedThreadDetailState={selectedThreadDetailState}
+        threadIsTask={selectedThread.task != null}
+        threadTitle={selectedThread.title}
+      />
+    );
   }
 
   const stillHydrating =
@@ -171,9 +188,79 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   return <ThreadUnavailableScreen />;
 }
 
-function ThreadRouteContent(
-  props: ThreadRouteScreenProps & {
-    readonly selectedThreadDetailState: ReturnType<typeof useSelectedThreadDetailState>;
+interface ThreadRouteContentProps extends ThreadRouteScreenProps {
+  readonly selectedThreadDetailState: ReturnType<typeof useSelectedThreadDetailState>;
+  readonly threadIsTask: boolean;
+  readonly threadTitle: string;
+}
+
+function ThreadRouteContent(props: ThreadRouteContentProps) {
+  if (!props.threadIsTask) return <ThreadRouteContentCore {...props} />;
+  return <TaskFeatureGatedThreadRouteContent {...props} />;
+}
+
+function TaskFeatureGatedThreadRouteContent(props: ThreadRouteContentProps) {
+  const threadTasksEnabled = useThreadTasksEnabled();
+  if (!threadTasksEnabled) return <ThreadRouteContentCore {...props} />;
+  return <TaskThreadRouteContent {...props} />;
+}
+
+function TaskThreadRouteContent(props: ThreadRouteContentProps) {
+  const threadShells = useThreadShells();
+  const { readState, markThreadsVisited } = useTaskAgentReadState();
+  const environmentIdRaw = firstRouteParam(props.route.params.environmentId);
+  const threadIdRaw = firstRouteParam(props.route.params.threadId);
+  const environmentId = environmentIdRaw === null ? null : EnvironmentId.make(environmentIdRaw);
+  const threadId = threadIdRaw === null ? null : ThreadId.make(threadIdRaw);
+  const taskAgentTaskSurface = useMemo(() => {
+    if (environmentId === null || threadId === null) return undefined;
+
+    const route = { environmentId, threadId };
+    const surface = buildTaskAgentSurfaceRows(
+      buildTaskAgentModel({
+        threads: threadShells,
+        readState,
+        // The route does not schedule a repainting elapsed-time clock.
+        nowMs: Date.now(),
+      }),
+    );
+
+    return (
+      resolveTaskAgentTaskSurface({ surface, route }) ??
+      buildUnavailableTaskAgentTaskSurface({ route, title: props.threadTitle })
+    );
+  }, [environmentId, readState, threadId, threadShells, props.threadTitle]);
+  const visitedTaskThreadId =
+    taskAgentTaskSurface?.kind === "task-thread-surface"
+      ? taskAgentTaskSurface.route.threadId
+      : null;
+  const visitedParentThreadId =
+    taskAgentTaskSurface?.kind === "task-thread-surface"
+      ? taskAgentTaskSurface.parentThreadId
+      : null;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (visitedParentThreadId === null || visitedTaskThreadId === null) return;
+      markThreadsVisited({
+        parentThreadId: visitedParentThreadId,
+        taskThreadId: visitedTaskThreadId,
+        visitedAt: new Date().toISOString(),
+      });
+    }, [markThreadsVisited, visitedParentThreadId, visitedTaskThreadId]),
+  );
+
+  return (
+    <ThreadRouteContentCore
+      {...props}
+      {...(taskAgentTaskSurface === undefined ? {} : { taskAgentTaskSurface })}
+    />
+  );
+}
+
+function ThreadRouteContentCore(
+  props: ThreadRouteContentProps & {
+    readonly taskAgentTaskSurface?: TaskAgentTaskSurfacePresentation;
   },
 ) {
   const {
@@ -793,6 +880,9 @@ function ThreadRouteContent(
           onSelectUserInputOption={requests.onSelectUserInputOption}
           onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}
           onSubmitUserInput={requests.onSubmitUserInput}
+          {...(props.taskAgentTaskSurface === undefined
+            ? {}
+            : { taskAgentTaskSurface: props.taskAgentTaskSurface })}
         />
       </View>
     </>
