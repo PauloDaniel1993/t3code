@@ -1045,21 +1045,25 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   display: none;
 }
 
+/* Wide enough to keep both: the map stays put and the ticket opens beneath it,
+   stacked rather than side by side, so the constellation never loses width and
+   the selected star stays where the eye left it. Still a container query, not a
+   viewport one — PreviewPanelShell sets an explicit pixel width. */
 @container (min-width: 720px) {
   [data-star-map-split][data-level="ticket"] {
-    flex-direction: row;
+    flex-direction: column;
   }
 
   [data-star-map-split][data-level="ticket"] > [data-star-map-mapside] {
     display: flex;
     flex: 1 1 55%;
-    min-width: 0;
+    min-height: 0;
   }
 
   [data-star-map-split][data-level="ticket"] > [data-star-map-detail] {
     flex: 1 1 45%;
-    min-width: 0;
-    border-inline-start: 1px solid var(--border);
+    min-height: 0;
+    border-block-start: 1px solid var(--border);
   }
 }
 

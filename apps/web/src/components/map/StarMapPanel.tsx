@@ -33,6 +33,7 @@ import {
   type StarMapCamera,
 } from "./starMapCamera";
 import { buildStarMapGraph, type StarMapGraph, type StarMapGraphNode } from "./starMapGraph";
+import { hitTestStarMapLabels } from "./starMapLabels";
 import {
   STAR_MAP_CAMERA_EASE_MS,
   STAR_MAP_CLICK_DRAG_TOLERANCE_PX,
@@ -337,8 +338,26 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       const anchor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
       renderer.setCamera(
         clampToContent(zoomCameraAt(renderer.getCamera(), viewport, anchor, factor)),
+        { user: true },
       );
       renderer.noteInteraction();
+    };
+
+    // A star is a ~6px dot; its name is the part you can actually aim at. Hit
+    // the dot first, then the drawn label box, so both routes select the same
+    // ticket. Labels come from the last painted frame, so what is clickable is
+    // exactly what is visible — a suppressed label is not hittable.
+    const ticketAtClientPoint = (clientX: number, clientY: number): string | null => {
+      const currentLayout = layoutRef.current;
+      if (currentLayout === null) return null;
+      const bounds = canvas.getBoundingClientRect();
+      const screen = { x: clientX - bounds.left, y: clientY - bounds.top };
+      const star = hitTestStarMap(
+        currentLayout,
+        renderer.toWorld(screen),
+        STAR_MAP_HIT_TOLERANCE_SCREEN_PX / renderer.getCamera().scale,
+      );
+      return star ?? hitTestStarMapLabels(renderer.getLabelPlacements(), screen);
     };
 
     let drag: {
@@ -363,17 +382,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         // Nothing on a canvas says "this is clickable", so the cursor has to.
         // Hover hit-testing uses the same tolerance as the click, so what looks
         // hittable and what is hittable cannot drift apart.
-        const hoverLayout = layoutRef.current;
-        if (hoverLayout === null) return;
-        const hoverRect = canvas.getBoundingClientRect();
-        const hovered = hitTestStarMap(
-          hoverLayout,
-          renderer.toWorld({
-            x: event.clientX - hoverRect.left,
-            y: event.clientY - hoverRect.top,
-          }),
-          STAR_MAP_HIT_TOLERANCE_SCREEN_PX / renderer.getCamera().scale,
-        );
+        const hovered = ticketAtClientPoint(event.clientX, event.clientY);
         canvas.style.cursor = hovered === null ? "grab" : "pointer";
         return;
       }
@@ -385,7 +394,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       drag.totalMove += Math.hypot(dx, dy);
       // Below the click tolerance this might still be a selection, not a pan.
       if (drag.totalMove < STAR_MAP_CLICK_DRAG_TOLERANCE_PX) return;
-      renderer.setCamera(clampToContent(panCameraBy(renderer.getCamera(), dx, dy)));
+      renderer.setCamera(clampToContent(panCameraBy(renderer.getCamera(), dx, dy)), { user: true });
       renderer.noteInteraction();
     };
     const finishDrag = (event: PointerEvent, cancelled: boolean) => {
@@ -395,19 +404,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       renderer.setGestureActive(false);
       if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
       if (!wasClick) return;
-      const currentLayout = layoutRef.current;
-      if (currentLayout === null) return;
-      const rect = canvas.getBoundingClientRect();
-      const camera = renderer.getCamera();
-      const world = renderer.toWorld({
-        x: event.clientX - rect.left,
-        y: event.clientY - rect.top,
-      });
-      const hit = hitTestStarMap(
-        currentLayout,
-        world,
-        STAR_MAP_HIT_TOLERANCE_SCREEN_PX / camera.scale,
-      );
+      const hit = ticketAtClientPoint(event.clientX, event.clientY);
       if (hit !== null) dispatch({ type: "selectTicket", ticketId: hit });
     };
     const onPointerUp = (event: PointerEvent) => finishDrag(event, false);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  hitTestStarMapLabels,
   placeStarMapLabels,
   STAR_MAP_LABEL_CHAR_WIDTH,
   STAR_MAP_LABEL_OFFSET_X,
@@ -98,5 +99,33 @@ describe("placeStarMapLabels", () => {
       viewportWidth: 800,
     });
     expect(placements.map((placement) => placement.id)).toEqual(["t1", "t5", "t9"]);
+  });
+
+  describe("hitTestStarMapLabels", () => {
+    const nodes: ReadonlyArray<StarMapLabelNode> = [
+      { id: "t1", ordinal: 1, label: "Pick the store", x: 100, y: 100 },
+      { id: "t2", ordinal: 2, label: "Measure the cost", x: 100, y: 106 },
+    ];
+    const placements = placeStarMapLabels({ nodes, viewportWidth: 800 });
+    const visible = placements.find((placement) => !placement.suppressed)!;
+    const hidden = placements.find((placement) => placement.suppressed);
+
+    it("hits a ticket by its drawn label, not just its star", () => {
+      const inside = {
+        x: visible.x + visible.text.length * STAR_MAP_LABEL_CHAR_WIDTH - 1,
+        y: visible.y,
+      };
+      expect(hitTestStarMapLabels(placements, inside)).toBe(visible.id);
+    });
+
+    it("misses to the left of the label, where the star's own tolerance applies", () => {
+      expect(hitTestStarMapLabels(placements, { x: visible.x - 2, y: visible.y })).toBeNull();
+    });
+
+    it("never hits a suppressed label, because it is not drawn", () => {
+      if (hidden === undefined) return;
+      const inside = { x: hidden.x + 1, y: hidden.y };
+      expect(hitTestStarMapLabels(placements, inside)).not.toBe(hidden.id);
+    });
   });
 });

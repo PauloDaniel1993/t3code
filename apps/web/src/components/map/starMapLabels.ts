@@ -51,6 +51,40 @@ interface LabelBox {
   readonly maxY: number;
 }
 
+/** The drawn box of a placement, in screen pixels. Shared by layout and hit-testing. */
+export function labelBox(placement: StarMapLabelPlacement): LabelBox {
+  return {
+    minX: placement.x,
+    minY: placement.y - STAR_MAP_LABEL_HEIGHT / 2,
+    maxX: placement.x + placement.text.length * STAR_MAP_LABEL_CHAR_WIDTH,
+    maxY: placement.y + STAR_MAP_LABEL_HEIGHT / 2,
+  };
+}
+
+/**
+ * The ticket whose label covers `screenPoint`, or null. A suppressed label is
+ * not drawn, so it must not be clickable either — what you can hit is exactly
+ * what you can see. Ties go to the earlier placement, matching draw order.
+ */
+export function hitTestStarMapLabels(
+  placements: ReadonlyArray<StarMapLabelPlacement>,
+  screenPoint: { readonly x: number; readonly y: number },
+): string | null {
+  for (const placement of placements) {
+    if (placement.suppressed) continue;
+    const box = labelBox(placement);
+    if (
+      screenPoint.x >= box.minX &&
+      screenPoint.x <= box.maxX &&
+      screenPoint.y >= box.minY &&
+      screenPoint.y <= box.maxY
+    ) {
+      return placement.id;
+    }
+  }
+  return null;
+}
+
 function boxesCollide(left: LabelBox, right: LabelBox): boolean {
   return (
     left.minX < right.maxX + COLLISION_GAP &&

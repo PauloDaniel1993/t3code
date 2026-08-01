@@ -306,4 +306,57 @@ describe("detectPrefersReducedMotion", () => {
   it("is false outside a browser (the Node test harness)", () => {
     expect(detectPrefersReducedMotion()).toBe(false);
   });
+
+  describe("starfield distribution", () => {
+    // The starfield drew as repeating clumps of dots rather than scatter,
+    // because x and y were the two halves of one FNV-1a hash and FNV-1a
+    // avalanches poorly across inputs differing only in a trailing digit.
+    // These assert scatter directly; determinism is covered above.
+    const layer = STAR_MAP_STARFIELD_LAYERS[0]!;
+    const stars = Array.from({ length: 400 }, (_, index) => starfieldStar(layer, 0, index));
+
+    it("fills every quadrant of the tile instead of clumping", () => {
+      const half = STAR_MAP_STARFIELD_TILE / 2;
+      const quadrants = [0, 0, 0, 0];
+      for (const star of stars) {
+        quadrants[(star.x < half ? 0 : 1) + (star.y < half ? 0 : 2)]! += 1;
+      }
+      // A clumped field leaves quadrants near-empty; scatter lands ~25% each.
+      for (const count of quadrants) {
+        expect(count).toBeGreaterThan(stars.length * 0.15);
+      }
+    });
+
+    it("keeps x and y uncorrelated, so stars do not march along a line", () => {
+      const n = stars.length;
+      const xs = stars.map((star) => star.x);
+      const ys = stars.map((star) => star.y);
+      const meanX = xs.reduce((a, b) => a + b, 0) / n;
+      const meanY = ys.reduce((a, b) => a + b, 0) / n;
+      let cov = 0;
+      let varX = 0;
+      let varY = 0;
+      for (let i = 0; i < n; i += 1) {
+        const dx = xs[i]! - meanX;
+        const dy = ys[i]! - meanY;
+        cov += dx * dy;
+        varX += dx * dx;
+        varY += dy * dy;
+      }
+      const correlation = cov / Math.sqrt(varX * varY);
+      expect(Math.abs(correlation)).toBeLessThan(0.2);
+    });
+
+    it("does not step consecutive stars a near-constant distance apart", () => {
+      const steps: number[] = [];
+      for (let i = 1; i < 60; i += 1) {
+        steps.push(Math.hypot(stars[i]!.x - stars[i - 1]!.x, stars[i]!.y - stars[i - 1]!.y));
+      }
+      const mean = steps.reduce((a, b) => a + b, 0) / steps.length;
+      const spread =
+        Math.sqrt(steps.reduce((a, b) => a + (b - mean) ** 2, 0) / steps.length) / mean;
+      // A marching line has near-identical steps (tiny spread); scatter varies.
+      expect(spread).toBeGreaterThan(0.3);
+    });
+  });
 });

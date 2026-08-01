@@ -1,5 +1,6 @@
 import {
   boundsFromPoints,
+  clampCamera,
   fitCameraToBounds,
   screenToWorld,
   worldToScreen,
@@ -8,7 +9,11 @@ import {
   type StarMapSize,
 } from "./starMapCamera";
 import { hash32, type StarMapGraph, type StarMapNodeStatus } from "./starMapGraph";
-import { placeStarMapLabels, type StarMapLabelNode } from "./starMapLabels";
+import {
+  placeStarMapLabels,
+  type StarMapLabelNode,
+  type StarMapLabelPlacement,
+} from "./starMapLabels";
 import type { StarMapLayoutResult } from "./starMapLayout";
 import {
   DEFAULT_STAR_MAP_THEME,
@@ -272,7 +277,15 @@ export function advanceFlowParticles(particles: Array<StarMapFlowParticle>, dtMs
 // ---------------------------------------------------------------------------
 
 /** Side of the square screen-space tile the starfield repeats on. */
-export const STAR_MAP_STARFIELD_TILE = 512;
+/**
+ * The starfield repeats on this grid. It must stay LARGER than a realistic
+ * panel, or the eye reads the repeat as structure: at 512 an 851x1056 panel
+ * stamped the identical 26-star arrangement six times and the field looked
+ * like clumps in a pattern rather than stars. Star counts scale with the tile
+ * area so density is unchanged, and the draw loop culls off-canvas stars so a
+ * bigger tile costs less to draw, not more.
+ */
+export const STAR_MAP_STARFIELD_TILE = 1600;
 
 export interface StarMapStarfieldLayer {
   /** Fraction of camera movement applied to this layer; smaller reads farther. */
@@ -284,8 +297,8 @@ export interface StarMapStarfieldLayer {
 }
 
 export const STAR_MAP_STARFIELD_LAYERS: ReadonlyArray<StarMapStarfieldLayer> = [
-  { parallax: 0.18, starsPerTile: 26, minRadius: 0.6, maxRadius: 1.2, baseAlpha: 0.55 },
-  { parallax: 0.42, starsPerTile: 14, minRadius: 1.0, maxRadius: 1.8, baseAlpha: 0.85 },
+  { parallax: 0.18, starsPerTile: 254, minRadius: 0.6, maxRadius: 1.2, baseAlpha: 0.55 },
+  { parallax: 0.42, starsPerTile: 137, minRadius: 1.0, maxRadius: 1.8, baseAlpha: 0.85 },
 ];
 
 export interface StarMapStarfieldStar {
@@ -298,21 +311,46 @@ export interface StarMapStarfieldStar {
   readonly twinkleSpeed: number;
 }
 
+/**
+ * MurmurHash3 finalizer. `hash32` is FNV-1a, whose avalanche is weak in the low
+ * bits: for inputs differing only in a trailing digit — exactly `"0:1"`,
+ * `"0:2"`, `"0:3"` — the low half advances almost linearly, so taking x from
+ * the low bits and y from the high bits marched consecutive stars along a line
+ * and the starfield drew as repeating clumps instead of scatter. `hash32`
+ * itself is deliberately untouched: it seeds ticket layout and the content
+ * revision, and changing it would move every node and break spatial memory.
+ */
+function mix32(value: number): number {
+  let mixed = value >>> 0;
+  mixed ^= mixed >>> 16;
+  mixed = Math.imul(mixed, 0x85ebca6b) >>> 0;
+  mixed ^= mixed >>> 13;
+  mixed = Math.imul(mixed, 0xc2b2ae35) >>> 0;
+  mixed ^= mixed >>> 16;
+  return mixed >>> 0;
+}
+
+/** Unit interval from an independently salted, avalanched hash. */
+function starfieldUnit(salt: string, layerIndex: number, starIndex: number): number {
+  return mix32(hash32(`${salt}:${layerIndex}:${starIndex}`)) / 0x1_0000_0000;
+}
+
 /** One deterministic star inside a tile; same input, same star, forever. */
 export function starfieldStar(
   layer: StarMapStarfieldLayer,
   layerIndex: number,
   starIndex: number,
 ): StarMapStarfieldStar {
-  const base = hash32(`${layerIndex}:${starIndex}`);
-  const extra = hash32(`${starIndex}:${layerIndex}`);
+  // Each field draws from its own salt, so no two share bits of one hash.
   return {
-    x: ((base & 0xffff) / 0x10000) * STAR_MAP_STARFIELD_TILE,
-    y: ((base >>> 16) / 0x10000) * STAR_MAP_STARFIELD_TILE,
-    radius: layer.minRadius + ((extra & 0xffff) / 0x10000) * (layer.maxRadius - layer.minRadius),
+    x: starfieldUnit("x", layerIndex, starIndex) * STAR_MAP_STARFIELD_TILE,
+    y: starfieldUnit("y", layerIndex, starIndex) * STAR_MAP_STARFIELD_TILE,
+    radius:
+      layer.minRadius +
+      starfieldUnit("r", layerIndex, starIndex) * (layer.maxRadius - layer.minRadius),
     baseAlpha: layer.baseAlpha,
-    twinklePhase: ((extra >>> 16) / 0x10000) * TAU,
-    twinkleSpeed: 0.15 + 0.35 * (((base ^ extra) & 0xff) / 0xff),
+    twinklePhase: starfieldUnit("p", layerIndex, starIndex) * TAU,
+    twinkleSpeed: 0.15 + 0.35 * starfieldUnit("s", layerIndex, starIndex),
   };
 }
 
@@ -477,6 +515,14 @@ export class StarMapRenderer {
   private particles: Array<StarMapFlowParticle> = [];
   private readonly starfieldStars: ReadonlyArray<ReadonlyArray<StarMapStarfieldStar>>;
   private readonly labelNodes: Array<StarMapLabelNode> = [];
+  private labelPlacements: ReadonlyArray<StarMapLabelPlacement> = [];
+  /**
+   * True once the user has framed the map themselves. Only then is the camera
+   * theirs to keep across a resize; otherwise the framing was chosen for a
+   * viewport that no longer exists and must be recomputed. Selection easing
+   * does NOT set this — it inherits whatever framing was already in effect.
+   */
+  private userFramedCamera = false;
 
   private resizeObserver: ResizeObserver | null = null;
   private intersectionObserver: IntersectionObserver | null = null;
@@ -618,6 +664,11 @@ export class StarMapRenderer {
     return screenToWorld(this.currentCamera(), this.viewport, point);
   }
 
+  /** Placements from the most recent painted frame, for label hit-testing. */
+  getLabelPlacements(): ReadonlyArray<StarMapLabelPlacement> {
+    return this.labelPlacements;
+  }
+
   toScreen(point: StarMapPoint): StarMapPoint {
     return worldToScreen(this.currentCamera(), this.viewport, point);
   }
@@ -631,14 +682,16 @@ export class StarMapRenderer {
     this.invalidate();
   }
 
-  setCamera(camera: StarMapCamera): void {
+  setCamera(camera: StarMapCamera, options?: { readonly user?: boolean }): void {
     this.cameraValue = camera;
+    if (options?.user === true) this.userFramedCamera = true;
     this.invalidate();
   }
 
   /** Returns to auto-fit; the reset-view control and map switches use this. */
   fitToContent(): void {
     this.cameraValue = null;
+    this.userFramedCamera = false;
     this.invalidate();
   }
 
@@ -820,6 +873,17 @@ export class StarMapRenderer {
     const backing = backingStoreSize(cssWidth, cssHeight, dpr);
     this.viewport = { width: cssWidth, height: cssHeight };
     this.dpr = dpr;
+    // The camera was framed for the old box. Auto framing recomputes itself in
+    // `currentCamera`, but a pinned camera would keep a scale and centre chosen
+    // for a viewport that no longer exists — which is how a re-laid-out panel
+    // ends up drawing the whole constellation off-canvas.
+    if (this.cameraValue !== null) {
+      if (this.userFramedCamera) {
+        this.cameraValue = clampCamera(this.cameraValue, this.contentBounds(), this.viewport);
+      } else {
+        this.cameraValue = null;
+      }
+    }
     if (backing.width > 0 && backing.height > 0) {
       if (this.canvas.width !== backing.width) this.canvas.width = backing.width;
       if (this.canvas.height !== backing.height) this.canvas.height = backing.height;
@@ -910,13 +974,15 @@ export class StarMapRenderer {
     this.particles = createFlowParticles(flowLengths);
   }
 
+  private contentBounds() {
+    return this.layout !== null
+      ? boundsFromPoints(this.layout.positions)
+      : { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  }
+
   private currentCamera(): StarMapCamera {
     if (this.cameraValue !== null) return this.cameraValue;
-    const bounds =
-      this.layout !== null
-        ? boundsFromPoints(this.layout.positions)
-        : { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-    return fitCameraToBounds(bounds, this.viewport);
+    return fitCameraToBounds(this.contentBounds(), this.viewport);
   }
 
   // -- drawing ------------------------------------------------------------------
@@ -962,10 +1028,13 @@ export class StarMapRenderer {
       for (let tileX = -offset.x; tileX < width; tileX += STAR_MAP_STARFIELD_TILE) {
         for (let tileY = -offset.y; tileY < height; tileY += STAR_MAP_STARFIELD_TILE) {
           for (const star of stars) {
-            const alpha = twinkleAlpha(star.baseAlpha, star.twinklePhase, star.twinkleSpeed, clock);
-            ctx.fillStyle = variants[alphaVariantIndex(alpha, variants.length)]!;
             const x = tileX + star.x;
             const y = tileY + star.y;
+            // Most of a tile now falls outside the canvas; skipping those makes
+            // the cost track visible stars rather than tile area.
+            if (x < -2 || x > width + 2 || y < -2 || y > height + 2) continue;
+            const alpha = twinkleAlpha(star.baseAlpha, star.twinklePhase, star.twinkleSpeed, clock);
+            ctx.fillStyle = variants[alphaVariantIndex(alpha, variants.length)]!;
             if (star.radius < 1.25) {
               ctx.fillRect(x - star.radius, y - star.radius, star.radius * 2, star.radius * 2);
             } else {
@@ -1118,7 +1187,13 @@ export class StarMapRenderer {
     ctx.font = this.labelFont;
     ctx.textBaseline = "middle";
     ctx.fillStyle = this.brushes.label;
-    for (const placement of placeStarMapLabels({ nodes: this.labelNodes, viewportWidth: width })) {
+    // Cached so the mount can hit-test exactly the labels that were drawn,
+    // rather than recomputing placement (and risking a different answer).
+    this.labelPlacements = placeStarMapLabels({
+      nodes: this.labelNodes,
+      viewportWidth: width,
+    });
+    for (const placement of this.labelPlacements) {
       if (placement.suppressed) continue;
       ctx.fillText(placement.text, placement.x, placement.y);
     }
