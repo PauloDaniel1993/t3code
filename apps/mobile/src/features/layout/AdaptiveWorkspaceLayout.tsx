@@ -43,6 +43,7 @@ import {
 } from "../keyboard/hardwareKeyboardCommands";
 import { HomeListOptionsProvider, resolveProjectGroupingMode } from "../home/home-list-options";
 import { ThreadNavigationSidebar } from "../threads/ThreadNavigationSidebar";
+import type { TaskDestination } from "../threads/task-agent-surface/taskAgentNavigation";
 import { WORKSPACE_PANE_TIMING } from "./workspace-pane-animation";
 import { WorkspaceInspectorPane } from "./workspace-inspector-pane";
 
@@ -500,6 +501,16 @@ function AdaptiveWorkspaceLayoutContent(
     },
     [layout.usesSplitView, pathname, navigation, selectedThreadKey],
   );
+  const handleOpenTaskAgentDestination = useCallback(
+    (destination: TaskDestination) => {
+      if (destination.kind === "peek") {
+        navigation.navigate("TaskPeek", destination.params);
+        return;
+      }
+      navigation.navigate("Thread", destination.params);
+    },
+    [navigation],
+  );
 
   return (
     <HomeListOptionsProvider projectGroupingMode={projectGroupingMode}>
@@ -525,6 +536,7 @@ function AdaptiveWorkspaceLayoutContent(
                 onOpenEnvironmentSettings={handleOpenEnvironmentSettings}
                 onNewThreadInProject={handleNewThreadInProject}
                 onSelectThread={handleSelectThread}
+                onOpenTaskAgentDestination={handleOpenTaskAgentDestination}
                 onSearchQueryChange={setPrimarySidebarSearchQuery}
                 searchQuery={primarySidebarSearchQuery}
               />

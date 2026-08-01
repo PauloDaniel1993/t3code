@@ -28,10 +28,15 @@ import { AppText as Text } from "../../components/AppText";
 import { EmptyState } from "../../components/EmptyState";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
-import { scopedProjectKey } from "../../lib/scopedEntities";
+import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import {
+  mobilePreferencesAtom,
+  updateMobilePreferencesAtom,
+  useThreadTasksEnabled,
+} from "../../state/preferences";
 import { useThreadSearch } from "../../state/queries";
+import { useTaskAgentReadState } from "../../state/use-task-agent-read-state";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
 import { environmentServerConfigsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
@@ -42,6 +47,13 @@ import {
   ThreadListShowMoreRow,
 } from "../threads/thread-list-items";
 import { ThreadListV2PendingRow, ThreadListV2Row } from "../threads/thread-list-v2-items";
+import { buildTaskAgentModel } from "../threads/task-agent-surface/taskAgentModel";
+import type { TaskDestination } from "../threads/task-agent-surface/taskAgentNavigation";
+import {
+  buildTaskAgentSurfaceRows,
+  type TaskAgentListPresentationState,
+  type TaskAgentRowViewModel,
+} from "../threads/task-agent-surface/taskAgentSurface.logic";
 import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
@@ -96,6 +108,7 @@ interface HomeScreenProps {
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
+  readonly onOpenTaskAgentDestination: (destination: TaskDestination) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
   /** Resolves true iff the settle was dispatched and succeeded. */
@@ -192,6 +205,8 @@ export function HomeScreen(props: HomeScreenProps) {
   >(() => new Map());
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const threadListV2Enabled = useThreadListV2Enabled();
+  const threadTasksEnabled = useThreadTasksEnabled();
+  const { readState: taskAgentReadState, markThreadsVisited } = useTaskAgentReadState();
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
@@ -528,6 +543,86 @@ export function HomeScreen(props: HomeScreenProps) {
     const id = setInterval(() => setNowMinute(new Date().toISOString().slice(0, 16)), 60_000);
     return () => clearInterval(id);
   }, [threadListV2Enabled]);
+  // The task/agent projection shares the v2 minute clock so elapsed labels can
+  // advance without reading a clock during render or invalidating every row.
+  const taskAgentNowMs = useMemo(() => Date.parse(`${nowMinute}:00.000Z`), [nowMinute]);
+  const taskAgentSurface = useMemo(() => {
+    if (!threadListV2Enabled || !threadTasksEnabled) return null;
+    return buildTaskAgentSurfaceRows(
+      buildTaskAgentModel({
+        threads: props.threads,
+        nowMs: taskAgentNowMs,
+        readState: taskAgentReadState,
+      }),
+    );
+  }, [props.threads, taskAgentNowMs, taskAgentReadState, threadListV2Enabled, threadTasksEnabled]);
+  const [taskAgentExpandedByThreadKey, setTaskAgentExpandedByThreadKey] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
+  const taskAgentPresentationByThreadKey = useMemo(() => {
+    if (taskAgentSurface === null) return null;
+    const presentationByThreadKey = new Map<string, TaskAgentListPresentationState>();
+    for (const row of taskAgentSurface.threads) {
+      presentationByThreadKey.set(row.key, {
+        row,
+        expanded:
+          row.kind === "rollup-thread"
+            ? (taskAgentExpandedByThreadKey.get(row.key) ?? row.rollup.expandedByDefault)
+            : false,
+      });
+    }
+    return presentationByThreadKey;
+  }, [taskAgentExpandedByThreadKey, taskAgentSurface]);
+  const taskAgentParentThreadIdByTaskThreadKey = useMemo(() => {
+    const parentThreadIdByTaskThreadKey = new Map<string, EnvironmentThreadShell["id"]>();
+    if (taskAgentSurface === null) return parentThreadIdByTaskThreadKey;
+
+    for (const row of taskAgentSurface.threads) {
+      if (row.kind !== "rollup-thread") continue;
+      for (const task of row.rollup.tasks) {
+        if (!("tap" in task.navigation)) continue;
+        parentThreadIdByTaskThreadKey.set(
+          scopedThreadKey(
+            task.navigation.tap.params.environmentId,
+            task.navigation.tap.params.threadId,
+          ),
+          row.thread.id,
+        );
+      }
+    }
+    return parentThreadIdByTaskThreadKey;
+  }, [taskAgentSurface]);
+  const taskAgentParentThreadIdByTaskThreadKeyRef = useRef(taskAgentParentThreadIdByTaskThreadKey);
+  taskAgentParentThreadIdByTaskThreadKeyRef.current = taskAgentParentThreadIdByTaskThreadKey;
+  const handleTaskAgentExpandedChange = useCallback((threadKey: string, expanded: boolean) => {
+    setTaskAgentExpandedByThreadKey((current) => {
+      if (current.get(threadKey) === expanded) return current;
+      const next = new Map(current);
+      next.set(threadKey, expanded);
+      return next;
+    });
+  }, []);
+  const handleTaskAgentRowPress = useCallback(
+    (row: TaskAgentRowViewModel) => {
+      if (row.kind !== "task" || !("tap" in row.navigation)) return;
+
+      const destination = row.navigation.tap;
+      const parentThreadId = taskAgentParentThreadIdByTaskThreadKeyRef.current.get(
+        scopedThreadKey(destination.params.environmentId, destination.params.threadId),
+      );
+      if (parentThreadId !== undefined) {
+        // This is interaction time, so the timestamp is deliberately read here
+        // rather than while projecting a render.
+        markThreadsVisited({
+          parentThreadId,
+          taskThreadId: destination.params.threadId,
+          visitedAt: new Date().toISOString(),
+        });
+      }
+      props.onOpenTaskAgentDestination(destination);
+    },
+    [markThreadsVisited, props.onOpenTaskAgentDestination],
+  );
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
@@ -649,6 +744,9 @@ export function HomeScreen(props: HomeScreenProps) {
         );
       }
       const thread = item.item.thread;
+      const taskAgentPresentation = taskAgentPresentationByThreadKey?.get(
+        scopedThreadKey(thread.environmentId, thread.id),
+      );
       return (
         <ThreadListV2Row
           thread={thread}
@@ -693,6 +791,15 @@ export function HomeScreen(props: HomeScreenProps) {
           }
           onSwipeableClose={handleSwipeableClose}
           onSwipeableWillOpen={handleSwipeableWillOpen}
+          {...(taskAgentPresentation === undefined
+            ? {}
+            : {
+                taskAgentPresentation: {
+                  ...taskAgentPresentation,
+                  onExpandedChange: handleTaskAgentExpandedChange,
+                  onPressRow: handleTaskAgentRowPress,
+                },
+              })}
         />
       );
     },
@@ -700,6 +807,8 @@ export function HomeScreen(props: HomeScreenProps) {
       handleChangeRequestState,
       handleDeleteThread,
       handleSettleThread,
+      handleTaskAgentExpandedChange,
+      handleTaskAgentRowPress,
       handleSwipeableClose,
       handleSwipeableWillOpen,
       handleUnsettleThread,
@@ -713,6 +822,7 @@ export function HomeScreen(props: HomeScreenProps) {
       serverConfigs,
       settlementEnvironmentIds,
       threadSearchMatchByKey,
+      taskAgentPresentationByThreadKey,
       v2ProjectTitleByProjectKey,
       props.searchQuery,
     ],
@@ -730,6 +840,7 @@ export function HomeScreen(props: HomeScreenProps) {
       serverConfigs,
       savedConnectionsById: props.savedConnectionsById,
       searchQuery: props.searchQuery,
+      taskAgentPresentationByThreadKey,
       threadSearchMatchByKey,
     }),
     [
@@ -738,6 +849,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.searchQuery,
       props.savedConnectionsById,
       serverConfigs,
+      taskAgentPresentationByThreadKey,
       threadSearchMatchByKey,
       v2ProjectTitleByProjectKey,
     ],
