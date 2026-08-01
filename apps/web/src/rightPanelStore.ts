@@ -170,6 +170,16 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
+                    // Persisted state can outlive the build that wrote it: drop
+                    // surfaces of a kind this build does not know (for example a
+                    // removed surface kind) so they never render as ghost tabs.
+                    if (
+                      !surface ||
+                      typeof surface !== "object" ||
+                      !RIGHT_PANEL_KINDS.includes(surface.kind)
+                    ) {
+                      return [];
+                    }
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&
