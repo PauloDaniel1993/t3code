@@ -9,7 +9,7 @@ import {
   groupNativeAgentsByTurn,
   nativeAgentGroupStartsExpanded,
   type NativeAgentTurnGroup,
-} from "./SidebarNativeAgents.logic";
+} from "@t3tools/client-runtime/state/native-agents";
 
 /**
  * In-session agents nested under the parent's task rows, grouped per turn to

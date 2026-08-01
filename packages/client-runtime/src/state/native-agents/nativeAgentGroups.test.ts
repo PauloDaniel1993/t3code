@@ -5,7 +5,7 @@ import {
   formatTaskGroupChipLabel,
   resolveNativeAgentPeekChips,
   resolveNativeAgentRetryLinks,
-} from "./SidebarNativeAgentGroups.logic";
+} from "./nativeAgentGroups.ts";
 
 // `turnId` is a branded `TurnId` on the contract; the fixtures use plain
 // strings because none of these rules compare it.

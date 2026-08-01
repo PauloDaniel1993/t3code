@@ -23,11 +23,14 @@ import {
 
 import { cn } from "../lib/utils";
 import { useThread, useThreadShell } from "../state/entities";
-import { formatNativeAgentStatusLine, resolveNativeAgentBody } from "./SidebarNativeAgents.logic";
+import {
+  formatNativeAgentStatusLine,
+  resolveNativeAgentBody,
+} from "@t3tools/client-runtime/state/native-agents";
 import {
   resolveNativeAgentPeekChips,
   resolveNativeAgentRetryLinks,
-} from "./SidebarNativeAgentGroups.logic";
+} from "@t3tools/client-runtime/state/native-agents";
 import {
   formatTaskStatusLine,
   resolveMiniWindowMode,
