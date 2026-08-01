@@ -10,6 +10,7 @@ This is a living glossary for T3 Code. It explains what common terms mean in thi
 - [Thread timeline](#thread-timeline)
 - [Orchestration](#orchestration)
 - [Provider runtime](#provider-runtime)
+- [Wayfinder maps](#wayfinder-maps)
 - [Checkpointing](#checkpointing)
 
 ## Concepts
@@ -116,6 +117,28 @@ Controls how assistant text reaches the thread timeline. In [the contracts][1], 
 
 A point-in-time view of state. The word is used in multiple layers, including orchestration, provider, and checkpointing. See [ProjectionSnapshotQuery.ts][10], [ProviderAdapter.ts][15], and [CheckpointStore.ts][19].
 
+### Wayfinder maps
+
+#### Wayfinder map
+
+A directory of Markdown under a project's `.plan/`: one `map.md` describing an effort plus a `tickets/` directory of decision tickets. T3 Code normalises that on-disk graph for the read-only Map surface. See [wayfinder-maps.md][25].
+
+#### Ticket
+
+One decision in a wayfinder map. Its effective status is derived rather than stored as ticket state, with precedence ruled out (`out_of_scope`) over `resolved`, then `claimed`, then `open`. T3 Code treats prose under `Ruled out` as out of scope and prose under `Answer` or `Resolution` as resolved; a bare heading leaves an otherwise open ticket open. A claimant makes it claimed, and the legacy `Status: closed` field also resolves a field-line ticket. See [wayfinder-maps.md][25].
+
+#### Frontier
+
+A ticket that is neither resolved nor out of scope and whose every blocker is resolved or out of scope. The frontier is the map's answer to "what can I pick up now?" See [wayfinder-maps.md][25].
+
+#### Fog
+
+A named area of a wayfinder effort that is not yet specified. A fog entry may name the ticket that will clear it. See [wayfinder-maps.md][25].
+
+#### Undermined
+
+A ticket that is the target of an `undermines` edge from a ticket that is not resolved. See [wayfinder-maps.md][25].
+
 ### Checkpointing
 
 Checkpointing captures workspace state over time so the app can diff turns and restore earlier points. The main pieces are [CheckpointStore.ts][19], [CheckpointDiffQuery.ts][20], and [CheckpointReactor.ts][6].
@@ -154,6 +177,7 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 - [Provider architecture][16]
 - [Permission modes][18]
 - [Workspace layout][2]
+- [Wayfinder maps][25]
 
 [1]: ../../packages/contracts/src/orchestration.ts
 [2]: ./workspace-layout.md
@@ -179,3 +203,4 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [22]: ../../apps/server/src/checkpointing/Utils.ts
 [23]: ../../apps/server/src/checkpointing/Diffs.ts
 [24]: ./overview.md
+[25]: ./wayfinder-maps.md

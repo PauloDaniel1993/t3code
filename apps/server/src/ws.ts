@@ -58,6 +58,8 @@ import {
   type TerminalError,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
+  type WayfinderMapsFailure,
+  WayfinderMapsError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -99,6 +101,7 @@ import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
+import * as WayfinderMaps from "./wayfinder/WayfinderMaps.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
@@ -204,6 +207,40 @@ function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesEr
         normalizedCwd: error.cwd,
         detail: error.reason,
       };
+    default:
+      return unexpectedCompatibilityError(error);
+  }
+}
+
+function wayfinderMapsFailureContext(error: WayfinderMaps.WayfinderMapsError): {
+  readonly failure: WayfinderMapsFailure;
+  readonly normalizedCwd?: string;
+  readonly detail?: string;
+} {
+  switch (error._tag) {
+    case "WorkspaceRootNotExistsError":
+      return {
+        failure: "workspace_root_not_found",
+        normalizedCwd: error.normalizedWorkspaceRoot,
+      };
+    case "WorkspaceRootCreateFailedError":
+      return {
+        failure: "workspace_root_create_failed",
+        normalizedCwd: error.normalizedWorkspaceRoot,
+      };
+    case "WorkspaceRootStatFailedError":
+      return {
+        failure: "workspace_root_stat_failed",
+        normalizedCwd: error.normalizedWorkspaceRoot,
+        detail: error.phase,
+      };
+    case "WorkspaceRootNotDirectoryError":
+      return {
+        failure: "workspace_root_not_directory",
+        normalizedCwd: error.normalizedWorkspaceRoot,
+      };
+    case "WorkspacePathOutsideRootError":
+      return { failure: "workspace_path_outside_root" };
     default:
       return unexpectedCompatibilityError(error);
   }
@@ -401,6 +438,7 @@ const makeWsRpcLayer = (
       );
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+      const wayfinderMaps = yield* WayfinderMaps.WayfinderMaps;
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
@@ -1868,6 +1906,30 @@ const makeWsRpcLayer = (
             }),
             {
               "rpc.aggregate": "vcs",
+            },
+          ),
+        [WS_METHODS.subscribeWayfinderMaps]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeWayfinderMaps,
+            wayfinderMaps
+              .stream(input.cwd, {
+                automaticBootstrapProbeInterval: Effect.succeed(
+                  WayfinderMaps.WAYFINDER_MAPS_DEFAULT_BOOTSTRAP_PROBE_INTERVAL,
+                ),
+              })
+              .pipe(
+                Stream.mapError(
+                  (cause) =>
+                    new WayfinderMapsError({
+                      cwd: input.cwd,
+                      ...wayfinderMapsFailureContext(cause),
+                      message: cause.message,
+                      cause,
+                    }),
+                ),
+              ),
+            {
+              "rpc.aggregate": "workspace",
             },
           ),
         [WS_METHODS.vcsRefreshStatus]: (input) =>

@@ -102,6 +102,92 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("drops persisted surfaces with an unknown kind during migration", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "diff",
+            surfaces: [
+              { id: "diff", kind: "diff" },
+              { id: "kanban", kind: "kanban" },
+              { id: "plan", kind: "plan" },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "diff",
+          surfaces: [
+            { id: "diff", kind: "diff" },
+            { id: "plan", kind: "plan" },
+          ],
+        },
+      },
+    });
+  });
+
+  it("clears the persisted active surface when migration drops it", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "kanban",
+            surfaces: [
+              { id: "kanban", kind: "kanban" },
+              { id: "plan", kind: "plan" },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: null,
+          surfaces: [{ id: "plan", kind: "plan" }],
+        },
+      },
+    });
+  });
+
+  it("preserves persisted surfaces of known kinds and their ordering", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "browser:tab-a",
+            surfaces: [
+              { id: "browser:tab-a", kind: "preview", resourceId: "tab-a" },
+              { id: "diff", kind: "diff" },
+              { id: "files", kind: "files" },
+              { id: "plan", kind: "plan" },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "browser:tab-a",
+          surfaces: [
+            { id: "browser:tab-a", kind: "preview", resourceId: "tab-a" },
+            { id: "diff", kind: "diff" },
+            { id: "files", kind: "files" },
+            { id: "plan", kind: "plan" },
+          ],
+        },
+      },
+    });
+  });
+
   it("open sets the active panel for a thread", () => {
     useRightPanelStore.getState().open(refA, "preview");
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("preview");
@@ -139,6 +225,62 @@ describe("rightPanelStore", () => {
       isOpen: true,
       activeSurfaceId: "files",
       surfaces: [{ id: "files", kind: "files" }],
+    });
+  });
+
+  it("opens the map surface as a singleton", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "map",
+      surfaces: [{ id: "map", kind: "map" }],
+    });
+  });
+
+  it("reopening the map surface activates the existing surface instead of duplicating it", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().open(refA, "map");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "map",
+      surfaces: [
+        { id: "map", kind: "map" },
+        { id: "plan", kind: "plan" },
+      ],
+    });
+  });
+
+  it("closes the map surface like any other singleton", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().closeSurface(refA, "map");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
+  });
+
+  it("round-trips the map surface through persistence migration", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().open(refA, "plan");
+
+    const persisted = JSON.parse(
+      JSON.stringify({ byThreadKey: useRightPanelStore.getState().byThreadKey }),
+    );
+    expect(migratePersistedRightPanelState(persisted)).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "plan",
+          surfaces: [
+            { id: "map", kind: "map" },
+            { id: "plan", kind: "plan" },
+          ],
+        },
+      },
     });
   });
 

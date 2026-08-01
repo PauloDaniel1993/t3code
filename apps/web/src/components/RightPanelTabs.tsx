@@ -1,6 +1,6 @@
 import type { ContextMenuItem, PreviewSessionSnapshot } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
-import { ClipboardList, FileDiff, Files, Globe2, Plus, TerminalSquare, X } from "lucide-react";
+import { ClipboardList, FileDiff, Files, Globe2, Map, Plus, TerminalSquare, X } from "lucide-react";
 import {
   type MouseEvent as ReactMouseEvent,
   type ReactElement,
@@ -44,9 +44,11 @@ interface RightPanelTabsProps {
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
+  onAddMap: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
+  mapAvailable: boolean;
   children: ReactNode;
 }
 
@@ -54,6 +56,7 @@ const SURFACE_DISABLED_REASONS = {
   browser: "Browser previews are only available in the T3 Code desktop app.",
   files: "Files are only available when a project is open.",
   diff: "Diff is only available for server threads in Git repositories.",
+  map: "Maps are only available when a project is open.",
 } as const;
 
 type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
@@ -91,9 +94,11 @@ function RightPanelEmptyState(props: {
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
+  onAddMap: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
+  mapAvailable: boolean;
 }) {
   const actions = [
     {
@@ -119,6 +124,14 @@ function RightPanelEmptyState(props: {
       available: props.filesAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.files,
       onClick: props.onAddFiles,
+    },
+    {
+      label: "Map",
+      description: "See this project's tickets and blockers as a star map.",
+      icon: Map,
+      available: props.mapAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.map,
+      onClick: props.onAddMap,
     },
     {
       label: "Diff",
@@ -205,6 +218,8 @@ function surfaceTitle(
       );
     case "plan":
       return "Plan";
+    case "map":
+      return "Map";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -242,7 +257,7 @@ function SurfaceIcon({
   surface: RightPanelSurface;
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
   theme: "light" | "dark";
-}) {
+}): ReactElement {
   switch (surface.kind) {
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
@@ -266,6 +281,8 @@ function SurfaceIcon({
       return <TerminalSquare className="size-3.5 shrink-0" />;
     case "plan":
       return <ClipboardList className="size-3.5 shrink-0" />;
+    case "map":
+      return <Map className="size-3.5 shrink-0" />;
   }
 }
 
@@ -464,6 +481,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     Files
                   </SurfaceMenuItem>
                   <SurfaceMenuItem
+                    available={props.mapAvailable}
+                    disabledReason={SURFACE_DISABLED_REASONS.map}
+                    onClick={props.onAddMap}
+                  >
+                    <Map />
+                    Map
+                  </SurfaceMenuItem>
+                  <SurfaceMenuItem
                     available={props.diffAvailable}
                     disabledReason={SURFACE_DISABLED_REASONS.diff}
                     onClick={props.onAddDiff}
@@ -485,9 +510,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddTerminal={props.onAddTerminal}
             onAddDiff={props.onAddDiff}
             onAddFiles={props.onAddFiles}
+            onAddMap={props.onAddMap}
             browserAvailable={props.browserAvailable}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
+            mapAvailable={props.mapAvailable}
           />
         ) : (
           props.children
