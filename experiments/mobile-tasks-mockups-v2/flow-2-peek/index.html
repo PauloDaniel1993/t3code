@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks v2 · Flow 2 — bottom-sheet peek</title>
+    <link rel="stylesheet" href="../mockup.css" />
+  </head>
+  <body>
+    <a class="backlink" href="../index.html" id="backlink">← v2 index</a>
+
+    <div class="stage">
+      <div class="device">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Behind the sheet: a static facsimile of flow-1's thread list.
+                 The expanded groups carry the deep-link ids (?sheet= values
+                 open their sheets; flow-1's ?peek= highlights the same rows). -->
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow selected">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="clk" title="Snooze / reminders">
+                        <svg
+                          style="width: 14px; height: 14px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7v5l3 2" />
+                        </svg>
+                      </span>
+                      <span class="settle" title="Settle this thread">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        Settle
+                      </span>
+                    </span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="1 task · 10 agents in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      1 task · 10 agents
+                    </span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub" data-unit="task" title="Task · working — tap switches the sheet">
+                    <span class="sic working-ic">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Create 4 mockups for the mobile app based on th…</span>
+                    <span class="smeta working">8s</span>
+                  </div>
+                  <div
+                    class="sub lvl2"
+                    data-unit="turn"
+                    title="Latest turn — 10 agents: 6 completed, 4 failed, all tool-use budget exceeded — tap switches to the task's sheet, where its agents are view only"
+                  >
+                    <span class="sic" style="color: var(--dim)">
+                      <svg
+                        class="ic"
+                        style="width: 12px; height: 12px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle" style="color: var(--muted)">Latest turn · 10 agents</span>
+                    <span class="smeta">
+                      <span class="cnt-ok" title="6 agents completed">✓ 6</span>
+                      <span class="cnt-fail" title="4 agents failed — tool-use budget exceeded"
+                        >× 4</span
+                      >
+                      <span class="ret" title="Results returned to the task">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Build Standalone Android APK</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Redirect Error</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="3 tasks in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      3 tasks
+                    </span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div
+                    class="sub"
+                    data-unit="apk"
+                    title="Task · returned results · has a nested turn — tap switches the sheet"
+                  >
+                    <span class="sic" style="color: var(--dim)">
+                      <svg
+                        class="ic"
+                        style="width: 12px; height: 12px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Build a standalone, installable Android APK of t…</span>
+                    <span class="smeta">
+                      19m
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div
+                    class="sub done"
+                    data-unit="local"
+                    title="Task · done · returned results — tap switches the sheet"
+                  >
+                    <span class="sic ok">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </span>
+                    <span class="stitle">is it possible to build locally?</span>
+                    <span class="smeta">
+                      59s
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div
+                    class="sub"
+                    data-unit="login"
+                    title="Task · working · returned results — tap switches the sheet"
+                  >
+                    <span class="sic working-ic">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">the t3 connect is not letting log in</span>
+                    <span class="smeta">
+                      <span class="working">24s</span>
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast" id="toast"></div>
+
+            <!-- Bottom sheet: the mobile peek. Task and agent sheets share one
+                 anatomy; the agent sheet disables the composer with the reason
+                 spelled out in words and swaps "Open thread" for "Show in
+                 transcript". Dismissing the sheet returns to flow-1. -->
+            <div class="sheet-wrap" id="sheetWrap">
+              <div class="sheet-dim" id="sheetDim"></div>
+              <div class="sheet" id="sheet">
+                <div
+                  class="sheet-grab"
+                  id="sheetGrab"
+                  title="Drag down to dismiss — returns to the list"
+                ></div>
+                <div class="sheet-scroll" id="sheetScroll"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Flow 2 — Bottom-sheet peek.</b> The middle of the flow: tap a task / turn row to switch
+          sheets, dismiss to go back to the list, "Open thread" pushes the full task view.
+          <code>?sheet=task|apk|local|login|a4</code> opens one on load (a4 is a failed in-session
+          agent whose composer refuses steering, with the reason in words).
+          <code>?task=&lt;id&gt;</code> is the alias flow-1's rows emit.
+        </div>
+      </div>
+    </div>
+
+    <div class="concept">
+      <b>Flow 2</b> · bottom-sheet peek — task sheets steer; agent sheets say why they can't
+    </div>
+
+    <script>
+      /* v2 theme convention: ?theme=dark|light pins the page on <html>;
+         no parameter follows the OS via the prefers-color-scheme block in
+         mockup.css. */
+      const params = new URLSearchParams(location.search);
+      const theme = params.get("theme");
+      if (theme === "dark" || theme === "light") {
+        document.documentElement.dataset.theme = theme;
+      }
+
+      /* Every internal link preserves the current ?theme= value
+         (CONVENTIONS.md §2). */
+      function withTheme(href) {
+        if (theme === "dark" || theme === "light") {
+          href += (href.indexOf("?") === -1 ? "?" : "&") + "theme=" + theme;
+        }
+        return href;
+      }
+      function nav(href) {
+        location.href = withTheme(href);
+      }
+
+      /* ---- Sheet data (v1 option 2's scenario, carried forward) ----
+         Task sheets: status, title, chips (creator · context · model ·
+         returned), prompt, latest activity, the task's turn with its agents
+         (✓/× counters; failed agents carry their reason in words), Cancel
+         while running, enabled steer composer, "Open thread" → flow-3.
+         The agent sheet keeps the identical anatomy with only what a native
+         run has (type, status, prompt, usage, error) — the model chip is
+         derived from the session ("inherits task · Opus 4.7"), the composer
+         is disabled with the reason spelled out, and the header action is
+         "Show in transcript" → the owning task's thread view in flow-3. */
+      const AGENTS_10 = [
+        { id: "a1", ok: 1, name: "Map screenshot chrome regions", t: "3s" },
+        { id: "a2", ok: 1, name: "Extract thread-row anatomy", t: "4s" },
+        { id: "a3", ok: 1, name: "Draft status bar + app header markup", t: "5s" },
+        { id: "a4", ok: 0, name: "Reproduce provider glyph set", t: "9s" },
+        { id: "a5", ok: 1, name: "Draft list-row CSS tokens", t: "4s" },
+        { id: "a6", ok: 0, name: "Fit expanded task group into 390px", t: "7s" },
+        { id: "a7", ok: 0, name: "Bottom-sheet layout pass", t: "6s" },
+        { id: "a8", ok: 1, name: "Compose thread-list variant", t: "5s" },
+        { id: "a9", ok: 0, name: "In-thread card layout pass", t: "8s" },
+        { id: "a10", ok: 1, name: "Assemble full-thread variant", t: "6s" },
+      ];
+      const AGENTS_APK = [
+        { id: "apk1", ok: 1, name: "Locate Gradle wrapper + signing config", t: "4m" },
+        { id: "apk2", ok: 1, name: "Assemble release APK locally", t: "11m" },
+        { id: "apk3", ok: 0, name: "Verify install on emulator", t: "3m" },
+      ];
+      /* Every failure in the scenario is a tool-use budget exhaustion
+         (CONVENTIONS.md §7.6) — the reason rides in the row, never a bare ×. */
+      const FAIL_REASON = "failed — tool-use budget exceeded";
+
+      const UNITS = {
+        task: {
+          kind: "task",
+          state: "working",
+          statusText: "Working · 8s",
+          title: "Create 4 mockups for the mobile app based on the image",
+          chips: [
+            { cls: "agent", label: "✦ agent" },
+            { cls: "", label: "full thread context" },
+            { cls: "", label: "Opus 4.7" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Create 4 mockups for the mobile app based on the reference image: thread list, bottom sheet, in-thread, full thread.",
+            },
+            {
+              role: "asst",
+              html: "Fanned out <b>10 agents</b> over chrome, rows and variants — 6 back already, 4 hit the tool-use budget. Retrying the failures, then assembling.",
+            },
+          ],
+          agents: { label: "Latest turn · 10 agents", list: AGENTS_10, ok: 6, fail: 4 },
+          cancellable: true,
+        },
+        apk: {
+          kind: "task",
+          state: "done",
+          statusText: "Done · 19m",
+          title: "Build a standalone, installable Android APK of the app",
+          chips: [
+            { cls: "agent", label: "✦ agent" },
+            { cls: "", label: "full thread context" },
+            { cls: "", label: "Opus 4.7" },
+            { cls: "returned", label: "↩ returned · woke parent" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Build a standalone, installable Android APK of the app.",
+            },
+            {
+              role: "asst",
+              html: "<b>Result:</b> release APK assembles locally; emulator install blocked on SDK license acceptance — flagged for the parent thread.",
+            },
+            { role: "evt", text: "↩ Returned to the parent — woke Fix T3 Connect Redirect Error" },
+          ],
+          agents: { label: "Latest turn · 3 agents", list: AGENTS_APK, ok: 2, fail: 1 },
+          composerPh: "Message this task…",
+        },
+        local: {
+          kind: "task",
+          state: "done",
+          statusText: "Done · 59s",
+          title: "is it possible to build locally?",
+          chips: [
+            { cls: "you", label: "you" },
+            { cls: "", label: "2 selected messages" },
+            { cls: "", label: "Opus 4.7" },
+            { cls: "returned", label: "↩ returned · woke parent" },
+          ],
+          convo: [
+            { role: "user", text: "is it possible to build locally?" },
+            {
+              role: "asst",
+              html: "<b>Yes</b> — Gradle wrapper is checked in; needs a local keystore and the Android SDK platform 35.",
+            },
+            { role: "evt", text: "↩ Returned to the parent — woke Fix T3 Connect Redirect Error" },
+          ],
+          composerPh: "Message this task…",
+        },
+        login: {
+          kind: "task",
+          state: "working",
+          statusText: "Working · 24s",
+          title: "the t3 connect is not letting log in",
+          chips: [
+            { cls: "you", label: "you" },
+            { cls: "", label: "full thread context" },
+            { cls: "", label: "Opus 4.7" },
+          ],
+          convo: [
+            { role: "user", text: "the t3 connect is not letting log in" },
+            {
+              role: "asst",
+              html: "Tracing the pairing-token exchange… the redirect lands on /oauth/callback but the state param doesn't round-trip.",
+            },
+          ],
+          cancellable: true,
+        },
+        a4: {
+          kind: "agent",
+          owner: "task",
+          state: "failed",
+          statusText: "Failed · tool-use budget exceeded",
+          title: "Reproduce provider glyph set",
+          chips: [
+            { cls: "native", label: "agent · runs in the task session" },
+            { cls: "", label: "Explore" },
+            { cls: "", label: "inherits task · Opus 4.7" },
+            { cls: "danger", label: "6.8k tokens · 5 tools · 9s" },
+          ],
+          convo: [
+            {
+              role: "user",
+              text: "Reproduce the provider glyphs from the screenshot (coral asterisk, gray swirl) as inline SVGs.",
+            },
+            {
+              role: "evt",
+              cls: "failed",
+              text: "✕ Tool-use budget exceeded before the sweep converged",
+            },
+            {
+              role: "evt",
+              text: "The task's agent decides whether to retry — you can't restart it from here",
+            },
+          ],
+        },
+      };
+
+      const CHECK =
+        '<svg style="width:12px;height:12px;flex:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>';
+      const XFAIL =
+        '<svg style="width:12px;height:12px;flex:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>';
+      const AST =
+        '<svg style="width:12px;height:12px;flex:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9"/></svg>';
+      const X =
+        '<svg style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+      const EXT =
+        '<svg style="width:10px;height:10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>';
+      const LOCATE =
+        '<svg style="width:10px;height:10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+      const SEND =
+        '<svg style="width:11px;height:11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+
+      const wrap = document.getElementById("sheetWrap");
+      const scroll = document.getElementById("sheetScroll");
+      const toast = document.getElementById("toast");
+      let toastTimer = null;
+      function say(msg) {
+        toast.textContent = msg;
+        toast.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove("show"), 1800);
+      }
+
+      let current = "task";
+      /* Dismissing a sheet returns to the flow-1 list with the corresponding
+         row still highlighted; an agent's sheet returns to its owning task. */
+      const PEEK_BACK = { task: "task", apk: "apk", local: "local", login: "login", a4: "task" };
+
+      function agentsBlock(a) {
+        const rows = a.list
+          .map(
+            (g) =>
+              '<div class="wrow' +
+              (g.ok ? "" : " failed") +
+              '"><span class="sic ' +
+              (g.ok ? "ok" : "xfail") +
+              '">' +
+              (g.ok ? CHECK : XFAIL) +
+              '</span><span class="wname">' +
+              g.name +
+              '</span><span class="wmeta"><span class="wsub">' +
+              (g.ok ? g.t : FAIL_REASON) +
+              "</span></span></div>",
+          )
+          .join("");
+        return (
+          '<div class="sh-agents"><div class="sh-agents-head"><span style="color:var(--dim)">' +
+          AST +
+          "</span><span><b>" +
+          a.label +
+          '</b></span><span class="right"><span class="cnt-ok">✓ ' +
+          a.ok +
+          '</span><span class="cnt-fail">× ' +
+          a.fail +
+          "</span></span></div>" +
+          rows +
+          "</div>"
+        );
+      }
+
+      function renderSheet(id) {
+        const u = UNITS[id];
+        const icon = u.state === "working" ? AST : u.state === "failed" ? XFAIL : CHECK;
+        /* Both header actions are real links. Tasks push the full task view
+           in flow-3; an agent's only action is "Show in transcript", which
+           lands on its owning task's thread view (agents run in-session). */
+        const headAction =
+          u.kind === "task"
+            ? '<a class="sh-btn" style="margin-left:auto" href="' +
+              withTheme("../flow-3-task/index.html?task=" + id) +
+              '" title="Open this task as a full thread">Open thread ' +
+              EXT +
+              "</a>"
+            : '<a class="sh-btn" style="margin-left:auto" href="' +
+              withTheme("../flow-3-task/index.html?task=" + u.owner) +
+              '" title="Jump to this run in the transcript">Show in transcript ' +
+              LOCATE +
+              "</a>";
+        let h =
+          '<div class="sh-top ' +
+          u.state +
+          '">' +
+          icon +
+          "<span>" +
+          u.statusText +
+          "</span>" +
+          headAction +
+          '<span class="sh-btn" id="shClose" style="padding:6px 7px" title="Dismiss — back to the list">' +
+          X +
+          "</span></div>";
+        h += '<div class="sh-title">' + u.title + "</div>";
+        h +=
+          '<div class="sh-meta">' +
+          u.chips
+            .map(
+              (c) => '<span class="chip' + (c.cls ? " " + c.cls : "") + '">' + c.label + "</span>",
+            )
+            .join("") +
+          "</div>";
+        h += '<div class="sh-body">';
+        h += u.convo
+          .map((m) => {
+            if (m.role === "user") return '<div class="sh-msg user">' + m.text + "</div>";
+            if (m.role === "evt")
+              return '<div class="sh-evt' + (m.cls ? " " + m.cls : "") + '">' + m.text + "</div>";
+            return '<div class="sh-msg asst">' + m.html + "</div>";
+          })
+          .join("");
+        if (u.agents) h += agentsBlock(u.agents);
+        h += "</div>";
+        if (u.cancellable) {
+          h +=
+            '<div class="sh-actions"><span class="sh-btn danger" id="shCancel" title="Cancel this task">Cancel task</span></div>';
+        }
+        if (u.kind === "task") {
+          /* The placeholder carries the state's truth: a running task takes a
+             steer; a done task takes a follow-up (flow-3 uses the same split). */
+          h +=
+            '<div class="sh-composer" id="shComposer"><span class="grow">' +
+            (u.composerPh || "Steer this task…") +
+            '</span><span class="sh-send">' +
+            SEND +
+            "</span></div>";
+        } else {
+          /* The headline honesty rule: the disabled composer states its
+             reason in words, at full strength — never a bare greyed box. */
+          h +=
+            '<div class="sh-composer disabled"><span class="grow"><span class="composer-note">Runs inside the task’s session — to stop it, interrupt the task’s turn.</span></span><span class="sh-send">' +
+            SEND +
+            "</span></div>";
+        }
+        scroll.innerHTML = h;
+        document.getElementById("shClose").addEventListener("click", goBack);
+        const cancel = document.getElementById("shCancel");
+        if (cancel) cancel.addEventListener("click", () => say("Cancel task (mock)"));
+        const composer = document.getElementById("shComposer");
+        if (composer)
+          composer.addEventListener("click", () =>
+            say((u.composerPh || "Steer this task…") + " (mock)"),
+          );
+      }
+
+      function showSheet(id) {
+        const u = UNITS[id];
+        if (!u) return;
+        current = id;
+        renderSheet(id);
+        wrap.classList.add("show");
+        document
+          .querySelectorAll(".sub")
+          .forEach((s) => s.classList.toggle("picked", s.dataset.unit === id));
+      }
+      function goBack() {
+        nav("../flow-1-list/index.html?peek=" + (PEEK_BACK[current] || "task"));
+      }
+
+      document.querySelectorAll(".sub[data-unit]").forEach((row) => {
+        row.addEventListener("click", () => {
+          /* The turn row peeks its owning task; the failed agent's sheet is
+             reachable via deep link (?sheet=a4) since agents are nested in
+             the task sheet — agent rows stay view-only (CONVENTIONS.md §5). */
+          const id = row.dataset.unit === "turn" ? "task" : row.dataset.unit;
+          showSheet(id);
+          /* Keep the address bar an accurate deep link while switching
+             sheets in place; purely cosmetic, and file:// history APIs can
+             throw, so guard it. */
+          try {
+            const p = new URLSearchParams(location.search);
+            p.set("sheet", id);
+            history.replaceState(null, "", "?" + p.toString());
+          } catch (e) {}
+        });
+      });
+      document.getElementById("sheetDim").addEventListener("click", goBack);
+      document.getElementById("sheetGrab").addEventListener("click", goBack);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") goBack();
+      });
+
+      /* Furniture: everything the flow doesn't own demonstrates itself with a
+         toast, matching chrome.html. Parent thread rows belong to flow 1. */
+      const [filterBtn, settingsBtn] = document.querySelectorAll(".circlebtn");
+      filterBtn.addEventListener("click", () => say("Filter threads (mock)"));
+      settingsBtn.addEventListener("click", () => say("Settings (mock)"));
+      document
+        .querySelector(".searchbar")
+        .addEventListener("click", () => say("Search threads (mock)"));
+      document.querySelector(".fab").addEventListener("click", () => say("New thread (mock)"));
+      document
+        .querySelectorAll(".trow")
+        .forEach((row) =>
+          row.addEventListener("click", () =>
+            say("Opens the thread — not part of this flow; tasks open from the nested rows"),
+          ),
+        );
+
+      /* The backlink preserves the theme too. */
+      document.getElementById("backlink").href = withTheme("../index.html");
+
+      /* ?sheet=task|apk|local|login|a4 opens that sheet on load; unknown or
+         absent values fall back to the mockups task (never a blank screen).
+         ?task=<id> is accepted as an alias — that is the id flow-1's task and
+         turn rows emit when they open a sheet (CONVENTIONS.md §3). */
+      const sheet = params.get("sheet");
+      const alias = params.get("task");
+      showSheet(sheet && UNITS[sheet] ? sheet : alias && UNITS[alias] ? alias : "task");
+    </script>
+  </body>
+</html>

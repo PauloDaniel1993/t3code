@@ -1,0 +1,2944 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks v2 · State matrix — every lifecycle state side by side</title>
+    <link rel="stylesheet" href="../mockup.css" />
+    <style>
+      /* Page-specific only. The shared-sheet gaps this page originally
+         stopgapped (device-level .picked, .cnt-cancel, .sh-evt.cancelled,
+         .wrow.cancelled, .udot/.unread) were promoted into mockup.css in the
+         v2 reconciliation — see _reports/T7.md. */
+      /* Theme toggle placement; the .seg control itself is shared. */
+      .themerow {
+        position: fixed;
+        left: 14px;
+        top: 54px;
+        z-index: 60;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      /* Caption links + code (v2 index styles these page-locally too). */
+      .devicecap a {
+        color: var(--muted);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .devicecap a:hover {
+        color: var(--info);
+      }
+      code {
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        color: var(--info);
+      }
+    </style>
+  </head>
+  <body>
+    <a class="backlink" href="../index.html">← v2 index</a>
+    <div class="themerow">
+      <div class="seg" id="themeSeg">
+        <a href="?theme=dark" data-t="dark">Dark</a>
+        <a href="?theme=light" data-t="light">Light</a>
+        <a href="index.html" data-t="">System</a>
+      </div>
+    </div>
+
+    <div class="stage">
+      <!-- ══════════════ STATE 1 · QUEUED, NOT YET STARTED ══════════════ -->
+      <div class="device" data-state="queued">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <div class="mscroll">
+              <div class="mlist">
+                <!-- Expanded parent: the task exists but nothing has run.
+                     No turn row, no counters — there is no outcome to ratio. -->
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="clk" title="Snooze / reminders">
+                        <svg
+                          style="width: 14px; height: 14px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7v5l3 2" />
+                        </svg>
+                      </span>
+                      <span class="settle" title="Settle this thread">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        Settle
+                      </span>
+                    </span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="1 task in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      1 task
+                    </span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub queued" title="Task · queued — accepted, not yet started">
+                    <span class="sic clk">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="M12 7v5l3 2" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Create 4 mockups for the mobile app based on th…</span>
+                    <span class="smeta">Queued</span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Build Standalone Android APK</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago"><span class="working">Working</span></span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Login</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Queued — accepted, not yet started.</b> Dim clock + “Queued” in words. No turn row, no
+          counters: nothing has run, so there is no outcome to ratio. Not the blue of running, not
+          red, not green.
+          <a data-state-link="queued" href="?state=queued"><code>?state=queued</code></a>
+        </div>
+      </div>
+
+      <!-- ══════════════ STATE 2 · EXACTLY ONE AGENT ══════════════ -->
+      <div class="device" data-state="single">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <div class="mscroll">
+              <div class="mlist">
+                <!-- Expanded parent: the turn ran exactly one agent — every
+                     rollup reads singular. -->
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="clk" title="Snooze / reminders">
+                        <svg
+                          style="width: 14px; height: 14px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7v5l3 2" />
+                        </svg>
+                      </span>
+                      <span class="settle" title="Settle this thread">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        Settle
+                      </span>
+                    </span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="1 task · 1 agent in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      1 task · 1 agent
+                    </span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub done" title="Task · done · returned results">
+                    <span class="sic ok">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Create 4 mockups for the mobile app based on th…</span>
+                    <span class="smeta">
+                      11s
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="sub lvl2" title="The task's latest turn — 1 agent, completed">
+                    <span class="sic" style="color: var(--dim)">
+                      <svg
+                        class="ic"
+                        style="width: 12px; height: 12px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle" style="color: var(--muted)">Latest turn · 1 agent</span>
+                    <span class="smeta">
+                      <span class="cnt-ok">✓ 1</span>
+                      <span class="ret" title="Results returned to the task">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Build Standalone Android APK</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago"><span class="working">Working</span></span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Login</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Exactly one agent.</b> The turn ran a single one of the ten (“Map screenshot chrome
+          regions”) — singular everywhere: “1 task · 1 agent”, “Latest turn · 1 agent”, ✓ 1. Never
+          “1 agents”.
+          <a data-state-link="single" href="?state=single"><code>?state=single</code></a>
+        </div>
+      </div>
+
+      <!-- ══════════════ STATE 3 · ZERO FAILURES ══════════════ -->
+      <div class="device" data-state="zero-fail">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Behind the sheet: the same thread, consistent with the sheet —
+                 the turn succeeded in full here, so the backdrop says ✓ 10. -->
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="clk" title="Snooze / reminders">
+                        <svg
+                          style="width: 14px; height: 14px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7v5l3 2" />
+                        </svg>
+                      </span>
+                      <span class="settle" title="Settle this thread">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        Settle
+                      </span>
+                    </span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="1 task · 10 agents in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      1 task · 10 agents
+                    </span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub done" title="Task · done · returned results">
+                    <span class="sic ok">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Create 4 mockups for the mobile app based on th…</span>
+                    <span class="smeta">
+                      38s
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="sub lvl2" title="The task's latest turn — 10 agents, all completed">
+                    <span class="sic" style="color: var(--dim)">
+                      <svg
+                        class="ic"
+                        style="width: 12px; height: 12px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle" style="color: var(--muted)">Latest turn · 10 agents</span>
+                    <span class="smeta">
+                      <span class="cnt-ok">✓ 10</span>
+                      <span class="ret" title="Results returned to the task">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Redirect Error</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+
+            <!-- Bottom sheet: the task, done, every agent succeeded.
+                 Head shows ✓ 10 and nothing else — no “× 0”, no red. -->
+            <div class="sheet-wrap show">
+              <div class="sheet-dim"></div>
+              <div class="sheet">
+                <div class="sheet-grab" title="Drag down to dismiss"></div>
+                <div class="sheet-scroll">
+                  <div class="sh-top done">
+                    <svg
+                      style="width: 12px; height: 12px; flex: none"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.4"
+                    >
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                    <span>Done · 38s</span>
+                    <a
+                      class="sh-btn flowlink"
+                      style="margin-left: auto"
+                      href="../flow-3-task/index.html?task=task&amp;state=complete"
+                      title="Open this task as a full thread"
+                    >
+                      Open thread
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M7 17 17 7" />
+                        <path d="M8 7h9v9" />
+                      </svg>
+                    </a>
+                    <span class="sh-btn" style="padding: 6px 7px" title="Dismiss">
+                      <svg
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M18 6 6 18M6 6l12 12" />
+                      </svg>
+                    </span>
+                  </div>
+                  <div class="sh-title">Create 4 mockups for the mobile app based on the image</div>
+                  <div class="sh-meta">
+                    <span class="chip agent">✦ agent</span>
+                    <span class="chip">full thread context</span>
+                    <span class="chip">Opus 4.7</span>
+                    <span class="chip returned">↩ returned · woke parent</span>
+                  </div>
+                  <div class="sh-body">
+                    <div class="sh-msg user">
+                      Create 4 mockups for the mobile app based on the reference image: thread list,
+                      bottom sheet, in-thread, full thread.
+                    </div>
+                    <div class="sh-msg asst">
+                      <b>Result:</b> all <b>10 agents</b> returned — the four variants are assembled
+                      from their drafts.
+                    </div>
+                    <div class="sh-evt">
+                      ↩ Returned to the parent — woke Add Wayfinder Constellation Sidebar View
+                    </div>
+                    <div class="sh-agents">
+                      <div class="sh-agents-head">
+                        <span style="color: var(--dim)">
+                          <svg
+                            style="width: 12px; height: 12px; display: block"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.2"
+                          >
+                            <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                          </svg>
+                        </span>
+                        <span><b>Latest turn · 10 agents</b></span>
+                        <span class="right"><span class="cnt-ok">✓ 10</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Map screenshot chrome regions</span>
+                        <span class="wmeta"><span class="wsub">3s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Extract thread-row anatomy</span>
+                        <span class="wmeta"><span class="wsub">4s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Draft status bar + app header markup</span>
+                        <span class="wmeta"><span class="wsub">5s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Reproduce provider glyph set</span>
+                        <span class="wmeta"><span class="wsub">9s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Draft list-row CSS tokens</span>
+                        <span class="wmeta"><span class="wsub">4s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Fit expanded task group into 390px</span>
+                        <span class="wmeta"><span class="wsub">7s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Bottom-sheet layout pass</span>
+                        <span class="wmeta"><span class="wsub">6s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Compose thread-list variant</span>
+                        <span class="wmeta"><span class="wsub">5s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">In-thread card layout pass</span>
+                        <span class="wmeta"><span class="wsub">8s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Assemble full-thread variant</span>
+                        <span class="wmeta"><span class="wsub">6s</span></span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="sh-composer">
+                    <span class="grow">Message this task…</span>
+                    <span class="sh-send">
+                      <svg
+                        style="width: 11px; height: 11px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Zero failures.</b> All ten agents succeeded. The head shows ✓ 10 and nothing else — no
+          “× 0”, no red anywhere on the screen. A red zero would teach the user to distrust the
+          indicator. Composer is enabled and carries no note: a done task takes a follow-up
+          (“Message this task…”), and “Open thread” really opens it (flow 3, complete state).
+          <a data-state-link="zero-fail" href="?state=zero-fail"><code>?state=zero-fail</code></a>
+        </div>
+      </div>
+
+      <!-- ══════════════ STATE 4 · ALL AGENTS FAILED ══════════════ -->
+      <div class="device" data-state="all-failed">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Behind the sheet: the redirect thread, its APK task failed.
+                 The row carries the terse reason in words, per the honesty
+                 rules — a red icon alone is a bug. -->
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Redirect Error</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="3 tasks in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      3 tasks
+                    </span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub failed" title="Task · failed — tool-use budget exceeded">
+                    <span class="sic xfail">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="m15 9-6 6M9 9l6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Build a standalone, installable Android APK of t…</span>
+                    <span class="smeta failed">failed — tool-use budget exceeded</span>
+                  </div>
+                  <div class="sub done" title="Task · done · returned results">
+                    <span class="sic ok">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </span>
+                    <span class="stitle">is it possible to build locally?</span>
+                    <span class="smeta">
+                      59s
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="sub" title="Task · working">
+                    <span class="sic working-ic">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">the t3 connect is not letting log in</span>
+                    <span class="smeta">
+                      <span class="working">24s</span>
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+
+            <!-- Bottom sheet: the APK task, every agent failed. Head shows
+                 × 3 and nothing else — no “✓ 0”, no green — and each failed
+                 row carries its own reason in words. -->
+            <div class="sheet-wrap show">
+              <div class="sheet-dim"></div>
+              <div class="sheet">
+                <div class="sheet-grab" title="Drag down to dismiss"></div>
+                <div class="sheet-scroll">
+                  <div class="sh-top failed">
+                    <svg
+                      style="width: 12px; height: 12px; flex: none"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="m15 9-6 6M9 9l6 6" />
+                    </svg>
+                    <span>Failed · 19m</span>
+                    <span
+                      class="sh-btn"
+                      style="margin-left: auto"
+                      title="Open this task as a full thread"
+                    >
+                      Open thread
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M7 17 17 7" />
+                        <path d="M8 7h9v9" />
+                      </svg>
+                    </span>
+                    <span class="sh-btn" style="padding: 6px 7px" title="Dismiss">
+                      <svg
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M18 6 6 18M6 6l12 12" />
+                      </svg>
+                    </span>
+                  </div>
+                  <div class="sh-title">Build a standalone, installable Android APK of the app</div>
+                  <div class="sh-meta">
+                    <span class="chip agent">✦ agent</span>
+                    <span class="chip">full thread context</span>
+                    <span class="chip">Opus 4.7</span>
+                    <span class="chip danger">all 3 agents failed</span>
+                  </div>
+                  <div class="sh-body">
+                    <div class="sh-msg user">
+                      Build a standalone, installable Android APK of the app.
+                    </div>
+                    <div class="sh-msg asst">
+                      The turn fanned out <b>3 agents</b>; every one hit its tool-use budget before
+                      finishing, so there is no partial result to keep.
+                    </div>
+                    <div class="sh-evt failed">
+                      ✕ Tool-use budget exceeded in all 3 agents — no result was returned
+                    </div>
+                    <div class="sh-agents">
+                      <div class="sh-agents-head">
+                        <span style="color: var(--dim)">
+                          <svg
+                            style="width: 12px; height: 12px; display: block"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.2"
+                          >
+                            <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                          </svg>
+                        </span>
+                        <span><b>Latest turn · 3 agents</b></span>
+                        <span class="right"><span class="cnt-fail">× 3</span></span>
+                      </div>
+                      <div
+                        class="wrow failed"
+                        title="Locate Gradle wrapper + signing config — failed, tool-use budget exceeded"
+                      >
+                        <span class="sic xfail">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="m15 9-6 6M9 9l6 6" />
+                          </svg>
+                        </span>
+                        <span class="wname">Locate Gradle wrapper + signing config</span>
+                        <span class="wmeta"
+                          ><span class="wsub">failed — tool-use budget exceeded</span></span
+                        >
+                      </div>
+                      <div
+                        class="wrow failed"
+                        title="Assemble release APK locally — failed, tool-use budget exceeded"
+                      >
+                        <span class="sic xfail">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="m15 9-6 6M9 9l6 6" />
+                          </svg>
+                        </span>
+                        <span class="wname">Assemble release APK locally</span>
+                        <span class="wmeta"
+                          ><span class="wsub">failed — tool-use budget exceeded</span></span
+                        >
+                      </div>
+                      <div
+                        class="wrow failed"
+                        title="Verify install on emulator — failed, tool-use budget exceeded"
+                      >
+                        <span class="sic xfail">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="m15 9-6 6M9 9l6 6" />
+                          </svg>
+                        </span>
+                        <span class="wname">Verify install on emulator</span>
+                        <span class="wmeta"
+                          ><span class="wsub">failed — tool-use budget exceeded</span></span
+                        >
+                      </div>
+                    </div>
+                  </div>
+                  <!-- A failed task has no in-flight turn to steer, so the
+                       composer is disabled with the reason in words and the
+                       offered path is Retry — flow-3's failed state treats
+                       the same task the same way. -->
+                  <div class="sh-actions">
+                    <span class="sh-btn primary" title="Retry the task with the same brief">
+                      <svg
+                        style="width: 12px; height: 12px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M3 12a9 9 0 1 0 3-6.7" />
+                        <path d="M3 4v5h5" />
+                      </svg>
+                      Retry task
+                    </span>
+                  </div>
+                  <div class="sh-composer disabled">
+                    <span class="grow">
+                      <span class="composer-note"
+                        >The task stopped — steering only reaches a task mid-turn. Use Retry task
+                        above to continue.</span
+                      >
+                    </span>
+                    <span class="sh-send">
+                      <svg
+                        style="width: 11px; height: 11px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>All agents failed.</b> The APK turn with zero successes: × 3 and nothing else — no “✓
+          0”, no green, no ↩ returned chip — and every failed row names its own reason in words. The
+          failed row in the list behind carries the terse form too. A stopped task has no turn to
+          steer: the composer is disabled with the reason, and Retry is the offered path. “Open
+          thread” stays unwired — flow 3 models this task's ✓ 2 × 1 turn, not this × 3 cardinality,
+          so a link would show the wrong turn.
+          <a data-state-link="all-failed" href="?state=all-failed"
+            ><code>?state=all-failed</code></a
+          >
+        </div>
+      </div>
+
+      <!-- ══════════════ STATE 5 · CANCELLED MID-FLIGHT ══════════════ -->
+      <div class="device" data-state="cancelled">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Behind the sheet: the mockups task, cancelled mid-turn.
+                 Amber minus-in-circle — neither the green of done nor the
+                 red of failed. -->
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="clk" title="Snooze / reminders">
+                        <svg
+                          style="width: 14px; height: 14px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7v5l3 2" />
+                        </svg>
+                      </span>
+                      <span class="settle" title="Settle this thread">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        Settle
+                      </span>
+                    </span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="1 task · 10 agents in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      1 task · 10 agents
+                    </span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub cancelled" title="Task · cancelled by you mid-turn">
+                    <span class="sic cancel-ic">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="M8 12h8" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Create 4 mockups for the mobile app based on th…</span>
+                    <span class="smeta cancelled">cancelled</span>
+                  </div>
+                  <div
+                    class="sub lvl2"
+                    title="The task's latest turn — stopped with 6 agents done, 4 still running"
+                  >
+                    <span class="sic" style="color: var(--dim)">
+                      <svg
+                        class="ic"
+                        style="width: 12px; height: 12px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle" style="color: var(--muted)">Latest turn · 10 agents</span>
+                    <span class="smeta">
+                      <span class="cnt-ok">✓ 6</span>
+                      <span class="cnt-cancel" title="4 agents were cancelled mid-run">
+                        <svg
+                          style="width: 10px; height: 10px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M8 12h8" />
+                        </svg>
+                        4
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Redirect Error</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+
+            <!-- Bottom sheet: cancelled while 4 agents were still running.
+                 Not complete (not all ✓, amber not green), not failed (no red,
+                 no × — the in-flight agents never failed; they were stopped). -->
+            <div class="sheet-wrap show">
+              <div class="sheet-dim"></div>
+              <div class="sheet">
+                <div class="sheet-grab" title="Drag down to dismiss"></div>
+                <div class="sheet-scroll">
+                  <div class="sh-top cancelled">
+                    <svg
+                      style="width: 12px; height: 12px; flex: none"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M8 12h8" />
+                    </svg>
+                    <span>Cancelled · 26s</span>
+                    <span
+                      class="sh-btn"
+                      style="margin-left: auto"
+                      title="Open this task as a full thread"
+                    >
+                      Open thread
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M7 17 17 7" />
+                        <path d="M8 7h9v9" />
+                      </svg>
+                    </span>
+                    <span class="sh-btn" style="padding: 6px 7px" title="Dismiss">
+                      <svg
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M18 6 6 18M6 6l12 12" />
+                      </svg>
+                    </span>
+                  </div>
+                  <div class="sh-title">Create 4 mockups for the mobile app based on the image</div>
+                  <div class="sh-meta">
+                    <span class="chip agent">✦ agent</span>
+                    <span class="chip">full thread context</span>
+                    <span class="chip">Opus 4.7</span>
+                  </div>
+                  <div class="sh-body">
+                    <div class="sh-msg user">
+                      Create 4 mockups for the mobile app based on the reference image: thread list,
+                      bottom sheet, in-thread, full thread.
+                    </div>
+                    <div class="sh-evt cancelled">
+                      <svg
+                        style="width: 11px; height: 11px; flex: none"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="M8 12h8" />
+                      </svg>
+                      Cancelled by you — 6 agents had finished, 4 were still running
+                    </div>
+                    <div class="sh-agents">
+                      <div class="sh-agents-head">
+                        <span style="color: var(--dim)">
+                          <svg
+                            style="width: 12px; height: 12px; display: block"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.2"
+                          >
+                            <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                          </svg>
+                        </span>
+                        <span><b>Latest turn · 10 agents</b></span>
+                        <span class="right">
+                          <span class="cnt-ok">✓ 6</span>
+                          <span class="cnt-cancel" title="4 agents were cancelled mid-run">
+                            <svg
+                              style="width: 10px; height: 10px"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                            >
+                              <circle cx="12" cy="12" r="9" />
+                              <path d="M8 12h8" />
+                            </svg>
+                            4
+                          </span>
+                        </span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Map screenshot chrome regions</span>
+                        <span class="wmeta"><span class="wsub">3s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Extract thread-row anatomy</span>
+                        <span class="wmeta"><span class="wsub">4s</span></span>
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Draft status bar + app header markup</span>
+                        <span class="wmeta"><span class="wsub">5s</span></span>
+                      </div>
+                      <div
+                        class="wrow cancelled"
+                        title="Reproduce provider glyph set — cancelled, retry interrupted"
+                      >
+                        <span class="sic cancel-ic">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M8 12h8" />
+                          </svg>
+                        </span>
+                        <span class="wname">Reproduce provider glyph set</span>
+                        <span class="wmeta"
+                          ><span class="wsub">cancelled — retry interrupted</span></span
+                        >
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Draft list-row CSS tokens</span>
+                        <span class="wmeta"><span class="wsub">4s</span></span>
+                      </div>
+                      <div
+                        class="wrow cancelled"
+                        title="Fit expanded task group into 390px — cancelled, retry interrupted"
+                      >
+                        <span class="sic cancel-ic">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M8 12h8" />
+                          </svg>
+                        </span>
+                        <span class="wname">Fit expanded task group into 390px</span>
+                        <span class="wmeta"
+                          ><span class="wsub">cancelled — retry interrupted</span></span
+                        >
+                      </div>
+                      <div
+                        class="wrow cancelled"
+                        title="Bottom-sheet layout pass — cancelled, retry interrupted"
+                      >
+                        <span class="sic cancel-ic">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M8 12h8" />
+                          </svg>
+                        </span>
+                        <span class="wname">Bottom-sheet layout pass</span>
+                        <span class="wmeta"
+                          ><span class="wsub">cancelled — retry interrupted</span></span
+                        >
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Compose thread-list variant</span>
+                        <span class="wmeta"><span class="wsub">5s</span></span>
+                      </div>
+                      <div
+                        class="wrow cancelled"
+                        title="In-thread card layout pass — cancelled, retry interrupted"
+                      >
+                        <span class="sic cancel-ic">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M8 12h8" />
+                          </svg>
+                        </span>
+                        <span class="wname">In-thread card layout pass</span>
+                        <span class="wmeta"
+                          ><span class="wsub">cancelled — retry interrupted</span></span
+                        >
+                      </div>
+                      <div class="wrow">
+                        <span class="sic ok">
+                          <svg
+                            class="ic"
+                            style="width: 13px; height: 13px"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.4"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        </span>
+                        <span class="wname">Assemble full-thread variant</span>
+                        <span class="wmeta"><span class="wsub">6s</span></span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="sh-composer disabled">
+                    <span class="grow">
+                      <span class="composer-note"
+                        >Cancelled — the task is no longer running, so there is nothing to
+                        steer.</span
+                      >
+                    </span>
+                    <span class="sh-send">
+                      <svg
+                        style="width: 11px; height: 11px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Cancelled mid-flight.</b> Amber minus-in-circle and “Cancelled by you” in words;
+          counters split ✓ 6 / ⊖ 4 with no red and no “failed”. Not complete, not failed — a
+          cancelled task is neither. The disabled composer says why. “Open thread” stays unwired —
+          flow 3 models no cancelled state, so a link would have to lie.
+          <a data-state-link="cancelled" href="?state=cancelled"><code>?state=cancelled</code></a>
+        </div>
+      </div>
+
+      <!-- ══════════════ STATE 6 · RESULT RETURNED, UNREAD ══════════════ -->
+      <div class="device" data-state="unread">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">3h</span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- The APK task returned a result since the user last looked:
+                     blue dot on the parent, the word “unread” on the row.
+                     The “build locally?” row beneath is the read state for
+                     direct comparison — plain ↩, no dot, no word. -->
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="udot" title="1 unread result in this thread"></span>
+                      13h
+                    </span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Redirect Error</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="3 tasks in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      3 tasks
+                    </span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub" title="Task · returned a result you have not read yet">
+                    <span class="sic" style="color: var(--dim)">
+                      <svg
+                        class="ic"
+                        style="width: 12px; height: 12px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Build a standalone, installable Android APK of t…</span>
+                    <span class="smeta">
+                      19m
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                      <span class="unread">unread</span>
+                    </span>
+                  </div>
+                  <div class="sub done" title="Task · done · returned results — read">
+                    <span class="sic ok">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </span>
+                    <span class="stitle">is it possible to build locally?</span>
+                    <span class="smeta">
+                      59s
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="sub" title="Task · working">
+                    <span class="sic working-ic">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">the t3 connect is not letting log in</span>
+                    <span class="smeta">
+                      <span class="working">24s</span>
+                      <span class="ret" title="Returned results">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Result returned, unread.</b> The APK task's ↩ came back since you last looked: a blue
+          dot on the parent, the word “unread” on the row. The “build locally?” row below it is the
+          read state — plain ↩, no dot, no word — rendered in the same screen for direct comparison.
+          <a data-state-link="unread" href="?state=unread"><code>?state=unread</code></a>
+        </div>
+      </div>
+
+      <!-- ══════════════ STATE 7 · NATIVE AGENT REFUSING STEERING ══════════════ -->
+      <div class="device" data-state="native">
+        <div class="phone">
+          <div class="screen">
+            <!-- Android status bar -->
+            <div class="statusbar">
+              <span>
+                11:31
+                <span class="notif">
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path
+                      d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3Zm18 0a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"
+                    />
+                  </svg>
+                  <svg
+                    style="width: 11px; height: 11px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <path d="m3 7 9 6 9-6" />
+                  </svg>
+                </span>
+              </span>
+              <span class="sicons">
+                <span style="font-size: 11px; font-weight: 700">5G</span>
+                <svg
+                  style="width: 12px; height: 11px"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M7 10v4M12 7v7M17 4v10" transform="translate(0 6)" />
+                </svg>
+                <svg style="width: 24px; height: 12px" viewBox="0 0 25 12" fill="none">
+                  <rect
+                    x="0.5"
+                    y="0.5"
+                    width="21"
+                    height="11"
+                    rx="3.5"
+                    stroke="currentColor"
+                    opacity="0.4"
+                  />
+                  <rect x="2" y="2" width="16" height="8" rx="2" fill="#34d399" />
+                  <path d="M23.5 4v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.4" />
+                </svg>
+                <span style="font-size: 11.5px">81</span>
+              </span>
+            </div>
+
+            <!-- App home header -->
+            <div class="appbar">
+              <div class="brand-row">
+                <span class="brand-name">T3 <span class="thin">Code</span></span>
+                <span class="alpha">ALPHA</span>
+                <span class="spacer"></span>
+                <span class="circlebtn" title="Filter threads">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 5h16l-6.2 7.2V19l-3.6 2v-8.8L4 5Z" />
+                  </svg>
+                </span>
+                <span class="circlebtn" title="Settings">
+                  <svg
+                    class="ic"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"
+                    />
+                  </svg>
+                </span>
+              </div>
+              <div class="searchbar">
+                <svg
+                  class="ic"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+                Search threads
+              </div>
+            </div>
+
+            <!-- Behind the sheet: the working mockups task, whose turn this
+                 agent runs inside. -->
+            <div class="mscroll">
+              <div class="mlist">
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">
+                      <span class="clk" title="Snooze / reminders">
+                        <svg
+                          style="width: 14px; height: 14px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7v5l3 2" />
+                        </svg>
+                      </span>
+                      <span class="settle" title="Settle this thread">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        Settle
+                      </span>
+                    </span>
+                  </div>
+                  <div class="ttitle">Add Wayfinder Constellation Sidebar View</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="dchip" title="1 task · 10 agents in this thread">
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      1 task · 10 agents
+                    </span>
+                    <span class="tprov" title="Claude Code">
+                      <svg
+                        class="ic"
+                        style="color: var(--coral)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="subs">
+                  <div class="sub" title="Task · working">
+                    <span class="sic working-ic">
+                      <svg
+                        class="ic"
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                      >
+                        <path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9" />
+                      </svg>
+                    </span>
+                    <span class="stitle">Create 4 mockups for the mobile app based on th…</span>
+                    <span class="smeta working">8s</span>
+                  </div>
+                  <div
+                    class="sub lvl2"
+                    title="The task's latest turn — 10 agents: 6 completed, 4 failed, all tool-use budget exceeded"
+                  >
+                    <span class="sic" style="color: var(--dim)">
+                      <svg
+                        class="ic"
+                        style="width: 12px; height: 12px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="m9 6 6 6-6 6" />
+                      </svg>
+                    </span>
+                    <span class="stitle" style="color: var(--muted)">Latest turn · 10 agents</span>
+                    <span class="smeta">
+                      <span class="cnt-ok" title="6 agents completed">✓ 6</span>
+                      <span class="cnt-fail" title="4 agents failed — tool-use budget exceeded"
+                        >× 4</span
+                      >
+                      <span class="ret" title="Results returned to the task">
+                        <svg
+                          style="width: 11px; height: 11px"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="trow">
+                  <div class="trow-top">
+                    <span class="picon" style="--h: 215">T3</span>
+                    <span class="repo">pingdotgg/t3code</span>
+                    <span class="tago">13h</span>
+                  </div>
+                  <div class="ttitle">Fix T3 Connect Redirect Error</div>
+                  <div class="trow-bot">
+                    <span class="tbranch">dev</span>
+                    <span class="tprov" title="Codex">
+                      <svg
+                        class="ic"
+                        style="color: var(--dim)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M12 3a9 9 0 1 0 9 9" />
+                        <path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="fab" title="New thread">
+              <svg
+                style="width: 21px; height: 21px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </div>
+            <div class="gesturebar"></div>
+            <div class="toast"></div>
+
+            <!-- Agent sheet: same anatomy as a task sheet, but the composer
+                 is visibly unavailable AND the reason is written next to it.
+                 A greyed control with no explanation would read as a defect. -->
+            <div class="sheet-wrap show">
+              <div class="sheet-dim"></div>
+              <div class="sheet">
+                <div class="sheet-grab" title="Drag down to dismiss"></div>
+                <div class="sheet-scroll">
+                  <div class="sh-top failed">
+                    <svg
+                      style="width: 12px; height: 12px; flex: none"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="m15 9-6 6M9 9l6 6" />
+                    </svg>
+                    <span>Failed · tool-use budget exceeded</span>
+                    <a
+                      class="sh-btn flowlink"
+                      style="margin-left: auto"
+                      href="../flow-3-task/index.html?task=task"
+                      title="Jump to this run in the transcript"
+                    >
+                      Show in transcript
+                      <svg
+                        style="width: 10px; height: 10px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+                      </svg>
+                    </a>
+                    <span class="sh-btn" style="padding: 6px 7px" title="Dismiss">
+                      <svg
+                        style="width: 13px; height: 13px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M18 6 6 18M6 6l12 12" />
+                      </svg>
+                    </span>
+                  </div>
+                  <div class="sh-title">Reproduce provider glyph set</div>
+                  <div class="sh-meta">
+                    <span class="chip native">agent · runs in the task session</span>
+                    <span class="chip">Explore</span>
+                    <span class="chip">inherits task · Opus 4.7</span>
+                    <span class="chip danger">6.8k tokens · 5 tools · 9s</span>
+                  </div>
+                  <div class="sh-body">
+                    <div class="sh-msg user">
+                      Reproduce the provider glyphs from the screenshot (coral asterisk, gray swirl)
+                      as inline SVGs.
+                    </div>
+                    <div class="sh-evt failed">
+                      ✕ Tool-use budget exceeded before the sweep converged
+                    </div>
+                    <div class="sh-evt">
+                      The task's agent decides whether to retry — you can't restart it from here
+                    </div>
+                  </div>
+                  <div class="sh-composer disabled">
+                    <span class="grow">
+                      <span class="composer-note"
+                        >Runs inside the task’s session — to stop it, interrupt the task’s
+                        turn.</span
+                      >
+                    </span>
+                    <span class="sh-send">
+                      <svg
+                        style="width: 11px; height: 11px"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                      >
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="devicecap">
+          <b>Native in-session agent — steering refused, with the reason.</b> The same sheet anatomy
+          as a task, but the composer is visibly unavailable AND the reason is written next to it:
+          “Runs inside the task’s session — to stop it, interrupt the task’s turn.”
+          <a data-state-link="native" href="?state=native"><code>?state=native</code></a>
+        </div>
+      </div>
+    </div>
+
+    <div class="concept">
+      <b>State matrix</b> · every lifecycle state, one phone each — ?state=queued · single ·
+      zero-fail · all-failed · cancelled · unread · native
+    </div>
+
+    <script>
+      /* v2 theme convention: ?theme=dark|light pins the page on <html>;
+         no parameter follows the OS via the prefers-color-scheme block in
+         mockup.css. */
+      const params = new URLSearchParams(location.search);
+      const theme = params.get("theme");
+      if (theme === "dark" || theme === "light") {
+        document.documentElement.dataset.theme = theme;
+      }
+
+      /* ?state=queued|single|zero-fail|all-failed|cancelled|unread|native rings
+         that phone and scrolls it into view; unknown values fall back to the
+         plain page (no highlight), never a blank one. */
+      const state = params.get("state");
+      if (state) {
+        const dev = document.querySelector('.device[data-state="' + state + '"]');
+        if (dev) {
+          dev.classList.add("picked");
+          dev.scrollIntoView({ block: "nearest", inline: "center" });
+        }
+      }
+
+      /* Preserve ?theme= across every internal link: the v2 index backlink,
+         the per-state permalinks, the theme toggle itself, and the sheets'
+         flow links (zero-fail's "Open thread", native's "Show in transcript"
+         — the only sheets whose target state flow-3 honestly models). */
+      const pinned = theme === "dark" || theme === "light" ? theme : null;
+      if (pinned) {
+        document.querySelector(".backlink").href = "../index.html?theme=" + pinned;
+        document.querySelectorAll("a.flowlink").forEach((a) => {
+          a.href += (a.href.includes("?") ? "&" : "?") + "theme=" + pinned;
+        });
+      }
+      document.querySelectorAll("a[data-state-link]").forEach((a) => {
+        const p = new URLSearchParams();
+        p.set("state", a.getAttribute("data-state-link"));
+        if (pinned) p.set("theme", pinned);
+        a.href = "?" + p.toString();
+      });
+      document.querySelectorAll("#themeSeg a").forEach((a) => {
+        const p = new URLSearchParams(location.search);
+        if (a.dataset.t) p.set("theme", a.dataset.t);
+        else p.delete("theme");
+        const q = p.toString();
+        a.href = q ? "?" + q : "index.html";
+        a.classList.toggle("on", (a.dataset.t || null) === pinned);
+      });
+    </script>
+  </body>
+</html>

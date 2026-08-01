@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mobile tasks v2 — mockups</title>
+    <link rel="stylesheet" href="mockup.css" />
+    <style>
+      body {
+        background: var(--bg);
+      }
+      .page {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 56px 32px 80px;
+      }
+      .kicker {
+        font-size: 11.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-bottom: 10px;
+      }
+      h1 {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        margin-bottom: 12px;
+      }
+      .lede {
+        font-size: 14px;
+        line-height: 1.65;
+        color: var(--muted);
+        max-width: 720px;
+      }
+      .lede b {
+        color: var(--fg);
+        font-weight: 550;
+      }
+      .themebar {
+        margin-top: 22px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 14px;
+        padding: 12px 16px;
+      }
+      .themebar .tlabel {
+        font-size: 12px;
+        color: var(--dim);
+        flex: none;
+      }
+      .themebar .seg {
+        flex: none;
+      }
+      .themebar .tnote {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--dim);
+        flex: 1;
+        min-width: 260px;
+      }
+      .opt {
+        margin-top: 44px;
+      }
+      .opt-head {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+      }
+      .opt-head h2 {
+        font-size: 17px;
+        font-weight: 600;
+      }
+      .opt-head .vrec {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--success);
+        border: 1px solid rgba(52, 211, 153, 0.4);
+        background: rgba(52, 211, 153, 0.1);
+        border-radius: 999px;
+        padding: 1px 7px;
+        flex: none;
+      }
+      .opt-head .soon {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--dim);
+        border: 1px solid var(--border2);
+        border-radius: 999px;
+        padding: 1px 7px;
+        flex: none;
+      }
+      .opt-head .open-all {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .opt-head .open-all:hover {
+        color: var(--info);
+      }
+      .opt-desc {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+        margin-top: 8px;
+        max-width: 720px;
+      }
+      .opt-desc b {
+        color: var(--fg);
+        font-weight: 550;
+      }
+      .ref {
+        margin-top: 20px;
+        display: flex;
+        gap: 18px;
+        align-items: flex-start;
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 14px;
+        padding: 14px 16px;
+      }
+      .ref img {
+        width: 130px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        flex: none;
+      }
+      .ref .ref-copy {
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .ref .ref-copy b {
+        color: var(--fg);
+        font-weight: 550;
+      }
+      .foot {
+        margin-top: 52px;
+        font-size: 12px;
+        color: var(--dim);
+        border-top: 1px solid var(--border);
+        padding-top: 14px;
+        line-height: 1.7;
+      }
+      .foot a {
+        color: var(--muted);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .foot a:hover {
+        color: var(--fg);
+      }
+      code {
+        font-family: ui-monospace, monospace;
+        font-size: 11.5px;
+        color: var(--info);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="kicker">T3 Code · design exploration · v2</div>
+      <h1>Mobile tasks — the converged flow</h1>
+      <p class="lede">
+        v2 converges <b>v1's four options</b> into the flow its own README recommended —
+        <b>thread list → bottom-sheet peek → full task view</b> — and renders the lifecycle states
+        v1 never showed: queued, one agent, zero failures, all failed, cancelled, returned-unread,
+        and the native in-session agent that must visibly refuse steering. The
+        <a href="../mobile-tasks-mockups/index.html">v1 set</a> stays frozen as the comparison
+        baseline. Sibling mockups: <code>../thread-tasks-mockups/</code>,
+        <code>../subagent-view-mockups/</code>.
+      </p>
+
+      <div class="themebar">
+        <span class="tlabel">Theme</span>
+        <div class="seg" id="themeSeg">
+          <a href="?theme=dark" data-t="dark">Dark</a>
+          <a href="?theme=light" data-t="light">Light</a>
+          <a href="index.html" data-t="">System</a>
+        </div>
+        <span class="tnote">
+          Every v2 page reads <code>?theme=dark|light</code> and sets <code>data-theme</code> on
+          <code>&lt;html&gt;</code>; no parameter follows the OS via
+          <code>prefers-color-scheme</code>. The convention, with the exact JS every page must
+          carry, is in <code>CONVENTIONS.md</code>.
+        </span>
+      </div>
+
+      <div class="ref">
+        <img
+          src="../mobile-tasks-mockups/reference-mobile.png"
+          alt="Reference screenshot of the T3 Code Android app thread list"
+        />
+        <span class="ref-copy">
+          <b>References.</b> <code>../mobile-tasks-mockups/reference-mobile.png</code> — the real
+          Android app (dark): status bar, "T3 Code · ALPHA" header with filter/settings buttons,
+          "Search threads", hairline-separated thread rows, compose FAB. The tasks/agents visual
+          language (disclosure chips, guide-line sub-rows, ✓/× counters, ↩ returned markers) follows
+          v1's reading of the desktop sidebar — still unconfirmed against a real reference, exactly
+          as v1's HANDOFF recorded. The reference is dark-only; the light theme is our translation.
+        </span>
+      </div>
+
+      <!-- ============ Shared chrome ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Shared chrome — the Android shell</h2>
+          <span class="vrec">start here</span>
+          <a class="open-all" href="chrome.html">open →</a>
+          <a class="open-all" href="chrome.html?theme=light">open light →</a>
+        </div>
+        <p class="opt-desc">
+          The canonical, copy-pasteable chrome every v2 screen is built on, rendered as two
+          identical phones side by side (dark / light): status bar, "T3 Code · ALPHA" header with
+          circular filter/settings buttons, "Search threads", the thread-row anatomy (repo icon,
+          time-ago or <b>Working</b>, branch, provider glyph, unread badge), the compose FAB, and
+          the gesture bar. Screen pages copy the block between <code>CHROME-BEGIN</code> /
+          <code>CHROME-END</code> — also mirrored, with rules, in <code>CONVENTIONS.md</code>.
+        </p>
+      </div>
+
+      <!-- ============ Flow 1 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Flow 1 — Thread list, expanded groups</h2>
+          <a class="open-all" href="flow-1-list/index.html">open →</a>
+        </div>
+        <p class="opt-desc">
+          The entry screen: the app's real thread list with expanded parent rows (clock +
+          <b>✓ Settle</b> pill, <b>⌄ 1 task · 10 agents</b> disclosure chip) and guide-line sub-rows
+          nesting thread → tasks → a task's turn. Deep link
+          <code>?peek=task|turn|apk|local|login</code> highlights a row ·
+          <code>?groups=collapsed</code> renders every group closed.
+        </p>
+      </div>
+
+      <!-- ============ Flow 2 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Flow 2 — Bottom-sheet peek</h2>
+          <a class="open-all" href="flow-2-peek/index.html">open →</a>
+        </div>
+        <p class="opt-desc">
+          Tapping a task row slides up the glass bottom sheet: status, chips, prompt, latest
+          activity, the turn's agents, Cancel while running, an enabled steer composer, "Open
+          thread". An agent's sheet keeps the same anatomy but disables the composer
+          <b>with the reason in words</b> and swaps in "Show in transcript". Deep link
+          <code>?sheet=task|apk|local|login|a4</code> (a4 is a failed agent);
+          <code>?task=&lt;id&gt;</code> is the alias flow 1's rows emit.
+        </p>
+      </div>
+
+      <!-- ============ Flow 3 ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Flow 3 — Full task view</h2>
+          <a class="open-all" href="flow-3-task/index.html">open →</a>
+        </div>
+        <p class="opt-desc">
+          A task opens as a normal pushed thread view — own transcript, steer composer, parent as
+          back target — because "Open thread" must land somewhere. All four tasks are modelled:
+          <code>?task=task|apk|local|login</code> picks one ·
+          <code>?state=running|complete|failed</code> switches the mockups task's lifecycle ·
+          <code>?view=parent</code> redirects to the list.
+        </p>
+      </div>
+
+      <!-- ============ State matrix ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>State matrix — every lifecycle state side by side</h2>
+          <a class="open-all" href="state-matrix/index.html">open →</a>
+        </div>
+        <p class="opt-desc">
+          The deliverable v1 lacked: queued, exactly one agent, zero failures, all agents failed
+          (each with its reason), cancelled mid-flight, returned-but-unread, and the native
+          in-session agent refusing a steer — one screen per state, side by side. Deep link
+          <code>?state=…</code> jumps to a state (ids in <code>CONVENTIONS.md</code>).
+        </p>
+      </div>
+
+      <!-- ============ Docs ============ -->
+      <div class="opt">
+        <div class="opt-head">
+          <h2>Documents</h2>
+        </div>
+        <p class="opt-desc">
+          <a href="CONTRAST.md">CONTRAST.md</a> — measured WCAG ratios for every text token in both
+          themes, plus the chrome fixes (FAB, avatar, ALPHA pill). ·
+          <a href="CONVENTIONS.md">CONVENTIONS.md</a> — the contract for the four screen pages:
+          chrome skeleton, <code>?theme=</code> / <code>?param</code> conventions, class inventory,
+          honesty rules. · <a href="README.md">README.md</a> — the converged flow, what changed from
+          v1 and why, and the gaps v2 does not close. · <a href="HANDOFF.md">HANDOFF.md</a> — which
+          references v2 was built from, and which are still missing.
+        </p>
+      </div>
+
+      <div class="foot">
+        Everything here is static HTML over <code>file://</code> — no server, no build, no
+        dependencies, no external requests. Deep links carry v1's <code>?param</code> convention
+        forward so the two sets navigate the same way; the frozen v1 baseline lives at
+        <a href="../mobile-tasks-mockups/index.html">../mobile-tasks-mockups/</a>.
+      </div>
+    </div>
+
+    <script>
+      /* v2 theme convention — identical on every v2 page: ?theme=dark|light
+         pins the page on <html>; no parameter follows the OS. */
+      const params = new URLSearchParams(location.search);
+      const theme = params.get("theme");
+      const pinned = theme === "dark" || theme === "light" ? theme : "";
+      if (pinned) {
+        document.documentElement.dataset.theme = pinned;
+      }
+
+      /* Mark the active segment of the theme switcher. */
+      document.querySelectorAll("#themeSeg a").forEach((a) => {
+        a.classList.toggle("on", a.dataset.t === pinned);
+      });
+    </script>
+  </body>
+</html>

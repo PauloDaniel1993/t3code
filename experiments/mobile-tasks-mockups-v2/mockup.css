@@ -1,0 +1,1461 @@
+/* T3 Code — mobile tasks mockups v2. Forked wholesale from v1 so the
+   comparison baseline remains untouched. This revision raises the dim
+   metadata token to measured WCAG AA contrast and adds explicit plus
+   system-preference light-theme tokens; the shared mobile chrome and
+   tasks/agents anatomy otherwise begin from the v1 stylesheet.
+
+   Shared-chrome revision (task 1.6b): translucent elevated surfaces are
+   derived from --card/--bg via color-mix so their backdrop-filter blur
+   has show-through again in both themes; the compose FAB, ALPHA pill,
+   search field and header buttons carry per-theme tokens (the light FAB
+   inverts to dark charcoal so it clears 3:1 against the page); v1's
+   traced dark values for hairline separators, row hover, the header
+   wells and the ALPHA pill are restored as tokens; the repo avatar drops
+   to 38% lightness and is constrained to hues 200-260 (CONVENTIONS.md)
+   so white initials always clear 4.5:1. The phone bezel stays a dark
+   physical frame in both themes; only its cast shadow follows the theme.
+
+   Flow reconciliation (task T7): the parallel-build freeze is over — every
+   page-local stopgap the four screens independently needed is promoted
+   here and deleted from the pages: .trow.selected, .sh-agents-head b,
+   the wrapping .sh-top, .composer.disabled's greyed send, .evt.failed,
+   .tail/.hidden, .cnt-cancel, .sh-evt.cancelled, .wrow.cancelled,
+   .udot/.unread, and device-granularity .picked. The disabled sheet
+   composer no longer dims by opacity (it put the mandatory reason
+   sentence under 4.5:1 — CONTRAST.md); the greyed send carries the
+   disabled read.
+
+   Stage reachability (task T10): below the phone's own 390px width the
+   stage stops centring its devices — centred overflow splits to both
+   sides and the leading half lands at negative coordinates no browser
+   can scroll to (measured at 320px: phone x=-38, the left 29px of every
+   screen permanently unreachable). 390px and up keeps the centring
+   untouched, so wide-viewport rendering is pixel-identical to before.
+
+   Theme selectors are element-scoped, not html-scoped, so one page can
+   pin themes per subtree (chrome.html renders dark and light phones
+   side by side). Pages still set data-theme on <html> — see the ?theme=
+   convention in CONVENTIONS.md. */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0a0a;
+  --sb: #000;
+  --fg: #f1f3f7;
+  --muted: #a3a3a3;
+  --dim: #787e8a;
+  --border: rgba(255, 255, 255, 0.08);
+  --border2: rgba(255, 255, 255, 0.14);
+  --hover: rgba(255, 255, 255, 0.055);
+  --selected: rgba(255, 255, 255, 0.075);
+  --card: #101013;
+  --chip: rgba(255, 255, 255, 0.05);
+  --primary: #6478f0;
+  --info: #60a5fa;
+  --success: #34d399;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --teal: #2dd4bf;
+  --violet: #c084fc;
+  --coral: #e0764e;
+
+  /* Chrome tokens — v1's traced dark values, kept as tokens so the
+     light theme can substitute its own (task 1.6b item 4) */
+  --hairline: rgba(255, 255, 255, 0.05);
+  --row-hover: rgba(255, 255, 255, 0.025);
+  --well: #121215;
+  --btn: #17171a;
+  --alpha-bg: #1b1b1f;
+  --alpha-fg: #8a8a90;
+  --fab-bg: #f2f2f4;
+  --fab-fg: #111113;
+  --fab-shadow: 0 10px 26px -8px rgba(0, 0, 0, 0.8);
+  --bezel-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.9);
+
+  /* Translucent elevated surfaces — the backdrop-filter blur under them
+     needs show-through. Derived from --card/--bg so one declaration
+     serves both themes; the dark composites reproduce v1's rgba values
+     (pcard and the pills exactly, sheet and toast within a hair). */
+  --sheet-bg: color-mix(in srgb, var(--card) 94%, transparent);
+  --float-bg: color-mix(in srgb, var(--card) 92%, transparent);
+  --pill-bg: color-mix(in srgb, var(--bg) 80%, transparent);
+  --toast-bg: color-mix(in srgb, var(--card) 96%, transparent);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f7f8;
+  --sb: #ffffff;
+  --fg: #18181b;
+  --muted: #52525b;
+  --dim: #6b6b73;
+  --border: rgba(24, 24, 27, 0.1);
+  --border2: rgba(24, 24, 27, 0.18);
+  --hover: rgba(24, 24, 27, 0.055);
+  --selected: rgba(24, 24, 27, 0.075);
+  --card: #ffffff;
+  --chip: rgba(24, 24, 27, 0.05);
+  --primary: #4f46e5;
+  --info: #1d4ed8;
+  --success: #047857;
+  --warn: #8a5a00;
+  --danger: #b91c1c;
+  --teal: #0f766e;
+  --violet: #7e22ce;
+  --coral: #b45309;
+
+  --hairline: rgba(24, 24, 27, 0.07);
+  --row-hover: rgba(24, 24, 27, 0.03);
+  --well: #f0f0f2;
+  --btn: #f0f0f2;
+  --alpha-bg: rgba(24, 24, 27, 0.07);
+  --alpha-fg: #52525b;
+  --fab-bg: #18181b;
+  --fab-fg: #fafafa;
+  --fab-shadow: 0 10px 24px -10px rgba(24, 24, 27, 0.4);
+  --bezel-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.35);
+}
+
+@media (prefers-color-scheme: light) {
+  html:not([data-theme]) {
+    color-scheme: light;
+    --bg: #f7f7f8;
+    --sb: #ffffff;
+    --fg: #18181b;
+    --muted: #52525b;
+    --dim: #6b6b73;
+    --border: rgba(24, 24, 27, 0.1);
+    --border2: rgba(24, 24, 27, 0.18);
+    --hover: rgba(24, 24, 27, 0.055);
+    --selected: rgba(24, 24, 27, 0.075);
+    --card: #ffffff;
+    --chip: rgba(24, 24, 27, 0.05);
+    --primary: #4f46e5;
+    --info: #1d4ed8;
+    --success: #047857;
+    --warn: #8a5a00;
+    --danger: #b91c1c;
+    --teal: #0f766e;
+    --violet: #7e22ce;
+    --coral: #b45309;
+
+    --hairline: rgba(24, 24, 27, 0.07);
+    --row-hover: rgba(24, 24, 27, 0.03);
+    --well: #f0f0f2;
+    --btn: #f0f0f2;
+    --alpha-bg: rgba(24, 24, 27, 0.07);
+    --alpha-fg: #52525b;
+    --fab-bg: #18181b;
+    --fab-fg: #fafafa;
+    --fab-shadow: 0 10px 24px -10px rgba(24, 24, 27, 0.4);
+    --bezel-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.35);
+  }
+}
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html,
+body {
+  min-height: 100%;
+}
+body {
+  font-family:
+    "DM Sans",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border2);
+  border-radius: 3px;
+}
+svg.ic {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+/* ============================================================
+   Stage + phone frame (Android)
+   ============================================================ */
+.stage {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 56px;
+  flex-wrap: wrap;
+  padding: 44px 24px 60px;
+  background:
+    radial-gradient(60% 45% at 20% 0%, rgba(124, 92, 255, 0.07), transparent 60%),
+    radial-gradient(55% 40% at 85% 10%, rgba(47, 107, 255, 0.06), transparent 60%);
+}
+/* Narrow-viewport reachability (task T10): the .phone is a fixed 390px, so
+   below that viewport width justify-content: center splits the overflow to
+   BOTH sides of the stage — the trailing half is reachable by scrolling but
+   the leading half sits at negative coordinates no browser can scroll to
+   (measured at 320px: phone x=-38, the left 29px of every screen — status
+   bar, leading title characters, the a4 sheet's close control — permanently
+   clipped). Pinning devices to the start edge keeps the whole phone inside
+   the scrollable area; the page scrolling right is expected and fine. The
+   media query, not a base-rule change, so 390px-and-up rendering keeps the
+   exact centring it has today. align-items is deliberately untouched — the
+   vertical axis was not part of the measured defect. */
+@media (max-width: 389.98px) {
+  .stage {
+    justify-content: flex-start;
+  }
+}
+.device {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.phone {
+  width: 390px;
+  height: min(844px, calc(100vh - 130px));
+  min-height: 620px;
+  flex: none;
+  border-radius: 34px;
+  padding: 8px;
+  /* The physical device frame: stays dark in both themes by design —
+     only its cast shadow follows the page theme. */
+  background: #141416;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    var(--bezel-shadow),
+    inset 0 0 0 2px #000;
+}
+.screen {
+  position: relative;
+  height: 100%;
+  border-radius: 26px;
+  overflow: hidden;
+  background: var(--sb);
+  display: flex;
+  flex-direction: column;
+}
+.devicecap {
+  max-width: 340px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.devicecap b {
+  color: var(--muted);
+  font-weight: 550;
+}
+
+/* Android status bar: time + notification icons left, radios/battery right */
+.statusbar {
+  flex: none;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 18px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.statusbar .sicons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+}
+.statusbar .notif {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--fg);
+  margin-left: 8px;
+  font-weight: 400;
+}
+
+/* Gesture home bar */
+.gesturebar {
+  flex: none;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gesturebar::after {
+  content: "";
+  width: 108px;
+  height: 4px;
+  border-radius: 2px;
+  /* v1's white-at-0.3 bar, reproduced with the themed --dim token:
+     composites to rgb(72,76,83) on the dark screen (v1: rgb(77,77,77)) */
+  background: var(--dim);
+  opacity: 0.6;
+}
+
+/* ============================================================
+   App home header: T3 Code · ALPHA, filter/settings, search
+   ============================================================ */
+.appbar {
+  flex: none;
+  padding: 10px 14px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+.brand-name {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.brand-name .thin {
+  font-weight: 400;
+  color: var(--muted);
+}
+.alpha {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  /* Opaque pill with its own text token: --dim on the restored dark pill
+     would measure only 4.21:1; --alpha-fg keeps v1's exact pair (5.00:1) */
+  color: var(--alpha-fg);
+  background: var(--alpha-bg);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+.brand-row .spacer {
+  flex: 1;
+}
+.circlebtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--btn);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.searchbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  height: 44px;
+  padding: 0 14px;
+  background: var(--well);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  color: var(--dim);
+  font-size: 14px;
+}
+
+/* Content scroll region */
+.mscroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* ============================================================
+   Thread list rows (matches reference-mobile.png anatomy)
+   ============================================================ */
+.mlist {
+  padding: 2px 0 90px;
+  display: flex;
+  flex-direction: column;
+}
+.trow {
+  position: relative;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--hairline);
+  cursor: default;
+}
+.trow:hover {
+  background: var(--row-hover);
+}
+/* The row that owns an open overlay (e.g. the sheet's backdrop row in
+   flow-2) stays visibly selected. v1 had this class; restored here. */
+.trow.selected {
+  background: var(--selected);
+}
+.trow-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.picon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 7.5px;
+  font-weight: 800;
+  /* The initials are text: at 45% lightness a warm hue (yellow ~60)
+     measures 2.00:1 against white. 38% keeps every hue in the allowed
+     200-260 set at 5.05:1 or better — see CONVENTIONS.md */
+  color: #fff;
+  background: hsl(var(--h, 215) 65% 38% / 1);
+}
+.repo {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tago {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.tago .working {
+  color: var(--info);
+  font-weight: 600;
+}
+.ttitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-top: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trow-bot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--dim);
+  min-height: 18px;
+}
+.tbranch {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tbadge {
+  margin-left: auto;
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--success);
+}
+.tprov {
+  flex: none;
+  display: flex;
+  margin-left: auto;
+}
+.tbadge + .tprov {
+  margin-left: 0;
+}
+
+/* Settle pill + clock on an expanded parent row */
+.settle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--muted);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.settle:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.clk {
+  color: var(--dim);
+  display: flex;
+}
+
+/* Disclosure chip: "⌄ 1 task · 10 agents" */
+.dchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--chip);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+  flex: none;
+}
+
+/* Sub-rows: tasks (and a task's turn) nested under a guide line */
+.subs {
+  margin: 0 14px 0 22px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border2);
+  display: flex;
+  flex-direction: column;
+  background: var(--sb);
+  border-bottom: 1px solid var(--hairline);
+  padding-top: 2px;
+  padding-bottom: 6px;
+}
+.sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 2px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.sub:hover {
+  background: var(--hover);
+}
+.sub .sic {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sub .stitle {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sub.done .stitle {
+  color: var(--muted);
+}
+.sub.failed .stitle {
+  color: var(--dim);
+}
+/* Lifecycle states v1 lacked: queued (accepted, not yet started) and
+   cancelled mid-flight. The title stays quiet; the state is carried by
+   the icon (.clk for queued, .cancel-ic for cancelled) and the smeta. */
+.sub.queued .stitle {
+  color: var(--muted);
+}
+.sub.cancelled .stitle {
+  color: var(--dim);
+}
+.sub .smeta {
+  flex: none;
+  font-size: 11px;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sub .smeta.working {
+  color: var(--info);
+}
+.sub .smeta.failed,
+.smeta.failed {
+  color: var(--danger);
+}
+.sub .smeta.cancelled,
+.smeta.cancelled {
+  color: var(--warn);
+}
+.sub.picked {
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.35);
+}
+/* Deep-link highlight at whole-device granularity (state-matrix); row-level
+   highlighting uses .sub.picked above. */
+.device.picked .phone {
+  outline: 2px solid rgba(96, 165, 250, 0.7);
+  outline-offset: 5px;
+}
+/* A task's turn, nested one level deeper */
+.sub.lvl2 {
+  margin-left: 18px;
+}
+.cnt-ok {
+  color: var(--success);
+  font-weight: 600;
+}
+.cnt-fail {
+  color: var(--danger);
+  font-weight: 600;
+}
+/* Cancelled outcome counter, mirroring .cnt-ok / .cnt-fail: amber
+   minus-in-circle as inline SVG (a ⊖ text glyph is font-dependent over
+   file://). */
+.cnt-cancel {
+  color: var(--warn);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.cnt-cancel svg {
+  display: block;
+}
+.ret {
+  color: var(--info);
+  display: flex;
+}
+/* Unread indication: a blue dot on the parent row, the word "unread" on the
+   sub-row that returned. (.tbadge is the per-thread "#10" form, not a
+   generic unread signal.) */
+.udot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--info);
+  flex: none;
+}
+.unread {
+  color: var(--info);
+  font-weight: 600;
+}
+
+/* Compose FAB — white in dark (matches reference-mobile.png), dark
+   charcoal in light: the hardcoded #f2f2f4 measured 1.04:1 against the
+   light page and vanished. Both surfaces clear 16:1 on their page
+   (WCAG 1.4.11 wants 3:1) — measured in CONTRAST.md */
+.fab {
+  position: absolute;
+  right: 18px;
+  bottom: 34px;
+  z-index: 20;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: var(--fab-bg);
+  color: var(--fab-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--fab-shadow);
+}
+
+/* ============================================================
+   Detail header (thread/task views): back arrow + title
+   ============================================================ */
+.tbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+.tbar-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--fg);
+  flex: none;
+}
+.tbar-back:hover {
+  background: var(--hover);
+}
+.tbar-titles {
+  flex: 1;
+  min-width: 0;
+}
+.tbar-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tbar-sub {
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tbar-act {
+  color: var(--dim);
+  display: flex;
+  flex: none;
+}
+
+/* ============================================================
+   Timeline (thread feed)
+   ============================================================ */
+.tl {
+  padding: 16px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.msg.user {
+  align-self: flex-end;
+  max-width: 84%;
+  background: var(--selected);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.msg.asst {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--fg);
+  max-width: 96%;
+}
+.msg.asst .who {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.msg.asst code {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--info);
+}
+
+/* Quiet lifecycle event rows */
+.evt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: var(--chip);
+  border-radius: 10px;
+  padding: 8px 12px;
+  max-width: 100%;
+}
+.evt b {
+  font-weight: 550;
+  color: var(--fg);
+}
+.evt .open {
+  color: var(--dim);
+  margin-left: auto;
+  flex: none;
+  font-size: 11.5px;
+}
+.evt.wake {
+  color: var(--info);
+  border-color: rgba(96, 165, 250, 0.35);
+  background: rgba(96, 165, 250, 0.08);
+}
+.evt.wake b {
+  color: var(--fg);
+}
+/* Failed lifecycle event in a timeline — the .sh-evt.failed equivalent for
+   .evt. Tints mirror .sh-btn.danger / .chip.danger (the sheet's own
+   theme-agnostic danger tints). */
+.evt.failed {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+/* State-toggle utilities: a .tail wrapper keeps its rows in the parent flex
+   flow (display: contents) while toggling as one block. .hidden is declared
+   after it so the toggle wins the cascade at equal specificity. */
+.tail {
+  display: contents;
+}
+.hidden {
+  display: none;
+}
+
+/* ============================================================
+   Composer
+   ============================================================ */
+.composer-wrap {
+  flex: none;
+  padding: 8px 12px 4px;
+}
+.composer {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  padding: 12px 12px 8px;
+  box-shadow: 0 12px 30px -18px rgba(0, 0, 0, 0.65);
+}
+.composer .ph {
+  color: var(--dim);
+  font-size: 13.5px;
+  padding: 2px 4px 12px;
+}
+.composer .bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.chipbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 5px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.chipbtn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.send {
+  margin-left: auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex: none;
+}
+.send svg {
+  width: 14px;
+  height: 14px;
+}
+/* Disabled standalone composer, mirroring the sheet's disabled composer:
+   the greyed send carries the disabled read while the reason note next to
+   it stays at full strength (an opacity dim dropped that mandatory text
+   below 4.5:1 — see CONTRAST.md). */
+.composer.disabled .send {
+  background: var(--border2);
+  color: var(--dim);
+}
+
+/* ============================================================
+   Chips
+   ============================================================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--chip);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.chip.agent {
+  color: var(--info);
+  border-color: rgba(100, 120, 240, 0.4);
+  background: rgba(100, 120, 240, 0.12);
+}
+.chip.you {
+  color: var(--fg);
+}
+.chip.returned {
+  color: var(--info);
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.1);
+}
+.chip.native {
+  color: var(--teal);
+  border-color: rgba(45, 212, 191, 0.4);
+  background: rgba(45, 212, 191, 0.1);
+}
+.chip.danger {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+/* Segmented control */
+.seg {
+  display: flex;
+  background: var(--chip);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+.seg a,
+.seg span {
+  flex: 1;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 5px 11px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+.seg .on {
+  background: var(--selected);
+  color: var(--fg);
+}
+.seg .cnt {
+  font-size: 10px;
+  background: var(--border2);
+  border-radius: 999px;
+  padding: 0 5px;
+  line-height: 15px;
+}
+
+/* Status bits */
+.spin {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex: none;
+  border: 1.5px solid rgba(96, 165, 250, 0.25);
+  border-top-color: var(--info);
+  animation: rot 0.9s linear infinite;
+}
+@keyframes rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ok {
+  color: var(--success);
+  flex: none;
+  display: flex;
+}
+.xfail {
+  color: var(--danger);
+  flex: none;
+  display: flex;
+}
+.working-ic {
+  color: var(--info);
+  flex: none;
+  display: flex;
+}
+/* Queued reuses .clk (dim clock); cancelled gets amber — distinct from
+   both the green done check and the red failure mark */
+.cancel-ic {
+  color: var(--warn);
+  flex: none;
+  display: flex;
+}
+
+/* Usage metrics: "38.2k tokens · 14 tools · 2m 14s" */
+.usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Agent card — the per-turn card in a transcript listing the
+   turn's agents (workflow card in the desktop mockups).
+   ============================================================ */
+.wcard {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 14px;
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+.wcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 5px;
+}
+.wcard-head b {
+  color: var(--fg);
+  font-weight: 550;
+}
+.wcard-head .usage {
+  margin-left: auto;
+}
+.wrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+.wrow:hover {
+  background: var(--hover);
+}
+.wrow .sic {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wrow .wname {
+  color: var(--fg);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wrow .wtype {
+  font-size: 10.5px;
+  color: var(--dim);
+  flex: none;
+}
+.wrow .wmeta {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wrow.failed .wname {
+  color: var(--dim);
+}
+/* Cancelled agent row: the name quiets the same way a failed row's does —
+   neither reads as still-active. */
+.wrow.cancelled .wname {
+  color: var(--dim);
+}
+.wrow .wsub {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Jump-target highlight — tapping an agent row flashes its transcript card */
+@keyframes hl-flash {
+  0% {
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.55);
+    background: rgba(96, 165, 250, 0.12);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background: transparent;
+  }
+}
+.hl-flash {
+  animation: hl-flash 1.4s ease-out 2;
+}
+
+/* ============================================================
+   Bottom sheet — the mobile replacement for the mini peek window
+   ============================================================ */
+.sheet-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: none;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.sheet-wrap.show {
+  display: flex;
+}
+.sheet-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  animation: dim-in 0.16s ease-out both;
+}
+@keyframes dim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.sheet {
+  position: relative;
+  max-height: 84%;
+  display: flex;
+  flex-direction: column;
+  /* Translucent again — an opaque background made the blur a no-op.
+     var(--card) is the fallback for engines without color-mix. */
+  background: var(--card);
+  background: var(--sheet-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  backdrop-filter: blur(18px) saturate(1.1);
+  border-top: 1px solid var(--border2);
+  border-radius: 24px 24px 0 0;
+  box-shadow: 0 -18px 44px -18px rgba(0, 0, 0, 0.8);
+  animation: sheet-in 0.22s cubic-bezier(0.2, 0, 0.2, 1) both;
+}
+@keyframes sheet-in {
+  from {
+    transform: translateY(40px);
+    opacity: 0.6;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.sheet-grab {
+  flex: none;
+  padding: 7px 0 3px;
+  display: flex;
+  justify-content: center;
+}
+.sheet-grab::after {
+  content: "";
+  width: 36px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--dim);
+  opacity: 0.45;
+}
+.sheet-scroll {
+  overflow-y: auto;
+  min-height: 0;
+}
+.sh-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 320px safety: a long status line plus two header actions (e.g. the agent
+     sheet's "Failed · tool-use budget exceeded" + "Show in transcript" +
+     close ≈ 360px) must wrap to a second line, not clip. */
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--dim);
+  padding: 6px 14px 0;
+}
+.sh-top .sh-btn {
+  flex: none;
+}
+.sh-top.working {
+  color: var(--info);
+}
+.sh-top.done {
+  color: var(--success);
+}
+.sh-top.failed {
+  color: var(--danger);
+}
+.sh-top.cancelled {
+  color: var(--warn);
+}
+.sh-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  padding: 6px 14px 0;
+}
+.sh-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 8px 14px 0;
+}
+.sh-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+}
+.sh-msg {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sh-msg.user {
+  align-self: flex-end;
+  max-width: 88%;
+  background: var(--selected);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 6px 10px;
+  color: var(--fg);
+}
+.sh-msg.asst {
+  color: var(--muted);
+}
+.sh-msg.asst b {
+  color: var(--fg);
+  font-weight: 550;
+}
+.sh-evt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--info);
+}
+.sh-evt.failed {
+  color: var(--danger);
+}
+/* Cancelled lifecycle row inside a sheet, mirroring .sh-evt.failed. */
+.sh-evt.cancelled {
+  color: var(--warn);
+}
+/* Agents block inside a task sheet */
+.sh-agents {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 7px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sh-agents-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding-bottom: 4px;
+}
+.sh-agents-head .right {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 7px;
+  font-size: 11px;
+}
+/* Matches .wcard-head b — v1 hardcoded color:#d5d7de inline here, which was
+   both a hardcode violation and dark-only. */
+.sh-agents-head b {
+  color: var(--fg);
+  font-weight: 550;
+}
+.sh-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 10px;
+}
+.sh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--chip);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px 11px;
+  white-space: nowrap;
+}
+.sh-btn:hover {
+  background: var(--hover);
+}
+.sh-btn.danger {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.08);
+}
+.sh-btn.primary {
+  background: var(--primary);
+  border-color: transparent;
+  color: #fff;
+}
+.sh-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: var(--dim);
+  flex: none;
+}
+.sh-composer .grow {
+  flex: 1;
+  min-width: 0;
+}
+/* A disabled composer reads disabled through the greyed send pill and the
+   --dim reason note — NOT through an opacity dim. The old opacity: 0.65
+   composited the mandatory reason sentence (CONVENTIONS.md §7.2) down to
+   2.65:1 dark / 2.55:1 light; at full strength the note measures 4.69:1 /
+   4.91:1 on the sheet composites (CONTRAST.md). */
+.composer-note {
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.45;
+}
+.sh-send {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.sh-composer.disabled .sh-send {
+  background: var(--border2);
+  color: var(--dim);
+}
+
+/* ============================================================
+   Collapsible "Parallel work" card (pinned above the composer)
+   ============================================================ */
+.pcard {
+  margin: 0 12px 8px;
+  border: 1px solid var(--border);
+  /* Translucent again (v1: rgba(16,16,19,0.92) — exactly the dark
+     --float-bg composite); var(--card) is the color-mix fallback */
+  background: var(--card);
+  background: var(--float-bg);
+  backdrop-filter: blur(12px);
+  border-radius: 14px;
+  overflow: hidden;
+  flex: none;
+}
+.pcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: default;
+}
+.pcard-head b {
+  color: var(--fg);
+  font-weight: 550;
+}
+.pcard-head .chev {
+  margin-left: auto;
+  color: var(--dim);
+  display: flex;
+  transition: transform 0.12s;
+}
+.pcard.closed .chev {
+  transform: rotate(-90deg);
+}
+.pcard.closed .pcard-body {
+  display: none;
+}
+.pcard-body {
+  border-top: 1px solid var(--border);
+  padding: 4px 6px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pcard-body .sub {
+  padding-left: 6px;
+}
+
+/* Toast — tiny action confirmation in mockups */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 34px;
+  transform: translateX(-50%);
+  z-index: 60;
+  font-size: 11.5px;
+  color: var(--fg);
+  /* v1's toast was translucent too (rgba(24,24,28,0.96)); restored via
+     the derived token, var(--card) fallback */
+  background: var(--card);
+  background: var(--toast-bg);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  padding: 7px 14px;
+  white-space: nowrap;
+  max-width: 92%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.toast.show {
+  opacity: 1;
+}
+
+/* ============================================================
+   Mockup furniture
+   ============================================================ */
+.concept {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 50;
+  font-size: 11.5px;
+  color: var(--dim);
+  /* Translucent pill (v1: rgba(10,10,10,0.8) — exactly the dark
+     --pill-bg composite); var(--card) is the color-mix fallback */
+  background: var(--card);
+  background: var(--pill-bg);
+  border: 1px solid var(--border);
+  padding: 5px 11px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+.concept b {
+  color: var(--muted);
+  font-weight: 550;
+}
+.backlink {
+  position: fixed;
+  left: 14px;
+  top: 12px;
+  z-index: 60;
+  font-size: 11.5px;
+  color: var(--dim);
+  background: var(--card);
+  background: var(--pill-bg);
+  border: 1px solid var(--border);
+  padding: 5px 11px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+.backlink:hover {
+  color: var(--fg);
+  border-color: var(--border2);
+}
