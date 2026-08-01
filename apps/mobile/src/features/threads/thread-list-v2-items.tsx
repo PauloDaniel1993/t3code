@@ -19,10 +19,13 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr } from "../../state/use-thread-pr";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import {
+  TaskAgentDisclosureChip,
   TaskAgentListGroup,
+  type TaskAgentDisclosureChipProps,
   type TaskAgentListGroupProps,
 } from "./task-agent-surface/TaskAgentListGroup";
 import {
+  shouldIntegrateTaskAgentDisclosure,
   taskAgentListPresentationStateEqual,
   type TaskAgentThreadRowViewModel,
 } from "./task-agent-surface/taskAgentSurface.logic";
@@ -216,7 +219,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
 export interface ThreadListV2TaskAgentPresentation {
   readonly row: TaskAgentThreadRowViewModel;
   readonly expanded: boolean;
-  readonly onExpandedChange: TaskAgentListGroupProps["onExpandedChange"];
+  readonly onExpandedChange: TaskAgentDisclosureChipProps["onExpandedChange"];
   readonly onPressRow: TaskAgentListGroupProps["onPressRow"];
 }
 
@@ -468,17 +471,72 @@ function ThreadListV2RowComponent(props: {
     </>
   );
 
-  const rowContent = (close: () => void) =>
-    variant === "card" ? (
+  const rowContent = (
+    close: () => void,
+    taskAgentDisclosure: Omit<TaskAgentDisclosureChipProps, "onPressThread"> | null = null,
+  ) => {
+    const handleOpenThread = () => {
+      close();
+      onSelectThread(thread);
+    };
+    const disclosureChip =
+      taskAgentDisclosure === null ? null : (
+        <TaskAgentDisclosureChip {...taskAgentDisclosure} onPressThread={handleOpenThread} />
+      );
+    const existingSlimContent = (
+      /* Settled history recedes: dimmed favicon + muted title. */
+      <View
+        className={cn(
+          "min-h-[44px] flex-row items-center gap-2.5 py-2",
+          sidebarPane ? "px-3" : "px-5",
+        )}
+      >
+        {props.project ? (
+          <View className="opacity-40">
+            <ProjectFavicon
+              environmentId={thread.environmentId}
+              size={15}
+              projectTitle={props.projectTitle ?? props.project.title}
+              workspaceRoot={props.project.workspaceRoot}
+            />
+          </View>
+        ) : null}
+        <View className="min-w-0 flex-1">
+          <Text
+            className={cn(
+              "text-base",
+              selected ? "text-user-bubble-foreground" : "text-foreground-muted",
+            )}
+            numberOfLines={1}
+          >
+            {thread.title}
+          </Text>
+          {props.searchMatch ? (
+            <ThreadSearchMatchExcerpt
+              match={props.searchMatch}
+              query={props.searchQuery ?? ""}
+              selected={selected}
+            />
+          ) : null}
+        </View>
+        <Text
+          className={cn(
+            "text-sm tabular-nums",
+            selected ? "text-user-bubble-foreground-muted" : "text-foreground-tertiary",
+          )}
+          style={{ fontFamily: MONO_FONT }}
+        >
+          {relativeTime(thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt)}
+        </Text>
+      </View>
+    );
+    const existingCardRow = (
       <Pressable
         accessibilityHint={`Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`}
         accessibilityLabel={thread.title}
         accessibilityRole="button"
         accessibilityState={{ selected }}
-        onPress={() => {
-          close();
-          onSelectThread(thread);
-        }}
+        onPress={handleOpenThread}
         style={
           sidebarPane
             ? ({ pressed }) => ({
@@ -507,17 +565,56 @@ function ThreadListV2RowComponent(props: {
           </View>
         )}
       </Pressable>
-    ) : (
+    );
+    const integratedCardRow =
+      disclosureChip === null ? (
+        existingCardRow
+      ) : (
+        <View
+          className={sidebarPane ? undefined : "bg-screen"}
+          style={
+            sidebarPane
+              ? {
+                  backgroundColor: selected ? selectedBackgroundColor : drawerColor,
+                  borderRadius: SIDEBAR_V2_ROW_RADIUS,
+                }
+              : undefined
+          }
+        >
+          <Pressable
+            accessibilityHint={`Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`}
+            accessibilityLabel={thread.title}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            onPress={handleOpenThread}
+            style={
+              sidebarPane
+                ? ({ pressed }) => ({
+                    backgroundColor: pressed
+                      ? pressedBackgroundColor
+                      : selected
+                        ? selectedBackgroundColor
+                        : drawerColor,
+                    paddingHorizontal: 12,
+                    paddingTop: 10,
+                  })
+                : ({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })
+            }
+          >
+            {sidebarPane ? cardContent : <View className="px-5 pt-2.5">{cardContent}</View>}
+          </Pressable>
+          <View className={sidebarPane ? "px-3 pb-2.5" : "px-5 pb-2.5"}>{disclosureChip}</View>
+          {sidebarPane ? null : <View className="ml-5 h-px bg-border-subtle" />}
+        </View>
+      );
+    const existingSlimRow = (
       <Pressable
         accessibilityHint={`Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`}
         accessibilityLabel={thread.title}
         accessibilityRole="button"
         accessibilityState={{ selected }}
         className={sidebarPane ? undefined : "bg-screen"}
-        onPress={() => {
-          close();
-          onSelectThread(thread);
-        }}
+        onPress={handleOpenThread}
         style={
           sidebarPane
             ? ({ pressed }) => ({
@@ -531,55 +628,55 @@ function ThreadListV2RowComponent(props: {
             : ({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })
         }
       >
-        {/* Settled history recedes: dimmed favicon + muted title. */}
-        <View
-          className={cn(
-            "min-h-[44px] flex-row items-center gap-2.5 py-2",
-            sidebarPane ? "px-3" : "px-5",
-          )}
-        >
-          {props.project ? (
-            <View className="opacity-40">
-              <ProjectFavicon
-                environmentId={thread.environmentId}
-                size={15}
-                projectTitle={props.projectTitle ?? props.project.title}
-                workspaceRoot={props.project.workspaceRoot}
-              />
-            </View>
-          ) : null}
-          <View className="min-w-0 flex-1">
-            <Text
-              className={cn(
-                "text-base",
-                selected ? "text-user-bubble-foreground" : "text-foreground-muted",
-              )}
-              numberOfLines={1}
-            >
-              {thread.title}
-            </Text>
-            {props.searchMatch ? (
-              <ThreadSearchMatchExcerpt
-                match={props.searchMatch}
-                query={props.searchQuery ?? ""}
-                selected={selected}
-              />
-            ) : null}
-          </View>
-          <Text
-            className={cn(
-              "text-sm tabular-nums",
-              selected ? "text-user-bubble-foreground-muted" : "text-foreground-tertiary",
-            )}
-            style={{ fontFamily: MONO_FONT }}
-          >
-            {relativeTime(thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt)}
-          </Text>
-        </View>
+        {existingSlimContent}
       </Pressable>
     );
+    const integratedSlimRow =
+      disclosureChip === null ? (
+        existingSlimRow
+      ) : (
+        <View
+          className={sidebarPane ? undefined : "bg-screen"}
+          style={
+            sidebarPane
+              ? {
+                  backgroundColor: selected ? selectedBackgroundColor : drawerColor,
+                  borderRadius: SIDEBAR_V2_ROW_RADIUS,
+                }
+              : undefined
+          }
+        >
+          <Pressable
+            accessibilityHint={`Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`}
+            accessibilityLabel={thread.title}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            onPress={handleOpenThread}
+            style={
+              sidebarPane
+                ? ({ pressed }) => ({
+                    backgroundColor: pressed
+                      ? pressedBackgroundColor
+                      : selected
+                        ? selectedBackgroundColor
+                        : drawerColor,
+                    borderRadius: SIDEBAR_V2_ROW_RADIUS,
+                  })
+                : ({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })
+            }
+          >
+            {existingSlimContent}
+          </Pressable>
+          <View className={sidebarPane ? "px-3 pb-2" : "px-5 pb-2"}>{disclosureChip}</View>
+        </View>
+      );
 
-  const existingThreadRow = (
+    return variant === "card" ? integratedCardRow : integratedSlimRow;
+  };
+
+  const buildThreadRow = (
+    taskAgentDisclosure: Omit<TaskAgentDisclosureChipProps, "onPressThread"> | null,
+  ) => (
     <>
       {props.showSettledDivider ? (
         <ThreadListV2SectionDivider label="Settled" pane={props.pane} />
@@ -615,23 +712,39 @@ function ThreadListV2RowComponent(props: {
             onPressAction={handleMenuAction}
             shouldOpenOnLongPress
           >
-            {rowContent(close)}
+            {rowContent(close, taskAgentDisclosure)}
           </ControlPillMenu>
         )}
       </ThreadSwipeable>
     </>
   );
 
+  // Keep this binding and early return as the structural regression gate:
+  // without a rollup, rowContent receives null and yields the established
+  // Pressable/Swipeable tree without an added wrapper or padding change.
+  const existingThreadRow = buildThreadRow(null);
+
   const taskAgentPresentation = props.taskAgentPresentation;
-  if (taskAgentPresentation?.row.kind !== "rollup-thread") return existingThreadRow;
+  if (
+    taskAgentPresentation === undefined ||
+    !shouldIntegrateTaskAgentDisclosure(taskAgentPresentation.row)
+  ) {
+    return existingThreadRow;
+  }
+
+  const integratedThreadRow = buildThreadRow({
+    expanded: taskAgentPresentation.expanded,
+    onExpandedChange: taskAgentPresentation.onExpandedChange,
+    pane: props.pane,
+    row: taskAgentPresentation.row,
+  });
 
   return (
     <View collapsable={false}>
-      {existingThreadRow}
+      {integratedThreadRow}
       <TaskAgentListGroup
         key={taskAgentPresentation.row.key}
         expanded={taskAgentPresentation.expanded}
-        onExpandedChange={taskAgentPresentation.onExpandedChange}
         onPressRow={taskAgentPresentation.onPressRow}
         pane={props.pane}
         row={taskAgentPresentation.row}

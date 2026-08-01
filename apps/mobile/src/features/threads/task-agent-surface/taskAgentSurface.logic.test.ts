@@ -12,10 +12,12 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { buildTaskAgentModel, type TaskAgentModel } from "./taskAgentModel";
 import {
+  buildTaskAgentDisclosureContent,
   buildTaskAgentListEntries,
   buildNativeAgentRow,
   buildTaskAgentRow,
   buildTaskAgentSurfaceRows,
+  shouldIntegrateTaskAgentDisclosure,
   taskAgentListPresentationStateEqual,
   taskAgentThreadRowsRenderEqual,
   type TaskAgentSurfaceViewModel,
@@ -358,6 +360,37 @@ describe("task-agent surface row honesty", () => {
     assert(model);
     expect(collectStrings(model).some((value) => /\b0 of 0\b/.test(value))).toBe(false);
   });
+
+  it("keeps the collapsed chip terse while preserving the bounded agent window", () => {
+    const parentId = ThreadId.make("disclosure-parent");
+    const parent = rollup(
+      surface([
+        makeThread({
+          id: parentId,
+          title: "Disclosure parent",
+          nativeAgents: [makeAgent({ taskId: "windowed-agent", status: "running" })],
+        }),
+        makeTask(parentId, { id: ThreadId.make("disclosure-task") }),
+      ]),
+    );
+
+    const collapsed = buildTaskAgentDisclosureContent(parent, false);
+    const expanded = buildTaskAgentDisclosureContent(parent, true);
+
+    expect(collapsed.chipLabel).toBe(parent.rollup.chipLabel);
+    expect(collapsed.chipLabel).toBe("1 task · 1 agent");
+    expect(collapsed.chipLabel).not.toContain("Latest turn plus anything still running");
+    expect(collapsed.expandedQualification).toBeNull();
+    expect(collapsed.accessibilityHint).toBe(
+      "Shows this thread's tasks and agents from the latest turn plus anything still running",
+    );
+
+    expect(expanded.chipLabel).toBe(parent.rollup.chipLabel);
+    expect(expanded.expandedQualification).toBe("Agents: Latest turn plus anything still running");
+    expect(expanded.accessibilityHint).toBe(
+      "Collapses this thread's tasks and agents from the latest turn plus anything still running",
+    );
+  });
 });
 
 describe("task-agent surface hierarchy", () => {
@@ -372,6 +405,8 @@ describe("task-agent surface hierarchy", () => {
       unread: false,
     });
     expect(row && "rollup" in row).toBe(false);
+    expect(shouldIntegrateTaskAgentDisclosure(row)).toBe(false);
+    expect(shouldIntegrateTaskAgentDisclosure(undefined)).toBe(false);
   });
 
   it("keeps tasks under a thread and agents under their turn", () => {
@@ -391,6 +426,7 @@ describe("task-agent surface hierarchy", () => {
     ]);
 
     const parent = rollup(model);
+    expect(shouldIntegrateTaskAgentDisclosure(parent)).toBe(true);
     expect(parent.rollup.tasks).toHaveLength(1);
     expect(parent.rollup.nativeAgentTurns).toHaveLength(1);
     expect(parent.rollup.nativeAgentTurns[0]?.agents[0]?.id).toBe("parent-agent");

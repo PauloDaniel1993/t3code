@@ -124,6 +124,46 @@ export type TaskAgentRollupThreadRowViewModel = Extract<
   { readonly kind: "rollup-thread" }
 >;
 
+const NATIVE_AGENT_WINDOW_LABEL = "Latest turn plus anything still running";
+const NATIVE_AGENT_WINDOW_HINT = "agents from the latest turn plus anything still running";
+
+export interface TaskAgentDisclosureContent {
+  /** The projected count label is always shown verbatim in the chip. */
+  readonly chipLabel: string;
+  /** Visible only beside the expanded nested rows. */
+  readonly expandedQualification: string | null;
+  /** Keeps the bounded native-agent window available to assistive technology. */
+  readonly accessibilityHint: string;
+}
+
+/**
+ * Resolve disclosure copy without deriving counts at the render boundary.
+ * The compact chip remains terse while the expanded surface and accessibility
+ * hint preserve the projection's bounded native-agent-window qualification.
+ */
+export function buildTaskAgentDisclosureContent(
+  row: TaskAgentRollupThreadRowViewModel,
+  expanded: boolean,
+): TaskAgentDisclosureContent {
+  const contents: string[] = [];
+  if (row.rollup.taskCount > 0) contents.push("this thread's tasks");
+  if (row.rollup.nativeAgentCount > 0) contents.push(NATIVE_AGENT_WINDOW_HINT);
+
+  return {
+    chipLabel: row.rollup.chipLabel,
+    expandedQualification:
+      expanded && row.rollup.nativeAgentCount > 0 ? `Agents: ${NATIVE_AGENT_WINDOW_LABEL}` : null,
+    accessibilityHint: `${expanded ? "Collapses" : "Shows"} ${contents.join(" and ")}`,
+  };
+}
+
+/** The UI only changes the established thread-row tree for actual rollups. */
+export function shouldIntegrateTaskAgentDisclosure(
+  row: TaskAgentThreadRowViewModel | undefined,
+): row is TaskAgentRollupThreadRowViewModel {
+  return row?.kind === "rollup-thread";
+}
+
 export interface TaskAgentListPresentationState {
   readonly row: TaskAgentThreadRowViewModel;
   readonly expanded: boolean;

@@ -12,6 +12,7 @@ import { SymbolView } from "../../../components/AppSymbol";
 import { useThemeColor } from "../../../lib/useThemeColor";
 import {
   buildTaskAgentListEntries,
+  buildTaskAgentDisclosureContent,
   taskAgentThreadRowsRenderEqual,
   type TaskAgentListEntry,
   type TaskAgentRollupThreadRowViewModel,
@@ -24,30 +25,15 @@ export interface TaskAgentListGroupProps {
   readonly row: TaskAgentRollupThreadRowViewModel;
   readonly expanded: boolean;
   readonly pane?: "screen" | "sidebar";
-  readonly onExpandedChange: (threadKey: string, expanded: boolean) => void;
   readonly onPressRow: (row: TaskAgentRowViewModel) => void;
 }
 
-const NATIVE_AGENT_WINDOW_LABEL = "Latest turn plus anything still running";
-const NATIVE_AGENT_WINDOW_HINT = "agents from the latest turn plus anything still running";
-
-function taskAgentDisclosureLabel(row: TaskAgentRollupThreadRowViewModel): string {
-  // Keep the projected count verbatim; the suffix only scopes what the agent
-  // count means so it cannot be read as a full thread history.
-  return row.rollup.nativeAgentCount === 0
-    ? row.rollup.chipLabel
-    : `${row.rollup.chipLabel} · Agents: ${NATIVE_AGENT_WINDOW_LABEL}`;
-}
-
-function taskAgentDisclosureHint(
-  row: TaskAgentRollupThreadRowViewModel,
-  expanded: boolean,
-): string {
-  const action = expanded ? "Collapses" : "Shows";
-  const contents: string[] = [];
-  if (row.rollup.taskCount > 0) contents.push("this thread's tasks");
-  if (row.rollup.nativeAgentCount > 0) contents.push(NATIVE_AGENT_WINDOW_HINT);
-  return `${action} ${contents.join(" and ")}`;
+export interface TaskAgentDisclosureChipProps {
+  readonly row: TaskAgentRollupThreadRowViewModel;
+  readonly expanded: boolean;
+  readonly pane?: "screen" | "sidebar";
+  readonly onExpandedChange: (threadKey: string, expanded: boolean) => void;
+  readonly onPressThread: () => void;
 }
 
 function toneColor(theme: TaskAgentTheme, tone: TaskAgentRowTone): string {
@@ -187,6 +173,71 @@ function TaskAgentTurnRow(props: {
   );
 }
 
+function TaskAgentDisclosureChipComponent(props: TaskAgentDisclosureChipProps) {
+  const colorScheme = useColorScheme() === "light" ? "light" : "dark";
+  const theme = getTaskAgentTheme(colorScheme);
+  const borderColor = useThemeColor("--color-border");
+  const surfaceColor = props.pane === "sidebar" ? theme.card : theme.background;
+  const interactiveSurfaceColor = props.pane === "sidebar" ? theme.background : theme.card;
+  const content = buildTaskAgentDisclosureContent(props.row, props.expanded);
+
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      // The chip sits above a sibling thread-open target. Stop the JS event at
+      // the chip; the ancestor ReanimatedSwipeable remains the sole owner of
+      // horizontal gesture recognition across the whole card.
+      event.stopPropagation();
+      props.onExpandedChange(props.row.key, !props.expanded);
+    },
+    [props.expanded, props.onExpandedChange, props.row.key],
+  );
+
+  return (
+    <View style={styles.disclosureLine}>
+      <Pressable
+        accessible={false}
+        importantForAccessibility="no"
+        onPress={props.onPressThread}
+        style={StyleSheet.absoluteFill}
+      />
+      <Pressable
+        accessibilityHint={content.accessibilityHint}
+        accessibilityLabel={content.chipLabel}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: props.expanded }}
+        hitSlop={8}
+        onPress={handlePress}
+        style={({ pressed }) => [
+          styles.disclosureChip,
+          {
+            backgroundColor: pressed ? surfaceColor : interactiveSurfaceColor,
+            borderColor,
+          },
+        ]}
+      >
+        <SymbolView
+          name={props.expanded ? "chevron.down" : "chevron.right"}
+          size={10}
+          tintColor={theme.text.muted}
+        />
+        <Text style={[styles.disclosureLabel, { color: theme.text.muted }]}>
+          {content.chipLabel}
+        </Text>
+      </Pressable>
+      {props.row.unread ? (
+        <View
+          accessibilityLabel="Unread task result"
+          pointerEvents="none"
+          style={styles.unreadMarker}
+        >
+          <View style={[styles.unreadDot, { backgroundColor: theme.text.info }]} />
+          <Text style={[styles.unreadLabel, { color: theme.text.info }]}>Unread result</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function TaskAgentListGroupComponent(props: TaskAgentListGroupProps) {
   const colorScheme = useColorScheme() === "light" ? "light" : "dark";
   const theme = getTaskAgentTheme(colorScheme);
@@ -201,14 +252,7 @@ function TaskAgentListGroupComponent(props: TaskAgentListGroupProps) {
   );
   const surfaceColor = props.pane === "sidebar" ? theme.card : theme.background;
   const interactiveSurfaceColor = props.pane === "sidebar" ? theme.background : theme.card;
-
-  const handleDisclosurePress = useCallback(
-    (event: GestureResponderEvent) => {
-      event.stopPropagation();
-      props.onExpandedChange(props.row.key, !props.expanded);
-    },
-    [props],
-  );
+  const disclosureContent = buildTaskAgentDisclosureContent(props.row, props.expanded);
   const handleToggleTurn = useCallback((turnKey: string, expanded: boolean) => {
     setTurnExpansionOverrides((current) => {
       const next = new Map(current);
@@ -217,79 +261,46 @@ function TaskAgentListGroupComponent(props: TaskAgentListGroupProps) {
     });
   }, []);
 
+  if (!props.expanded) return null;
+
   return (
     <View collapsable={false} style={{ backgroundColor: surfaceColor }}>
       <View
         style={[
-          styles.disclosureLine,
-          props.pane === "sidebar" ? styles.sidebarDisclosureLine : styles.screenDisclosureLine,
+          styles.nestedRows,
+          props.pane === "sidebar" ? styles.sidebarNestedRows : styles.screenNestedRows,
+          {
+            backgroundColor: surfaceColor,
+            borderBottomColor: borderColor,
+            borderLeftColor: borderColor,
+          },
         ]}
       >
-        <Pressable
-          accessibilityHint={taskAgentDisclosureHint(props.row, props.expanded)}
-          accessibilityLabel={taskAgentDisclosureLabel(props.row)}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: props.expanded }}
-          hitSlop={8}
-          onPress={handleDisclosurePress}
-          style={({ pressed }) => [
-            styles.disclosureChip,
-            {
-              backgroundColor: pressed ? surfaceColor : interactiveSurfaceColor,
-              borderColor,
-            },
-          ]}
-        >
-          <SymbolView
-            name={props.expanded ? "chevron.down" : "chevron.right"}
-            size={10}
-            tintColor={theme.text.muted}
-          />
-          <Text style={[styles.disclosureLabel, { color: theme.text.muted }]}>
-            {taskAgentDisclosureLabel(props.row)}
+        {disclosureContent.expandedQualification ? (
+          <Text style={[styles.expandedQualification, { color: theme.text.dim }]}>
+            {disclosureContent.expandedQualification}
           </Text>
-        </Pressable>
-        {props.row.unread ? (
-          <View accessibilityLabel="Unread task result" style={styles.unreadMarker}>
-            <View style={[styles.unreadDot, { backgroundColor: theme.text.info }]} />
-            <Text style={[styles.unreadLabel, { color: theme.text.info }]}>Unread result</Text>
-          </View>
         ) : null}
+        {entries.map((entry) =>
+          entry.kind === "entity-row" ? (
+            <TaskAgentEntityRow
+              key={entry.key}
+              entry={entry}
+              onPressRow={props.onPressRow}
+              pressedBackgroundColor={interactiveSurfaceColor}
+              theme={theme}
+            />
+          ) : (
+            <TaskAgentTurnRow
+              key={entry.key}
+              entry={entry}
+              onToggle={handleToggleTurn}
+              pressedBackgroundColor={interactiveSurfaceColor}
+              theme={theme}
+            />
+          ),
+        )}
       </View>
-
-      {props.expanded ? (
-        <View
-          style={[
-            styles.nestedRows,
-            props.pane === "sidebar" ? styles.sidebarNestedRows : styles.screenNestedRows,
-            {
-              backgroundColor: surfaceColor,
-              borderBottomColor: borderColor,
-              borderLeftColor: borderColor,
-            },
-          ]}
-        >
-          {entries.map((entry) =>
-            entry.kind === "entity-row" ? (
-              <TaskAgentEntityRow
-                key={entry.key}
-                entry={entry}
-                onPressRow={props.onPressRow}
-                pressedBackgroundColor={interactiveSurfaceColor}
-                theme={theme}
-              />
-            ) : (
-              <TaskAgentTurnRow
-                key={entry.key}
-                entry={entry}
-                onToggle={handleToggleTurn}
-                pressedBackgroundColor={interactiveSurfaceColor}
-                theme={theme}
-              />
-            ),
-          )}
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -301,12 +312,28 @@ function taskAgentListGroupPropsEqual(
   return (
     previous.expanded === next.expanded &&
     previous.pane === next.pane &&
-    previous.onExpandedChange === next.onExpandedChange &&
     previous.onPressRow === next.onPressRow &&
     taskAgentThreadRowsRenderEqual(previous.row, next.row)
   );
 }
 
+function taskAgentDisclosureChipPropsEqual(
+  previous: TaskAgentDisclosureChipProps,
+  next: TaskAgentDisclosureChipProps,
+): boolean {
+  return (
+    previous.expanded === next.expanded &&
+    previous.pane === next.pane &&
+    previous.onExpandedChange === next.onExpandedChange &&
+    previous.onPressThread === next.onPressThread &&
+    taskAgentThreadRowsRenderEqual(previous.row, next.row)
+  );
+}
+
+export const TaskAgentDisclosureChip = memo(
+  TaskAgentDisclosureChipComponent,
+  taskAgentDisclosureChipPropsEqual,
+);
 export const TaskAgentListGroup = memo(TaskAgentListGroupComponent, taskAgentListGroupPropsEqual);
 
 const styles = StyleSheet.create({
@@ -314,13 +341,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     gap: 8,
+    marginTop: 8,
     minHeight: 30,
-  },
-  screenDisclosureLine: {
-    paddingHorizontal: 20,
-  },
-  sidebarDisclosureLine: {
-    paddingHorizontal: 12,
   },
   disclosureChip: {
     alignItems: "center",
@@ -355,6 +377,14 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
     paddingLeft: 12,
     paddingTop: 2,
+  },
+  expandedQualification: {
+    fontSize: 11,
+    lineHeight: 15,
+    paddingBottom: 2,
+    paddingLeft: 2,
+    paddingRight: 8,
+    paddingTop: 5,
   },
   screenNestedRows: {
     marginLeft: 22,
