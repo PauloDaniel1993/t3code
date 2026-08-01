@@ -13,6 +13,14 @@ import { MobileStorageDecodeError, MobileStorageEncodeError } from "./mobile-sto
 const PREFERENCES_KEY = "t3code.preferences";
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
 
+/**
+ * Keeps the device-local read-marker blob small while retaining a generous
+ * recent history. Evicted markers fall back to the shipped unread policy.
+ */
+export const MAX_TASK_AGENT_READ_MARKERS = 1_000;
+
+export type TaskAgentReadMarkers = Readonly<Record<string, string>>;
+
 export interface Preferences {
   readonly liveActivitiesEnabled?: boolean;
   readonly baseFontSize?: number;
@@ -30,6 +38,10 @@ export interface Preferences {
    * see `resolveThreadListV2Enabled`.
    */
   readonly threadListV2Enabled?: boolean;
+  /** Device-local counterpart of web's local-only thread-tasks beta flag. */
+  readonly threadTasksEnabled?: boolean;
+  /** JSON-safe form of the task-agent read-state map. */
+  readonly taskAgentReadMarkers?: TaskAgentReadMarkers;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -54,6 +66,51 @@ interface PreferencesFallback {
   readonly payload: string;
   readonly updatedAt: number;
   readonly preferences: Preferences;
+}
+
+/**
+ * Validate and bound the persisted marker map at the storage boundary.
+ * Prioritized IDs let a visit command retain its parent/task pair together
+ * when the map is already full.
+ */
+export function normalizeTaskAgentReadMarkers(
+  value: unknown,
+  prioritizedThreadIds: ReadonlyArray<string> = [],
+): TaskAgentReadMarkers {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+
+  const priorityByThreadId = new Map(
+    prioritizedThreadIds.map((threadId, index) => [threadId, index] as const),
+  );
+  const entries = Object.entries(value).flatMap(([threadId, visitedAt]) => {
+    if (threadId.trim().length === 0 || typeof visitedAt !== "string") return [];
+    const normalizedVisitedAt = visitedAt.trim();
+    if (normalizedVisitedAt.length === 0 || normalizedVisitedAt.startsWith("-")) return [];
+    const visitedAtMilliseconds = Date.parse(normalizedVisitedAt);
+    return Number.isFinite(visitedAtMilliseconds) && visitedAtMilliseconds >= 0
+      ? [{ threadId, visitedAt: normalizedVisitedAt, visitedAtMilliseconds }]
+      : [];
+  });
+
+  entries.sort((left, right) => {
+    const leftPriority = priorityByThreadId.get(left.threadId);
+    const rightPriority = priorityByThreadId.get(right.threadId);
+    if (leftPriority !== undefined || rightPriority !== undefined) {
+      if (leftPriority === undefined) return 1;
+      if (rightPriority === undefined) return -1;
+      return leftPriority - rightPriority;
+    }
+    return (
+      right.visitedAtMilliseconds - left.visitedAtMilliseconds ||
+      left.threadId.localeCompare(right.threadId)
+    );
+  });
+
+  return Object.fromEntries(
+    entries
+      .slice(0, MAX_TASK_AGENT_READ_MARKERS)
+      .map(({ threadId, visitedAt }) => [threadId, visitedAt]),
+  );
 }
 
 export class MobilePreferencesStore extends Context.Service<
@@ -81,6 +138,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     collapsedProjectGroups?: readonly string[];
     projectGroupingEnabled?: boolean;
     threadListV2Enabled?: boolean;
+    threadTasksEnabled?: boolean;
+    taskAgentReadMarkers?: TaskAgentReadMarkers;
   } = {};
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
@@ -112,6 +171,16 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.threadListV2Enabled === "boolean") {
     preferences.threadListV2Enabled = parsed.threadListV2Enabled;
+  }
+  if (typeof parsed.threadTasksEnabled === "boolean") {
+    preferences.threadTasksEnabled = parsed.threadTasksEnabled;
+  }
+  if (
+    typeof parsed.taskAgentReadMarkers === "object" &&
+    parsed.taskAgentReadMarkers !== null &&
+    !Array.isArray(parsed.taskAgentReadMarkers)
+  ) {
+    preferences.taskAgentReadMarkers = normalizeTaskAgentReadMarkers(parsed.taskAgentReadMarkers);
   }
   return preferences;
 }

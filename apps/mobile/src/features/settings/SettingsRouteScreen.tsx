@@ -36,7 +36,11 @@ import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
 import { runtime } from "../../lib/runtime";
 import { useThemeColor } from "../../lib/useThemeColor";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import {
+  mobilePreferencesAtom,
+  updateMobilePreferencesAtom,
+  useThreadTasksEnabled,
+} from "../../state/preferences";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
 import {
   type AppUpdateCheckState,
@@ -555,6 +559,7 @@ function GeneralSettingsSection() {
 function BetaSettingsSection() {
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const threadListV2Enabled = useThreadListV2Enabled();
+  const threadTasksEnabled = useThreadTasksEnabled();
 
   return (
     <View className="gap-3">
@@ -565,10 +570,17 @@ function BetaSettingsSection() {
           value={threadListV2Enabled}
           onValueChange={(value) => savePreferences({ threadListV2Enabled: value })}
         />
+        <SettingsSwitchRow
+          icon="checklist"
+          label="Thread Tasks"
+          value={threadTasksEnabled}
+          onValueChange={(value) => savePreferences({ threadTasksEnabled: value })}
+        />
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
-        One flat thread list in creation order. Active work renders as cards; settled threads
-        collapse to compact rows. Switch back any time.
+        Thread List v2 uses one flat list in creation order. Thread Tasks enables the task-thread
+        surface; task groups appear in Thread List v2 only when both switches are on. Switch either
+        off any time.
       </Text>
     </View>
   );

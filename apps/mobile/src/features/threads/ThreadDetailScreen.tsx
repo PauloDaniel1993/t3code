@@ -40,6 +40,7 @@ import {
   ThreadComposer,
 } from "./ThreadComposer";
 import { ThreadFeed } from "./ThreadFeed";
+import type { TaskAgentTaskSurfacePresentation } from "./task-agent-surface/taskAgentTaskSurface.logic";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 
 export interface ThreadDetailScreenProps {
@@ -101,6 +102,7 @@ export interface ThreadDetailScreenProps {
   ) => void;
   readonly onSubmitUserInput: () => Promise<unknown>;
   readonly showContent?: boolean;
+  readonly taskAgentTaskSurface?: TaskAgentTaskSurfacePresentation;
 }
 
 function latestStreamingAssistantMessage(
@@ -204,6 +206,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     }
   })();
   const selectedThreadFeed = props.selectedThreadFeed;
+  const taskComposer = props.taskAgentTaskSurface?.composer;
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
   const composerOverlapHeight = composerChrome + composerBottomInset;
   const estimatedOverlayHeight = composerOverlapHeight;
@@ -245,6 +248,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     lastScrolledAnchorMessageIdRef.current = null;
     freeze.set(false);
   }, [freeze, selectedThreadKey]);
+
+  useEffect(() => {
+    if (taskComposer?.kind !== "unavailable") return;
+    setComposerExpanded(false);
+    composerEditorRef.current?.blur();
+    void KeyboardController.dismiss().catch(() => undefined);
+  }, [taskComposer?.kind]);
 
   useEffect(() => {
     if (
@@ -379,6 +389,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             usesAutomaticContentInsets={props.usesAutomaticContentInsets}
             onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
             skills={selectedProviderSkills}
+            {...(props.taskAgentTaskSurface === undefined
+              ? {}
+              : { taskAgentTaskSurface: props.taskAgentTaskSurface })}
           />
         </View>
       ) : (
@@ -428,7 +441,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               editorRef={composerEditorRef}
               draftMessage={props.draftMessage}
               draftAttachments={props.draftAttachments}
-              placeholder="Ask the repo agent, or run a command…"
+              placeholder={
+                taskComposer?.kind === "available"
+                  ? taskComposer.placeholder
+                  : "Ask the repo agent, or run a command…"
+              }
               contentMaxWidth={contentMaxWidth}
               connectionState={props.connectionStateLabel}
               connectionError={props.connectionError}
@@ -452,6 +469,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}
               onUpdateInteractionMode={props.onUpdateThreadInteractionMode}
               onExpandedChange={setComposerExpanded}
+              {...(taskComposer === undefined ? {} : { taskComposer })}
             />
           </View>
         </KeyboardStickyView>

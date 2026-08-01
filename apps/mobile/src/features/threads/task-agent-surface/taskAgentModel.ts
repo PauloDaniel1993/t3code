@@ -342,30 +342,6 @@ function taskResultSummary(thread: EnvironmentThreadShell) {
   return thread.taskSummary;
 }
 
-function latestDeliveredTaskTimestamp(tasks: ReadonlyArray<EnvironmentThreadShell>): string | null {
-  let latest: string | null = null;
-  for (const task of tasks) {
-    if (task.task?.delivery?.state !== "delivered") continue;
-    const deliveredAt = task.task.delivery.updatedAt;
-    if (latest === null || deliveredAt > latest) latest = deliveredAt;
-  }
-  return latest;
-}
-
-function parentTaskSummary(
-  parent: EnvironmentThreadShell,
-  tasks: ReadonlyArray<EnvironmentThreadShell>,
-) {
-  if (parent.taskSummary != null) return parent.taskSummary;
-  const latestDeliveredAt = latestDeliveredTaskTimestamp(tasks);
-  if (latestDeliveredAt === null) return null;
-  return {
-    total: tasks.length,
-    running: runningTaskCount(tasks),
-    latestDeliveredAt,
-  };
-}
-
 function taskStatus(thread: EnvironmentThreadShell): TaskStatusProjection {
   const metadata = thread.task;
   if (metadata == null) {
@@ -672,11 +648,10 @@ function projectThread(
     };
   }
 
-  const hasUnreadResults = resolveHasUnreadTaskResults({
-    taskSummary: parentTaskSummary(thread, tasks),
-    lastVisitedAt: readState.lastVisitedAtByThreadId.get(thread.id),
-  });
   const taskProjections = tasks.map((task) => projectTask(task, readState, nowMs));
+  // A parent is unread while any child task row remains unread. A visit to one
+  // child must not clear a returned result on one of its siblings.
+  const hasUnreadResults = taskProjections.some((task) => task.hasUnreadTaskResults);
   const nativeAgentTurns = projectNativeAgentTurns(thread, nativeAgents, key, nowMs);
   const expandedByDefault =
     defaultTaskGroupExpanded({ tasks, hasUnreadResults }) ||

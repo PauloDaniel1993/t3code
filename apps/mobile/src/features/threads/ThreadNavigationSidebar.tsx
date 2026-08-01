@@ -9,6 +9,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import { LegendList } from "@legendapp/list/react-native";
 import type { MenuAction } from "@react-native-menu/menu";
+import { useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -28,7 +29,9 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useProjects, useThreadShells } from "../../state/entities";
+import { useThreadTasksEnabled } from "../../state/preferences";
 import { useThreadSearch } from "../../state/queries";
+import { useTaskAgentReadState } from "../../state/use-task-agent-read-state";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
@@ -68,21 +71,47 @@ import {
   ThreadListShowMoreRow,
 } from "./thread-list-items";
 import { ThreadListV2PendingRow, ThreadListV2Row } from "./thread-list-v2-items";
+import { buildTaskAgentModel } from "./task-agent-surface/taskAgentModel";
+import type { TaskPeekAgentRouteParams } from "./task-agent-surface/taskAgentPeek.logic";
+import type { TaskDestination } from "./task-agent-surface/taskAgentNavigation";
+import {
+  buildTaskAgentSurfaceRows,
+  taskAgentListPresentationStateEqual,
+  type TaskAgentListPresentationState,
+  type TaskAgentRowViewModel,
+  type TaskAgentSurfaceViewModel,
+} from "./task-agent-surface/taskAgentSurface.logic";
 import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
-  type ThreadListV2ListItem,
+  type ThreadListV2PendingListItem,
+  type ThreadListV2ThreadListItem,
 } from "./threadListV2";
 
 /** The sidebar list serves both lists: v1 grouped items or, when the Thread
     List v2 beta is on, flat v2 rows with queued tasks spliced in, and a settled
     "Show more" pager. */
+type SidebarV2ThreadListItem = ThreadListV2ThreadListItem & {
+  /** Captured in list data so LegendList can compare old and new expansion. */
+  readonly taskAgentPresentationState: TaskAgentListPresentationState | undefined;
+};
+
 type SidebarListItem =
   | HomeListItem
-  | ThreadListV2ListItem
+  | SidebarV2ThreadListItem
+  | ThreadListV2PendingListItem
   | { readonly type: "v2-show-more"; readonly key: string; readonly hiddenCount: number };
+
+function taskAgentPresentationStatesEqual(
+  previous: TaskAgentListPresentationState | undefined,
+  next: TaskAgentListPresentationState | undefined,
+): boolean {
+  if (previous === next) return true;
+  if (previous === undefined || next === undefined) return false;
+  return taskAgentListPresentationStateEqual(previous, next);
+}
 
 /**
  * Shared capsule behind the sidebar header buttons — a native liquid-glass
@@ -136,8 +165,73 @@ interface ThreadNavigationSidebarProps {
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
+  readonly onOpenTaskAgentDestination: (destination: TaskDestination) => void;
   readonly onRequestVisibility: () => void;
   readonly searchQuery: string;
+}
+
+type TaskAgentPeekParamsByRow = ReadonlyMap<TaskAgentRowViewModel, TaskPeekAgentRouteParams>;
+type OpenTaskAgentPeek = (params: TaskPeekAgentRouteParams) => void;
+
+function buildTaskAgentPeekParamsByRow(
+  surface: TaskAgentSurfaceViewModel | null,
+): TaskAgentPeekParamsByRow {
+  const paramsByRow = new Map<TaskAgentRowViewModel, TaskPeekAgentRouteParams>();
+  if (surface === null) return paramsByRow;
+
+  for (const thread of surface.threads) {
+    if (thread.kind !== "rollup-thread") continue;
+    const environmentId = thread.thread.environmentId;
+    const threadId = thread.thread.id;
+    if (
+      typeof environmentId !== "string" ||
+      environmentId.trim().length === 0 ||
+      typeof threadId !== "string" ||
+      threadId.trim().length === 0
+    ) {
+      continue;
+    }
+
+    for (const turn of thread.rollup.nativeAgentTurns) {
+      for (const agent of turn.agents) {
+        if (agent.kind !== "native-agent") continue;
+        const agentId = agent.nativeAgent?.id;
+        if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+        paramsByRow.set(agent, {
+          environmentId,
+          threadId,
+          agentId,
+        });
+      }
+    }
+
+    for (const task of thread.rollup.tasks) {
+      if (!("tap" in task.navigation)) continue;
+      const taskIdentity = task.navigation.tap.params;
+      if (
+        typeof taskIdentity.environmentId !== "string" ||
+        taskIdentity.environmentId.trim().length === 0 ||
+        typeof taskIdentity.threadId !== "string" ||
+        taskIdentity.threadId.trim().length === 0
+      ) {
+        continue;
+      }
+      for (const turn of task.turns) {
+        for (const agent of turn.agents) {
+          if (agent.kind !== "native-agent") continue;
+          const agentId = agent.nativeAgent?.id;
+          if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+          paramsByRow.set(agent, {
+            environmentId: taskIdentity.environmentId,
+            threadId: taskIdentity.threadId,
+            agentId,
+          });
+        }
+      }
+    }
+  }
+
+  return paramsByRow;
 }
 
 /**
@@ -150,13 +244,29 @@ interface ThreadNavigationSidebarProps {
  * column gets. Other platforms keep the custom header chrome.
  */
 export function ThreadNavigationSidebar(props: ThreadNavigationSidebarProps) {
+  const navigation = useNavigation();
+  const openTaskAgentPeek = useCallback(
+    (params: TaskPeekAgentRouteParams) => {
+      navigation.navigate("TaskAgentPeek", params);
+    },
+    [navigation],
+  );
+
   if (Platform.OS !== "ios") {
-    return <ThreadNavigationSidebarPane {...props} nativeChrome={false} />;
+    return (
+      <ThreadNavigationSidebarPane
+        {...props}
+        nativeChrome={false}
+        onOpenTaskAgentPeek={openTaskAgentPeek}
+      />
+    );
   }
-  return <NativeSidebarContainer {...props} />;
+  return <NativeSidebarContainer {...props} onOpenTaskAgentPeek={openTaskAgentPeek} />;
 }
 
-function NativeSidebarContainer(props: ThreadNavigationSidebarProps) {
+function NativeSidebarContainer(
+  props: ThreadNavigationSidebarProps & { readonly onOpenTaskAgentPeek: OpenTaskAgentPeek },
+) {
   const backgroundColor = useThemeColor("--color-drawer");
   const borderColor = useThemeColor("--color-border");
 
@@ -179,7 +289,10 @@ function NativeSidebarContainer(props: ThreadNavigationSidebarProps) {
 }
 
 function ThreadNavigationSidebarPane(
-  props: ThreadNavigationSidebarProps & { readonly nativeChrome: boolean },
+  props: ThreadNavigationSidebarProps & {
+    readonly nativeChrome: boolean;
+    readonly onOpenTaskAgentPeek: OpenTaskAgentPeek;
+  },
 ) {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme() === "dark" ? "dark" : "light";
@@ -196,6 +309,8 @@ function ThreadNavigationSidebarPane(
   const { archiveThread, confirmDeleteThread, settleThread, unsettleThread } =
     useThreadListActions();
   const threadListV2Enabled = useThreadListV2Enabled();
+  const threadTasksEnabled = useThreadTasksEnabled();
+  const { readState: taskAgentReadState, markThreadsVisited } = useTaskAgentReadState();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
   const environments = useMemo(
@@ -510,6 +625,96 @@ function ThreadNavigationSidebarPane(
     // unchanged: after a clamped fire (wake beyond the 32-bit setTimeout
     // range) the boundary string is identical and the chain would die.
   }, [nextSnoozeWakeAt, snoozeWakeTick]);
+  // Keep the task projection on the same minute boundary as v2 partitioning;
+  // this advances elapsed labels without reading time during a render pass.
+  const taskAgentNowMs = useMemo(() => Date.parse(`${nowMinute}:00.000Z`), [nowMinute]);
+  const taskAgentSurface = useMemo(() => {
+    if (!threadListV2Enabled || !threadTasksEnabled) return null;
+    return buildTaskAgentSurfaceRows(
+      buildTaskAgentModel({
+        threads,
+        nowMs: taskAgentNowMs,
+        readState: taskAgentReadState,
+      }),
+    );
+  }, [taskAgentNowMs, taskAgentReadState, threadListV2Enabled, threadTasksEnabled, threads]);
+  const [taskAgentExpandedByThreadKey, setTaskAgentExpandedByThreadKey] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
+  const taskAgentPresentationByThreadKey = useMemo(() => {
+    if (taskAgentSurface === null) return null;
+    const presentationByThreadKey = new Map<string, TaskAgentListPresentationState>();
+    for (const row of taskAgentSurface.threads) {
+      presentationByThreadKey.set(row.key, {
+        row,
+        expanded:
+          row.kind === "rollup-thread"
+            ? (taskAgentExpandedByThreadKey.get(row.key) ?? row.rollup.expandedByDefault)
+            : false,
+      });
+    }
+    return presentationByThreadKey;
+  }, [taskAgentExpandedByThreadKey, taskAgentSurface]);
+  const taskAgentParentThreadIdByTaskThreadKey = useMemo(() => {
+    const parentThreadIdByTaskThreadKey = new Map<string, EnvironmentThreadShell["id"]>();
+    if (taskAgentSurface === null) return parentThreadIdByTaskThreadKey;
+
+    for (const row of taskAgentSurface.threads) {
+      if (row.kind !== "rollup-thread") continue;
+      for (const task of row.rollup.tasks) {
+        if (!("tap" in task.navigation)) continue;
+        parentThreadIdByTaskThreadKey.set(
+          scopedThreadKey(
+            task.navigation.tap.params.environmentId,
+            task.navigation.tap.params.threadId,
+          ),
+          row.thread.id,
+        );
+      }
+    }
+    return parentThreadIdByTaskThreadKey;
+  }, [taskAgentSurface]);
+  const taskAgentParentThreadIdByTaskThreadKeyRef = useRef(taskAgentParentThreadIdByTaskThreadKey);
+  taskAgentParentThreadIdByTaskThreadKeyRef.current = taskAgentParentThreadIdByTaskThreadKey;
+  const taskAgentPeekParamsByRow = useMemo(
+    () => buildTaskAgentPeekParamsByRow(taskAgentSurface),
+    [taskAgentSurface],
+  );
+  const taskAgentPeekParamsByRowRef = useRef(taskAgentPeekParamsByRow);
+  taskAgentPeekParamsByRowRef.current = taskAgentPeekParamsByRow;
+  const handleTaskAgentExpandedChange = useCallback((threadKey: string, expanded: boolean) => {
+    setTaskAgentExpandedByThreadKey((current) => {
+      if (current.get(threadKey) === expanded) return current;
+      const next = new Map(current);
+      next.set(threadKey, expanded);
+      return next;
+    });
+  }, []);
+  const handleTaskAgentRowPress = useCallback(
+    (row: TaskAgentRowViewModel) => {
+      if (row.kind === "native-agent") {
+        const params = taskAgentPeekParamsByRowRef.current.get(row);
+        if (params === undefined) return;
+        props.onOpenTaskAgentPeek(params);
+        return;
+      }
+      if (!("tap" in row.navigation)) return;
+
+      const destination = row.navigation.tap;
+      const parentThreadId = taskAgentParentThreadIdByTaskThreadKeyRef.current.get(
+        scopedThreadKey(destination.params.environmentId, destination.params.threadId),
+      );
+      if (parentThreadId !== undefined) {
+        markThreadsVisited({
+          parentThreadId,
+          taskThreadId: destination.params.threadId,
+          visitedAt: new Date().toISOString(),
+        });
+      }
+      props.onOpenTaskAgentDestination(destination);
+    },
+    [markThreadsVisited, props.onOpenTaskAgentDestination, props.onOpenTaskAgentPeek],
+  );
   const listItems = useMemo<readonly SidebarListItem[]>(() => {
     if (!threadListV2Enabled) return listLayout.items;
     // Queued offline tasks are not thread shells, so the v2 item builder
@@ -532,6 +737,14 @@ function ThreadNavigationSidebarPane(
     const items: SidebarListItem[] = buildThreadListV2ListItems({
       items: threadListV2Layout.items,
       pendingTasks: v2PendingTasks,
+    }).map((item) => {
+      if (item.type !== "v2-thread") return item;
+      return {
+        ...item,
+        taskAgentPresentationState: taskAgentPresentationByThreadKey?.get(
+          scopedThreadKey(item.item.thread.environmentId, item.item.thread.id),
+        ),
+      };
     });
     if (threadListV2Layout.hiddenSettledCount > 0) {
       items.push({
@@ -547,6 +760,7 @@ function ThreadNavigationSidebarPane(
     pendingTasks,
     props.searchQuery,
     selectedProjectRefs,
+    taskAgentPresentationByThreadKey,
     threadListV2Enabled,
     threadListV2Layout,
   ]);
@@ -731,6 +945,7 @@ function ThreadNavigationSidebarPane(
       projectTitleByProjectKey,
       savedConnectionsById,
       serverConfigs,
+      taskAgentPresentationByThreadKey,
       threadSearchMatchByKey,
     }),
     [
@@ -740,6 +955,7 @@ function ThreadNavigationSidebarPane(
       projectTitleByProjectKey,
       savedConnectionsById,
       serverConfigs,
+      taskAgentPresentationByThreadKey,
       threadSearchMatchByKey,
     ],
   );
@@ -750,7 +966,11 @@ function ThreadNavigationSidebarPane(
           previous.key === item.key &&
           previous.item.thread === item.item.thread &&
           previous.item.variant === item.item.variant &&
-          previous.item.showSettledDivider === item.item.showSettledDivider
+          previous.item.showSettledDivider === item.item.showSettledDivider &&
+          taskAgentPresentationStatesEqual(
+            previous.taskAgentPresentationState,
+            item.taskAgentPresentationState,
+          )
         );
       }
       if (previous.type === "v2-show-more" && item.type === "v2-show-more") {
@@ -822,6 +1042,7 @@ function ThreadNavigationSidebarPane(
         case "v2-thread": {
           const thread = item.item.thread;
           const scopeKey = scopedProjectKey(thread.environmentId, thread.projectId);
+          const taskAgentPresentation = item.taskAgentPresentationState;
           return (
             <ThreadListV2Row
               thread={thread}
@@ -866,6 +1087,15 @@ function ThreadNavigationSidebarPane(
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
               simultaneousSwipeGesture={sidebarScrollGesture}
+              {...(taskAgentPresentation === undefined
+                ? {}
+                : {
+                    taskAgentPresentation: {
+                      ...taskAgentPresentation,
+                      onExpandedChange: handleTaskAgentExpandedChange,
+                      onPressRow: handleTaskAgentRowPress,
+                    },
+                  })}
             />
           );
         }
@@ -967,6 +1197,8 @@ function ThreadNavigationSidebarPane(
       confirmDeleteThread,
       handleChangeRequestState,
       handleSelectThread,
+      handleTaskAgentExpandedChange,
+      handleTaskAgentRowPress,
       handleSwipeableClose,
       handleSwipeableWillOpen,
       openPendingTask,

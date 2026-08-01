@@ -104,6 +104,8 @@ import {
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { useAssetUrl } from "../../state/assets";
 import { resolveWorkspaceRelativeFilePath } from "../files/filePath";
+import { TaskAgentTaskSurface } from "./task-agent-surface/TaskAgentTaskSurface";
+import type { TaskAgentTaskSurfacePresentation } from "./task-agent-surface/taskAgentTaskSurface.logic";
 
 const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
@@ -168,6 +170,7 @@ export interface ThreadFeedProps {
   readonly usesAutomaticContentInsets?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
+  readonly taskAgentTaskSurface?: TaskAgentTaskSurfacePresentation;
 }
 
 function MessageAttachmentImage(props: {
@@ -1620,6 +1623,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       });
     });
   }, []);
+  const suspendEndScrollMaintenanceForTaskSurfaceDisclosure = useCallback(() => {
+    // The task surface is LegendList's measured header, not a fixed-size data
+    // row. Let size anchoring compensate while end pinning stands down for the
+    // disclosure commit and its measurement pass.
+    suspendEndScrollMaintenanceForDisclosure(null);
+  }, [suspendEndScrollMaintenanceForDisclosure]);
 
   const shouldRestoreVisibleContentPosition = useCallback((entry: ThreadFeedEntry) => {
     const disclosureAnchorKey = disclosureAnchorKeyRef.current;
@@ -1638,6 +1647,24 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     () => (
       <View>
         {usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />}
+        {props.taskAgentTaskSurface === undefined ? null : (
+          <TaskAgentTaskSurface
+            key={`${props.taskAgentTaskSurface.route.environmentId}:${props.taskAgentTaskSurface.route.threadId}`}
+            onBeforeDisclosureToggle={suspendEndScrollMaintenanceForTaskSurfaceDisclosure}
+            presentation={props.taskAgentTaskSurface}
+          />
+        )}
+        {props.taskAgentTaskSurface !== undefined &&
+        props.contentPresentation.kind === "unavailable" ? (
+          <View className="items-center gap-2 px-6 py-5">
+            <Text className="text-center font-t3-bold text-base text-foreground">
+              {props.contentPresentation.title}
+            </Text>
+            <Text className="text-center text-sm leading-normal text-foreground-secondary">
+              {props.contentPresentation.detail}
+            </Text>
+          </View>
+        ) : null}
         {props.hasOlderActivities || props.olderActivitiesError !== null ? (
           <View className="items-center gap-2 py-3">
             <Pressable
@@ -1681,6 +1708,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.isLoadingOlderActivities,
       props.olderActivitiesError,
       props.onLoadOlderActivities,
+      props.contentPresentation,
+      props.taskAgentTaskSurface,
+      suspendEndScrollMaintenanceForTaskSurfaceDisclosure,
       topContentInset,
       usesNativeAutomaticInsets,
     ],
@@ -1827,7 +1857,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     ],
   );
 
-  if (props.contentPresentation.kind === "unavailable") {
+  if (
+    props.contentPresentation.kind === "unavailable" &&
+    props.taskAgentTaskSurface === undefined
+  ) {
     return (
       <ThreadFeedPlaceholder
         title={props.contentPresentation.title}
@@ -1957,6 +1990,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         {props.feed.length === 0 &&
         props.activeWorkStartedAt === null &&
         props.contentPresentation.kind === "ready" &&
+        props.taskAgentTaskSurface === undefined &&
         !props.hasOlderActivities &&
         props.olderActivitiesError === null ? (
           <View pointerEvents="none" style={StyleSheet.absoluteFill}>
