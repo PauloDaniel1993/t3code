@@ -1,21 +1,23 @@
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { useAtomValue } from "@effect/atom-react";
 import {
   StackActions,
   useFocusEffect,
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
+import { Atom } from "effect/unstable/reactivity";
 import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { useEnvironmentQuery } from "../../state/query";
-import { useThreadShells } from "../../state/entities";
 import { useThreadTasksEnabled } from "../../state/preferences";
-import { useTaskAgentReadState } from "../../state/use-task-agent-read-state";
+import { useTaskAgentReadStateWhenEnabled } from "../../state/use-task-agent-read-state";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
 import { vcsEnvironment } from "../../state/vcs";
 
@@ -61,7 +63,7 @@ import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-s
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
-import { threadEnvironment } from "../../state/threads";
+import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import {
   useAdaptiveWorkspaceLayout,
@@ -88,6 +90,17 @@ interface ThreadInspectorSelection {
 }
 
 type NativeHeaderItems = ReadonlyArray<Record<string, unknown>>;
+
+const EMPTY_TASK_THREAD_SHELLS = Object.freeze([]) as ReadonlyArray<EnvironmentThreadShell>;
+const EMPTY_TASK_THREAD_SHELLS_ATOM = Atom.make<ReadonlyArray<EnvironmentThreadShell>>(
+  EMPTY_TASK_THREAD_SHELLS,
+).pipe(Atom.withLabel("mobile:task-thread-shells:empty"));
+
+function useTaskThreadShells(enabled: boolean): ReadonlyArray<EnvironmentThreadShell> {
+  return useAtomValue(
+    enabled ? environmentThreadShells.threadShellsAtom : EMPTY_TASK_THREAD_SHELLS_ATOM,
+  );
+}
 
 function InspectorPaneRoleActivation() {
   useAdaptiveWorkspacePaneRole("inspector");
@@ -195,25 +208,28 @@ interface ThreadRouteContentProps extends ThreadRouteScreenProps {
 }
 
 function ThreadRouteContent(props: ThreadRouteContentProps) {
-  if (!props.threadIsTask) return <ThreadRouteContentCore {...props} />;
-  return <TaskFeatureGatedThreadRouteContent {...props} />;
+  const taskAgentTaskSurface = useTaskAgentTaskSurface(props);
+  return (
+    <ThreadRouteContentCore
+      {...props}
+      {...(taskAgentTaskSurface === undefined ? {} : { taskAgentTaskSurface })}
+    />
+  );
 }
 
-function TaskFeatureGatedThreadRouteContent(props: ThreadRouteContentProps) {
+function useTaskAgentTaskSurface(
+  props: ThreadRouteContentProps,
+): TaskAgentTaskSurfacePresentation | undefined {
   const threadTasksEnabled = useThreadTasksEnabled();
-  if (!threadTasksEnabled) return <ThreadRouteContentCore {...props} />;
-  return <TaskThreadRouteContent {...props} />;
-}
-
-function TaskThreadRouteContent(props: ThreadRouteContentProps) {
-  const threadShells = useThreadShells();
-  const { readState, markThreadsVisited } = useTaskAgentReadState();
+  const taskSurfaceEnabled = props.threadIsTask && threadTasksEnabled;
+  const threadShells = useTaskThreadShells(taskSurfaceEnabled);
+  const { readState, markThreadsVisited } = useTaskAgentReadStateWhenEnabled(taskSurfaceEnabled);
   const environmentIdRaw = firstRouteParam(props.route.params.environmentId);
   const threadIdRaw = firstRouteParam(props.route.params.threadId);
   const environmentId = environmentIdRaw === null ? null : EnvironmentId.make(environmentIdRaw);
   const threadId = threadIdRaw === null ? null : ThreadId.make(threadIdRaw);
   const taskAgentTaskSurface = useMemo(() => {
-    if (environmentId === null || threadId === null) return undefined;
+    if (!taskSurfaceEnabled || environmentId === null || threadId === null) return undefined;
 
     const route = { environmentId, threadId };
     const surface = buildTaskAgentSurfaceRows(
@@ -229,7 +245,7 @@ function TaskThreadRouteContent(props: ThreadRouteContentProps) {
       resolveTaskAgentTaskSurface({ surface, route }) ??
       buildUnavailableTaskAgentTaskSurface({ route, title: props.threadTitle })
     );
-  }, [environmentId, readState, threadId, threadShells, props.threadTitle]);
+  }, [environmentId, readState, taskSurfaceEnabled, threadId, threadShells, props.threadTitle]);
   const visitedTaskThreadId =
     taskAgentTaskSurface?.kind === "task-thread-surface"
       ? taskAgentTaskSurface.route.threadId
@@ -250,12 +266,7 @@ function TaskThreadRouteContent(props: ThreadRouteContentProps) {
     }, [markThreadsVisited, visitedParentThreadId, visitedTaskThreadId]),
   );
 
-  return (
-    <ThreadRouteContentCore
-      {...props}
-      {...(taskAgentTaskSurface === undefined ? {} : { taskAgentTaskSurface })}
-    />
-  );
+  return taskAgentTaskSurface;
 }
 
 function ThreadRouteContentCore(

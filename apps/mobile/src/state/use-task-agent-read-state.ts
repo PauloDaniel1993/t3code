@@ -24,21 +24,19 @@ interface PendingVisit {
 }
 
 const EMPTY_TASK_AGENT_READ_STATE = createTaskAgentReadState();
+const EMPTY_TASK_AGENT_READ_STATE_RESULT_ATOM = Atom.make(
+  AsyncResult.success<TaskAgentReadState>(EMPTY_TASK_AGENT_READ_STATE),
+).pipe(Atom.keepAlive, Atom.withLabel("mobile:task-agent-read-state:empty"));
 
 export function taskAgentReadStateFromPreferences(preferences: Preferences): TaskAgentReadState {
-  let readState = createTaskAgentReadState();
   const markers = normalizeTaskAgentReadMarkers(preferences.taskAgentReadMarkers);
-
-  for (const [rawThreadId, visitedAt] of Object.entries(markers)) {
-    const threadId = ThreadId.make(rawThreadId);
-    readState = markTaskAgentThreadsVisited(readState, {
-      parentThreadId: threadId,
-      taskThreadId: threadId,
-      visitedAt,
-    });
-  }
-
-  return readState;
+  return {
+    lastVisitedAtByThreadId: new Map(
+      Object.entries(markers).map(
+        ([rawThreadId, visitedAt]) => [ThreadId.make(rawThreadId), visitedAt] as const,
+      ),
+    ),
+  };
 }
 
 function taskAgentReadMarkersFromState(
@@ -164,11 +162,23 @@ export interface UseTaskAgentReadState {
 
 /** Shared read/write entry point for every mobile task-agent surface. */
 export function useTaskAgentReadState(): UseTaskAgentReadState {
-  const readStateResult = useAtomValue(taskAgentReadStateAtom);
+  return useTaskAgentReadStateWhenEnabled(true);
+}
+
+/**
+ * Uses inert state outside a task surface so ordinary thread routes do not
+ * subscribe to task-agent read state.
+ */
+export function useTaskAgentReadStateWhenEnabled(enabled: boolean): UseTaskAgentReadState {
+  const readStateResult = useAtomValue(
+    enabled ? taskAgentReadStateAtom : EMPTY_TASK_AGENT_READ_STATE_RESULT_ATOM,
+  );
   const dispatchMarkThreadsVisited = useAtomSet(markTaskAgentThreadsVisitedAtom);
   const markThreadsVisited = useCallback(
-    (input: MarkTaskAgentThreadsVisitedInput) => dispatchMarkThreadsVisited(input),
-    [dispatchMarkThreadsVisited],
+    (input: MarkTaskAgentThreadsVisitedInput) => {
+      if (enabled) dispatchMarkThreadsVisited(input);
+    },
+    [dispatchMarkThreadsVisited, enabled],
   );
 
   return {

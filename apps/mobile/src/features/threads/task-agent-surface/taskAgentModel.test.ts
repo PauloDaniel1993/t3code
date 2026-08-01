@@ -18,6 +18,10 @@ import {
   type TaskAgentModel,
 } from "./taskAgentModel";
 import { NATIVE_AGENT_NOT_STEERABLE_REASON } from "./taskAgentNavigation";
+import {
+  createTaskAgentReadState,
+  markTaskAgentThreadsVisited,
+} from "../../../state/task-agent-read-state";
 
 const environmentId = EnvironmentId.make("environment-1");
 const projectId = ProjectId.make("project-1");
@@ -58,13 +62,17 @@ function makeTask(
     readonly title?: string;
     readonly status?: "queued" | "running" | "finished" | "failed" | "cancelled";
     readonly delivered?: boolean;
+    readonly deliveredAt?: string;
     readonly nativeAgents?: ReadonlyArray<ThreadNativeAgent>;
     readonly taskSummary?: EnvironmentThreadShell["taskSummary"];
   },
 ): EnvironmentThreadShell {
   const status = input.status ?? "finished";
   const terminal = status === "finished" || status === "failed" || status === "cancelled";
-  const delivery = input.delivered ? { state: "delivered" as const, updatedAt: deliveredAt } : null;
+  const taskDeliveredAt = input.deliveredAt ?? deliveredAt;
+  const delivery = input.delivered
+    ? { state: "delivered" as const, updatedAt: taskDeliveredAt }
+    : null;
   return makeThread({
     id: input.id,
     title: input.title ?? "Task",
@@ -79,7 +87,7 @@ function makeTask(
       status,
       requestedAt,
       startedAt: status === "queued" ? null : requestedAt,
-      finishedAt: terminal ? deliveredAt : null,
+      finishedAt: terminal ? taskDeliveredAt : null,
       result: terminal
         ? {
             outcome:
@@ -87,7 +95,7 @@ function makeTask(
             summary: status === "failed" ? "Task failure reason" : "Task result",
             summaryTruncated: false,
             assistantMessageId: MessageId.make(`result-${input.id}`),
-            completedAt: deliveredAt,
+            completedAt: taskDeliveredAt,
           }
         : null,
       delivery,
@@ -389,6 +397,61 @@ describe("task-agent model honesty states", () => {
 });
 
 describe("task-agent model hierarchy", () => {
+  it("keeps the parent unread until every delivered task has been visited", () => {
+    const parentId = ThreadId.make("unread-siblings-parent");
+    const firstTaskId = ThreadId.make("unread-siblings-first-task");
+    const secondTaskId = ThreadId.make("unread-siblings-second-task");
+    const firstDeliveredAt = "2026-07-29T10:05:00.000Z";
+    const secondDeliveredAt = "2026-07-29T10:06:00.000Z";
+    const visitedAt = "2026-07-29T10:10:00.000Z";
+    const threads = [
+      makeThread({
+        id: parentId,
+        title: "Unread siblings parent",
+        taskSummary: {
+          total: 2,
+          running: 0,
+          latestResultAt: secondDeliveredAt,
+          latestDeliveredAt: secondDeliveredAt,
+        },
+      }),
+      makeTask(parentId, {
+        id: firstTaskId,
+        delivered: true,
+        deliveredAt: firstDeliveredAt,
+      }),
+      makeTask(parentId, {
+        id: secondTaskId,
+        delivered: true,
+        deliveredAt: secondDeliveredAt,
+      }),
+    ];
+    const firstVisit = markTaskAgentThreadsVisited(createTaskAgentReadState(), {
+      parentThreadId: parentId,
+      taskThreadId: firstTaskId,
+      visitedAt,
+    });
+
+    const afterFirstVisit = rollup(project(threads, firstVisit.lastVisitedAtByThreadId));
+    expect(afterFirstVisit.hasUnreadTaskResults).toBe(true);
+    expect(afterFirstVisit.rollup.tasks.map((task) => task.hasUnreadTaskResults)).toEqual([
+      false,
+      true,
+    ]);
+
+    const secondVisit = markTaskAgentThreadsVisited(firstVisit, {
+      parentThreadId: parentId,
+      taskThreadId: secondTaskId,
+      visitedAt,
+    });
+    const afterSecondVisit = rollup(project(threads, secondVisit.lastVisitedAtByThreadId));
+    expect(afterSecondVisit.hasUnreadTaskResults).toBe(false);
+    expect(afterSecondVisit.rollup.tasks.map((task) => task.hasUnreadTaskResults)).toEqual([
+      false,
+      false,
+    ]);
+  });
+
   it("keeps a thread that owns nothing as an ordinary row with no rollup", () => {
     const model = project([emptyThread()]);
     const row = model.threads[0];
