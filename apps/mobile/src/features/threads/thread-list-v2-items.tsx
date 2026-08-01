@@ -18,6 +18,14 @@ import { useThemeColor } from "../../lib/useThemeColor";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr } from "../../state/use-thread-pr";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
+import {
+  TaskAgentListGroup,
+  type TaskAgentListGroupProps,
+} from "./task-agent-surface/TaskAgentListGroup";
+import {
+  taskAgentListPresentationStateEqual,
+  type TaskAgentThreadRowViewModel,
+} from "./task-agent-surface/taskAgentSurface.logic";
 import { resolveThreadListV2Status, type ThreadListV2Status } from "./threadListV2";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
@@ -205,7 +213,14 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   );
 });
 
-export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
+export interface ThreadListV2TaskAgentPresentation {
+  readonly row: TaskAgentThreadRowViewModel;
+  readonly expanded: boolean;
+  readonly onExpandedChange: TaskAgentListGroupProps["onExpandedChange"];
+  readonly onPressRow: TaskAgentListGroupProps["onPressRow"];
+}
+
+function ThreadListV2RowComponent(props: {
   readonly thread: EnvironmentThreadShell;
   readonly variant: "card" | "slim";
   readonly showSettledDivider: boolean;
@@ -250,6 +265,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly simultaneousSwipeGesture?: ComponentProps<
     typeof ThreadSwipeable
   >["simultaneousWithExternalGesture"];
+  /** Built by the caller only when task data is enabled. Omitting this keeps
+      the existing v2 row tree structurally unchanged. */
+  readonly taskAgentPresentation?: ThreadListV2TaskAgentPresentation;
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const {
@@ -561,7 +579,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       </Pressable>
     );
 
-  return (
+  const existingThreadRow = (
     <>
       {props.showSettledDivider ? (
         <ThreadListV2SectionDivider label="Settled" pane={props.pane} />
@@ -603,4 +621,55 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       </ThreadSwipeable>
     </>
   );
-});
+
+  const taskAgentPresentation = props.taskAgentPresentation;
+  if (taskAgentPresentation?.row.kind !== "rollup-thread") return existingThreadRow;
+
+  return (
+    <View collapsable={false}>
+      {existingThreadRow}
+      <TaskAgentListGroup
+        key={taskAgentPresentation.row.key}
+        expanded={taskAgentPresentation.expanded}
+        onExpandedChange={taskAgentPresentation.onExpandedChange}
+        onPressRow={taskAgentPresentation.onPressRow}
+        pane={props.pane}
+        row={taskAgentPresentation.row}
+      />
+    </View>
+  );
+}
+
+type ThreadListV2RowProps = Parameters<typeof ThreadListV2RowComponent>[0];
+
+function taskAgentPresentationsEqual(
+  previous: ThreadListV2TaskAgentPresentation | undefined,
+  next: ThreadListV2TaskAgentPresentation | undefined,
+): boolean {
+  if (previous === next) return true;
+  if (previous === undefined || next === undefined) return false;
+  return (
+    previous.onExpandedChange === next.onExpandedChange &&
+    previous.onPressRow === next.onPressRow &&
+    taskAgentListPresentationStateEqual(previous, next)
+  );
+}
+
+function threadListV2RowPropsEqual(
+  previous: ThreadListV2RowProps,
+  next: ThreadListV2RowProps,
+): boolean {
+  const previousRecord = previous as Readonly<Record<string, unknown>>;
+  const nextRecord = next as Readonly<Record<string, unknown>>;
+  const previousKeys = Object.keys(previousRecord);
+  if (previousKeys.length !== Object.keys(nextRecord).length) return false;
+
+  for (const key of previousKeys) {
+    if (key === "taskAgentPresentation") continue;
+    if (!Object.is(previousRecord[key], nextRecord[key])) return false;
+  }
+
+  return taskAgentPresentationsEqual(previous.taskAgentPresentation, next.taskAgentPresentation);
+}
+
+export const ThreadListV2Row = memo(ThreadListV2RowComponent, threadListV2RowPropsEqual);

@@ -12,9 +12,12 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { buildTaskAgentModel, type TaskAgentModel } from "./taskAgentModel";
 import {
+  buildTaskAgentListEntries,
   buildNativeAgentRow,
   buildTaskAgentRow,
   buildTaskAgentSurfaceRows,
+  taskAgentListPresentationStateEqual,
+  taskAgentThreadRowsRenderEqual,
   type TaskAgentSurfaceViewModel,
 } from "./taskAgentSurface.logic";
 import { NATIVE_AGENT_NOT_STEERABLE_REASON } from "./taskAgentNavigation";
@@ -251,6 +254,10 @@ const stateCases = [
         "Budget exceeded",
         "Provider stopped",
       ]);
+      expect(firstTurn(model).agents.map((agent) => agent.statusLine)).toEqual([
+        expect.stringContaining(" — Budget exceeded"),
+        expect.stringContaining(" — Provider stopped"),
+      ]);
       expect(JSON.stringify(outcome)).not.toContain("✓ 0");
     },
   },
@@ -278,6 +285,8 @@ const stateCases = [
       const { task } = firstTask(model);
       expect(task.status.kind).toBe("cancelled");
       expect(task.tone).toBe("cancelled");
+      expect(task.glyph).toBe("−");
+      expect(task.statusLine).toContain("Cancelled — The task was cancelled");
       expect(task.failure).toBeNull();
       const agents = task.turns[0]?.agents ?? [];
       expect(agents.map((agent) => agent.status.kind)).toEqual(["finished", "running"]);
@@ -387,6 +396,105 @@ describe("task-agent surface hierarchy", () => {
     expect(parent.rollup.nativeAgentTurns[0]?.agents[0]?.id).toBe("parent-agent");
     expect(parent.rollup.tasks[0]?.turns[0]?.agents[0]?.id).toBe("task-agent");
     expect(parent.rollup.tasks[0]?.turns[0]?.turnId).toBe("task-turn");
+  });
+
+  it("flattens tasks, turns, and agents into stable nesting without changing row anatomy", () => {
+    const parentId = ThreadId.make("list-parent");
+    const model = surface([
+      makeThread({
+        id: parentId,
+        title: "List parent",
+        nativeAgents: [makeAgent({ taskId: "parent-agent", status: "running" })],
+      }),
+      makeTask(parentId, {
+        id: ThreadId.make("list-task"),
+        nativeAgents: [
+          makeAgent({ taskId: "task-agent", turnId: "task-turn", status: "finished" }),
+        ],
+      }),
+    ]);
+    const parent = rollup(model);
+    const taskTurn = parent.rollup.tasks[0]?.turns[0];
+    const parentTurn = parent.rollup.nativeAgentTurns[0];
+    if (taskTurn === undefined || parentTurn === undefined) throw new Error("expected turns");
+
+    const entries = buildTaskAgentListEntries(
+      parent,
+      new Map([
+        [taskTurn.key, true],
+        [parentTurn.key, true],
+      ]),
+    );
+
+    expect(
+      entries.map((entry) => [
+        entry.kind,
+        entry.nestingLevel,
+        entry.kind === "entity-row" ? entry.row.kind : entry.turn.kind,
+      ]),
+    ).toEqual([
+      ["entity-row", 0, "task"],
+      ["turn-row", 1, "native-agent-turn"],
+      ["entity-row", 2, "native-agent"],
+      ["turn-row", 0, "native-agent-turn"],
+      ["entity-row", 1, "native-agent"],
+    ]);
+    expect(buildTaskAgentListEntries(parent, new Map()).map((entry) => entry.key)).toEqual(
+      buildTaskAgentListEntries(parent, new Map()).map((entry) => entry.key),
+    );
+  });
+
+  it("keeps agents behind a collapsed turn while leaving its projected rollup reachable", () => {
+    const model = surface([
+      makeThread({
+        id: ThreadId.make("collapsed-turn-parent"),
+        title: "Collapsed turn parent",
+        nativeAgents: [makeAgent({ taskId: "hidden-agent", status: "failed" })],
+      }),
+    ]);
+    const parent = rollup(model);
+    const turn = parent.rollup.nativeAgentTurns[0];
+    if (turn === undefined) throw new Error("expected turn");
+
+    const entries = buildTaskAgentListEntries(parent, new Map([[turn.key, false]]));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "turn-row",
+      expanded: false,
+      turn: { outcome: { kind: "failure-only", counter: { label: "× 1" } } },
+    });
+  });
+
+  it("invalidates render equality for unread and projected-row changes", () => {
+    const parentId = ThreadId.make("memo-parent");
+    const parent = rollup(
+      surface([
+        makeThread({ id: parentId, title: "Memo parent" }),
+        makeTask(parentId, { id: ThreadId.make("memo-task") }),
+      ]),
+    );
+    const sameRenderData = { ...parent, rollup: { ...parent.rollup } };
+    const unreadChanged = { ...parent, unread: !parent.unread };
+    const projectedRowsChanged = {
+      ...parent,
+      rollup: { ...parent.rollup, tasks: [...parent.rollup.tasks] },
+    };
+
+    expect(taskAgentThreadRowsRenderEqual(parent, sameRenderData)).toBe(true);
+    expect(taskAgentThreadRowsRenderEqual(parent, unreadChanged)).toBe(false);
+    expect(taskAgentThreadRowsRenderEqual(parent, projectedRowsChanged)).toBe(false);
+    expect(
+      taskAgentListPresentationStateEqual(
+        { row: parent, expanded: false },
+        { row: sameRenderData, expanded: false },
+      ),
+    ).toBe(true);
+    expect(
+      taskAgentListPresentationStateEqual(
+        { row: parent, expanded: false },
+        { row: parent, expanded: true },
+      ),
+    ).toBe(false);
   });
 });
 

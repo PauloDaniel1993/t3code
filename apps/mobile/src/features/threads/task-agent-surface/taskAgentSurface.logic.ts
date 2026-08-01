@@ -20,6 +20,8 @@ export type TaskAgentRowStatus = TaskStatusProjection | NativeAgentStatusProject
 
 export type TaskAgentRowTone = TaskAgentRowStatus["tone"];
 
+export type TaskAgentRowGlyph = "◷" | "✦" | "✓" | "×" | "−" | "?";
+
 /** Navigation is always either actionable or an explicit unavailable reason. */
 export type TaskAgentRowNavigation = TaskRowAffordances | AgentTranscriptAffordance;
 
@@ -75,6 +77,7 @@ export interface TaskAgentRowViewModel {
   readonly statusLabel: string;
   readonly statusLine: string;
   readonly tone: TaskAgentRowTone;
+  readonly glyph: TaskAgentRowGlyph;
   readonly elapsedLabel: string | null;
   readonly unread: boolean;
   readonly returnedToParent: boolean;
@@ -116,6 +119,35 @@ export interface TaskAgentSurfaceViewModel {
   readonly threads: ReadonlyArray<TaskAgentThreadRowViewModel>;
 }
 
+export type TaskAgentRollupThreadRowViewModel = Extract<
+  TaskAgentThreadRowViewModel,
+  { readonly kind: "rollup-thread" }
+>;
+
+export interface TaskAgentListPresentationState {
+  readonly row: TaskAgentThreadRowViewModel;
+  readonly expanded: boolean;
+}
+
+export type TaskAgentListEntry =
+  | Readonly<{
+      readonly kind: "entity-row";
+      readonly key: string;
+      readonly nestingLevel: 0 | 1 | 2;
+      readonly row: TaskAgentRowViewModel;
+    }>
+  | Readonly<{
+      readonly kind: "turn-row";
+      readonly key: string;
+      readonly nestingLevel: 0 | 1;
+      readonly turn: TaskAgentTurnRowViewModel;
+      readonly expanded: boolean;
+      readonly unread: boolean;
+      readonly returnedToParent: boolean;
+    }>;
+
+export type TaskAgentTurnExpansionOverrides = ReadonlyMap<string, boolean>;
+
 export type TaskAgentRowBuildInput = Readonly<{
   readonly projection: TaskProjection;
   /** Explicit render signal; the adapter does not calculate unread state. */
@@ -135,6 +167,49 @@ function taskFailure(status: TaskStatusProjection): TaskAgentRowFailure | null {
 
 function nativeAgentFailure(status: NativeAgentStatusProjection): TaskAgentRowFailure | null {
   return status.kind === "failed" ? { kind: "native-agent", attribution: status.failure } : null;
+}
+
+function rowGlyph(status: TaskAgentRowStatus): TaskAgentRowGlyph {
+  switch (status.kind) {
+    case "queued":
+      return "◷";
+    case "running":
+      return "✦";
+    case "finished":
+      return "✓";
+    case "failed":
+      return "×";
+    case "cancelled":
+      return "−";
+    case "metadata-unavailable":
+    case "unavailable":
+      return "?";
+  }
+}
+
+function taskStatusLine(status: TaskStatusProjection): string {
+  switch (status.kind) {
+    case "failed":
+    case "cancelled":
+    case "metadata-unavailable":
+      return `${status.label} — ${status.reason}`;
+    case "queued":
+    case "running":
+    case "finished":
+      return status.label;
+  }
+}
+
+function nativeAgentStatusLine(projection: NativeAgentProjection): string {
+  switch (projection.status.kind) {
+    case "failed":
+      return `${projection.statusLine} — ${projection.status.failure.reason}`;
+    case "unavailable":
+      return `${projection.statusLine} — ${projection.status.reason}`;
+    case "running":
+    case "finished":
+      return projection.statusLine;
+  }
 }
 
 function turnContext(turn: NativeAgentTurnProjection): TaskAgentRowTurnContext {
@@ -169,8 +244,9 @@ export function buildTaskAgentRow(input: TaskAgentRowBuildInput): TaskAgentRowVi
     title: projection.thread.title,
     status: projection.status,
     statusLabel: projection.status.label,
-    statusLine: projection.status.label,
+    statusLine: taskStatusLine(projection.status),
     tone: projection.status.tone,
+    glyph: rowGlyph(projection.status),
     elapsedLabel: null,
     unread: input.unread,
     returnedToParent: projection.returnedToParent,
@@ -192,8 +268,9 @@ export function buildNativeAgentRow(input: NativeAgentRowBuildInput): TaskAgentR
     title: projection.description,
     status: projection.status,
     statusLabel: projection.status.label,
-    statusLine: projection.statusLine,
+    statusLine: nativeAgentStatusLine(projection),
     tone: projection.status.tone,
+    glyph: rowGlyph(projection.status),
     elapsedLabel: projection.elapsed === "" ? null : projection.elapsed,
     unread: input.unread,
     returnedToParent: false,
@@ -255,3 +332,102 @@ export function buildTaskAgentSurfaceViewModel(
 
 /** Alias for callers that name the result after its row collection. */
 export const buildTaskAgentSurfaceRows = buildTaskAgentSurfaceViewModel;
+
+function turnExpanded(
+  turn: TaskAgentTurnRowViewModel,
+  overrides: TaskAgentTurnExpansionOverrides,
+): boolean {
+  return overrides.get(turn.key) ?? turn.expandedByDefault;
+}
+
+function appendTurnEntries(
+  entries: TaskAgentListEntry[],
+  turn: TaskAgentTurnRowViewModel,
+  nestingLevel: 0 | 1,
+  owner: TaskAgentRowViewModel | null,
+  overrides: TaskAgentTurnExpansionOverrides,
+): void {
+  const expanded = turnExpanded(turn, overrides);
+  entries.push({
+    kind: "turn-row",
+    key: `turn:${turn.key}`,
+    nestingLevel,
+    turn,
+    expanded,
+    unread: owner?.unread ?? false,
+    returnedToParent: owner?.returnedToParent ?? false,
+  });
+
+  if (!expanded) return;
+  const agentNestingLevel = (nestingLevel + 1) as 1 | 2;
+  for (const agent of turn.agents) {
+    entries.push({
+      kind: "entity-row",
+      key: `agent:${turn.key}:${agent.id}`,
+      nestingLevel: agentNestingLevel,
+      row: agent,
+    });
+  }
+}
+
+/**
+ * Flatten one expanded thread into stable render entries without deriving any
+ * count. Tasks and native agents deliberately share the same entity-row shape;
+ * turn rows retain the projected outcome union and its legal counters.
+ */
+export function buildTaskAgentListEntries(
+  row: TaskAgentRollupThreadRowViewModel,
+  overrides: TaskAgentTurnExpansionOverrides = new Map(),
+): ReadonlyArray<TaskAgentListEntry> {
+  const entries: TaskAgentListEntry[] = [];
+
+  for (const task of row.rollup.tasks) {
+    entries.push({
+      kind: "entity-row",
+      key: `task:${task.id}`,
+      nestingLevel: 0,
+      row: task,
+    });
+    for (const turn of task.turns) {
+      appendTurnEntries(entries, turn, 1, task, overrides);
+    }
+  }
+
+  for (const turn of row.rollup.nativeAgentTurns) {
+    appendTurnEntries(entries, turn, 0, null, overrides);
+  }
+
+  return entries;
+}
+
+/** Render equality used by memoized list rows; arrays are immutable outputs. */
+export function taskAgentThreadRowsRenderEqual(
+  previous: TaskAgentThreadRowViewModel,
+  next: TaskAgentThreadRowViewModel,
+): boolean {
+  if (Object.is(previous, next)) return true;
+  if (previous.kind !== next.kind || previous.key !== next.key || previous.unread !== next.unread) {
+    return false;
+  }
+  if (previous.kind === "plain-thread" || next.kind === "plain-thread") return true;
+
+  return (
+    previous.rollup.chipLabel === next.rollup.chipLabel &&
+    previous.rollup.taskCount === next.rollup.taskCount &&
+    previous.rollup.nativeAgentCount === next.rollup.nativeAgentCount &&
+    previous.rollup.runningTaskCount === next.rollup.runningTaskCount &&
+    previous.rollup.expandedByDefault === next.rollup.expandedByDefault &&
+    previous.rollup.tasks === next.rollup.tasks &&
+    previous.rollup.nativeAgentTurns === next.rollup.nativeAgentTurns
+  );
+}
+
+/** The task-specific portion of the outer thread-row memo comparator. */
+export function taskAgentListPresentationStateEqual(
+  previous: TaskAgentListPresentationState,
+  next: TaskAgentListPresentationState,
+): boolean {
+  return (
+    previous.expanded === next.expanded && taskAgentThreadRowsRenderEqual(previous.row, next.row)
+  );
+}
