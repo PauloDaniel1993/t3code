@@ -4,12 +4,12 @@
  * retry linkage lines.
  *
  * The rules about grouping, labels, and bodies live in
- * `SidebarNativeAgents.logic.ts`; these are the rules that file does not
+ * `nativeAgents.ts`; these are the rules that file does not
  * cover, kept separate for the same reason — testable without rendering.
  */
 import type { ThreadNativeAgent } from "@t3tools/contracts";
 
-import { formatNativeAgentUsage } from "./SidebarNativeAgents.logic";
+import { formatNativeAgentUsage } from "./nativeAgents.ts";
 
 /**
  * The parent row's collapse chip. The group mixes two kinds of work — real

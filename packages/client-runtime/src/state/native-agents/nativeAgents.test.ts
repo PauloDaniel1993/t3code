@@ -8,7 +8,7 @@ import {
   groupNativeAgentsByTurn,
   nativeAgentGroupStartsExpanded,
   resolveNativeAgentBody,
-} from "./SidebarNativeAgents.logic";
+} from "./nativeAgents.ts";
 
 const NOW = Date.parse("2026-07-29T10:10:00.000Z");
 

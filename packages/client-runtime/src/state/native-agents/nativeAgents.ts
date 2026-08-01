@@ -89,8 +89,8 @@ export function formatNativeAgentGroupLabel(input: {
   return elapsed === null ? `Earlier turn · ${count} ${noun}` : `${elapsed} ago · ${count} ${noun}`;
 }
 
-function formatElapsedSince(iso: string, nowMs: number): string | null {
-  const atMs = Date.parse(iso);
+function formatElapsedSince(isoOrMs: string | number, nowMs: number): string | null {
+  const atMs = typeof isoOrMs === "number" ? isoOrMs : Date.parse(isoOrMs);
   if (!Number.isFinite(atMs)) return null;
   const seconds = Math.max(0, Math.floor((nowMs - atMs) / 1_000));
   if (seconds < 60) return `${seconds}s`;
@@ -123,7 +123,7 @@ export function formatNativeAgentElapsed(input: {
   const endedAtMs =
     input.agent.status === "running" ? input.nowMs : Date.parse(input.agent.updatedAt);
   if (!Number.isFinite(endedAtMs)) return "";
-  return formatElapsedSince(new Date(startedAtMs).toISOString(), endedAtMs) ?? "";
+  return formatElapsedSince(startedAtMs, endedAtMs) ?? "";
 }
 
 /**

@@ -171,7 +171,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { SidebarTaskGroup } from "./SidebarTaskGroup";
 import { groupSidebarTaskThreads } from "./SidebarTaskRows.logic";
 import { MiniNativeAgentWindow, MiniThreadWindow } from "./MiniThreadWindow";
-import { formatTaskGroupChipLabel } from "./SidebarNativeAgentGroups.logic";
+import { formatTaskGroupChipLabel } from "@t3tools/client-runtime/state/native-agents";
 import { jumpToNativeAgentInTranscript } from "../lib/nativeAgentJump";
 import { NewThreadTaskDialog } from "./NewThreadTaskDialog";
 import {
