@@ -16,6 +16,7 @@ import {
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveThreadFeedPresentation,
+  sortThreadActivities,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
 } from "./threadActivity";
@@ -537,100 +538,108 @@ describe("buildThreadFeed", () => {
 
 describe("committed sequence ordering", () => {
   it("orders a legacy sequence-less activity before a sequenced one at the same timestamp", () => {
-    const pending = derivePendingApprovals([
-      makeActivity({
-        id: EventId.make("approval-sequenced"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-04-01T00:00:05.000Z",
-        sequence: 4,
-        payload: { requestId: "req-sequenced", requestKind: "command" },
-      }),
-      makeActivity({
-        id: EventId.make("approval-legacy"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-04-01T00:00:05.000Z",
-        payload: { requestId: "req-legacy", requestKind: "file-change" },
-      }),
-    ]);
+    const pending = derivePendingApprovals(
+      sortThreadActivities([
+        makeActivity({
+          id: EventId.make("approval-sequenced"),
+          kind: "approval.requested",
+          summary: "Approval requested",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          sequence: 4,
+          payload: { requestId: "req-sequenced", requestKind: "command" },
+        }),
+        makeActivity({
+          id: EventId.make("approval-legacy"),
+          kind: "approval.requested",
+          summary: "Approval requested",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          payload: { requestId: "req-legacy", requestKind: "file-change" },
+        }),
+      ]),
+    );
 
     expect(pending.map((entry) => entry.requestId)).toEqual(["req-legacy", "req-sequenced"]);
   });
 
   it("clears a legacy approval request once its sequenced resolution commits, even at equal timestamps", () => {
-    const pending = derivePendingApprovals([
-      makeActivity({
-        id: EventId.make("approval-resolved"),
-        kind: "approval.resolved",
-        summary: "Approval resolved",
-        createdAt: "2026-04-01T00:00:05.000Z",
-        sequence: 7,
-        payload: { requestId: "req-1", decision: "accept" },
-      }),
-      makeActivity({
-        id: EventId.make("approval-requested"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-04-01T00:00:05.000Z",
-        payload: { requestId: "req-1", requestKind: "command" },
-      }),
-    ]);
+    const pending = derivePendingApprovals(
+      sortThreadActivities([
+        makeActivity({
+          id: EventId.make("approval-resolved"),
+          kind: "approval.resolved",
+          summary: "Approval resolved",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          sequence: 7,
+          payload: { requestId: "req-1", decision: "accept" },
+        }),
+        makeActivity({
+          id: EventId.make("approval-requested"),
+          kind: "approval.requested",
+          summary: "Approval requested",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          payload: { requestId: "req-1", requestKind: "command" },
+        }),
+      ]),
+    );
 
     expect(pending).toEqual([]);
   });
 
   it("clears a legacy user-input request once its sequenced resolution commits, even at equal timestamps", () => {
-    const pending = derivePendingUserInputs([
-      makeActivity({
-        id: EventId.make("user-input-resolved"),
-        kind: "user-input.resolved",
-        summary: "User input resolved",
-        createdAt: "2026-04-01T00:00:05.000Z",
-        sequence: 11,
-        payload: { requestId: "input-1", answers: { q1: "A" } },
-      }),
-      makeActivity({
-        id: EventId.make("user-input-requested"),
-        kind: "user-input.requested",
-        summary: "User input requested",
-        createdAt: "2026-04-01T00:00:05.000Z",
-        payload: {
-          requestId: "input-1",
-          questions: [
-            {
-              id: "q1",
-              header: "Pick one",
-              question: "Which option?",
-              options: [{ label: "A", description: "Option A" }],
-            },
-          ],
-        },
-      }),
-    ]);
+    const pending = derivePendingUserInputs(
+      sortThreadActivities([
+        makeActivity({
+          id: EventId.make("user-input-resolved"),
+          kind: "user-input.resolved",
+          summary: "User input resolved",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          sequence: 11,
+          payload: { requestId: "input-1", answers: { q1: "A" } },
+        }),
+        makeActivity({
+          id: EventId.make("user-input-requested"),
+          kind: "user-input.requested",
+          summary: "User input requested",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          payload: {
+            requestId: "input-1",
+            questions: [
+              {
+                id: "q1",
+                header: "Pick one",
+                question: "Which option?",
+                options: [{ label: "A", description: "Option A" }],
+              },
+            ],
+          },
+        }),
+      ]),
+    );
 
     expect(pending).toEqual([]);
   });
 
   it("orders two sequenced activities by committed sequence rather than createdAt", () => {
-    const pending = derivePendingApprovals([
-      makeActivity({
-        id: EventId.make("approval-requested"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-04-01T00:00:01.000Z",
-        sequence: 9,
-        payload: { requestId: "req-1", requestKind: "command" },
-      }),
-      makeActivity({
-        id: EventId.make("approval-resolved"),
-        kind: "approval.resolved",
-        summary: "Approval resolved",
-        createdAt: "2026-04-01T00:00:09.000Z",
-        sequence: 3,
-        payload: { requestId: "req-1", decision: "accept" },
-      }),
-    ]);
+    const pending = derivePendingApprovals(
+      sortThreadActivities([
+        makeActivity({
+          id: EventId.make("approval-requested"),
+          kind: "approval.requested",
+          summary: "Approval requested",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          sequence: 9,
+          payload: { requestId: "req-1", requestKind: "command" },
+        }),
+        makeActivity({
+          id: EventId.make("approval-resolved"),
+          kind: "approval.resolved",
+          summary: "Approval resolved",
+          createdAt: "2026-04-01T00:00:09.000Z",
+          sequence: 3,
+          payload: { requestId: "req-1", decision: "accept" },
+        }),
+      ]),
+    );
 
     // Committed sequence 3 reduces before sequence 9 even though its
     // createdAt is later, so the request survives as the last writer.
@@ -638,40 +647,44 @@ describe("committed sequence ordering", () => {
   });
 
   it("keeps the createdAt and lifecycle fallbacks for legacy sequence-less activities", () => {
-    const pendingByCreatedAt = derivePendingApprovals([
-      makeActivity({
-        id: EventId.make("approval-requested"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-04-01T00:00:09.000Z",
-        payload: { requestId: "req-1", requestKind: "command" },
-      }),
-      makeActivity({
-        id: EventId.make("approval-resolved"),
-        kind: "approval.resolved",
-        summary: "Approval resolved",
-        createdAt: "2026-04-01T00:00:01.000Z",
-        payload: { requestId: "req-1", decision: "accept" },
-      }),
-    ]);
+    const pendingByCreatedAt = derivePendingApprovals(
+      sortThreadActivities([
+        makeActivity({
+          id: EventId.make("approval-requested"),
+          kind: "approval.requested",
+          summary: "Approval requested",
+          createdAt: "2026-04-01T00:00:09.000Z",
+          payload: { requestId: "req-1", requestKind: "command" },
+        }),
+        makeActivity({
+          id: EventId.make("approval-resolved"),
+          kind: "approval.resolved",
+          summary: "Approval resolved",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: { requestId: "req-1", decision: "accept" },
+        }),
+      ]),
+    );
     expect(pendingByCreatedAt.map((entry) => entry.requestId)).toEqual(["req-1"]);
 
-    const pendingAtEqualTimestamp = derivePendingApprovals([
-      makeActivity({
-        id: EventId.make("approval-resolved"),
-        kind: "approval.resolved",
-        summary: "Approval resolved",
-        createdAt: "2026-04-01T00:00:05.000Z",
-        payload: { requestId: "req-2", decision: "accept" },
-      }),
-      makeActivity({
-        id: EventId.make("approval-requested"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-04-01T00:00:05.000Z",
-        payload: { requestId: "req-2", requestKind: "command" },
-      }),
-    ]);
+    const pendingAtEqualTimestamp = derivePendingApprovals(
+      sortThreadActivities([
+        makeActivity({
+          id: EventId.make("approval-resolved"),
+          kind: "approval.resolved",
+          summary: "Approval resolved",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          payload: { requestId: "req-2", decision: "accept" },
+        }),
+        makeActivity({
+          id: EventId.make("approval-requested"),
+          kind: "approval.requested",
+          summary: "Approval requested",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          payload: { requestId: "req-2", requestKind: "command" },
+        }),
+      ]),
+    );
     expect(pendingAtEqualTimestamp).toEqual([]);
   });
 
