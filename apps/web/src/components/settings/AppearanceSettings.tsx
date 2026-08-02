@@ -838,7 +838,7 @@ export function AppearanceSettings() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Mode">
+      <SettingsSection id="appearance-mode" title="Mode">
         <div
           className="grid grid-cols-3 gap-2 p-3 sm:gap-3 sm:p-4"
           role="radiogroup"

@@ -38,6 +38,7 @@ import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
+import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   PROVIDER_EVENT_FLOW_CONTROL,
@@ -2230,12 +2231,12 @@ const make = Effect.gen(function* () {
       // A lossless event may intentionally backpressure this provider stream
       // while its destination lane is full. Bounded upstream provider queues
       // cap memory during that stall while preserving global event order.
-      yield* Effect.forkScoped(
+      yield* forkParked(
         Stream.runForEach(providerService.streamEvents, (event) =>
           scheduler.enqueue(toScheduledInput({ source: "runtime", event })),
         ),
       );
-      yield* Effect.forkScoped(
+      yield* forkParked(
         Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
           if (event.type !== "thread.turn-start-requested") {
             return Effect.void;
