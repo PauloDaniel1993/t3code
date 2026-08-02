@@ -51,8 +51,8 @@ describe("appearance CSS defaults", () => {
     );
   });
 
-  it("binds SettingsRow titles to the 13px UI-size delta", () => {
-    expect(settingsLayout).toMatch(/<h3 className="settings-ui-text-13\s/);
+  it("binds SettingsRow titles to the 14px UI-size delta", () => {
+    expect(settingsLayout).toMatch(/<h3 className="settings-ui-text-sm\s/);
     expect(settingsLayout).not.toMatch(/<h3 className="text-\[13px\]/);
   });
 

@@ -7,7 +7,7 @@ import ForkMigration0001 from "./ForkMigrations/001_AttachmentCleanupQueue.ts";
 import ForkMigration0002 from "./ForkMigrations/002_ProjectionThreadSessionRecovery.ts";
 import ForkMigration0003 from "./ForkMigrations/003_DatabaseCompactionJournal.ts";
 import { reconcileBaseMigrationLedger, runForkMigrations } from "./ForkMigrations.ts";
-import { runMigrations } from "./Migrations.ts";
+import { migrationManifest, runMigrations } from "./Migrations.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 
 const runStartupMigrations = Effect.gen(function* () {
@@ -136,12 +136,23 @@ const assertForkMigrationApplied = (state: Effect.Success<typeof readMigrationSt
   ]);
 };
 
-const assertBaseLedgerEndsAt34 = (state: Effect.Success<typeof readMigrationState>) => {
-  assert.equal(state.baseLedger.length, 34);
-  assert.deepStrictEqual(state.baseLedger.at(-1), {
-    migration_id: 34,
-    name: "ProjectionThreadsSnoozed",
-  });
+const assertBaseLedgerMatchesManifest = (state: Effect.Success<typeof readMigrationState>) => {
+  // The manifest is only a trustworthy expectation if it is itself well-formed.
+  // Comparing the ledger to a manifest that had gained a duplicate id or lost an
+  // entry — the classic fork-sync merge-conflict shapes — would otherwise pass,
+  // because both sides derive from `migrationEntries`. Anchoring the ids to a
+  // contiguous 1..N run catches that without a literal that goes stale on every
+  // new migration.
+  const manifestIds = migrationManifest.map(([id]) => id);
+  assert.deepStrictEqual(
+    manifestIds,
+    manifestIds.map((_, index) => index + 1),
+  );
+
+  assert.deepStrictEqual(
+    state.baseLedger.map(({ migration_id, name }) => [migration_id, name] as const),
+    migrationManifest,
+  );
 };
 
 const seedLegacyAttachmentCleanupMigration = Effect.gen(function* () {
@@ -226,8 +237,7 @@ freshLayer("ForkMigrations (fresh database)", (it) => {
       const executed = yield* runStartupMigrations;
       const state = yield* readMigrationState;
 
-      assert.equal(executed.baseMigrations.length, 34);
-      assert.deepStrictEqual(executed.baseMigrations.at(-1), [34, "ProjectionThreadsSnoozed"]);
+      assert.deepStrictEqual(executed.baseMigrations, migrationManifest);
       assert.deepStrictEqual(executed.forkMigrations, [
         [1, "AttachmentCleanupQueue"],
         [2, "ProjectionThreadSessionRecovery"],
@@ -238,7 +248,7 @@ freshLayer("ForkMigrations (fresh database)", (it) => {
         [7, "ResetProjectionThreadNativeAgents"],
         [8, "BackfillProjectionThreadNativeAgents"],
       ]);
-      assertBaseLedgerEndsAt34(state);
+      assertBaseLedgerMatchesManifest(state);
       assertForkMigrationApplied(state);
     }),
   );
@@ -365,7 +375,7 @@ baseOnlyLayer("ForkMigrations (existing base-only database)", (it) => {
         [7, "ResetProjectionThreadNativeAgents"],
         [8, "BackfillProjectionThreadNativeAgents"],
       ]);
-      assertBaseLedgerEndsAt34(state);
+      assertBaseLedgerMatchesManifest(state);
       assertForkMigrationApplied(state);
     }),
   );
@@ -384,7 +394,7 @@ legacyLayer("ForkMigrations (legacy base-ledger entry)", (it) => {
         yield* runStartupMigrations;
 
         const state = yield* readMigrationState;
-        assertBaseLedgerEndsAt34(state);
+        assertBaseLedgerMatchesManifest(state);
         assertForkMigrationApplied(state);
 
         const preservedRows = yield* sql<{ readonly threadId: string }>`
@@ -407,7 +417,7 @@ legacyRecoveryLayer("ForkMigrations (legacy recovery and compaction rows)", (it)
       yield* runStartupMigrations;
 
       const state = yield* readMigrationState;
-      assertBaseLedgerEndsAt34(state);
+      assertBaseLedgerMatchesManifest(state);
       assertForkMigrationApplied(state);
       const journals = yield* sql<{ readonly phase: string }>`
         SELECT phase
@@ -428,11 +438,14 @@ upstreamBaseLayer("ForkMigrations (upstream base migrations)", (it) => {
 
       const state = yield* readMigrationState;
       assertForkMigrationApplied(state);
-      assertBaseLedgerEndsAt34(state);
-      assert.deepStrictEqual(state.baseLedger.slice(-2), [
-        { migration_id: 33, name: "ProjectionThreadsSettled" },
-        { migration_id: 34, name: "ProjectionThreadsSnoozed" },
-      ]);
+      assertBaseLedgerMatchesManifest(state);
+      assert.deepStrictEqual(
+        state.baseLedger.filter(({ migration_id }) => migration_id === 33 || migration_id === 34),
+        [
+          { migration_id: 33, name: "ProjectionThreadsSettled" },
+          { migration_id: 34, name: "ProjectionThreadsSnoozed" },
+        ],
+      );
     }),
   );
 });
@@ -450,7 +463,7 @@ restartLayer("ForkMigrations (restart reconciliation)", (it) => {
       const secondStartupState = yield* readMigrationState;
 
       assert.deepStrictEqual(secondStartupState, firstStartupState);
-      assertBaseLedgerEndsAt34(secondStartupState);
+      assertBaseLedgerMatchesManifest(secondStartupState);
       assertForkMigrationApplied(secondStartupState);
     }),
   );
