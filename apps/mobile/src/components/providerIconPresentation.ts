@@ -1,10 +1,4 @@
-export type ProviderIconKind =
-  | "claude"
-  | "kimi"
-  | "grok"
-  | "cursor"
-  | "opencode"
-  | "openai";
+export type ProviderIconKind = "claude" | "kimi" | "grok" | "cursor" | "opencode" | "openai";
 
 export function resolveProviderIconKind(provider: string | null | undefined): ProviderIconKind {
   if (provider === "claudeAgent") return "claude";
