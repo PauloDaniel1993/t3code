@@ -7,6 +7,12 @@ describe("ProviderIcon presentation", () => {
     expect(resolveProviderIconKind("kimi")).toBe("kimi");
   });
 
+  it("routes the upstream Grok, Cursor, and OpenCode icons through the same seam", () => {
+    expect(resolveProviderIconKind("grok")).toBe("grok");
+    expect(resolveProviderIconKind("cursor")).toBe("cursor");
+    expect(resolveProviderIconKind("opencode")).toBe("opencode");
+  });
+
   it("preserves existing and unknown provider presentation", () => {
     expect(resolveProviderIconKind("claudeAgent")).toBe("claude");
     expect(resolveProviderIconKind("codex")).toBe("openai");

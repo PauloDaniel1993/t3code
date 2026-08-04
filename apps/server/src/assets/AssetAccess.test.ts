@@ -32,8 +32,8 @@ const testLayer = Layer.mergeAll(
   ),
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
 ).pipe(Layer.provideMerge(NodeServices.layer));
-const decodeUnknownJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
-const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 describe("AssetAccess", () => {
   it.effect("issues workspace URLs that resolve the entry file and sibling assets", () =>

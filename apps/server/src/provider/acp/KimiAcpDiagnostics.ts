@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 
 const KIMI_FAILED_TURN_MARKER = "acp: turn ended with failed reason";
 const MAX_ERROR_MESSAGE_CHARS = 4_000;
-const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
+const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 export interface KimiAcpLogCheckpoint {
   readonly logPath: string;

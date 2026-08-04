@@ -17,7 +17,7 @@ const compactorLayer = it.layer(
   ),
 );
 
-const encodeUnknownJson = Schema.encodeSync(Schema.UnknownFromJsonString);
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const makePayload = (activityId: string, detail: string) =>
   encodeUnknownJson({

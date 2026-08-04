@@ -17,7 +17,7 @@ import { makeKimiTextGeneration } from "./KimiTextGeneration.ts";
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../scripts/acp-mock-agent.ts");
 const decodeKimiSettings = Schema.decodeSync(KimiSettings);
-const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(NodeServices.layer)("KimiTextGeneration", (it) => {
   it.effect("uses an isolated authenticated ACP session and releases the child process", () =>

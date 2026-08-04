@@ -40,7 +40,7 @@ import { makeSqlitePersistenceLive } from "./Layers/Sqlite.ts";
 import { DatabaseLogicalCompaction } from "./Services/DatabaseLogicalCompaction.ts";
 import { OrchestrationEventStore } from "./Services/OrchestrationEventStore.ts";
 
-const decodeUnknownJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 describe.runIf(process.env.T3_RUN_INCIDENT_COMPACTION === "1")(
   "incident-shaped database compaction",

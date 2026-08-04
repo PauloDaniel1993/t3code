@@ -16,7 +16,7 @@ const estimatorLayer = it.layer(
   ),
 );
 
-const encodeUnknownJson = Schema.encodeSync(Schema.UnknownFromJsonString);
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const activityEnvelope = ({
   activityId,

@@ -4,8 +4,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { deriveNativeAgents, selectVisibleNativeAgents } from "../../orchestration/nativeAgents.ts";
 
-const decodePayloadJson = Schema.decodeSync(Schema.UnknownFromJsonString);
-const encodeNativeAgentsJson = Schema.encodeSync(Schema.UnknownFromJsonString);
+const decodePayloadJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeNativeAgentsJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /**
  * Rebuild `native_agents_json` from the activities already on disk.

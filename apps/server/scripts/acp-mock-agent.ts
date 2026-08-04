@@ -59,7 +59,7 @@ const permissionOptionIds = {
   rejectOnce: process.env.T3_ACP_REJECT_ONCE_OPTION_ID ?? "reject-once",
 };
 const sessionId = "mock-session-1";
-const encodeUnknownJsonString = Schema.encodeSync(Schema.UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 let currentModeId = "ask";
 let currentModelId = "default";

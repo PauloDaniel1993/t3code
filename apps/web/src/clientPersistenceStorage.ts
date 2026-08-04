@@ -5,7 +5,7 @@ import { LocalStorageOperationError, setLocalStorageItem } from "./hooks/useLoca
 
 export const CLIENT_SETTINGS_STORAGE_KEY = "t3code:client-settings:v1";
 
-const decodeRawClientSettingsJson = Schema.decodeSync(Schema.UnknownFromJsonString);
+const decodeRawClientSettingsJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeClientSettingsJson = Schema.decodeSync(Schema.fromJsonString(ClientSettingsSchema));
 
 function hasWindow(): boolean {

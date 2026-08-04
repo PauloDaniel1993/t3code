@@ -41,7 +41,7 @@ import {
 } from "./KimiAdapter.ts";
 
 const decodeKimiSettings = Schema.decodeSync(KimiSettings);
-const encodeUnknownJsonString = Schema.encodeSync(Schema.UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 

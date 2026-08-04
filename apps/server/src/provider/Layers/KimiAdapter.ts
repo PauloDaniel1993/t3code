@@ -76,7 +76,7 @@ import { applyKimiAcpModelSelection, makeKimiAcpRuntime } from "../acp/KimiAcpSu
 import { findKimiModelConfigOption, type KimiModelStateShape } from "../KimiModelState.ts";
 import { type KimiAdapterShape } from "../Services/KimiAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
-const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
+const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 const PROVIDER = ProviderDriverKind.make("kimi");
 const KIMI_RESUME_VERSION = 1 as const;

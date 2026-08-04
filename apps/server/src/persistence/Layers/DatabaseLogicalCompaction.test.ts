@@ -43,8 +43,8 @@ const logicalCompactionLayer = it.layer(
   ),
 );
 
-const encodeUnknownJson = Schema.encodeSync(Schema.UnknownFromJsonString);
-const decodeUnknownJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const resetCompactionFixtures = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
