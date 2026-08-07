@@ -73,7 +73,6 @@ export const makeKimiTextGeneration = Effect.fn("makeKimiTextGeneration")(functi
 
       const promptResult = yield* Effect.gen(function* () {
         yield* runtime.start();
-        yield* Effect.ignore(runtime.setMode(KIMI_READ_ONLY_MODE_ID));
         yield* applyKimiAcpModelSelection({
           runtime,
           model: runOptions.modelSelection.model,
@@ -88,6 +87,9 @@ export const makeKimiTextGeneration = Effect.fn("makeKimiTextGeneration")(functi
               cause,
             }),
         });
+        // A model switch may replace Kimi's mode option, so restore the
+        // read-only policy only after all model configuration is settled.
+        yield* Effect.ignore(runtime.setMode(KIMI_READ_ONLY_MODE_ID));
         return yield* runtime.prompt({ prompt: [{ type: "text", text: prompt }] });
       }).pipe(
         Effect.mapError((cause) =>

@@ -125,6 +125,7 @@ export function makeJsonTextGeneration(
         stagedSummary: input.stagedSummary,
         stagedPatch: input.stagedPatch,
         includeBranch: input.includeBranch === true,
+        policy: input.policy,
       });
       const generated = yield* runJson({
         operation: "generateCommitMessage",
@@ -150,6 +151,8 @@ export function makeJsonTextGeneration(
         commitSummary: input.commitSummary,
         diffSummary: input.diffSummary,
         diffPatch: input.diffPatch,
+        changeRequestTemplate: input.changeRequestTemplate,
+        policy: input.policy,
       });
       const generated = yield* runJson({
         operation: "generatePrContent",
@@ -182,6 +185,7 @@ export function makeJsonTextGeneration(
       const { prompt, outputSchema } = buildThreadTitlePrompt({
         message: input.message,
         attachments: input.attachments,
+        previousTitle: input.previousTitle,
       });
       const generated = yield* runJson({
         operation: "generateThreadTitle",

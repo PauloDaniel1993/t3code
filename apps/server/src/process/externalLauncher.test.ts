@@ -3,12 +3,13 @@ import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -220,7 +221,44 @@ it.effect("reuses successful editor discovery results", () => {
   );
 });
 
-it.effect("retries editor discovery after an interrupted attempt", () =>
+it.effect("memoizes editor discovery and refreshes after the cache window", () => {
+  let commandChecks = 0;
+
+  return Effect.gen(function* () {
+    const launcher = yield* ExternalLauncher.ExternalLauncher;
+
+    const first = yield* launcher.resolveAvailableEditors();
+    assert.deepEqual(first, ["vscode", "file-manager"]);
+    const checksAfterFirstScan = commandChecks;
+    assert.isAbove(checksAfterFirstScan, 0);
+
+    yield* TestClock.adjust("31 seconds");
+    const second = yield* launcher.resolveAvailableEditors();
+    assert.deepEqual(second, first);
+    assert.equal(commandChecks, checksAfterFirstScan);
+
+    yield* TestClock.adjust("30 seconds");
+    yield* launcher.resolveAvailableEditors();
+    assert.isAbove(commandChecks, checksAfterFirstScan);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        testLayer({
+          platform: "win32",
+          env: { PATH: "" },
+          commandAvailable: (command) =>
+            Effect.sync(() => {
+              commandChecks += 1;
+              return command === "code" || command === "explorer";
+            }),
+        }),
+        TestClock.layer(),
+      ),
+    ),
+  );
+});
+
+it.effect("rescans after an interrupted discovery instead of caching the interrupt", () =>
   Effect.gen(function* () {
     const discoveryStarted = yield* Deferred.make<void>();
     let blockDiscovery = true;

@@ -30,7 +30,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { providerFileUri } from "../attachmentDelivery.ts";
-import { makeKimiModelState } from "../KimiModelState.ts";
+import { makeKimiModelState, type KimiModelStateShape } from "../KimiModelState.ts";
 import type { KimiAdapterShape } from "../Services/KimiAdapter.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
@@ -99,7 +99,7 @@ function withMockKimi<A, E, R>(
 
 function withKimiAdapter<A, E, R>(
   wrapperPath: string,
-  use: (adapter: KimiAdapterShape) => Effect.Effect<A, E, R>,
+  use: (adapter: KimiAdapterShape, modelState: KimiModelStateShape) => Effect.Effect<A, E, R>,
   environment?: NodeJS.ProcessEnv,
   nativeEventLogger?: EventNdjsonLogger,
 ) {
@@ -113,7 +113,7 @@ function withKimiAdapter<A, E, R>(
         ...(nativeEventLogger ? { nativeEventLogger } : {}),
       },
     );
-    return yield* use(adapter);
+    return yield* use(adapter, modelState);
   }).pipe(
     Effect.scoped,
     Effect.provide(
@@ -290,7 +290,7 @@ it.effect("maps Kimi session lifecycle without stderr backpressure and supports 
       T3_ACP_OMIT_KIMI_RESUME_CONFIG_OPTIONS: "1",
     },
     (wrapperPath) =>
-      withKimiAdapter(wrapperPath, (adapter) =>
+      withKimiAdapter(wrapperPath, (adapter, modelState) =>
         Effect.gen(function* () {
           const threadId = ThreadId.make("kimi-lifecycle-thread");
           const eventsFiber = yield* Stream.take(adapter.streamEvents, 9).pipe(
@@ -312,6 +312,12 @@ it.effect("maps Kimi session lifecycle without stderr backpressure and supports 
             instanceId: ProviderInstanceId.make("kimi"),
             sessionId: "mock-session-1",
           });
+          const configuredModelState = yield* modelState.getSnapshot;
+          assert.equal(
+            configuredModelState.configOptions.find((option) => option.id === "model")
+              ?.currentValue,
+            "composer-2",
+          );
 
           yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
           const types = Array.from(yield* Fiber.join(eventsFiber), (event) => event.type);
@@ -358,6 +364,11 @@ it.effect("maps Kimi session lifecycle without stderr backpressure and supports 
             },
           });
           assert.deepStrictEqual(resumed.resumeCursor, session.resumeCursor);
+          const resumedModelState = yield* modelState.getSnapshot;
+          assert.equal(
+            resumedModelState.configOptions.find((option) => option.id === "model")?.currentValue,
+            "composer-2",
+          );
           yield* adapter.stopSession(threadId);
         }),
       ),

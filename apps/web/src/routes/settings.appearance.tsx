@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { AppearanceSettings } from "../components/settings/AppearanceSettings";
+import { AppearanceSettingsPanel } from "../components/settings/SettingsPanels";
 
 function SettingsAppearanceRoute() {
-  return <AppearanceSettings />;
+  return <AppearanceSettingsPanel />;
 }
 
 export const Route = createFileRoute("/settings/appearance")({

@@ -52,7 +52,7 @@ describe("attachmentStore", () => {
       attachmentRelativePath({
         type: "document",
         id: THREAD_ONE_ID,
-        name: "../original-name.anything",
+        name: "../original-name.PDF",
         mimeType: "application/pdf",
         sizeBytes: 10,
       }),
@@ -66,6 +66,15 @@ describe("attachmentStore", () => {
         sizeBytes: 10,
       }),
     ).toBe(`${THREAD_ONE_ID}.ts`);
+    expect(() =>
+      attachmentRelativePath({
+        type: "document",
+        id: THREAD_ONE_ID,
+        name: "renamed.txt",
+        mimeType: "application/pdf",
+        sizeBytes: 10,
+      }),
+    ).toThrow(".pdf final extension");
   });
 
   it("resolves mixed-case metadata names to the exact registry-derived path", () => {
@@ -79,7 +88,7 @@ describe("attachmentStore", () => {
       expect(
         resolveAttachmentPath({
           attachmentsDir,
-          threadId: "Thread.1",
+          threadId: "thread-1",
           attachment: {
             type: "file",
             id: THREAD_ONE_ID,
@@ -95,16 +104,19 @@ describe("attachmentStore", () => {
   });
 
   it("rejects cross-thread ownership when a requesting thread is known", () => {
-    expect(isAttachmentOwnedByThread({ attachmentId: THREAD_ONE_ID, threadId: "thread.1" })).toBe(
+    expect(isAttachmentOwnedByThread({ attachmentId: THREAD_ONE_ID, threadId: "thread-1" })).toBe(
       true,
     );
-    expect(isAttachmentOwnedByThread({ attachmentId: THREAD_TWO_ID, threadId: "thread.1" })).toBe(
+    expect(isAttachmentOwnedByThread({ attachmentId: THREAD_TWO_ID, threadId: "thread-1" })).toBe(
+      false,
+    );
+    expect(isAttachmentOwnedByThread({ attachmentId: THREAD_ONE_ID, threadId: "thread.1" })).toBe(
       false,
     );
     expect(
       resolveAttachmentPath({
         attachmentsDir: NodeOS.tmpdir(),
-        threadId: "thread.1",
+        threadId: "thread-1",
         attachment: {
           type: "document",
           id: THREAD_TWO_ID,
@@ -129,7 +141,7 @@ describe("attachmentStore", () => {
       expect(
         resolveAttachmentPath({
           attachmentsDir,
-          threadId: "thread.1",
+          threadId: "thread-1",
           attachment: {
             type: "file",
             id: THREAD_ONE_ID,
@@ -142,11 +154,11 @@ describe("attachmentStore", () => {
       expect(
         resolveAttachmentPath({
           attachmentsDir,
-          threadId: "thread.1",
+          threadId: "thread-1",
           attachment: {
             type: "document",
             id: THREAD_ONE_ID,
-            name: "page.html",
+            name: "page.PDF",
             mimeType: "application/pdf",
             sizeBytes: 3,
           },

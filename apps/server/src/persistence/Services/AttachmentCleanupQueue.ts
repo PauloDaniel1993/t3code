@@ -83,9 +83,6 @@ export interface AttachmentCleanupQueueRepositoryShape {
   readonly recordFailure: (
     input: RecordAttachmentCleanupFailureInput,
   ) => Effect.Effect<Option.Option<AttachmentCleanupFailureUpdate>, ProjectionRepositoryError>;
-  readonly discard: (
-    input: AttachmentCleanupIntentIdInput,
-  ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 export class AttachmentCleanupQueueRepository extends Context.Service<

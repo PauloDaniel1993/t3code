@@ -50,6 +50,8 @@ import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityRes
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import {
   PROVIDER_EVENT_FLOW_CONTROL,
@@ -299,6 +301,10 @@ describe("ProviderRuntimeIngestion", () => {
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
+      // Single shared liveness instance across ingestion (writer), the
+      // engine, and the snapshot query (reader).
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
@@ -400,6 +406,11 @@ describe("ProviderRuntimeIngestion", () => {
         await provider.awaitPublishedEvents();
         await runtime!.runPromise(ingestion.drain);
         return Effect.runPromise(snapshotQuery.getSnapshot());
+      },
+      readShell: async () => {
+        await provider.awaitPublishedEvents();
+        await runtime!.runPromise(ingestion.drain);
+        return Effect.runPromise(snapshotQuery.getShellSnapshot());
       },
       emit: provider.emit,
       setProviderSession: provider.setSession,
@@ -1091,6 +1102,8 @@ describe("ProviderRuntimeIngestion", () => {
         itemType: "dynamic_tool_call",
         status: "completed",
         title: "Read file",
+        agentId: "agent-1",
+        parentToolUseId: "parent-tool-1",
         data: {
           toolCallId: "tool-read-1",
           kind: "read",
@@ -1126,10 +1139,57 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.kind).toBe("tool.completed");
     expect(activity?.summary).toBe("Read file");
     expect(payload?.itemType).toBe("dynamic_tool_call");
+    expect(payload?.agentId).toBe("agent-1");
+    expect(payload?.parentToolUseId).toBe("parent-tool-1");
     expect(payload?.detail).toBeUndefined();
     expect(data?.toolCallId).toBe("tool-read-1");
     expect(data?.kind).toBe("read");
     expect(rawOutput?.content).toBe('import * as Effect from "effect/Effect"\n');
+  });
+
+  it("bounds terminal tool data without dropping agent ownership metadata", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const completedEvent: ProviderRuntimeEvent = {
+      type: "item.completed",
+      eventId: asEventId("evt-tool-completed-bounded"),
+      provider: ProviderDriverKind.make("cursor"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-tool-completed-bounded"),
+      itemId: asRuntimeItemId("item-tool-completed-bounded"),
+      payload: {
+        itemType: "dynamic_tool_call",
+        status: "completed",
+        title: "Read large file",
+        agentId: "agent-bounded",
+        parentToolUseId: "parent-tool-bounded",
+        data: { output: "x".repeat(PROVIDER_EVENT_FLOW_CONTROL.terminalToolDataMaxBytes * 2) },
+      },
+    };
+    const activityId = stableToolActivityId(completedEvent);
+    expect(activityId).toBeDefined();
+    harness.emit(completedEvent);
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.id === activityId),
+    );
+    const payload = thread.activities.find((activity) => activity.id === activityId)?.payload as
+      | Record<string, unknown>
+      | undefined;
+
+    expect(payload).toMatchObject({
+      agentId: "agent-bounded",
+      parentToolUseId: "parent-tool-bounded",
+      data: {
+        _tag: "T3TerminalToolDataTruncated",
+        encoding: "json",
+        truncated: true,
+      },
+    });
+    expect(Buffer.byteLength(JSON.stringify(payload), "utf8")).toBeLessThanOrEqual(
+      PROVIDER_EVENT_FLOW_CONTROL.terminalToolDataMaxBytes,
+    );
   });
 
   it("preserves the shared ACP terminal-data shape through event creation and ingestion", async () => {
@@ -3032,6 +3092,126 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
   });
 
+  it("guards active-turn plan progress while tracking native-agent liveness", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const activeTurnId = asTurnId("turn-active-state");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-active-state-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: activeTurnId,
+      payload: {},
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "turn.plan.updated",
+      eventId: asEventId("evt-active-state-plan"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: activeTurnId,
+      payload: {
+        plan: [
+          { step: "Inspect state guards", status: "completed" },
+          { step: "Merge ingestion paths", status: "inProgress" },
+          { step: "Run focused tests", status: "pending" },
+        ],
+      },
+    });
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-active-state-agent"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: activeTurnId,
+      payload: {
+        taskId: "agent-active-state",
+        retryOfTaskId: "agent-prior-attempt",
+        taskType: "subagent",
+        description: "Review the combined ingestion state machine",
+        nativeAgent: true,
+      },
+    });
+
+    await harness.drain();
+    let thread = (await harness.readShell()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    )!;
+    expect(thread.backgroundLiveness).toBe("working");
+    expect(thread.planProgress).toEqual({
+      step: "Merge ingestion paths",
+      completedSteps: 1,
+      totalSteps: 3,
+    });
+
+    // Superseded-turn events remain valid durable history, but must not
+    // replace or clear the active turn's transient working state.
+    harness.emit({
+      type: "turn.plan.updated",
+      eventId: asEventId("evt-stale-state-plan"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-stale-state"),
+      payload: {
+        plan: [{ step: "Stale step", status: "inProgress" }],
+      },
+    });
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-stale-state-aborted"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-stale-state"),
+      payload: { reason: "superseded" },
+    });
+    await harness.drain();
+    thread = (await harness.readShell()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    )!;
+    expect(thread.planProgress?.step).toBe("Merge ingestion paths");
+    expect(thread.backgroundLiveness).toBe("working");
+
+    harness.emit({
+      type: "task.updated",
+      eventId: asEventId("evt-active-state-agent-idle"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: activeTurnId,
+      payload: {
+        taskId: "agent-active-state",
+        status: "idle",
+        taskType: "subagent",
+        nativeAgent: true,
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-active-state-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: activeTurnId,
+      payload: { state: "completed" },
+    });
+
+    await harness.drain();
+    thread = (await harness.readShell()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    )!;
+    expect(thread.planProgress).toBeNull();
+    expect(thread.backgroundLiveness).toBeNull();
+    expect(thread.session?.activeTurnId).toBeNull();
+  });
+
   it("projects context window updates into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -3127,6 +3307,65 @@ describe("ProviderRuntimeIngestion", () => {
     expect(tokenActivities?.[0]?.payload).toMatchObject({ usedTokens: 200 });
     expect(taskActivities).toHaveLength(1);
     expect(taskActivities?.[0]?.payload).toMatchObject({ description: "Progress 1" });
+  });
+
+  it("coalesces task activity and usage as independent latest-state streams", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    for (let index = 0; index < 300; index += 1) {
+      harness.emit({
+        type: "task.progress",
+        eventId: asEventId(`evt-task-activity-stream-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-task-streams"),
+        payload: {
+          taskId: "task-dual-stream",
+          description: "Agent activity",
+          summary: `Activity ${index}`,
+          status: "running",
+        },
+      });
+      harness.emit({
+        type: "task.progress",
+        eventId: asEventId(`evt-task-usage-stream-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-task-streams"),
+        payload: {
+          taskId: "task-dual-stream",
+          description: "Agent usage",
+          typedUsage: { totalTokens: index },
+        },
+      });
+    }
+
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    const activity = thread?.activities.find(
+      (candidate: ProviderRuntimeTestActivity) =>
+        candidate.id === "task-progress:thread-1:task-dual-stream",
+    );
+    const usage = thread?.activities.find(
+      (candidate: ProviderRuntimeTestActivity) =>
+        candidate.id === "task-usage:thread-1:task-dual-stream",
+    );
+
+    expect(activity?.payload).toMatchObject({
+      description: "Agent activity",
+      summary: "Activity 299",
+      status: "running",
+    });
+    expect(usage?.payload).toMatchObject({
+      description: "Agent usage",
+      usageSnapshot: true,
+      typedUsage: { totalTokens: 299 },
+    });
   });
 
   it("projects Codex camelCase token usage payloads into normalized thread activities", async () => {
@@ -3262,6 +3501,19 @@ describe("ProviderRuntimeIngestion", () => {
 
     harness.emit({
       type: "task.started",
+      eventId: asEventId("evt-plan-task-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-task-1"),
+      payload: {
+        taskId: "plan-task-1",
+        taskType: "plan",
+      },
+    });
+
+    harness.emit({
+      type: "task.started",
       eventId: asEventId("evt-task-started"),
       provider: ProviderDriverKind.make("codex"),
       createdAt: now,
@@ -3277,6 +3529,28 @@ describe("ProviderRuntimeIngestion", () => {
         workflowName: "parallel-review",
         prompt: "Review the implementation for regressions.",
         skipTranscript: false,
+        nativeAgent: true,
+        agentId: "reviewer-agent",
+        title: "Implementation reviewer",
+        role: "reviewer",
+        model: "gpt-5.6",
+        effort: "high",
+        parentAgentId: "lead-agent",
+        agentIndex: 1,
+        phaseIndex: 0,
+        phaseTitle: "Review",
+        phases: [
+          { index: 0, title: "Review" },
+          { index: 1, title: "Report" },
+        ],
+        attempt: 2,
+        runHandles: {
+          runId: "review-run-2",
+          scriptPath: "C:/tmp/review.ps1",
+          transcriptDir: "C:/tmp/review-transcript",
+          sessionUrl: "https://example.test/review-run-2",
+        },
+        agentPath: "/root/reviewer",
       },
     });
 
@@ -3294,7 +3568,45 @@ describe("ProviderRuntimeIngestion", () => {
         subagentType: "code-reviewer",
         summary: "Code reviewer is validating the desktop rollout chunks.",
         usage: { totalTokens: 1234, toolUses: 7, durationMs: 8901 },
+        typedUsage: {
+          totalTokens: 1234,
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 234,
+          toolUses: 7,
+          durationMs: 8901,
+        },
         lastToolName: "Read",
+        nativeAgent: true,
+        taskType: "agent",
+        agentId: "reviewer-agent",
+        parentAgentId: "lead-agent",
+        phaseIndex: 0,
+        phaseTitle: "Review",
+        attempt: 2,
+      },
+    });
+
+    harness.emit({
+      type: "task.updated",
+      eventId: asEventId("evt-task-updated"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-task-1"),
+      payload: {
+        taskId: "turn-task-1",
+        status: "waiting",
+        description: "Waiting for the focused test run.",
+        isBackgrounded: true,
+        nativeAgent: true,
+        taskType: "agent",
+        agentId: "reviewer-agent",
+        parentAgentId: "lead-agent",
+        phaseIndex: 1,
+        phaseTitle: "Report",
+        attempt: 2,
+        runHandles: { runId: "review-run-2" },
       },
     });
 
@@ -3313,6 +3625,26 @@ describe("ProviderRuntimeIngestion", () => {
         skipTranscript: false,
         summary: "<proposed_plan>\n# Plan title\n</proposed_plan>",
         usage: { totalTokens: 2345, toolUses: 9, durationMs: 10_111 },
+        typedUsage: {
+          totalTokens: 2345,
+          inputTokens: 1700,
+          outputTokens: 645,
+          toolUses: 9,
+          durationMs: 10_111,
+        },
+        description: "Review the implementation",
+        subagentType: "code-reviewer",
+        nativeAgent: true,
+        taskType: "agent",
+        agentId: "reviewer-agent",
+        parentAgentId: "lead-agent",
+        phaseIndex: 1,
+        phaseTitle: "Report",
+        attempt: 2,
+        runHandles: {
+          runId: "review-run-2",
+          transcriptDir: "C:/tmp/review-transcript",
+        },
       },
     });
     harness.emit({
@@ -3351,6 +3683,13 @@ describe("ProviderRuntimeIngestion", () => {
         entry.activities.some(
           (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-failed",
         ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-updated",
+        ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "task-usage:thread-1:turn-task-1",
+        ) &&
         entry.proposedPlans.some(
           (proposedPlan: ProviderRuntimeTestProposedPlan) =>
             proposedPlan.id === "plan:thread-1:turn:turn-task-1",
@@ -3360,8 +3699,18 @@ describe("ProviderRuntimeIngestion", () => {
     const started = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-started",
     );
+    const planStarted = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-plan-task-started",
+    );
     const progress = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.kind === "task.progress",
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.id === "task-progress:thread-1:turn-task-1",
+    );
+    const usage = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task-usage:thread-1:turn-task-1",
+    );
+    const updated = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-updated",
     );
     const completed = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-completed",
@@ -3378,6 +3727,14 @@ describe("ProviderRuntimeIngestion", () => {
       progress?.payload && typeof progress.payload === "object"
         ? (progress.payload as Record<string, unknown>)
         : undefined;
+    const usagePayload =
+      usage?.payload && typeof usage.payload === "object"
+        ? (usage.payload as Record<string, unknown>)
+        : undefined;
+    const updatedPayload =
+      updated?.payload && typeof updated.payload === "object"
+        ? (updated.payload as Record<string, unknown>)
+        : undefined;
     const completedPayload =
       completed?.payload && typeof completed.payload === "object"
         ? (completed.payload as Record<string, unknown>)
@@ -3389,6 +3746,8 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(started?.kind).toBe("task.started");
     expect(started?.summary).toBe("agent task started");
+    expect(planStarted?.summary).toBe("Plan task started");
+    expect(planStarted?.payload).toMatchObject({ agentKind: "background", taskType: "plan" });
     expect(startedPayload).toMatchObject({
       taskId: "turn-task-1",
       retryOfTaskId: "prior-task-attempt",
@@ -3399,6 +3758,25 @@ describe("ProviderRuntimeIngestion", () => {
       workflowName: "parallel-review",
       prompt: "Review the implementation for regressions.",
       skipTranscript: false,
+      nativeAgent: true,
+      agentKind: "agent",
+      agentId: "reviewer-agent",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      parentAgentId: "lead-agent",
+      phases: [
+        { index: 0, title: "Review" },
+        { index: 1, title: "Report" },
+      ],
+      attempt: 2,
+      runHandles: {
+        runId: "review-run-2",
+        scriptPath: "C:/tmp/review.ps1",
+        transcriptDir: "C:/tmp/review-transcript",
+        sessionUrl: "https://example.test/review-run-2",
+      },
+      agentPath: "/root/reviewer",
     });
     expect(progress?.kind).toBe("task.progress");
     expect(progressPayload).toMatchObject({
@@ -3410,6 +3788,45 @@ describe("ProviderRuntimeIngestion", () => {
       summary: "Code reviewer is validating the desktop rollout chunks.",
       usage: { totalTokens: 1234, toolUses: 7, durationMs: 8901 },
       lastToolName: "Read",
+      nativeAgent: true,
+      agentKind: "agent",
+      agentId: "reviewer-agent",
+      parentAgentId: "lead-agent",
+      phaseIndex: 0,
+      phaseTitle: "Review",
+      attempt: 2,
+    });
+    expect(progressPayload).not.toHaveProperty("typedUsage");
+    expect(usagePayload).toMatchObject({
+      taskId: "turn-task-1",
+      usageSnapshot: true,
+      nativeAgent: true,
+      agentKind: "agent",
+      agentId: "reviewer-agent",
+      parentAgentId: "lead-agent",
+      typedUsage: {
+        totalTokens: 1234,
+        inputTokens: 900,
+        cachedInputTokens: 100,
+        outputTokens: 234,
+        toolUses: 7,
+        durationMs: 8901,
+      },
+    });
+    expect(updated?.kind).toBe("task.updated");
+    expect(updatedPayload).toMatchObject({
+      taskId: "turn-task-1",
+      status: "waiting",
+      description: "Waiting for the focused test run.",
+      isBackgrounded: true,
+      nativeAgent: true,
+      agentKind: "agent",
+      agentId: "reviewer-agent",
+      parentAgentId: "lead-agent",
+      phaseIndex: 1,
+      phaseTitle: "Report",
+      attempt: 2,
+      runHandles: { runId: "review-run-2" },
     });
     expect(completed?.kind).toBe("task.completed");
     expect(completedPayload).toMatchObject({
@@ -3421,6 +3838,26 @@ describe("ProviderRuntimeIngestion", () => {
       summary: "<proposed_plan>\n# Plan title\n</proposed_plan>",
       detail: "<proposed_plan>\n# Plan title\n</proposed_plan>",
       usage: { totalTokens: 2345, toolUses: 9, durationMs: 10_111 },
+      typedUsage: {
+        totalTokens: 2345,
+        inputTokens: 1700,
+        outputTokens: 645,
+        toolUses: 9,
+        durationMs: 10_111,
+      },
+      description: "Review the implementation",
+      subagentType: "code-reviewer",
+      nativeAgent: true,
+      agentKind: "agent",
+      agentId: "reviewer-agent",
+      parentAgentId: "lead-agent",
+      phaseIndex: 1,
+      phaseTitle: "Report",
+      attempt: 2,
+      runHandles: {
+        runId: "review-run-2",
+        transcriptDir: "C:/tmp/review-transcript",
+      },
     });
     expect(failed?.tone).toBe("error");
     expect(failedPayload).toMatchObject({
@@ -3592,7 +4029,8 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     const progress = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.kind === "task.progress",
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.id === "task-progress:thread-1:named-task-1",
     );
     const completed = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-named-task-completed",
@@ -3686,7 +4124,8 @@ describe("ProviderRuntimeIngestion", () => {
 
     await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === progressActivityId,
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task-progress:thread-1:swept-task-1",
       ),
     );
 
@@ -3757,8 +4196,7 @@ describe("ProviderRuntimeIngestion", () => {
         taskId: RuntimeTaskId.make("task-review-1"),
       },
     };
-    const enrichedActivityId = stableToolActivityId(enrichedEvent);
-    expect(enrichedActivityId).toBeDefined();
+    const enrichedActivityId = EventId.make("tool-progress:thread-1:task-review-1");
     harness.emit(enrichedEvent);
     harness.emit({
       type: "tool.progress",

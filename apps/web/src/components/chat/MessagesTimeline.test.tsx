@@ -202,6 +202,7 @@ function buildProps() {
     onAnchorReady: () => {},
     onAnchorSizeChanged: () => {},
     contentInsetEndAdjustment: 0,
+    liveFollowEnabled: true,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
     threadTasksEnabled: true,
@@ -430,7 +431,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-native-agent-task-id="worker-1"');
   });
 
-  it("uses LegendList isNearEnd when deciding whether the live edge is visible", async () => {
+  it("treats only the strict list end as the live edge", async () => {
     const {
       resolveTimelineIsAtEnd,
       resolveTimelineMinimapHasPersistentGutter,
@@ -441,10 +442,36 @@ describe("MessagesTimeline", () => {
       resolveTimelineMinimapTopPercent,
     } = await import("./MessagesTimeline.logic");
 
-    expect(resolveTimelineIsAtEnd({ isNearEnd: true, isAtEnd: false })).toBe(true);
-    expect(resolveTimelineIsAtEnd({ isNearEnd: false, isAtEnd: true })).toBe(false);
     expect(resolveTimelineIsAtEnd({ isAtEnd: true })).toBe(true);
     expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
+    // Within the pixel band above the content bottom counts as the end...
+    expect(
+      resolveTimelineIsAtEnd({
+        isAtEnd: false,
+        contentLength: 2000,
+        scroll: 1170,
+        scrollLength: 800,
+      }),
+    ).toBe(true);
+    // ...but half a viewport up (LegendList's isNearEnd territory) does not.
+    expect(
+      resolveTimelineIsAtEnd({
+        isAtEnd: false,
+        contentLength: 2000,
+        scroll: 900,
+        scrollLength: 800,
+      }),
+    ).toBe(false);
+    // The composer inset is part of contentLength and must not count as
+    // distance-to-end.
+    expect(
+      resolveTimelineIsAtEnd(
+        { isAtEnd: false, contentLength: 2100, scroll: 1170, scrollLength: 800 },
+        100,
+      ),
+    ).toBe(true);
+    // Geometry missing (older state shape): fall back to the strict flag.
+    expect(resolveTimelineIsAtEnd({ isAtEnd: false })).toBe(false);
 
     expect(resolveTimelineMinimapHeightStyle(5)).toBe("min(32px, calc(100vh - 18rem))");
     expect(resolveTimelineMinimapTopPercent(2, 5)).toBe(50);
@@ -489,6 +516,41 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineMinimapInteractiveWidth(0, true)).toBe("22rem");
     expect(resolveTimelineMinimapInteractiveWidth(14, true)).toBe("22rem");
     expect(resolveTimelineMinimapInteractiveWidth(40, true)).toBe("22rem");
+  });
+
+  it("uses turn-window pagination and keeps inline plans in the transcript", () => {
+    const turnId = TurnId.make("turn-with-plan");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        loadEarlier={{ loading: false, onLoadEarlier: () => {} }}
+        timelineEntries={[
+          {
+            id: "turn-plan:turn-with-plan",
+            kind: "turn-plan",
+            createdAt: MESSAGE_CREATED_AT,
+            turnPlan: {
+              id: "turn-plan:turn-with-plan",
+              createdAt: MESSAGE_CREATED_AT,
+              turnId,
+              plan: {
+                createdAt: MESSAGE_CREATED_AT,
+                turnId,
+                steps: [
+                  { step: "Inspect contracts", status: "completed" },
+                  { step: "Merge timeline behavior", status: "inProgress" },
+                ],
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Load earlier turns");
+    expect(markup).toContain("Merge timeline behavior");
+    expect(markup).toContain("1/2");
+    expect(markup).not.toContain("Load older activity");
   });
 
   it("anchors a sent attachment message using its measured height", () => {
@@ -568,7 +630,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).not.toContain("Show full message");
     expect(markup).toContain('data-user-message-collapsible="false"');
-    expect(markup).toContain("rounded-2xl bg-accent p-3");
+    expect(markup).toContain("rounded-2xl bg-message p-3");
   });
 
   it("renders inline terminal labels with the composer chip UI", () => {
@@ -901,6 +963,33 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("45s");
     expect(markup).toContain("last: Read");
     expect(markup).toContain('aria-label="1 subagent task"');
+  });
+
+  it("keeps native provider agents on the Agents CTA path instead of rendering a task card", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-native-agent",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "work-native-agent",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "Native agent",
+              tone: "info",
+              taskId: "native-agent-1",
+              agentSpawn: { workflowId: null, agentTaskIds: ["native-agent-1"] },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Ran 1 subagent");
+    expect(markup).toContain("View");
+    expect(markup).not.toContain('data-task-card="true"');
   });
 
   it("renders completed task cards with result and output information only", async () => {
@@ -1339,29 +1428,6 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("aria-expanded");
     expect(markup).not.toContain("aria-controls");
     expect(markup).not.toContain('tabindex="0"');
-  });
-
-  it("renders accessible older-activity loading and keeps the visible scroll anchor", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[]}
-        hasOlderActivities
-        isLoadingOlderActivities
-        olderActivitiesError={null}
-        onLoadOlderActivities={() => {}}
-      />,
-    );
-
-    expect(markup).toContain("Load older activity");
-    expect(markup).toContain("Loading older activity.");
-    expect(markup).toContain('role="status"');
-    expect(markup).toContain('aria-disabled="true"');
-    expect(markup).not.toMatch(/<button[^>]*\sdisabled(?:=|\s|>)/);
-    expect(markup).toContain('data-maintain-visible-content-position="object"');
-    expect(markup).toContain('data-maintain-visible-content-position-data="true"');
-    expect(markup).toContain('data-maintain-visible-content-position-size="false"');
   });
 
   describe("thread task lifecycle rows", () => {

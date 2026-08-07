@@ -117,6 +117,33 @@ it.effect("rejects a missing ACP attachment instead of returning a partial mappi
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("rejects an existing ACP attachment owned by another thread", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const attachmentsDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "acp-unowned-"));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => NodeFS.rmSync(attachmentsDir, { recursive: true, force: true })),
+    );
+    const unowned = {
+      ...file,
+      id: "other-thread-42345678-1234-1234-1234-123456789abc",
+    };
+    writeAttachment(attachmentsDir, unowned, Uint8Array.from([0x50, 0x4b, 0x03, 0x04]));
+
+    const error = yield* mapAcpAttachments({
+      attachmentsDir,
+      threadId: THREAD_ID,
+      attachments: [unowned],
+      fileSystem,
+    }).pipe(Effect.flip);
+
+    NodeAssert.equal(error._tag, "ProviderAttachmentAccessError");
+    if (error._tag === "ProviderAttachmentAccessError") {
+      NodeAssert.equal(error.reason, "invalid-or-unowned");
+    }
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("rejects an unknown ACP attachment kind exhaustively", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;

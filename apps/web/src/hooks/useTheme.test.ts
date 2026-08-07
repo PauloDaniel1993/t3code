@@ -20,10 +20,18 @@ function createStorage(overrides: Partial<Storage> = {}): Storage {
   };
 }
 
-function mockSettingsStore(initialMode: "light" | "dark" | "system", hydrated: boolean) {
+function mockSettingsStore(
+  initialMode: "light" | "dark" | "system",
+  hydrated: boolean,
+  appearanceOverrides: Partial<typeof DEFAULT_CLIENT_SETTINGS.appearance> = {},
+) {
   let settings = {
     ...DEFAULT_CLIENT_SETTINGS,
-    appearance: { ...DEFAULT_CLIENT_SETTINGS.appearance, colorScheme: initialMode },
+    appearance: {
+      ...DEFAULT_CLIENT_SETTINGS.appearance,
+      colorScheme: initialMode,
+      ...appearanceOverrides,
+    },
   };
   const updateAppearance = vi.fn(
     (updater: (appearance: typeof settings.appearance) => typeof settings.appearance) => {
@@ -38,9 +46,6 @@ function mockSettingsStore(initialMode: "light" | "dark" | "system", hydrated: b
     updateAppearance,
     useClientSettings: <T>(selector: (value: typeof settings) => T) => selector(settings),
     useClientSettingsHydrated: () => hydrated,
-  }));
-  vi.doMock("~/appearance/applyAppearance", () => ({
-    applyAppearanceToDocument: vi.fn(),
   }));
   return {
     get settings() {
@@ -81,10 +86,28 @@ function classListStub() {
   };
 }
 
+function documentElementStub() {
+  const classList = classListStub();
+  const style = {
+    backgroundColor: "",
+    removeProperty: vi.fn(),
+    setProperty: vi.fn(),
+  };
+  return {
+    classList,
+    element: {
+      classList,
+      dataset: {} as Record<string, string>,
+      offsetHeight: 1,
+      style,
+    },
+    style,
+  };
+}
+
 afterEach(() => {
   vi.doUnmock("react");
   vi.doUnmock("./useSettings");
-  vi.doUnmock("~/appearance/applyAppearance");
   vi.resetModules();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -134,6 +157,18 @@ describe("theme failure handling", () => {
     }
   });
 
+  it("reads the persisted T3 Chat theme preference", async () => {
+    vi.stubGlobal("window", {
+      localStorage: createStorage({
+        getItem: () => "t3-chat",
+      }),
+    });
+
+    const { readThemePreference } = await import("./useTheme");
+
+    expect(readThemePreference()).toBe("t3-chat");
+  });
+
   it("falls back during initial theme application and logs only safe attributes", async () => {
     const cause = new Error("private browsing storage failure");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -168,9 +203,10 @@ describe("theme failure handling", () => {
 
   it("retries a failed storage read only after a relevant storage event", async () => {
     const cause = new Error("persistent storage failure");
-    const getItem = vi.fn(() => {
+    const themeGetItem = vi.fn((): string | null => {
       throw cause;
     });
+    const getItem = vi.fn((key: string) => (key === "t3code:theme" ? themeGetItem() : null));
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     let readSnapshot: (() => unknown) | undefined;
     let subscribeToTheme: ((listener: () => void) => () => void) | undefined;
@@ -206,14 +242,14 @@ describe("theme failure handling", () => {
     readSnapshot?.();
     readSnapshot?.();
 
-    expect(getItem).toHaveBeenCalledTimes(1);
+    expect(themeGetItem).toHaveBeenCalledTimes(1);
     expect(errorLog).toHaveBeenCalledTimes(1);
 
     const unsubscribe = subscribeToTheme?.(() => undefined);
     storageHandler?.({ key: "t3code:theme" } as StorageEvent);
     readSnapshot?.();
 
-    expect(getItem).toHaveBeenCalledTimes(2);
+    expect(themeGetItem).toHaveBeenCalledTimes(2);
     expect(errorLog).toHaveBeenCalledTimes(2);
     unsubscribe?.();
   });
@@ -257,21 +293,19 @@ describe("theme failure handling", () => {
   });
 });
 
-describe("Appearance-backed theme state", () => {
-  it("setTheme updates Appearance, the legacy mirror, the DOM class, and desktop chrome", async () => {
-    const store = mockSettingsStore("system", true);
+describe("contract appearance compatibility", () => {
+  it("uses the contract color scheme when no modular preference has been persisted", async () => {
+    const store = mockSettingsStore("dark", true);
     installHookReactMock();
     const localStorage = createStorage();
     const setItem = vi.spyOn(localStorage, "setItem");
-    const desktopSetTheme = vi.fn().mockResolvedValue(undefined);
-    const classList = classListStub();
+    const { classList, element } = documentElementStub();
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
     });
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
-      desktopBridge: { setTheme: desktopSetTheme },
       localStorage,
       matchMedia: () => ({
         matches: false,
@@ -280,46 +314,25 @@ describe("Appearance-backed theme state", () => {
       }),
       removeEventListener: vi.fn(),
     });
-    vi.stubGlobal("document", {
-      documentElement: { classList, offsetHeight: 1 },
-    });
+    vi.stubGlobal("document", { documentElement: element });
 
     const { useTheme } = await import("./useTheme");
-    const theme = useTheme();
-    setItem.mockClear();
-    desktopSetTheme.mockClear();
-    store.updateAppearance.mockClear();
-    classList.toggle.mockClear();
+    useTheme();
 
-    theme.setTheme("dark");
-    await Promise.resolve();
-
-    expect(store.settings.appearance.colorScheme).toBe("dark");
-    expect(store.updateAppearance).toHaveBeenCalledOnce();
-    expect(setItem).toHaveBeenCalledWith("t3code:theme", "dark");
+    expect(setItem).toHaveBeenCalledWith("t3code:theme-appearance-mode", "dark");
+    expect(store.updateAppearance).not.toHaveBeenCalled();
     expect(classList.toggle).toHaveBeenCalledWith("dark", true);
-    expect(desktopSetTheme).toHaveBeenCalledWith("dark");
-    expect(useTheme().theme).toBe("dark");
   });
 
-  it("continues applying the theme when the legacy mirror write fails", async () => {
-    const cause = new Error("storage quota exceeded");
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
-    const store = mockSettingsStore("system", true);
+  it("lets an explicit modular preference reconcile the contract without a persistence echo", async () => {
+    const store = mockSettingsStore("dark", true);
     installHookReactMock();
-    const setItem = vi.fn(() => {
-      throw cause;
-    });
-    const localStorage = createStorage({ setItem });
-    const desktopSetTheme = vi.fn().mockResolvedValue(undefined);
-    const classList = classListStub();
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
-    });
+    const localStorage = createStorage();
+    localStorage.setItem("t3code:theme-appearance-mode", "light");
+    const setItem = vi.spyOn(localStorage, "setItem");
+    const { element } = documentElementStub();
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
-      desktopBridge: { setTheme: desktopSetTheme },
       localStorage,
       matchMedia: () => ({
         matches: false,
@@ -328,41 +341,50 @@ describe("Appearance-backed theme state", () => {
       }),
       removeEventListener: vi.fn(),
     });
-    vi.stubGlobal("document", {
-      documentElement: { classList, offsetHeight: 1 },
-    });
+    vi.stubGlobal("document", { documentElement: element });
 
     const { useTheme } = await import("./useTheme");
-    const theme = useTheme();
-    errorLog.mockClear();
-    desktopSetTheme.mockClear();
-    store.updateAppearance.mockClear();
-    classList.toggle.mockClear();
+    useTheme();
 
-    theme.setTheme("dark");
-    await Promise.resolve();
-
-    expect(store.settings.appearance.colorScheme).toBe("dark");
+    expect(store.settings.appearance.colorScheme).toBe("light");
     expect(store.updateAppearance).toHaveBeenCalledOnce();
-    expect(classList.toggle).toHaveBeenCalledWith("dark", true);
-    expect(desktopSetTheme).toHaveBeenCalledWith("dark");
-    expect(errorLog).toHaveBeenCalledWith(
-      "Failed to write theme preference for t3code:theme.",
-      expect.objectContaining({
-        operation: "write",
-        storageKey: "t3code:theme",
-        theme: "dark",
-        errorTag: "ThemeStorageError",
-      }),
-    );
+    expect(setItem).not.toHaveBeenCalled();
   });
 
-  it("storage events reconcile Appearance and the DOM without a persistence echo", async () => {
+  it("exposes the resolved contract density without owning theme colors", async () => {
+    mockSettingsStore("system", true, { activeThemeId: "compact" });
+    installHookReactMock();
+    const localStorage = createStorage();
+    const { element, style } = documentElementStub();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      localStorage,
+      matchMedia: () => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", { documentElement: element });
+
+    const { useTheme } = await import("./useTheme");
+    useTheme();
+
+    expect(element.dataset.appearanceDensity).toBe("compact");
+    expect(style.setProperty).toHaveBeenCalledWith("--app-density-scale", "0.85");
+  });
+
+  it("reconciles modular appearance storage events without a persistence echo", async () => {
     const store = mockSettingsStore("system", true);
     const react = installHookReactMock();
     const localStorage = createStorage();
     const setItem = vi.spyOn(localStorage, "setItem");
-    const classList = classListStub();
+    const { classList, element } = documentElementStub();
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
@@ -377,9 +399,7 @@ describe("Appearance-backed theme state", () => {
       }),
       removeEventListener: vi.fn(),
     });
-    vi.stubGlobal("document", {
-      documentElement: { classList, offsetHeight: 1 },
-    });
+    vi.stubGlobal("document", { documentElement: element });
 
     const { useTheme } = await import("./useTheme");
     useTheme();
@@ -391,14 +411,16 @@ describe("Appearance-backed theme state", () => {
     store.updateAppearance.mockClear();
     classList.toggle.mockClear();
 
-    localStorage.setItem("t3code:theme", "dark");
+    localStorage.setItem("t3code:theme-appearance-mode", "dark");
     setItem.mockClear();
-    storageListener?.({ key: "t3code:theme", newValue: "dark" } as unknown as Event);
+    storageListener?.({
+      key: "t3code:theme-appearance-mode",
+      newValue: "dark",
+    } as unknown as Event);
 
     expect(store.reconcileAppearanceColorScheme).toHaveBeenCalledWith("dark");
     expect(store.updateAppearance).not.toHaveBeenCalled();
     expect(classList.toggle).toHaveBeenCalledWith("dark", true);
-    expect(useTheme().theme).toBe("dark");
     expect(setItem).not.toHaveBeenCalled();
     unsubscribe?.();
   });

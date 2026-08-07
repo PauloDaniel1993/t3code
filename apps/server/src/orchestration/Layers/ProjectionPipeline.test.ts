@@ -36,6 +36,9 @@ import {
   OrchestrationProjectionPipelineLive,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
+import { PROVIDER_EVENT_FLOW_CONTROL } from "../ProviderEventFlowControl.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -813,7 +816,7 @@ it.layer(
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
       const { attachmentsDir } = yield* ServerConfig;
-      const threadId = ThreadId.make("Thread Replace.Mixed");
+      const threadId = ThreadId.make("thread-replace-mixed");
       const oldDocument: ChatAttachment = {
         type: "document",
         id: "thread-replace-mixed-00000000-0000-4000-8000-000000000001",
@@ -1241,7 +1244,7 @@ it.layer(
       const eventStore = yield* OrchestrationEventStore;
       const { attachmentsDir } = yield* ServerConfig;
       const now = "2026-01-01T00:00:00.000Z";
-      const threadId = ThreadId.make("Thread Revert.Files");
+      const threadId = ThreadId.make("thread-revert-files");
       const keepAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000001";
       const removeAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000002";
       const otherThreadAttachmentId =
@@ -1452,7 +1455,7 @@ it.layer(
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
       const { attachmentsDir } = yield* ServerConfig;
-      const threadId = ThreadId.make("Thread Cleanup.Mixed");
+      const threadId = ThreadId.make("thread-cleanup-mixed");
       const now = "2026-01-01T00:00:00.000Z";
       const keepDocument: ChatAttachment = {
         type: "document",
@@ -1652,7 +1655,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         const eventStore = yield* OrchestrationEventStore;
         const { attachmentsDir } = yield* ServerConfig;
         const now = "2026-01-01T00:00:00.000Z";
-        const threadId = ThreadId.make("Thread Delete.Files");
+        const threadId = ThreadId.make("thread-delete-files");
         const attachmentId = "thread-delete-files-00000000-0000-4000-8000-000000000001";
         const otherThreadAttachmentId =
           "thread-delete-files-extra-00000000-0000-4000-8000-000000000002";
@@ -1786,7 +1789,7 @@ it.layer(
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
       const { attachmentsDir } = yield* ServerConfig;
-      const threadId = ThreadId.make("Thread Delete.Mixed");
+      const threadId = ThreadId.make("thread-delete-mixed");
       const attachments: ReadonlyArray<ChatAttachment> = [
         {
           type: "image",
@@ -2170,6 +2173,13 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepEqual(settledRows, [
         { state: "completed", completedAt: "2026-01-01T00:01:00.000Z" },
       ]);
+
+      const threadRows = yield* sql<{ readonly latestTurnId: string | null }>`
+        SELECT latest_turn_id AS "latestTurnId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(threadRows, [{ latestTurnId: turnId }]);
     }),
   );
 
@@ -3859,6 +3869,8 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provide(ThreadBackgroundLiveness.layer),
+    Layer.provide(ThreadPlanProgress.layer),
     Layer.provide(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
@@ -3951,6 +3963,109 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       assert.equal(history._tag, "Some");
       if (history._tag === "Some") {
         assert.deepEqual(history.value.thread.messages[0]?.attachments, attachments);
+      }
+
+      const windowedHistory = yield* snapshotQuery.getThreadDetailSnapshot(threadId, {
+        turnLimit: 1,
+      });
+      assert.equal(windowedHistory._tag, "Some");
+      if (windowedHistory._tag === "Some") {
+        assert.deepEqual(windowedHistory.value.thread.messages[0]?.attachments, attachments);
+      }
+    }),
+  );
+
+  it.effect("keeps activity-history and turn-window pagination independent", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-01-02T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-windowed-activity-history");
+      const turnId = TurnId.make("turn-windowed-activity-history");
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-windowed-activity-history-project"),
+        projectId: ProjectId.make("project-windowed-activity-history"),
+        title: "Windowed Activity History Project",
+        workspaceRoot: "/tmp/project-windowed-activity-history",
+        defaultModelSelection: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-windowed-activity-history-thread"),
+        threadId,
+        projectId: ProjectId.make("project-windowed-activity-history"),
+        title: "Windowed Activity History Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          state,
+          requested_at,
+          started_at,
+          completed_at,
+          checkpoint_files_json
+        )
+        VALUES (${threadId}, ${turnId}, 'completed', ${createdAt}, ${createdAt}, ${createdAt}, '[]')
+      `;
+
+      const activityCount = PROVIDER_EVENT_FLOW_CONTROL.initialActivityPageSize + 1;
+      for (let index = 0; index < activityCount; index += 1) {
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id,
+            thread_id,
+            turn_id,
+            tone,
+            kind,
+            summary,
+            payload_json,
+            created_at,
+            sequence
+          )
+          VALUES (
+            ${`activity-windowed-history-${index}`},
+            ${threadId},
+            ${turnId},
+            'info',
+            'tool.completed',
+            'completed',
+            '{}',
+            ${createdAt},
+            ${index}
+          )
+        `;
+      }
+
+      const unwindowed = yield* snapshotQuery.getThreadDetailSnapshot(threadId);
+      assert.equal(unwindowed._tag, "Some");
+      if (unwindowed._tag === "Some") {
+        assert.equal(
+          unwindowed.value.thread.activities.length,
+          PROVIDER_EVENT_FLOW_CONTROL.initialActivityPageSize,
+        );
+        assert.isTrue(unwindowed.value.thread.activityHistory?.hasMoreBefore);
+      }
+
+      const windowed = yield* snapshotQuery.getThreadDetailSnapshot(threadId, { turnLimit: 1 });
+      assert.equal(windowed._tag, "Some");
+      if (windowed._tag === "Some") {
+        assert.equal(windowed.value.thread.activities.length, activityCount);
+        assert.isUndefined(windowed.value.thread.activityHistory);
       }
     }),
   );

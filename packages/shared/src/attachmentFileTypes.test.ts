@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   ACCEPTED_ATTACHMENT_FILE_EXTENSIONS,
   ATTACHMENT_FILE_TYPES,
+  getAttachmentFileExtension,
   getAttachmentFileInputAccept,
   lookupAttachmentFileType,
 } from "./attachmentFileTypes.ts";
@@ -110,6 +111,9 @@ describe("attachment file types", () => {
 
   it("uses only the final extension", () => {
     expect(lookupAttachmentFileType("name.with.dots.ts")).toBe(ATTACHMENT_FILE_TYPES.ts);
+    expect(getAttachmentFileExtension("name.with.dots.PDF")).toBe("pdf");
+    expect(getAttachmentFileExtension(".env")).toBeUndefined();
+    expect(getAttachmentFileExtension("trailing.")).toBeUndefined();
   });
 
   it("generates an input accept string with every extension exactly once", () => {

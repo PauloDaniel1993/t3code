@@ -61,6 +61,55 @@ function isTerminalToolActivity(activity: OrchestrationThreadActivity): boolean 
 }
 
 /**
+ * Matches the validity rule in `deriveLatestContextWindowSnapshot` (and the
+ * server's snapshot-side `dropStaleContextWindowActivities`): rows without a
+ * finite, non-negative `usedTokens` are skipped during the consumer's backward
+ * walk, so they must not replace an earlier resolvable row here.
+ */
+function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "context-window.updated") {
+    return false;
+  }
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  const usedTokens = payload?.usedTokens;
+  return typeof usedTokens === "number" && Number.isFinite(usedTokens) && usedTokens >= 0;
+}
+
+/**
+ * Reconciles both the legacy append wire shape and stable activity upserts.
+ * A stable id is represented once, terminal tool state cannot regress, and
+ * resolvable context-window updates retain only the latest value per turn.
+ */
+function mergeThreadActivity(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  incoming: OrchestrationThreadActivity,
+): ReadonlyArray<OrchestrationThreadActivity> | null {
+  const existing = activities.find((entry) => entry.id === incoming.id);
+  if (existing && isTerminalToolActivity(existing) && !isTerminalToolActivity(incoming)) {
+    return null;
+  }
+
+  const supersedesContextWindow = isResolvableContextWindowActivity(incoming);
+  return pipe(
+    activities,
+    Arr.filter(
+      (entry) =>
+        entry.id !== incoming.id &&
+        !(
+          supersedesContextWindow &&
+          entry.turnId === incoming.turnId &&
+          isResolvableContextWindowActivity(entry)
+        ),
+    ),
+    Arr.append(incoming),
+    Arr.sort(activityOrder),
+  );
+}
+
+/**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
  * the updated thread, a deletion signal, or an "unchanged" marker when the
  * event doesn't affect this thread.
@@ -170,6 +219,26 @@ export function applyThreadDetailEvent(
           ...thread,
           snoozedUntil: null,
           snoozedAt: null,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.pinned":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          pinnedAt: event.payload.pinnedAt,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.unpinned":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          pinnedAt: null,
           updatedAt: event.payload.updatedAt,
         },
       };
@@ -536,24 +605,81 @@ export function applyThreadDetailEvent(
       };
     }
 
-    // ── Activities ──────────────────────────────────────────────────
-    case "thread.activity-appended": {
-      const incomingActivity = { ...event.payload.activity, sequence: event.sequence };
-      const existing = thread.activities.find((entry) => entry.id === incomingActivity.id);
-      if (
-        existing &&
-        isTerminalToolActivity(existing) &&
-        !isTerminalToolActivity(incomingActivity)
-      ) {
+    // ── Durable thread tasks ────────────────────────────────────────
+    case "thread.task-created":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          parentThreadId: event.payload.parentThreadId,
+          task: {
+            parentThreadId: event.payload.parentThreadId,
+            title: event.payload.title,
+            prompt: event.payload.prompt,
+            context: event.payload.context,
+            contextTruncated: event.payload.contextTruncated,
+            createdBy: event.payload.createdBy,
+            status: event.payload.status,
+            requestedAt: event.payload.requestedAt,
+            startedAt: null,
+            finishedAt: null,
+            result: null,
+            delivery: null,
+          },
+          updatedAt: event.payload.requestedAt,
+        },
+      };
+
+    case "thread.task-updated": {
+      const previous = thread.task;
+      if (previous == null) {
         return { kind: "unchanged" };
       }
-      const activity = incomingActivity;
-      const activities = pipe(
-        thread.activities,
-        Arr.filter((entry) => entry.id !== activity.id),
-        Arr.append(activity),
-        Arr.sort(activityOrder),
-      );
+      const status = event.payload.status ?? previous.status;
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          task: {
+            ...previous,
+            status,
+            startedAt:
+              previous.startedAt ?? (status === "running" ? event.payload.updatedAt : null),
+            ...(event.payload.delivery === undefined ? {} : { delivery: event.payload.delivery }),
+          },
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+    }
+
+    case "thread.task-finished": {
+      const previous = thread.task;
+      if (previous == null) {
+        return { kind: "unchanged" };
+      }
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          task: {
+            ...previous,
+            status: event.payload.status,
+            finishedAt: event.payload.finishedAt,
+            result: event.payload.result,
+            delivery: event.payload.delivery,
+          },
+          updatedAt: event.payload.finishedAt,
+        },
+      };
+    }
+
+    // ── Activities ──────────────────────────────────────────────────
+    case "thread.activity-appended": {
+      const activity = { ...event.payload.activity, sequence: event.sequence };
+      const activities = mergeThreadActivity(thread.activities, activity);
+      if (activities === null) {
+        return { kind: "unchanged" };
+      }
 
       return {
         kind: "updated",
@@ -563,25 +689,15 @@ export function applyThreadDetailEvent(
 
     case "thread.activity-upserted": {
       const existing = thread.activities.find((entry) => entry.id === event.payload.activity.id);
-      const incomingActivity = {
+      const activity = {
         ...event.payload.activity,
         createdAt: existing?.createdAt ?? event.payload.activity.createdAt,
         sequence: existing?.sequence ?? event.payload.activity.sequence ?? event.sequence,
       };
-      if (
-        existing &&
-        isTerminalToolActivity(existing) &&
-        !isTerminalToolActivity(incomingActivity)
-      ) {
+      const activities = mergeThreadActivity(thread.activities, activity);
+      if (activities === null) {
         return { kind: "unchanged" };
       }
-      const activity = incomingActivity;
-      const activities = pipe(
-        thread.activities,
-        Arr.filter((entry) => entry.id !== activity.id),
-        Arr.append(activity),
-        Arr.sort(activityOrder),
-      );
 
       return {
         kind: "updated",

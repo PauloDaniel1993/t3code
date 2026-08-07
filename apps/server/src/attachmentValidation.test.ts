@@ -120,6 +120,37 @@ describe("attachmentValidation", () => {
     }),
   );
 
+  it.effect("enforces extension-authoritative attachment kinds before MIME metadata", () =>
+    Effect.gen(function* () {
+      const cases: ReadonlyArray<UploadChatAttachment> = [
+        upload({
+          type: "image",
+          name: "renamed.ts",
+          mimeType: "image/png",
+          bytes: Buffer.from("image"),
+        }),
+        upload({
+          type: "image",
+          name: "renamed.pdf",
+          mimeType: "image/png",
+          bytes: Buffer.from("image"),
+        }),
+        upload({
+          type: "document",
+          name: "renamed.txt",
+          mimeType: "application/pdf",
+          bytes: Buffer.from("%PDF-1.7", "ascii"),
+        }),
+      ];
+
+      for (const attachment of cases) {
+        const error = yield* validateUploadAttachments([attachment]).pipe(Effect.flip);
+        expect(error.message).toContain(attachment.name);
+        expect(error.message).toContain("extension");
+      }
+    }),
+  );
+
   it.effect("accepts a PDF signature fully contained at offset 1019", () =>
     Effect.gen(function* () {
       const bytes = Buffer.alloc(1024, 0x20);
@@ -194,6 +225,21 @@ describe("attachmentValidation", () => {
         sizeBytes: bytes.byteLength,
       });
       expect(Buffer.from(validated?.bytes ?? [])).toEqual(bytes);
+    }),
+  );
+
+  it.effect("rejects invalid UTF-8 even when the text sniff contains no NUL bytes", () =>
+    Effect.gen(function* () {
+      const attachment = upload({
+        type: "file",
+        name: "broken.txt",
+        mimeType: "text/plain",
+        bytes: Uint8Array.from([0xc3, 0x28]),
+      });
+
+      const error = yield* validateUploadAttachments([attachment]).pipe(Effect.flip);
+      expect(error.message).toContain("broken.txt");
+      expect(error.message).toContain("UTF-8");
     }),
   );
 

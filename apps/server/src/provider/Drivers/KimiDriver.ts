@@ -1,5 +1,4 @@
 import { KimiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -46,7 +45,6 @@ import { makeKimiEnvironment } from "./KimiHome.ts";
 
 const decodeKimiSettings = Schema.decodeSync(KimiSettings);
 const DRIVER_KIND = ProviderDriverKind.make("kimi");
-const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 /**
  * The native installer places the executable in `~/.kimi-code/bin`, alongside
  * the `.bak` copy `kimi upgrade` leaves behind when it replaces itself.
@@ -263,7 +261,6 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
             stampIdentity,
             httpClient,
           }),
-        refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(
           (cause) =>

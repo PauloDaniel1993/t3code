@@ -52,7 +52,7 @@ import {
   attachmentRelativePath,
   parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
-  toSafeThreadAttachmentSegment,
+  toCanonicalThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
 import { compactedLegacyToolActivityId } from "../LegacyToolActivityIdentity.ts";
 import {
@@ -348,7 +348,7 @@ function collectThreadAttachmentRelativePaths(
   threadId: ThreadId,
   messages: ReadonlyArray<ProjectionThreadMessage>,
 ): Set<string> {
-  const threadSegment = toSafeThreadAttachmentSegment(threadId);
+  const threadSegment = toCanonicalThreadAttachmentSegment(threadId);
   if (!threadSegment) {
     return new Set();
   }
@@ -370,7 +370,7 @@ const recordAttachmentCleanupIntents = Effect.fn("recordAttachmentCleanupIntents
     const attachmentCleanupQueue = yield* AttachmentCleanupQueueRepository;
 
     for (const threadId of input.sideEffects.deletedThreadIds) {
-      if (!toSafeThreadAttachmentSegment(threadId)) {
+      if (!toCanonicalThreadAttachmentSegment(threadId)) {
         yield* Effect.logWarning("skipping attachment cleanup for unsafe thread id", {
           threadId,
         });
@@ -388,7 +388,7 @@ const recordAttachmentCleanupIntents = Effect.fn("recordAttachmentCleanupIntents
       if (input.sideEffects.deletedThreadIds.has(threadId)) {
         continue;
       }
-      const threadSegment = toSafeThreadAttachmentSegment(threadId);
+      const threadSegment = toCanonicalThreadAttachmentSegment(threadId);
       if (!threadSegment) {
         yield* Effect.logWarning("skipping attachment prune for unsafe thread id", { threadId });
         continue;
@@ -611,6 +611,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             settledAt: null,
             snoozedUntil: null,
             snoozedAt: null,
+            pinnedAt: null,
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
@@ -794,6 +795,36 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             snoozedUntil: null,
             snoozedAt: null,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.pinned": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            pinnedAt: event.payload.pinnedAt,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.unpinned": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            pinnedAt: null,
             updatedAt: event.payload.updatedAt,
           });
           return;

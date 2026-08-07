@@ -38,28 +38,62 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
  */
 export const SETTINGS_SEARCH_ITEMS = [
   {
-    id: "theme",
-    title: "Theme",
+    id: "color-scheme",
+    title: "Color scheme",
     to: "/settings/appearance",
-    targetId: "appearance-mode",
+    // The scheme tiles sit at the top of the Appearance section.
+    targetId: "appearance",
+  },
+  {
+    id: "theme",
+    title: "Themes",
+    to: "/settings/appearance",
+    // Theme cards live directly under the scheme tiles; the section is the
+    // stable scroll destination for both.
+    targetId: "appearance",
   },
   {
     // Prefixed because the slider control already owns the `glass-opacity` id.
     id: "setting-glass-opacity",
     title: "Glass opacity",
-    to: "/settings/general",
+    to: "/settings/appearance",
   },
   {
     id: "environment-identification",
     title: "Environment identification",
-    to: "/settings/general",
+    to: "/settings/appearance",
     // The setting is stage-dependent, so its parent section is the stable destination.
     targetId: "appearance",
   },
   {
+    id: "interface-font",
+    title: "Interface font",
+    to: "/settings/appearance",
+  },
+  {
+    id: "prompt-font",
+    title: "Prompt font",
+    to: "/settings/appearance",
+  },
+  {
+    id: "code-font",
+    title: "Code font",
+    to: "/settings/appearance",
+  },
+  {
+    id: "terminal-font",
+    title: "Terminal font",
+    to: "/settings/appearance",
+  },
+  {
+    id: "font-smoothing",
+    title: "Font smoothing",
+    to: "/settings/appearance",
+  },
+  {
     id: "word-wrap",
     title: "Word wrap",
-    to: "/settings/general",
+    to: "/settings/appearance",
   },
   {
     id: "project-grouping",
@@ -157,6 +191,26 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Auto-settle inactive threads",
     to: "/settings/beta",
     targetId: "sidebar-v2",
+  },
+  {
+    id: "thread-tasks",
+    title: "Thread tasks",
+    to: "/settings/beta",
+  },
+  {
+    id: "thread-task-max-running",
+    title: "Tasks running at once",
+    to: "/settings/beta",
+  },
+  {
+    id: "thread-task-max-total",
+    title: "Tasks in total per thread",
+    to: "/settings/beta",
+  },
+  {
+    id: "restore-plan-mode",
+    title: "Restore plan mode (legacy)",
+    to: "/settings/beta",
   },
   {
     id: "archive",

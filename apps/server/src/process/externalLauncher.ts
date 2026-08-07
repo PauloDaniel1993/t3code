@@ -24,6 +24,7 @@ import {
   isCommandAvailable,
   resolveSpawnCommand,
 } from "@t3tools/shared/shell";
+import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -306,6 +307,29 @@ const resolveAvailableEditors = Effect.fn("externalLauncher.resolveAvailableEdit
   return yield* buildAvailableEditors(platform, env);
 });
 
+// Editor discovery walks PATH for every known editor and runs for every
+// client connect (the server config embeds the available editors). Memoize
+// the discovered set for a bounded window so repeat connects skip even the
+// per-command cache lookups in @t3tools/shared/shell.
+// A synchronized cache also makes concurrent cache misses share one scan.
+//
+// This deliberately does not use `Effect.cachedWithTTL`: that memoizes the
+// first caller's Exit whatever it is, including an interrupt. Callers run this
+// on the connection fiber under a timeout (`resolveAvailableEditorsForConfig`),
+// so one client disconnecting mid-scan would cache the interrupt and replay it
+// to every later connect for the whole TTL, breaking `server.getConfig`
+// permanently. Storing only on success means an interrupted scan leaves the
+// cache untouched and the next connect simply rescans.
+// Expiry uses the monotonic clock (Clock.currentTimeNanos), matching the
+// command-resolution cache in @t3tools/shared/shell, so a backward wall-clock
+// adjustment cannot keep an expired entry alive.
+const EDITOR_DISCOVERY_CACHE_TTL_NANOS = 60_000_000_000n;
+
+interface EditorDiscoveryCacheEntry {
+  readonly editors: ReadonlyArray<EditorId>;
+  readonly expiresAtNanos: bigint;
+}
+
 /**
  * ExternalLauncher - Service tag for browser/editor launch operations.
  */
@@ -452,18 +476,26 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
 
-  const availableEditorsRef = yield* SynchronizedRef.make<Option.Option<ReadonlyArray<EditorId>>>(
-    Option.none(),
-  );
+  const editorDiscoveryCache = yield* SynchronizedRef.make<
+    Option.Option<EditorDiscoveryCacheEntry>
+  >(Option.none());
   const resolveAvailableEditorsCached = Effect.fn("externalLauncher.resolveAvailableEditorsCached")(
     function* () {
-      return yield* SynchronizedRef.modifyEffect(availableEditorsRef, (cached) =>
-        Option.match(cached, {
-          onNone: () =>
-            provideCommandResolutionServices(resolveAvailableEditors()).pipe(
-              Effect.map((available) => [available, Option.some(available)] as const),
-            ),
-          onSome: (available) => Effect.succeed([available, cached] as const),
+      return yield* SynchronizedRef.modifyEffect(editorDiscoveryCache, (entry) =>
+        Effect.gen(function* () {
+          const nowNanos = yield* Clock.currentTimeNanos;
+          if (Option.isSome(entry) && entry.value.expiresAtNanos > nowNanos) {
+            return [entry.value.editors, entry] as const;
+          }
+
+          const editors = yield* provideCommandResolutionServices(resolveAvailableEditors());
+          return [
+            editors,
+            Option.some({
+              editors,
+              expiresAtNanos: nowNanos + EDITOR_DISCOVERY_CACHE_TTL_NANOS,
+            }),
+          ] as const;
         }),
       );
     },

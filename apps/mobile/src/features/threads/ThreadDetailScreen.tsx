@@ -50,10 +50,6 @@ export interface ThreadDetailScreenProps {
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
-  readonly hasOlderActivities: boolean;
-  readonly isLoadingOlderActivities: boolean;
-  readonly olderActivitiesError: string | null;
-  readonly onLoadOlderActivities: () => void;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
@@ -66,6 +62,8 @@ export interface ThreadDetailScreenProps {
   readonly connectionStateLabel: EnvironmentConnectionPhase;
   /** Message sync status for the selected thread (drives the composer status pill). */
   readonly threadSyncStatus?: EnvironmentThreadStatus;
+  /** Non-null when older turns exist beyond the loaded window. */
+  readonly loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
@@ -370,10 +368,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             threadId={props.selectedThread.id}
             workspaceRoot={props.threadCwd}
             feed={props.selectedThreadFeed}
-            hasOlderActivities={props.hasOlderActivities}
-            isLoadingOlderActivities={props.isLoadingOlderActivities}
-            olderActivitiesError={props.olderActivitiesError}
-            onLoadOlderActivities={props.onLoadOlderActivities}
             contentPresentation={props.contentPresentation}
             agentLabel={agentLabel}
             latestTurn={props.selectedThread.latestTurn}
@@ -392,6 +386,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             {...(props.taskAgentTaskSurface === undefined
               ? {}
               : { taskAgentTaskSurface: props.taskAgentTaskSurface })}
+            loadEarlier={props.loadEarlier ?? null}
           />
         </View>
       ) : (

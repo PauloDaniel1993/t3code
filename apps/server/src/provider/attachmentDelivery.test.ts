@@ -69,6 +69,17 @@ describe("attachmentDelivery", () => {
         assert.equal(rejected.failure.reason, "invalid-or-unowned");
         assert.match(rejected.failure.message, /notes\.txt/u);
       }
+
+      const collisionRejected = yield* resolveProviderAttachment({
+        attachmentsDir,
+        threadId: ThreadId.make("thread.owned"),
+        attachment,
+        fileSystem,
+      }).pipe(Effect.result);
+      assert.equal(collisionRejected._tag, "Failure");
+      if (collisionRejected._tag === "Failure") {
+        assert.equal(collisionRejected.failure.reason, "invalid-or-unowned");
+      }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

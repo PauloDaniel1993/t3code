@@ -5,7 +5,10 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   OrchestrationDispatchCommandError,
 } from "@t3tools/contracts";
-import { lookupAttachmentFileType } from "@t3tools/shared/attachmentFileTypes";
+import {
+  getAttachmentFileExtension,
+  lookupAttachmentFileType,
+} from "@t3tools/shared/attachmentFileTypes";
 import * as Effect from "effect/Effect";
 
 const DATA_URL_CHARS_ROUNDING = 1_000_000;
@@ -176,20 +179,6 @@ function hasXlsxSignature(bytes: Uint8Array): boolean {
   return XLSX_SIGNATURE.every((byte, index) => bytes[index] === byte);
 }
 
-function hasRecognizedUtf16Bom(bytes: Uint8Array): boolean {
-  if (bytes.byteLength < 2) return false;
-
-  const isUtf16Be = bytes[0] === 0xfe && bytes[1] === 0xff;
-  if (isUtf16Be) return true;
-
-  const isUtf16Le = bytes[0] === 0xff && bytes[1] === 0xfe;
-  if (!isUtf16Le) return false;
-
-  // FF FE 00 00 is the UTF-32 LE BOM, not a UTF-16 LE BOM. The UTF-32 BE
-  // BOM starts with NUL bytes and therefore does not match either UTF-16 BOM.
-  return !(bytes[2] === 0x00 && bytes[3] === 0x00);
-}
-
 function hasNulInTextSniff(bytes: Uint8Array): boolean {
   const scanLength = Math.min(TEXT_NUL_SCAN_BYTES, bytes.byteLength);
   for (let index = 0; index < scanLength; index += 1) {
@@ -198,12 +187,73 @@ function hasNulInTextSniff(bytes: Uint8Array): boolean {
   return false;
 }
 
+function textContentFailure(bytes: Uint8Array): "nul" | "encoding" | null {
+  let encoding: "utf-8" | "utf-16be" | "utf-16" = "utf-8";
+  let payload = bytes;
+
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    // FF FE 00 00 is UTF-32 LE, not UTF-16 LE.
+    if (bytes[2] === 0x00 && bytes[3] === 0x00) return "nul";
+    encoding = "utf-16";
+    payload = bytes.subarray(2);
+  } else if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    encoding = "utf-16be";
+    payload = bytes.subarray(2);
+  } else if (hasNulInTextSniff(bytes)) {
+    return "nul";
+  }
+
+  try {
+    if (encoding === "utf-16be") {
+      if (payload.byteLength % 2 !== 0) return "encoding";
+      const littleEndianPayload = new Uint8Array(payload.byteLength);
+      for (let index = 0; index < payload.byteLength; index += 2) {
+        littleEndianPayload[index] = payload[index + 1]!;
+        littleEndianPayload[index + 1] = payload[index]!;
+      }
+      new TextDecoder("utf-16", { fatal: true }).decode(littleEndianPayload);
+    } else {
+      new TextDecoder(encoding, { fatal: true }).decode(payload);
+    }
+    return null;
+  } catch {
+    return "encoding";
+  }
+}
+
 export const validateUploadAttachments = Effect.fn("validateUploadAttachments")(function* (
   attachments: ReadonlyArray<UploadChatAttachment>,
 ) {
   const validated: ValidatedAttachment[] = [];
 
   for (const attachment of attachments) {
+    const finalExtension = getAttachmentFileExtension(attachment.name);
+    const registeredFileType = lookupAttachmentFileType(attachment.name);
+    if (finalExtension === "pdf" && attachment.type !== "document") {
+      return yield* attachmentError(
+        attachment.name,
+        "uses the .pdf extension and must be uploaded as a document.",
+      );
+    }
+    if (registeredFileType && attachment.type !== "file") {
+      return yield* attachmentError(
+        attachment.name,
+        `uses the registered .${finalExtension} extension and must be uploaded as a file.`,
+      );
+    }
+    if (attachment.type === "document" && finalExtension !== "pdf") {
+      return yield* attachmentError(
+        attachment.name,
+        "must use .pdf as its final extension when uploaded as a document.",
+      );
+    }
+    if (attachment.type === "file" && !registeredFileType) {
+      return yield* attachmentError(
+        attachment.name,
+        "does not have a supported registered final extension.",
+      );
+    }
+
     const decoded = yield* decodeStrictBase64DataUrl(attachment);
 
     switch (attachment.type) {
@@ -242,7 +292,7 @@ export const validateUploadAttachments = Effect.fn("validateUploadAttachments")(
       }
 
       case "file": {
-        const fileType = lookupAttachmentFileType(attachment.name);
+        const fileType = registeredFileType;
         if (!fileType) {
           return yield* attachmentError(
             attachment.name,
@@ -250,10 +300,17 @@ export const validateUploadAttachments = Effect.fn("validateUploadAttachments")(
           );
         }
         if (fileType.contentKind === "text") {
-          if (hasNulInTextSniff(decoded.bytes) && !hasRecognizedUtf16Bom(decoded.bytes)) {
+          const contentFailure = textContentFailure(decoded.bytes);
+          if (contentFailure === "nul") {
             return yield* attachmentError(
               attachment.name,
               "contains unexplained NUL bytes in its first 8192 bytes and is not readable text.",
+            );
+          }
+          if (contentFailure === "encoding") {
+            return yield* attachmentError(
+              attachment.name,
+              "is not valid UTF-8 or BOM-marked UTF-16 text.",
             );
           }
         } else if (!hasXlsxSignature(decoded.bytes)) {

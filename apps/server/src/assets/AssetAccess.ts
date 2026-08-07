@@ -1,4 +1,4 @@
-import type { AssetResource, ChatAttachment } from "@t3tools/contracts";
+import { ThreadId, type AssetResource, type ChatAttachment } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
   AssetPreviewTypeValidationError,
@@ -19,7 +19,10 @@ import {
   WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
   WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
 } from "@t3tools/shared/filePreview";
-import { lookupAttachmentFileType } from "@t3tools/shared/attachmentFileTypes";
+import {
+  getAttachmentFileExtension,
+  lookupAttachmentFileType,
+} from "@t3tools/shared/attachmentFileTypes";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -112,6 +115,7 @@ const AssetClaimsSchema = Schema.Union([
     version: Schema.Literal(2),
     kind: Schema.Literal("attachment"),
     attachmentId: Schema.String,
+    threadId: ThreadId,
     attachmentKind: Schema.Literals(["image", "document", "file"]),
     dispositionMode: Schema.Literals(["inline-pdf", "download"]),
     displayName: Schema.String,
@@ -185,7 +189,9 @@ function normalizeAttachmentMetadata(attachment: ChatAttachment): ChatAttachment
       return mimeType.startsWith("image/") ? { ...attachment, mimeType } : null;
     }
     case "document":
-      return { ...attachment, mimeType: "application/pdf" };
+      return getAttachmentFileExtension(attachment.name) === "pdf"
+        ? { ...attachment, mimeType: "application/pdf" }
+        : null;
     case "file": {
       const fileType = lookupAttachmentFileType(attachment.name);
       return fileType ? { ...attachment, mimeType: fileType.mimeType } : null;
@@ -196,6 +202,8 @@ function normalizeAttachmentMetadata(attachment: ChatAttachment): ChatAttachment
 function attachmentFromClaims(
   claims: Extract<AssetClaims, { readonly kind: "attachment"; readonly version: 2 }>,
 ): ChatAttachment | null {
+  if (claims.attachmentKind !== "document" && claims.dispositionMode !== "download") return null;
+
   switch (claims.attachmentKind) {
     case "image":
       return normalizeAttachmentMetadata({
@@ -206,14 +214,19 @@ function attachmentFromClaims(
         sizeBytes: 0,
       });
     case "document":
-      if (claims.mimeType !== "application/pdf") return null;
-      return {
+      if (
+        claims.mimeType !== "application/pdf" ||
+        getAttachmentFileExtension(claims.displayName) !== "pdf"
+      ) {
+        return null;
+      }
+      return normalizeAttachmentMetadata({
         type: "document",
         id: claims.attachmentId,
         name: claims.displayName,
         mimeType: "application/pdf",
         sizeBytes: 1,
-      };
+      });
     case "file": {
       const fileType = lookupAttachmentFileType(claims.displayName);
       if (!fileType || fileType.mimeType !== claims.mimeType) return null;
@@ -374,7 +387,12 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       const attachmentContext = input.attachmentContext;
       if (attachmentContext) {
         const attachment = normalizeAttachmentMetadata(attachmentContext.attachment);
-        if (!attachment || attachment.id !== input.resource.attachmentId) {
+        if (
+          !attachment ||
+          attachment.id !== input.resource.attachmentId ||
+          input.resource.threadId === undefined ||
+          input.resource.threadId !== attachmentContext.threadId
+        ) {
           return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
         }
         const attachmentPath = resolveAttachmentPath({
@@ -391,6 +409,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
           version: 2,
           kind: "attachment",
           attachmentId: attachment.id,
+          threadId: input.resource.threadId,
           attachmentKind: attachment.type,
           dispositionMode,
           displayName: attachment.name,
@@ -553,11 +572,19 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
         : null;
     }
 
+    const decodedAttachmentName = decodeRelativePath(relativePath);
+    if (
+      decodedAttachmentName === null ||
+      decodedAttachmentName !== toWellFormedUnicode(claims.displayName)
+    ) {
+      return null;
+    }
     const attachment = attachmentFromClaims(claims);
     if (!attachment) return null;
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: config.attachmentsDir,
       attachment,
+      threadId: claims.threadId,
     });
     if (!attachmentPath || !(yield* isRegularFile(attachmentPath))) return null;
     if (attachment.type === "image") {

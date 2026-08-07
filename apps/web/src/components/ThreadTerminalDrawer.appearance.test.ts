@@ -1,7 +1,5 @@
 import {
-  DEFAULT_TERMINAL_FONT_FAMILY,
-  type AppearanceSettings,
-  type AppearanceTheme,
+  DEFAULT_TERMINAL_FONT_SIZE,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
@@ -21,7 +19,11 @@ const testState = vi.hoisted(() => ({
   mount: null as unknown,
   nextFrameId: 0,
   resize: vi.fn(),
-  settings: { appearance: null as unknown },
+  settings: {
+    fontFamilyCode: "",
+    fontFamilyTerminal: "",
+    fontSizeTerminal: 12,
+  },
 }));
 
 const hooks = vi.hoisted(() => {
@@ -298,50 +300,8 @@ vi.mock("./preview/openTerminalLinkInPreview", () => ({
 
 import { TerminalViewport } from "./ThreadTerminalDrawer";
 
-function customAppearance(fontFamily: string, fontSize: number): AppearanceSettings {
-  const baseTheme = {
-    id: "custom-terminal-font",
-    name: "Terminal Font",
-    uiFontFamily: '"DM Sans Variable", sans-serif',
-    monoFontFamily: "Consolas, monospace",
-    terminalFontFamily: fontFamily,
-    uiFontSizePx: 14,
-    chatFontSizePx: 14,
-    codeFontSizePx: 12,
-    terminalFontSizePx: fontSize,
-    density: "default",
-    diffMarkerStyle: "color",
-    variants: {
-      light: {
-        accent: "#1b4ed8",
-        background: "#ffffff",
-        foreground: "#262626",
-        surface: "#ffffff",
-        muted: "#f5f5f5",
-        contrast: 1,
-        translucentSidebar: false,
-      },
-      dark: {
-        accent: "#366ffb",
-        background: "#161616",
-        foreground: "#f5f5f5",
-        surface: "#1b1b1b",
-        muted: "#1f1f1f",
-        contrast: 1,
-        translucentSidebar: false,
-      },
-    },
-  } satisfies AppearanceTheme;
-
-  return {
-    colorScheme: "system",
-    activeThemeId: baseTheme.id,
-    customThemeOrder: [baseTheme.id],
-    customThemes: { [baseTheme.id]: baseTheme },
-  };
-}
-
 const viewportProps = {
+  advancedTypography: false,
   autoFocus: false,
   cwd: "/workspace",
   drawerHeight: 300,
@@ -394,7 +354,11 @@ beforeEach(() => {
   testState.instances.length = 0;
   testState.nextFrameId = 0;
   testState.resize.mockReset();
-  testState.settings = { appearance: customAppearance('"Iosevka", monospace', 15) };
+  testState.settings = {
+    fontFamilyCode: '"Iosevka", monospace',
+    fontFamilyTerminal: '"Berkeley Mono", monospace',
+    fontSizeTerminal: 15,
+  };
 
   const drawerSurface = {};
   testState.mount = {
@@ -417,6 +381,7 @@ beforeEach(() => {
   vi.stubGlobal("getComputedStyle", () => ({
     backgroundColor: "rgb(255, 255, 255)",
     color: "rgb(28, 33, 41)",
+    getPropertyValue: () => "",
   }));
   vi.stubGlobal(
     "MutationObserver",
@@ -445,15 +410,39 @@ afterEach(() => {
 });
 
 describe("TerminalViewport appearance typography", () => {
-  it("creates a terminal with typography from the active custom appearance theme", async () => {
+  it("uses the code font while advanced typography is guarded off", async () => {
     const terminal = await mountViewport();
 
     expect(terminal.createdFont).toEqual({ family: '"Iosevka", monospace', size: 15 });
   });
 
-  it("re-fonts the existing terminal after typography changes without recreating it", async () => {
+  it("uses the dedicated terminal font when advanced typography is enabled", async () => {
+    hooks.beginRender();
+    TerminalViewport({ ...viewportProps, advancedTypography: true });
+    hooks.flushEffects();
+    await settleSetup();
+    flushAnimationFrames();
+
+    expect(testState.instances[0]?.createdFont).toEqual({
+      family: '"Berkeley Mono", monospace',
+      size: 15,
+    });
+  });
+
+  it("re-fonts the existing terminal after preferences hydrate without recreating it", async () => {
+    testState.settings = {
+      fontFamilyCode: "",
+      fontFamilyTerminal: "",
+      fontSizeTerminal: DEFAULT_TERMINAL_FONT_SIZE,
+    };
     const terminal = await mountViewport();
-    testState.settings = { appearance: customAppearance('"Fira Code", monospace', 17) };
+    expect(terminal.createdFont).toEqual({ size: DEFAULT_TERMINAL_FONT_SIZE });
+
+    testState.settings = {
+      fontFamilyCode: '"Fira Code", monospace',
+      fontFamilyTerminal: '"Berkeley Mono", monospace',
+      fontSizeTerminal: 17,
+    };
 
     renderViewport();
 
@@ -470,14 +459,17 @@ describe("TerminalViewport appearance typography", () => {
     expect(terminal.setFontCalls).toEqual([]);
   });
 
-  // The renderer appends Nerd Font glyph fallbacks to any face it is handed, and
-  // the appearance default ends in `monospace`, which would swallow them. Omitting
-  // the family lets the renderer's own stack — fallbacks included — apply.
-  it("omits the built-in default family so the renderer's own stack applies", async () => {
-    testState.settings = { appearance: customAppearance(DEFAULT_TERMINAL_FONT_FAMILY, 12) };
+  // Empty preferences leave the family unset so the renderer's own stack,
+  // including its Nerd Font glyph fallbacks, remains in control.
+  it("omits the current empty-family default so the renderer's own stack applies", async () => {
+    testState.settings = {
+      fontFamilyCode: "",
+      fontFamilyTerminal: "",
+      fontSizeTerminal: DEFAULT_TERMINAL_FONT_SIZE,
+    };
 
     const terminal = await mountViewport();
 
-    expect(terminal.createdFont).toEqual({ size: 12 });
+    expect(terminal.createdFont).toEqual({ size: DEFAULT_TERMINAL_FONT_SIZE });
   });
 });

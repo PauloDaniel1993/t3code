@@ -146,6 +146,7 @@ export const PREFERRED_DEFAULT_CODEX_MODELS: ReadonlyArray<string> = [
   "gpt-5.6-terra",
 ];
 export const DEFAULT_TEXT_GENERATION_MODEL = "gpt-5.6-luna";
+export const DEFAULT_TEXT_GENERATION_REASONING_EFFORT = "low";
 export const KIMI_DEFAULT_MODEL = "kimi-default";
 export const KIMI_DEFAULT_MODEL_NAME = "Kimi default";
 

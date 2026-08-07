@@ -45,6 +45,17 @@ layer("AttachmentCleanupQueueRepository", (it) => {
       assert.equal(retried[0]?.attemptCount, 1);
       assert.equal(retried[0]?.lastError, "locked");
 
+      for (let attempt = 2; attempt <= 12; attempt += 1) {
+        yield* repository.recordFailure({
+          id: intent.id,
+          attemptedAt: `2026-01-01T00:00:${String(attempt).padStart(2, "0")}.000Z`,
+          error: `locked-${attempt}`,
+        });
+      }
+      const durableRetry = yield* repository.listPending({ limit: 10 });
+      assert.equal(durableRetry[0]?.attemptCount, 12);
+      assert.equal(durableRetry[0]?.lastError, "locked-12");
+
       yield* repository.markSucceeded({ id: intent.id });
       assert.deepEqual(yield* repository.listPending({ limit: 10 }), []);
     }),

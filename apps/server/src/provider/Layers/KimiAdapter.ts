@@ -1063,12 +1063,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
             ),
           );
 
-          if (options?.modelState) {
-            yield* options.modelState.publishConfigOptions(
-              started.sessionSetupResult.configOptions ?? [],
-            );
-          }
-
+          const setupConfigOptions = started.sessionSetupResult.configOptions;
           yield* applyRequestedSessionConfiguration({
             runtime: acp,
             runtimeMode: input.runtimeMode,
@@ -1082,6 +1077,18 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
             mapError: ({ cause, method }) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
           });
+          if (options?.modelState) {
+            const currentConfigOptions = yield* acp.getConfigOptions;
+            // Some Kimi versions omit the model option from session/resume.
+            // Treat that as "not reported" so a fresh resume process cannot
+            // replace the instance's discovered catalog with its local default.
+            if (
+              resumeSessionId === undefined ||
+              findKimiModelConfigOption(setupConfigOptions ?? []) !== undefined
+            ) {
+              yield* options.modelState.publishConfigOptions(currentConfigOptions);
+            }
+          }
 
           const now = yield* nowIso;
           const session: ProviderSession = {
@@ -1347,6 +1354,12 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                 mapError: ({ cause, method }) =>
                   mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
               });
+              if (options?.modelState) {
+                const currentConfigOptions = yield* ctx.acp.getConfigOptions;
+                if (currentConfigOptions.length > 0) {
+                  yield* options.modelState.publishConfigOptions(currentConfigOptions);
+                }
+              }
               ctx.activeTurnId = turnId;
               ctx.lastPlanFingerprint = undefined;
               ctx.session = {

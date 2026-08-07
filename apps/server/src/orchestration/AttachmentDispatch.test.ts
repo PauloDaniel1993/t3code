@@ -42,6 +42,8 @@ import {
   type OrchestrationProjectionPipelineShape,
 } from "./Services/ProjectionPipeline.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
+import * as ThreadBackgroundLiveness from "./ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "./ThreadPlanProgress.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 
@@ -147,6 +149,8 @@ function makeTestEnvironment(options?: {
   const layer = OrchestrationEngineLive.pipe(
     Layer.provide(OrchestrationProjectionSnapshotQueryLive),
     Layer.provide(Layer.succeed(OrchestrationProjectionPipeline, projectionPipeline)),
+    Layer.provide(ThreadBackgroundLiveness.layer),
+    Layer.provide(ThreadPlanProgress.layer),
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolver.layer),

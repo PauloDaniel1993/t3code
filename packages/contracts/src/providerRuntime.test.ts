@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { ProviderRuntimeEvent, TaskUsageSnapshot } from "./providerRuntime.ts";
+import {
+  classifyTaskAgentKind,
+  ProviderRuntimeEvent,
+  TaskUsageSnapshot,
+} from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 const decodeTaskUsageSnapshot = Schema.decodeUnknownSync(TaskUsageSnapshot);
@@ -204,7 +208,7 @@ describe("ProviderRuntimeEvent", () => {
     expect(() => decodeTaskUsageSnapshot({ toolUses: 1.5 })).toThrow();
   });
 
-  it("decodes legacy and enriched task lifecycle payloads", () => {
+  it("decodes legacy and additive task lifecycle payloads", () => {
     const started = decodeRuntimeEvent({
       type: "task.started",
       eventId: "event-task-started",
@@ -235,6 +239,19 @@ describe("ProviderRuntimeEvent", () => {
         workflowName: "parallel-review",
         prompt: "Review the implementation for regressions.",
         skipTranscript: false,
+        nativeAgent: true,
+        agentKind: "agent",
+        title: "Review worker",
+        role: "reviewer",
+        model: "claude-sonnet-5",
+        effort: "high",
+        attempt: 2,
+        runHandles: {
+          runId: "run-2",
+          scriptPath: "C:/tmp/review.js",
+          transcriptDir: "C:/tmp/review-transcript",
+          sessionUrl: "https://example.test/session/run-2",
+        },
       },
     });
     expect(enrichedStarted.type).toBe("task.started");
@@ -244,6 +261,8 @@ describe("ProviderRuntimeEvent", () => {
     expect(enrichedStarted.payload.skipTranscript).toBe(false);
     expect(enrichedStarted.payload.workflowName).toBe("parallel-review");
     expect(enrichedStarted.payload.retryOfTaskId).toBe("task-1");
+    expect(enrichedStarted.payload.nativeAgent).toBe(true);
+    expect(enrichedStarted.payload.runHandles?.runId).toBe("run-2");
 
     const progress = decodeRuntimeEvent({
       type: "task.progress",
@@ -258,7 +277,16 @@ describe("ProviderRuntimeEvent", () => {
         subagentType: "code-reviewer",
         summary: "Read the changed files",
         usage: { total_tokens: 0, duration_ms: 0 },
+        typedUsage: {
+          totalTokens: 12,
+          inputTokens: 8,
+          outputTokens: 4,
+        },
         lastToolName: "Read",
+        workflowName: "parallel-review",
+        nativeAgent: true,
+        agentKind: "agent",
+        status: "running",
       },
     });
     expect(progress.type).toBe("task.progress");
@@ -266,8 +294,37 @@ describe("ProviderRuntimeEvent", () => {
       throw new Error("expected task.progress");
     }
     expect(progress.payload.usage).toEqual({ totalTokens: 0, durationMs: 0 });
-    expect(progress.payload).not.toHaveProperty("workflowName");
+    expect(progress.payload.typedUsage).toEqual({
+      totalTokens: 12,
+      inputTokens: 8,
+      outputTokens: 4,
+    });
+    expect(progress.payload.workflowName).toBe("parallel-review");
+    expect(progress.payload.nativeAgent).toBe(true);
     expect(progress.payload).not.toHaveProperty("skipTranscript");
+
+    const updated = decodeRuntimeEvent({
+      type: "task.updated",
+      eventId: "event-task-updated",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:07.500Z",
+      threadId: "thread-1",
+      payload: {
+        taskId: "task-2",
+        status: "waiting",
+        isBackgrounded: true,
+        taskType: "local_agent",
+        subagentType: "code-reviewer",
+        nativeAgent: true,
+        agentKind: "agent",
+      },
+    });
+    expect(updated.type).toBe("task.updated");
+    if (updated.type !== "task.updated") {
+      throw new Error("expected task.updated");
+    }
+    expect(updated.payload.status).toBe("waiting");
+    expect(updated.payload.nativeAgent).toBe(true);
 
     const completed = decodeRuntimeEvent({
       type: "task.completed",
@@ -283,6 +340,11 @@ describe("ProviderRuntimeEvent", () => {
         skipTranscript: false,
         summary: "No regressions found",
         usage: { totalTokens: 0, toolUses: 0, durationMs: 0 },
+        typedUsage: { totalTokens: 24, toolUses: 3 },
+        description: "Review the implementation",
+        subagentType: "code-reviewer",
+        nativeAgent: true,
+        agentKind: "agent",
       },
     });
     expect(completed.type).toBe("task.completed");
@@ -292,6 +354,8 @@ describe("ProviderRuntimeEvent", () => {
     expect(completed.payload.outputFile).toBe("C:/tmp/review.md");
     expect(completed.payload.skipTranscript).toBe(false);
     expect(completed.payload.usage).toEqual({ totalTokens: 0, toolUses: 0, durationMs: 0 });
+    expect(completed.payload.typedUsage).toEqual({ totalTokens: 24, toolUses: 3 });
+    expect(completed.payload.nativeAgent).toBe(true);
 
     const failed = decodeRuntimeEvent({
       type: "task.completed",
@@ -336,5 +400,24 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.taskId).toBeUndefined();
     expect(parsed.payload.parentToolUseId).toBeNull();
     expect(parsed.payload.elapsedSeconds).toBe(0);
+  });
+});
+
+describe("classifyTaskAgentKind", () => {
+  it("classifies agent-flavored, watch-loop, and inert types", () => {
+    expect(classifyTaskAgentKind({ taskType: "local_agent" })).toBe("agent");
+    expect(classifyTaskAgentKind({ taskType: "local_workflow" })).toBe("agent");
+    expect(classifyTaskAgentKind({})).toBe("agent");
+    expect(classifyTaskAgentKind({ taskType: "brand_new_agent_type" })).toBe("agent");
+    expect(classifyTaskAgentKind({ taskType: "local_bash" })).toBe("background");
+    expect(classifyTaskAgentKind({ taskType: "monitor" })).toBe("background");
+    expect(classifyTaskAgentKind({ taskType: "plan" })).toBe("background");
+  });
+
+  it("agent-owned tasks are background unless themselves agent-flavored", () => {
+    expect(classifyTaskAgentKind({ taskType: "local_bash", agentId: "owner" })).toBe("background");
+    expect(classifyTaskAgentKind({ agentId: "owner" })).toBe("background");
+    // Nested agent: outlives its parent, stays in the roster.
+    expect(classifyTaskAgentKind({ taskType: "local_agent", agentId: "owner" })).toBe("agent");
   });
 });

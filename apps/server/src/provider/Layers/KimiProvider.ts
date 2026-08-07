@@ -314,7 +314,15 @@ export const enrichKimiSnapshot = (input: {
     { enableProviderUpdateChecks: input.enableProviderUpdateChecks },
   ).pipe(
     Effect.provideService(HttpClient.HttpClient, input.httpClient),
-    Effect.flatMap((snapshot) => input.publishSnapshot(stampIdentity(snapshot))),
+    Effect.flatMap((snapshot) =>
+      input.getSnapshot.pipe(
+        Effect.flatMap((current) =>
+          input.publishSnapshot(
+            stampIdentity({ ...current, versionAdvisory: snapshot.versionAdvisory }),
+          ),
+        ),
+      ),
+    ),
     Effect.catchCause((cause) =>
       Effect.logWarning("Kimi version advisory enrichment failed", {
         errorTag: causeErrorTag(cause),

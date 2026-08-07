@@ -69,24 +69,29 @@ describe("searchSettings", () => {
     expect(searchableSetting("archive")).toEqual({ id: "archive", title: "Archived threads" });
   });
 
-  it("routes settings to the pages and stable sections that render them", () => {
+  it("routes appearance settings to their current section", () => {
     expect(searchSettings("theme")[0]).toMatchObject({
       id: "theme",
       to: "/settings/appearance",
-      targetId: "appearance-mode",
-    });
-    expect(searchSettings("glass opacity")[0]).toMatchObject({
-      id: "setting-glass-opacity",
-      to: "/settings/general",
     });
     expect(searchSettings("word wrap")[0]).toMatchObject({
       id: "word-wrap",
-      to: "/settings/general",
+      to: "/settings/appearance",
     });
     expect(searchSettings("environment identification")[0]).toMatchObject({
       id: "environment-identification",
-      to: "/settings/general",
+      to: "/settings/appearance",
       targetId: "appearance",
     });
+  });
+
+  it("keeps flat font preferences in the modular appearance panel", () => {
+    expect(searchSettings("font").map(({ id, to }) => ({ id, to }))).toEqual([
+      { id: "interface-font", to: "/settings/appearance" },
+      { id: "prompt-font", to: "/settings/appearance" },
+      { id: "code-font", to: "/settings/appearance" },
+      { id: "terminal-font", to: "/settings/appearance" },
+      { id: "font-smoothing", to: "/settings/appearance" },
+    ]);
   });
 });

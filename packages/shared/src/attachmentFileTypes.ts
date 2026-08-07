@@ -88,11 +88,16 @@ export const ACCEPTED_ATTACHMENT_FILE_EXTENSIONS = Object.freeze(
   Object.keys(ATTACHMENT_FILE_TYPES),
 ) as readonly AttachmentFileExtension[];
 
-export function lookupAttachmentFileType(fileName: string): AttachmentFileType | undefined {
+export function getAttachmentFileExtension(fileName: string): string | undefined {
   const finalDotIndex = fileName.lastIndexOf(".");
   if (finalDotIndex <= 0 || finalDotIndex === fileName.length - 1) return undefined;
 
-  const extension = fileName.slice(finalDotIndex + 1).toLowerCase();
+  return fileName.slice(finalDotIndex + 1).toLowerCase();
+}
+
+export function lookupAttachmentFileType(fileName: string): AttachmentFileType | undefined {
+  const extension = getAttachmentFileExtension(fileName);
+  if (!extension) return undefined;
   if (!Object.hasOwn(ATTACHMENT_FILE_TYPES, extension)) return undefined;
 
   return ATTACHMENT_FILE_TYPES[extension as AttachmentFileExtension];

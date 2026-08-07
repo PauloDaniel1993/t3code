@@ -1366,10 +1366,12 @@ export function WorkflowActivityBrowserFixture() {
                     if (messageId === anchorMessageId) setAnchorSize(size);
                   }}
                   contentInsetEndAdjustment={FIXTURE_COMPOSER_INSET_PX}
+                  liveFollowEnabled={scrollMode !== "free-scrolling"}
                   onIsAtEndChange={(nextIsAtEnd) => {
                     setIsAtEnd(scrollModeRef.current === "free-scrolling" ? false : nextIsAtEnd);
                   }}
                   onManualNavigation={() => driveScrollMode("free-scrolling")}
+                  loadEarlier={null}
                 />
                 {!isAtEnd ? (
                   <div

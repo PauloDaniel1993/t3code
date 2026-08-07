@@ -1,14 +1,7 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { createPortal } from "react-dom";
-import type { ScopedThreadRef, ThreadNativeAgent } from "@t3tools/contracts";
-import {
-  ArrowUpIcon,
-  CheckIcon,
-  CrosshairIcon,
-  ExternalLinkIcon,
-  LoaderIcon,
-  XIcon,
-} from "lucide-react";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { ArrowUpIcon, BotIcon, CheckIcon, ExternalLinkIcon, LoaderIcon, XIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -406,9 +399,9 @@ export function MiniThreadWindow(props: {
 
 /**
  * Peek at an in-session agent. The frame is the task peek's; the contents are
- * honestly different because the run is not a thread: no transcript to open,
- * nothing to cancel, and a composer that says why it is disabled rather than
- * pretending a steer could reach it.
+ * honestly different because the run is not a task thread: full fleet details
+ * live in the parent thread's Agents panel, there is nothing to cancel, and the
+ * composer says why it is disabled rather than pretending a steer could reach it.
  *
  * The agent is read off the parent thread's shell, so the window tracks the
  * run live as the provider streams progress. A run that drops out of the
@@ -421,8 +414,8 @@ export function MiniNativeAgentWindow(props: {
   anchor: HTMLElement | null;
   isMobile: boolean;
   onClose: () => void;
-  /** "Show in transcript": locate the run's row in the turn's workflow card. */
-  onShowInTranscript: (agent: ThreadNativeAgent) => void;
+  /** Opens the parent thread's upstream Agents panel. */
+  onShowInTranscript: () => void;
   /** Retry links swap the peek to the other run, keeping the same anchor. */
   onOpenAgent: (taskId: string) => void;
   onKeepOpen: () => void;
@@ -435,7 +428,7 @@ export function MiniNativeAgentWindow(props: {
     onKeepOpen,
     onOpenAgent,
     onPeekLeave,
-    onShowInTranscript,
+    onShowInTranscript: onOpenAgents,
     parentThreadRef,
     taskId,
   } = props;
@@ -447,8 +440,8 @@ export function MiniNativeAgentWindow(props: {
   const nowMs = usePeekNowTicker();
   usePeekDismiss(anchor, containerRef, onClose);
 
-  // As on the task peek, mobile taps act directly (here: jump to the
-  // transcript) instead of floating a card.
+  // As on the task peek, mobile taps act directly (here: open the parent
+  // thread's Agents panel) instead of floating a card.
   if (isMobile || agent === null) {
     return null;
   }
@@ -496,12 +489,12 @@ export function MiniNativeAgentWindow(props: {
         <span className="flex-1" />
         <button
           type="button"
-          data-testid="mini-native-agent-show"
-          onClick={() => onShowInTranscript(agent)}
+          data-testid="mini-native-agent-open-agents"
+          onClick={onOpenAgents}
           className="flex cursor-pointer items-center gap-1 rounded-md border border-border/60 px-2 py-0.5 text-[11px] text-foreground/80 transition-colors hover:bg-accent"
         >
-          <CrosshairIcon aria-hidden className="size-3" />
-          Show in transcript
+          <BotIcon aria-hidden className="size-3" />
+          Open Agents
         </button>
         <button
           type="button"

@@ -20,9 +20,10 @@ import {
   ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE,
   attachmentRelativePath,
   createAttachmentId,
+  isAttachmentOwnedByThread,
   parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
-  toSafeThreadAttachmentSegment,
+  toCanonicalThreadAttachmentSegment,
 } from "./attachmentStore.ts";
 import type { ValidatedAttachment } from "./attachmentValidation.ts";
 import { ServerConfig } from "./config.ts";
@@ -35,14 +36,21 @@ const ATTACHMENT_STAGE_MANIFEST_MAX_BYTES = 64 * 1024;
 const ATTACHMENT_STAGE_DIRECTORY_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ATTACHMENT_CLEANUP_DRAIN_LIMIT = 100;
-const ATTACHMENT_CLEANUP_MAX_ATTEMPTS = 10;
 const ATTACHMENT_CLEANUP_ERROR_MAX_LENGTH = 2_000;
 
-const AttachmentStageManifest = Schema.Struct({
-  version: Schema.Literal(1),
-  commandId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)),
-  finalRelativePaths: Schema.Array(Schema.String).check(Schema.isMaxLength(8)),
-});
+const AttachmentStageManifest = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    commandId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)),
+    finalRelativePaths: Schema.Array(Schema.String).check(Schema.isMaxLength(8)),
+  }),
+  Schema.Struct({
+    version: Schema.Literal(2),
+    commandId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)),
+    threadId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
+    finalRelativePaths: Schema.Array(Schema.String).check(Schema.isMaxLength(8)),
+  }),
+]);
 type AttachmentStageManifest = typeof AttachmentStageManifest.Type;
 const AttachmentStageManifestJson = Schema.fromJsonString(AttachmentStageManifest);
 const encodeAttachmentStageManifest = Schema.encodeSync(AttachmentStageManifestJson);
@@ -108,12 +116,18 @@ function toPersistedAttachment(attachment: ValidatedAttachment, id: string): Cha
 }
 
 function validateStageManifest(candidate: AttachmentStageManifest): AttachmentStageManifest | null {
+  if (candidate.version === 2 && toCanonicalThreadAttachmentSegment(candidate.threadId) === null) {
+    return null;
+  }
   for (const relativePath of candidate.finalRelativePaths) {
+    const attachmentId = parseAttachmentIdFromRelativePath(relativePath);
     if (
       relativePath.length === 0 ||
       relativePath.includes("/") ||
       relativePath.includes("\\") ||
-      !parseAttachmentIdFromRelativePath(relativePath)
+      !attachmentId ||
+      (candidate.version === 2 &&
+        !isAttachmentOwnedByThread({ attachmentId, threadId: candidate.threadId }))
     ) {
       return null;
     }
@@ -197,8 +211,9 @@ export const stageValidatedAttachments = Effect.fn("stageValidatedAttachments")(
 
   const manifestPath = path.join(stageDirectory, ATTACHMENT_STAGE_MANIFEST_FILE_NAME);
   const manifest: AttachmentStageManifest = {
-    version: 1,
+    version: 2,
     commandId: input.commandId,
+    threadId: input.threadId,
     finalRelativePaths: entries.map((entry) => entry.finalRelativePath),
   };
   let state: StageState = "unclaimed";
@@ -403,7 +418,7 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
     const removeThreadAttachments = Effect.fn("removeQueuedThreadAttachments")(function* (
       threadId: string,
     ) {
-      const threadSegment = toSafeThreadAttachmentSegment(threadId);
+      const threadSegment = toCanonicalThreadAttachmentSegment(threadId);
       if (!threadSegment) {
         return yield* Effect.fail(`Unsafe attachment cleanup thread id '${threadId}'.`);
       }
@@ -437,13 +452,8 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
       threadId: string,
       relativePath: string,
     ) {
-      const threadSegment = toSafeThreadAttachmentSegment(threadId);
       const attachmentId = parseAttachmentIdFromRelativePath(relativePath);
-      if (
-        !threadSegment ||
-        !attachmentId ||
-        parseThreadSegmentFromAttachmentId(attachmentId) !== threadSegment
-      ) {
+      if (!attachmentId || !isAttachmentOwnedByThread({ attachmentId, threadId })) {
         return yield* Effect.fail(`Unsafe queued attachment path '${relativePath}'.`);
       }
       const absolutePath = resolveAttachmentRelativePath({
@@ -459,14 +469,13 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
       }
       const fileInfo = yield* fileSystem.stat(absolutePath);
       if (fileInfo.type !== "File") {
-        return;
+        return yield* Effect.fail(`Queued attachment path '${relativePath}' is not a file.`);
       }
       yield* fileSystem.remove(absolutePath, { force: true });
     });
 
     let completedIntents = 0;
     let failedIntents = 0;
-    let abandonedIntents = 0;
     for (const intent of pendingIntents) {
       const cleanup =
         intent.operation === "delete-thread"
@@ -490,20 +499,6 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
       }
 
       const attemptCount = failureUpdate.value.attemptCount;
-      if (attemptCount >= ATTACHMENT_CLEANUP_MAX_ATTEMPTS) {
-        yield* input.queue.discard({ id: intent.id });
-        abandonedIntents += 1;
-        yield* Effect.logError("abandoned attachment cleanup after bounded retries", {
-          intentId: intent.id,
-          operation: intent.operation,
-          threadId: intent.threadId,
-          relativePath: intent.relativePath,
-          attemptCount,
-          error,
-        });
-        continue;
-      }
-
       failedIntents += 1;
       if (attemptCount === 1 || attemptCount % 5 === 0) {
         yield* Effect.logWarning("attachment cleanup failed and remains pending", {
@@ -517,12 +512,11 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
       }
     }
 
-    if (completedIntents > 0 || abandonedIntents > 0) {
+    if (completedIntents > 0) {
       yield* Effect.logInfo("attachment cleanup queue drain complete", {
         examinedIntents: pendingIntents.length,
         completedIntents,
         failedIntents,
-        abandonedIntents,
       });
     }
     if (pendingIntents.length === ATTACHMENT_CLEANUP_DRAIN_LIMIT) {

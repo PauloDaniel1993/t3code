@@ -5,6 +5,7 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import {
+  getAttachmentFileExtension,
   getAttachmentFileInputAccept,
   lookupAttachmentFileType,
 } from "@t3tools/shared/attachmentFileTypes";
@@ -54,7 +55,7 @@ function classifyFile(
   | { readonly type: "document"; readonly mimeType: "application/pdf"; readonly maxBytes: number }
   | { readonly type: "file"; readonly mimeType: string; readonly maxBytes: number }
   | null {
-  if (/\.pdf$/i.test(file.name)) {
+  if (getAttachmentFileExtension(file.name) === "pdf") {
     return {
       type: "document",
       mimeType: "application/pdf",

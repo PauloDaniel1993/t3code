@@ -227,11 +227,11 @@ describe("AssetAccess", () => {
         resource: {
           _tag: "attachment",
           attachmentId,
-          threadId: ThreadId.make("thread.1"),
+          threadId: ThreadId.make("thread-1"),
           disposition: "inline-pdf",
         },
         attachmentContext: {
-          threadId: "thread.1",
+          threadId: "thread-1",
           dispositionMode: "inline-pdf",
           attachment: {
             type: "document",
@@ -245,6 +245,16 @@ describe("AssetAccess", () => {
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const separatorIndex = suffix.indexOf("/");
       const token = suffix.slice(0, separatorIndex);
+      const [encodedPayload] = token.split(".");
+
+      expect(decodeUnknownJson(base64UrlDecodeUtf8(encodedPayload ?? ""))).toMatchObject({
+        version: 2,
+        kind: "attachment",
+        attachmentId,
+        threadId: "thread-1",
+        attachmentKind: "document",
+        dispositionMode: "inline-pdf",
+      });
 
       expect(yield* resolveAsset(token, suffix.slice(separatorIndex + 1))).toEqual({
         kind: "attachment",
@@ -254,9 +264,65 @@ describe("AssetAccess", () => {
         displayName: "Quarterly Résumé.pdf",
         contentType: "application/pdf",
       });
+      expect(yield* resolveAsset(token, "another.pdf")).toBeNull();
 
       yield* fileSystem.remove(attachmentPath);
       expect(yield* resolveAsset(token, "Quarterly%20R%C3%A9sum%C3%A9.pdf")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("binds typed file claims to their thread and forces the download default", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000016";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.html`);
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(attachmentPath, "<p>report</p>");
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "attachment",
+          attachmentId,
+          threadId: ThreadId.make("thread-1"),
+          disposition: "inline-pdf",
+        },
+        attachmentContext: {
+          threadId: "thread-1",
+          dispositionMode: "inline-pdf",
+          attachment: {
+            type: "file",
+            id: attachmentId,
+            name: "report.HTML",
+            mimeType: "application/octet-stream",
+            sizeBytes: 13,
+          },
+        },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+      const [encodedPayload] = token.split(".");
+
+      expect(decodeUnknownJson(base64UrlDecodeUtf8(encodedPayload ?? ""))).toMatchObject({
+        version: 2,
+        kind: "attachment",
+        attachmentId,
+        threadId: "thread-1",
+        attachmentKind: "file",
+        dispositionMode: "download",
+        displayName: "report.HTML",
+        mimeType: "text/html",
+      });
+      expect(yield* resolveAsset(token, "report.HTML")).toEqual({
+        kind: "attachment",
+        path: attachmentPath,
+        attachmentKind: "file",
+        dispositionMode: "download",
+        displayName: "report.HTML",
+        contentType: "text/html",
+      });
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -272,9 +338,13 @@ describe("AssetAccess", () => {
       yield* fileSystem.writeFileString(attachmentPath, "%PDF-1.7");
 
       const result = yield* issueAssetUrl({
-        resource: { _tag: "attachment", attachmentId },
+        resource: {
+          _tag: "attachment",
+          attachmentId,
+          threadId: ThreadId.make("thread-1"),
+        },
         attachmentContext: {
-          threadId: "thread.1",
+          threadId: "thread-1",
           dispositionMode: "download",
           attachment: {
             type: "document",
@@ -313,9 +383,13 @@ describe("AssetAccess", () => {
       yield* fileSystem.writeFileString(attachmentPath, "%PDF-1.7");
 
       const result = yield* issueAssetUrl({
-        resource: { _tag: "attachment", attachmentId },
+        resource: {
+          _tag: "attachment",
+          attachmentId,
+          threadId: ThreadId.make("thread-1"),
+        },
         attachmentContext: {
-          threadId: "thread.1",
+          threadId: "thread-1",
           dispositionMode: "download",
           attachment: {
             type: "document",
@@ -345,9 +419,13 @@ describe("AssetAccess", () => {
       yield* fileSystem.writeFileString(attachmentPath, "%PDF-1.7");
 
       const result = yield* issueAssetUrl({
-        resource: { _tag: "attachment", attachmentId },
+        resource: {
+          _tag: "attachment",
+          attachmentId,
+          threadId: ThreadId.make("thread-1"),
+        },
         attachmentContext: {
-          threadId: "thread.1",
+          threadId: "thread-1",
           dispositionMode: "inline-pdf",
           attachment: {
             type: "document",
@@ -373,6 +451,7 @@ describe("AssetAccess", () => {
       }
       const claims = decodedClaims as Record<string, unknown>;
       const mutations: ReadonlyArray<readonly [string, unknown]> = [
+        ["threadId", "thread-2"],
         ["attachmentKind", "file"],
         ["dispositionMode", "download"],
         ["displayName", "renamed.pdf"],
@@ -400,9 +479,13 @@ describe("AssetAccess", () => {
       );
 
       const error = yield* issueAssetUrl({
-        resource: { _tag: "attachment", attachmentId },
+        resource: {
+          _tag: "attachment",
+          attachmentId,
+          threadId: ThreadId.make("thread-1"),
+        },
         attachmentContext: {
-          threadId: "thread.1",
+          threadId: "thread-1",
           dispositionMode: "download",
           attachment: {
             type: "document",

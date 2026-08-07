@@ -7,9 +7,11 @@ import {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
@@ -191,15 +193,22 @@ export const makeKimiModelState = Effect.fn("makeKimiModelState")(function* (
     PubSub.shutdown,
   );
   const snapshotRef = yield* Ref.make(normalizeKimiModelState(customModels, []));
+  const publishSemaphore = yield* Semaphore.make(1);
 
   return {
     getSnapshot: Ref.get(snapshotRef),
     publishConfigOptions: (configOptions) =>
-      Effect.gen(function* () {
-        const next = normalizeKimiModelState(customModels, configOptions);
-        yield* Ref.set(snapshotRef, next);
-        yield* PubSub.publish(changes, next);
-      }),
+      publishSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const next = normalizeKimiModelState(customModels, configOptions);
+          const current = yield* Ref.get(snapshotRef);
+          if (Equal.equals(current, next)) {
+            return;
+          }
+          yield* Ref.set(snapshotRef, next);
+          yield* PubSub.publish(changes, next);
+        }),
+      ),
     get streamChanges() {
       return Stream.fromPubSub(changes);
     },

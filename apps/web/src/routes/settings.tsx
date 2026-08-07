@@ -9,7 +9,6 @@ import {
 } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 
-import { useAppearanceSettingsRestore } from "../components/settings/AppearanceSettings";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import { Button } from "../components/ui/button";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -17,13 +16,9 @@ import { isElectron } from "../env";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
-function RestoreDefaultsButton({
-  changedSettingLabels,
-  restoreDefaults,
-}: {
-  changedSettingLabels: readonly string[];
-  restoreDefaults: () => Promise<void>;
-}) {
+function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
+  const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
+
   return (
     <Button
       size="xs"
@@ -37,37 +32,12 @@ function RestoreDefaultsButton({
   );
 }
 
-function GeneralRestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
-  const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
-  return (
-    <RestoreDefaultsButton
-      changedSettingLabels={changedSettingLabels}
-      restoreDefaults={restoreDefaults}
-    />
-  );
-}
-
-function AppearanceRestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
-  const { changedSettingLabels, restoreDefaults } = useAppearanceSettingsRestore(onRestored);
-  return (
-    <RestoreDefaultsButton
-      changedSettingLabels={changedSettingLabels}
-      restoreDefaults={restoreDefaults}
-    />
-  );
-}
-
 function SettingsContentLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const [restoreSignal, setRestoreSignal] = useState(0);
-  const RestoreDefaultsButtonForRoute =
-    location.pathname === "/settings/general"
-      ? GeneralRestoreDefaultsButton
-      : location.pathname === "/settings/appearance"
-        ? AppearanceRestoreDefaultsButton
-        : null;
+  const showRestoreDefaults = location.pathname === "/settings/general";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
   const navigateBackWithinApp = useCallback(() => {
     if (canGoBack) {
@@ -110,9 +80,9 @@ function SettingsContentLayout() {
           >
             <div className="flex w-full items-center gap-2">
               <span className="text-sm font-medium text-foreground">Settings</span>
-              {RestoreDefaultsButtonForRoute ? (
+              {showRestoreDefaults ? (
                 <div className="ms-auto flex items-center gap-2">
-                  <RestoreDefaultsButtonForRoute onRestored={handleRestored} />
+                  <RestoreDefaultsButton onRestored={handleRestored} />
                 </div>
               ) : null}
             </div>
@@ -129,9 +99,9 @@ function SettingsContentLayout() {
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
               Settings
             </span>
-            {RestoreDefaultsButtonForRoute ? (
+            {showRestoreDefaults ? (
               <div className="ms-auto flex items-center gap-2">
-                <RestoreDefaultsButtonForRoute onRestored={handleRestored} />
+                <RestoreDefaultsButton onRestored={handleRestored} />
               </div>
             ) : null}
           </div>

@@ -8,6 +8,14 @@ import {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { AgentPanelModel } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  emptyAgentPanelModel,
+  formatSubagentTokenCount,
+} from "@t3tools/client-runtime/state/subagentRuntime";
+
+const EMPTY_AGENT_PANEL_MODEL = emptyAgentPanelModel();
+const NOOP_OPEN_AGENTS = () => {};
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import {
   createContext,
@@ -80,8 +88,6 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveTaskCardExpansionA11y,
-  resolveTimelineEndFollowing,
-  resolveTimelineIsAtExactEnd,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapHeightStyle,
@@ -97,7 +103,6 @@ import {
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
-import { overlayConsumesWheel, resolveWheelDeltaPixels } from "./overlayWheelForwarding";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -162,6 +167,8 @@ interface TimelineRowSharedState {
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
   workflowActivityModelsByTurnId: ReadonlyMap<TurnId, WorkflowActivityModel>;
+  agentPanelModel: AgentPanelModel;
+  onOpenAgents: () => void;
 }
 
 interface TimelineRowActivityState {
@@ -169,29 +176,53 @@ interface TimelineRowActivityState {
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
   latestTurnId: TurnId | null;
+  /** Current plan step label for the working row, when the turn has a plan. */
+  workingStepLabel: string | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = <div className="h-10 sm:h-12" />;
+
+// Header row shown when older turns exist beyond the loaded window. Plain
+// button, no spinner animation; the label change is the loading indicator.
+function TimelineLoadEarlierHeader({
+  loading,
+  onLoadEarlier,
+  fade,
+}: {
+  loading: boolean;
+  onLoadEarlier: () => void;
+  fade: boolean;
+}) {
+  return (
+    <div className={fade ? "pt-10 sm:pt-12" : "pt-3 sm:pt-4"}>
+      <div className="mx-auto w-full max-w-3xl pb-2">
+        <button
+          type="button"
+          onClick={onLoadEarlier}
+          disabled={loading}
+          className="w-full py-1.5 text-xs text-muted-foreground/60 hover:text-foreground disabled:cursor-default"
+        >
+          {loading ? "Loading earlier turns…" : "Load earlier turns"}
+        </button>
+      </div>
+    </div>
+  );
+}
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 const EMPTY_WORKFLOW_ACTIVITY_MODELS: ReadonlyMap<TurnId, WorkflowActivityModel> = new Map();
-/**
- * How long after a navigation gesture the list re-reads its extent to decide
- * whether end-following should resume. Long enough to outlast a wheel burst's
- * own scroll events, short enough that resting on the live edge resumes
- * following before the next streamed row lands.
- */
-const TIMELINE_END_FOLLOW_RECHECK_MS = 150;
-
 // ---------------------------------------------------------------------------
 // Props (public API)
 // ---------------------------------------------------------------------------
 
 interface MessagesTimelineProps {
+  agentPanelModel?: AgentPanelModel;
+  onOpenAgents?: () => void;
   isWorking: boolean;
+  workingStepLabel?: string | null;
   activeTurnInProgress: boolean;
   activeTurnStartedAt: string | null;
   listRef: React.RefObject<LegendListRef | null>;
@@ -217,20 +248,20 @@ interface MessagesTimelineProps {
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
   contentInsetEndAdjustment: number;
   /**
-   * Element wrapping both the list and the surfaces stacked on top of it. Wheel
-   * gestures landing on those overlays are forwarded to the list from here.
+   * Whether the timeline should keep pinning to the live edge as content
+   * grows. Off while the user is reading history; LegendList's own
+   * maintainScrollAtEnd would otherwise re-pin regardless of ChatView's
+   * scroll-mode refs whenever the user drifts near the bottom.
    */
-  overlayWheelHost?: HTMLElement | null;
+  liveFollowEnabled: boolean;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: () => void;
   /** Thread-tasks beta. Off hides the task lifecycle rows. */
   threadTasksEnabled?: boolean;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
-  hasOlderActivities?: boolean;
-  isLoadingOlderActivities?: boolean;
-  olderActivitiesError?: string | null;
-  onLoadOlderActivities?: () => void;
+  /** Non-null when older turns exist beyond the loaded window. */
+  loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,8 +270,11 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
+  workingStepLabel = null,
   activeTurnInProgress,
   activeTurnStartedAt,
+  agentPanelModel = EMPTY_AGENT_PANEL_MODEL,
+  onOpenAgents = NOOP_OPEN_AGENTS,
   listRef,
   timelineEntries,
   latestTurn,
@@ -263,16 +297,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onAnchorReady,
   onAnchorSizeChanged,
   contentInsetEndAdjustment,
-  overlayWheelHost = null,
+  liveFollowEnabled,
   onIsAtEndChange,
   onManualNavigation,
   threadTasksEnabled = false,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
-  hasOlderActivities = false,
-  isLoadingOlderActivities = false,
-  olderActivitiesError = null,
-  onLoadOlderActivities,
+  loadEarlier = null,
 }: MessagesTimelineProps) {
   const diffIndicators = useClientSettings((settings) =>
     resolveDiffIndicators(resolveActiveAppearanceTheme(settings.appearance).diffMarkerStyle),
@@ -383,60 +414,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
-  const [followsEnd, setFollowsEnd] = useState(true);
-  const followsEndRef = useRef(true);
-  const followsEndRecheckFrameRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const updateFollowsEnd = useCallback(
-    (input: { manualNavigation: boolean; isAtExactEnd: boolean | undefined }) => {
-      const next = resolveTimelineEndFollowing({ current: followsEndRef.current, ...input });
-      if (next !== followsEndRef.current) {
-        followsEndRef.current = next;
-        setFollowsEnd(next);
-      }
-      if (!input.manualNavigation) {
-        return;
-      }
-      // A gesture that cannot move the list — wheeling down while already
-      // resting on the end — emits no scroll event, so nothing would ever
-      // re-arm following. Re-check once the gesture has settled; scroll events
-      // arriving in the meantime keep resetting the timer.
-      if (followsEndRecheckFrameRef.current !== null) {
-        clearTimeout(followsEndRecheckFrameRef.current);
-      }
-      followsEndRecheckFrameRef.current = setTimeout(() => {
-        followsEndRecheckFrameRef.current = null;
-        updateFollowsEnd({
-          manualNavigation: false,
-          isAtExactEnd: resolveTimelineIsAtExactEnd(listRef.current?.getState?.()),
-        });
-      }, TIMELINE_END_FOLLOW_RECHECK_MS);
-    },
-    [listRef],
-  );
-  useEffect(
-    () => () => {
-      if (followsEndRecheckFrameRef.current !== null) {
-        clearTimeout(followsEndRecheckFrameRef.current);
-      }
-    },
-    [],
-  );
-  // LegendList pushes the scroll offset down by any growth of the end inset
-  // while it considers the list near its end — so an approval card growing the
-  // composer would shove a reader who has only nudged up a notch back toward
-  // the live edge. Hold the inset the reader scrolled away from until they
-  // return to the end, where growing it is what keeps the last row clear of
-  // the overlays.
-  const [heldContentInsetEndAdjustment, setHeldContentInsetEndAdjustment] =
-    useState(contentInsetEndAdjustment);
-  useEffect(() => {
-    if (followsEnd) {
-      setHeldContentInsetEndAdjustment(contentInsetEndAdjustment);
-    }
-  }, [contentInsetEndAdjustment, followsEnd]);
-  const effectiveContentInsetEndAdjustment = followsEnd
-    ? contentInsetEndAdjustment
-    : heldContentInsetEndAdjustment;
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
@@ -470,11 +447,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
-    const isAtEnd = resolveTimelineIsAtEnd(state);
+    const isAtEnd = resolveTimelineIsAtEnd(state, contentInsetEndAdjustment);
     if (isAtEnd !== undefined) {
       onIsAtEndChange(isAtEnd);
     }
-    updateFollowsEnd({ manualNavigation: false, isAtExactEnd: resolveTimelineIsAtExactEnd(state) });
     if (!state || minimapItems.length === 0) {
       return;
     }
@@ -497,7 +473,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
       strip.dataset.inView = inView ? "true" : "false";
     }
-  }, [listRef, minimapItems, minimapStripMap, onIsAtEndChange, updateFollowsEnd]);
+  }, [contentInsetEndAdjustment, listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(handleScroll);
@@ -547,6 +523,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleTurnFold,
       onToggleWorkGroup,
       workflowActivityModelsByTurnId,
+      agentPanelModel,
+      onOpenAgents,
     }),
     [
       timestampFormat,
@@ -564,102 +542,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleTurnFold,
       onToggleWorkGroup,
       workflowActivityModelsByTurnId,
+      agentPanelModel,
+      onOpenAgents,
     ],
   );
 
-  const handleManualTimelineNavigation = useCallback(() => {
-    updateFollowsEnd({ manualNavigation: true, isAtExactEnd: undefined });
-    onManualNavigation();
-  }, [onManualNavigation, updateFollowsEnd]);
-
-  // Approval cards and the composer are stacked on top of the list rather
-  // than inside its scroller, so a wheel gesture over them reaches no
-  // scrollable ancestor and the transcript stays frozen under the cursor.
-  // Forward those gestures to the list.
-  useEffect(() => {
-    if (!overlayWheelHost) {
-      return;
-    }
-    let scrollNode: HTMLElement | null = null;
-    const onWheel = (event: WheelEvent) => {
-      scrollNode ??= listRef.current?.getScrollableNode?.() ?? null;
-      const target = event.target;
-      if (!scrollNode || !(target instanceof HTMLElement) || scrollNode.contains(target)) {
-        return;
-      }
-      const deltaPixels = resolveWheelDeltaPixels({
-        deltaY: event.deltaY,
-        deltaMode: event.deltaMode,
-        viewportHeight: scrollNode.clientHeight,
-      });
-      if (
-        deltaPixels === 0 ||
-        overlayConsumesWheel({ target, host: overlayWheelHost, deltaPixels })
-      ) {
-        return;
-      }
-      event.preventDefault();
-      handleManualTimelineNavigation();
-      scrollNode.scrollBy({ top: deltaPixels });
-    };
-
-    overlayWheelHost.addEventListener("wheel", onWheel, { passive: false });
-    return () => overlayWheelHost.removeEventListener("wheel", onWheel);
-  }, [handleManualTimelineNavigation, listRef, overlayWheelHost]);
   const activityState = useMemo<TimelineRowActivityState>(
     () => ({
       isWorking,
       isRevertingCheckpoint,
       activeTurnInProgress,
       latestTurnId: latestTurn?.turnId ?? null,
+      workingStepLabel,
     }),
-    [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestTurn?.turnId],
+    [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestTurn?.turnId, workingStepLabel],
   );
-  const timelineListHeader = useMemo(
-    () =>
-      hasOlderActivities || olderActivitiesError !== null ? (
-        <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2 py-3 sm:py-4">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={onLoadOlderActivities === undefined}
-            aria-disabled={isLoadingOlderActivities || undefined}
-            onClick={isLoadingOlderActivities ? undefined : onLoadOlderActivities}
-            aria-describedby={olderActivitiesError === null ? undefined : "older-activities-error"}
-          >
-            {isLoadingOlderActivities ? (
-              <LoaderIcon className="mr-1.5 size-3.5 animate-spin" aria-hidden="true" />
-            ) : null}
-            {olderActivitiesError === null ? "Load older activity" : "Retry older activity"}
-          </Button>
-          {olderActivitiesError !== null ? (
-            <p
-              id="older-activities-error"
-              role="alert"
-              className="text-center text-xs text-destructive"
-            >
-              {olderActivitiesError}
-            </p>
-          ) : null}
-          <span className="sr-only" role="status" aria-live="polite">
-            {isLoadingOlderActivities ? "Loading older activity." : ""}
-          </span>
-        </div>
-      ) : topFadeEnabled ? (
-        TIMELINE_LIST_FADE_HEADER
-      ) : (
-        TIMELINE_LIST_HEADER
-      ),
-    [
-      hasOlderActivities,
-      isLoadingOlderActivities,
-      olderActivitiesError,
-      onLoadOlderActivities,
-      topFadeEnabled,
-    ],
-  );
-
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
   const renderItem = useCallback(
@@ -671,15 +568,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
-  if (rows.length === 0 && !isWorking && !hasOlderActivities && olderActivitiesError === null) {
+  if (rows.length === 0 && !isWorking) {
     if (hideEmptyPlaceholder) {
       return null;
     }
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-muted-foreground/30">
-          Send a message to start the conversation.
-        </p>
+        <p className="text-placeholder text-sm">Send a message to start the conversation.</p>
       </div>
     );
   }
@@ -687,16 +582,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
-        <div
-          ref={setTimelineViewportElement}
-          // Exposed so browser steps can tell a list that is following the live
-          // edge from one parked where the reader left it.
-          data-follows-end={followsEnd ? "true" : "false"}
-          className="relative h-full min-h-0"
-          onWheelCapture={handleManualTimelineNavigation}
-          onTouchMoveCapture={handleManualTimelineNavigation}
-          onPointerDownCapture={handleManualTimelineNavigation}
-        >
+        <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
@@ -706,9 +592,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             estimatedItemSize={90}
             initialScrollAtEnd
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-            contentInsetEndAdjustment={effectiveContentInsetEndAdjustment}
+            contentInsetEndAdjustment={contentInsetEndAdjustment}
             maintainScrollAtEnd={
-              anchoredEndSpace || !followsEnd
+              anchoredEndSpace || !liveFollowEnabled
                 ? false
                 : {
                     animated: false,
@@ -728,7 +614,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
-            ListHeaderComponent={timelineListHeader}
+            ListHeaderComponent={
+              loadEarlier !== null ? (
+                <TimelineLoadEarlierHeader
+                  loading={loadEarlier.loading}
+                  onLoadEarlier={loadEarlier.onLoadEarlier}
+                  fade={topFadeEnabled}
+                />
+              ) : topFadeEnabled ? (
+                TIMELINE_LIST_FADE_HEADER
+              ) : (
+                TIMELINE_LIST_HEADER
+              )
+            }
             ListFooterComponent={TIMELINE_LIST_FOOTER}
           />
           <TimelineMinimap
@@ -738,7 +636,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             hitStripWidth={minimapHitStripWidth}
             stripMap={minimapStripMap}
             onSelect={(item) => {
-              handleManualTimelineNavigation();
+              onManualNavigation();
               void listRef.current?.scrollToIndex({
                 index: item.rowIndex,
                 animated: true,
@@ -1056,7 +954,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         // they sit closer to the work that follows them.
         (row.kind === "message" && row.message.role === "assistant" && !row.showAssistantMeta) ||
           row.kind === "work" ||
-          row.kind === "work-toggle"
+          row.kind === "work-toggle" ||
+          row.kind === "turn-plan"
           ? "pb-2"
           : "pb-4",
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
@@ -1074,6 +973,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         <AssistantTimelineRow row={row} />
       ) : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
+      {row.kind === "turn-plan" ? <TurnPlanTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
@@ -1108,7 +1008,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
 
   return (
     <div className="group flex flex-col items-end gap-1">
-      <div className="relative max-w-[80%] rounded-2xl bg-accent p-3">
+      <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
         {userFiles.length > 0 ? (
           <div className="mb-2 grid min-w-64 gap-2">
             {userFiles.map((attachment) => (
@@ -1147,7 +1047,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                     />
                   </button>
                 ) : (
-                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
+                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-secondary-label text-[11px]">
                     {image.name}
                   </div>
                 )}
@@ -1330,16 +1230,117 @@ function ProposedPlanTimelineRow({
   );
 }
 
+/**
+ * Inline folded plan chip: one row per turn that produced plan/todo steps.
+ * Collapsed by default — a segment bar plus the in-progress step label —
+ * and expands in place to the full step list. Replaces the old plan sidebar.
+ */
+const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "turn-plan" }>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const { steps } = row.turnPlan.plan;
+  const completedCount = steps.filter((step) => step.status === "completed").length;
+  const allDone = completedCount === steps.length;
+  // Label priority: the in-progress step, else the next pending step (plan
+  // just created), else the last step (plan finished, rendered muted).
+  const label =
+    steps.find((step) => step.status === "inProgress")?.step ??
+    steps.find((step) => step.status === "pending")?.step ??
+    steps.at(-1)?.step ??
+    "Plan";
+  const Chevron = expanded ? ChevronDownIcon : ChevronRightIcon;
+
+  return (
+    <div className="min-w-0 px-1 py-0.5">
+      <button
+        type="button"
+        className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-0.5 py-0.5 text-left text-[12px] leading-5 transition-colors duration-150 hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <Chevron className="size-3.5 shrink-0 text-muted-foreground/65" />
+        {steps.length > 1 ? (
+          <span aria-hidden className="flex shrink-0 items-center gap-0.5">
+            {steps.map((step) => (
+              <span
+                key={step.step}
+                className={cn(
+                  "h-[3px] w-2.5 rounded-full",
+                  step.status === "completed"
+                    ? "bg-success"
+                    : step.status === "inProgress"
+                      ? "bg-primary"
+                      : "bg-muted-foreground/25",
+                )}
+              />
+            ))}
+          </span>
+        ) : null}
+        <span
+          className={cn(
+            "min-w-0 truncate",
+            allDone ? "text-muted-foreground/65" : "font-medium text-foreground/85",
+          )}
+        >
+          {label}
+        </span>
+        {steps.length > 1 ? (
+          <span className="shrink-0 text-muted-foreground/50 tabular-nums">
+            {completedCount}/{steps.length}
+          </span>
+        ) : null}
+      </button>
+      {expanded ? (
+        <div className="mt-0.5 space-y-px pl-6">
+          {steps.map((step) => (
+            <div key={step.step} className="flex items-baseline gap-2 text-[12px] leading-5">
+              <span
+                className={cn(
+                  "w-3 shrink-0 text-center font-mono text-[10px]",
+                  step.status === "completed"
+                    ? "text-success"
+                    : step.status === "inProgress"
+                      ? "text-primary"
+                      : "text-muted-foreground/40",
+                )}
+                aria-hidden
+              >
+                {step.status === "completed" ? "✓" : step.status === "inProgress" ? "●" : "○"}
+              </span>
+              <span
+                className={cn(
+                  "min-w-0",
+                  step.status === "completed"
+                    ? "text-muted-foreground/55"
+                    : step.status === "inProgress"
+                      ? "text-foreground/90"
+                      : "text-muted-foreground/70",
+                )}
+              >
+                {step.step}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
+  const { workingStepLabel } = use(TimelineRowActivityCtx);
   return (
     <div className="py-0.5 pl-1.5">
-      <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70 tabular-nums">
+      <div className="flex min-w-0 items-center gap-2 pt-1 text-secondary-label text-[11px] tabular-nums">
         <span className="inline-flex items-center gap-[3px]">
           <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
           <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
           <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
         </span>
-        <span>
+        <span className="shrink-0">
           {row.createdAt ? (
             <>
               Working for <WorkingTimer createdAt={row.createdAt} />
@@ -1348,6 +1349,9 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             "Working..."
           )}
         </span>
+        {workingStepLabel ? (
+          <span className="min-w-0 truncate text-muted-foreground/55">· {workingStepLabel}</span>
+        ) : null}
       </div>
     </div>
   );
@@ -1425,9 +1429,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
   return (
     <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label={groupLabel}>
       {!onlyToolEntries && !onlyTaskEntries && (
-        <p className="px-0.5 pb-0.5 font-medium text-[11px] text-muted-foreground/65">
-          {groupLabel}
-        </p>
+        <p className="px-0.5 pb-0.5 font-medium text-secondary-label text-[11px]">{groupLabel}</p>
       )}
       <div className="space-y-px">
         {nonEmptyEntries.map((workEntry) =>
@@ -1437,7 +1439,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
               workEntry={workEntry}
               threadTask={workEntry.threadTask}
             />
-          ) : workLogEntryIsTaskLike(workEntry) ? (
+          ) : workLogEntryIsTaskLike(workEntry) && workEntry.agentSpawn === undefined ? (
             <TaskWorkEntryRow
               key={workEntry.id}
               workEntry={workEntry}
@@ -1485,7 +1487,7 @@ function WorkGroupToggleTimelineRow({
         ctx.onToggleWorkGroup(row.groupId, anchorElement);
       }}
     >
-      <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/65">
+      <span className="flex size-5 shrink-0 items-center justify-center text-icon-muted">
         <ChevronDownIcon
           className={cn(
             "size-3.5 shrink-0 opacity-70 transition-transform duration-200",
@@ -1494,7 +1496,7 @@ function WorkGroupToggleTimelineRow({
         />
       </span>
       {row.expanded ? (
-        <span className="font-medium text-foreground/82">
+        <span className="font-medium text-foreground">
           Show fewer{" "}
           {row.onlyTaskEntries
             ? "subagent tasks"
@@ -1503,7 +1505,7 @@ function WorkGroupToggleTimelineRow({
               : "log entries"}
         </span>
       ) : (
-        <span className="font-medium text-foreground/82">
+        <span className="font-medium text-foreground">
           +{row.hiddenCount} previous {labelNoun}
         </span>
       )}
@@ -1608,7 +1610,7 @@ const UserMessageElementContextChip = memo(function UserMessageElementContextChi
     <Tooltip>
       <TooltipTrigger
         render={
-          <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-xs text-foreground/85">
+          <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-foreground/85 text-xs">
             <MousePointerClickIcon className="size-3 shrink-0" />
             <span className="truncate">{props.context.header}</span>
           </span>
@@ -1651,13 +1653,13 @@ function UserMessagePreviewAnnotationCard(props: {
       ) : null}
       <div className="min-w-0 px-2.5 py-2">
         {props.annotation.comment ? (
-          <div className="max-w-80 truncate text-xs font-medium text-foreground/90">
+          <div className="max-w-80 truncate text-foreground text-xs font-medium">
             {props.annotation.comment}
           </div>
         ) : null}
         <div
           className={cn(
-            "flex items-center gap-2 text-[10px] text-muted-foreground",
+            "flex items-center gap-2 text-secondary-label text-[10px]",
             props.annotation.comment && "mt-1",
           )}
         >
@@ -1746,7 +1748,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
               aria-expanded={expanded}
               data-scroll-anchor-ignore
               onClick={() => setExpanded((value) => !value)}
-              className="-ml-1 h-6 rounded-md px-1.5 text-xs text-muted-foreground/72 hover:bg-muted/55 hover:text-foreground/85"
+              className="-ml-1 h-6 rounded-md px-1.5 text-secondary-label text-xs hover:bg-muted/55 hover:text-message-foreground"
             >
               {expanded ? "Show less" : "Show full message"}
             </Button>
@@ -1785,7 +1787,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             cwd={props.markdownCwd}
             threadRef={ctx.threadRef ?? undefined}
             skills={props.skills}
-            className="text-foreground"
+            className="text-message-foreground"
             lineBreaks
           />
         ) : null}
@@ -1797,7 +1799,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   const reviewCommentSegments = parseReviewCommentMessageSegments(props.text);
   if (reviewCommentSegments.some((segment) => segment.kind === "review-comment")) {
     return (
-      <div className="space-y-3 text-sm leading-relaxed text-foreground">
+      <div className="space-y-3 text-message-foreground text-sm leading-relaxed">
         {reviewCommentSegments.map((segment) =>
           segment.kind === "text" ? (
             segment.text.trim().length > 0 ? (
@@ -1807,7 +1809,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
                   cwd={props.markdownCwd}
                   threadRef={ctx.threadRef ?? undefined}
                   skills={props.skills}
-                  className="text-foreground"
+                  className="text-message-foreground"
                   lineBreaks
                 />
               </div>
@@ -1866,7 +1868,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         }
 
         return (
-          <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
+          <div className="whitespace-pre-wrap wrap-break-word text-message-foreground text-sm leading-relaxed">
             {inlineNodes}
           </div>
         );
@@ -1895,7 +1897,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           cwd={props.markdownCwd}
           threadRef={ctx.threadRef ?? undefined}
           skills={props.skills}
-          className="text-foreground"
+          className="text-message-foreground"
           lineBreaks
         />,
       );
@@ -1904,7 +1906,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     }
 
     return (
-      <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
+      <div className="whitespace-pre-wrap wrap-break-word text-message-foreground text-sm leading-relaxed">
         {inlineNodes}
       </div>
     );
@@ -1920,7 +1922,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       cwd={props.markdownCwd}
       threadRef={ctx.threadRef ?? undefined}
       skills={props.skills}
-      className="text-foreground"
+      className="text-message-foreground"
       lineBreaks
     />
   );
@@ -1937,10 +1939,10 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
   return (
     <div className="space-y-2 rounded-lg border border-border/70 bg-background/70 p-3">
       <div className="space-y-1">
-        <div className="text-xs font-medium text-foreground">
+        <div className="text-message-foreground text-xs font-medium">
           {formatWorkspaceRelativePath(comment.filePath, ctx.workspaceRoot)}
         </div>
-        <div className="text-[11px] text-muted-foreground">
+        <div className="text-secondary-label text-[11px]">
           {comment.sectionTitle} · {comment.rangeLabel}
         </div>
       </div>
@@ -1955,7 +1957,7 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
           cwd={ctx.markdownCwd}
           threadRef={ctx.threadRef ?? undefined}
           skills={ctx.skills}
-          className="text-foreground"
+          className="text-message-foreground"
         />
       )}
       {renderablePatch?.kind === "files" &&
@@ -2081,24 +2083,24 @@ function workToneIcon(tone: TimelineWorkEntry["tone"]): {
   if (tone === "error") {
     return {
       iconName: "circle-alert",
-      className: "text-foreground/92",
+      className: "text-foreground",
     };
   }
   if (tone === "thinking") {
     return {
       iconName: "bot",
-      className: "text-foreground/92",
+      className: "text-foreground",
     };
   }
   if (tone === "info") {
     return {
       iconName: "check",
-      className: "text-muted-foreground",
+      className: "text-icon-muted",
     };
   }
   return {
     iconName: "zap",
-    className: "text-foreground/92",
+    className: "text-foreground",
   };
 }
 
@@ -2179,8 +2181,14 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
     case "mcp_tool_call":
       return "wrench";
     case "dynamic_tool_call":
-    case "collab_agent_tool_call":
       return "hammer";
+    case "collab_agent_tool_call":
+      return "bot";
+  }
+
+  // Subagent lifecycle rows (grouped by taskId) get agent identity chrome.
+  if (workEntry.taskId) {
+    return "bot";
   }
 
   return workToneIcon(workEntry.tone).iconName;
@@ -2333,7 +2341,113 @@ const ThreadTaskWorkEntryRow = memo(function ThreadTaskWorkEntryRow(props: {
   );
 });
 
+/**
+ * A1 spawn CTA: one anchored row per workflow run (or per-turn direct-spawn
+ * batch). Live status is derived from the shared agent panel model at render
+ * time — the row itself never re-renders a roster; the Agents panel is the
+ * only roster. Freezes to past tense when every member settles. Static dot,
+ * no animation.
+ */
+const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: TimelineWorkEntry }) {
+  const { workEntry } = props;
+  const { agentPanelModel, onOpenAgents } = use(TimelineRowCtx);
+  const spawn = workEntry.agentSpawn;
+  if (!spawn) {
+    return null;
+  }
+
+  const memberIds = new Set(spawn.agentTaskIds);
+  const workflowGroup = spawn.workflowId
+    ? agentPanelModel.workflows.find((group) => group.workflow.id === spawn.workflowId)
+    : undefined;
+  const agents = workflowGroup
+    ? [...workflowGroup.phases.flatMap((phase) => phase.members), ...workflowGroup.unphasedMembers]
+    : agentPanelModel.directAgents.filter((agent) => memberIds.has(agent.id));
+  const agentCount = Math.max(
+    agents.length,
+    Math.max(memberIds.size - (spawn.workflowId ? 1 : 0), 0),
+  );
+
+  const running = agents.filter(
+    (agent) => agent.status === "running" || agent.status === "pending",
+  ).length;
+  const waiting = agents.filter((agent) => agent.status === "waiting").length;
+  const failed = agents.filter((agent) => agent.status === "failed").length;
+  // The coordinator's own status is authoritative for workflows: dynamic
+  // spawns mean the member list can be momentarily all-settled while the
+  // run is still mid-flight (the "completed" lie from live testing). A
+  // workflow is live until the coordinator itself reaches a terminal state.
+  const coordinatorStatus = workflowGroup?.workflow.status;
+  const coordinatorSettled =
+    coordinatorStatus === "completed" ||
+    coordinatorStatus === "failed" ||
+    coordinatorStatus === "cancelled" ||
+    coordinatorStatus === "interrupted";
+  const live = workflowGroup !== undefined ? !coordinatorSettled : running + waiting > 0;
+  // Same rule as the panel footer: providers may aggregate member usage into
+  // the coordinator, so count the coordinator only when no members exist.
+  const totalTokens = agents.reduce(
+    (sum, agent) => sum + (agent.usage?.totalTokens ?? 0),
+    spawn.workflowId && agents.length === 0 ? (workflowGroup?.workflow.usage?.totalTokens ?? 0) : 0,
+  );
+
+  const livePhase = workflowGroup?.phases.find((phase) => phase.state === "running");
+  const workflowName =
+    workflowGroup?.workflow.workflowName ?? workflowGroup?.workflow.title ?? null;
+
+  // One steady in-flight presentation (monitoring-pill rule): waiting and
+  // stalled agents read as working; only settled states differentiate.
+  const working = running + waiting;
+  const dotClass = live ? "bg-info" : failed > 0 ? "bg-destructive" : "bg-success";
+  const lead = live
+    ? `Kicked off ${agentCount} subagent${agentCount === 1 ? "" : "s"}`
+    : `Ran ${agentCount} subagent${agentCount === 1 ? "" : "s"}`;
+  const status = live
+    ? livePhase
+      ? `${livePhase.title} · ${livePhase.activeCount} working`
+      : working > 0
+        ? `${working} working`
+        : "working"
+    : failed > 0
+      ? `${failed} failed`
+      : "✓ completed";
+
+  return (
+    <button
+      type="button"
+      onClick={onOpenAgents}
+      className="-mx-1 flex w-full items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-left text-[13px] transition hover:bg-accent/50"
+    >
+      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", dotClass)} />
+      <WorkEntryIconSvg name="bot" className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate">
+        <span className="font-medium">{lead}</span>
+        {workflowName ? <span className="text-muted-foreground"> · {workflowName}</span> : null}
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[.7rem] text-muted-foreground">
+        <span>{status}</span>
+        {totalTokens > 0 ? (
+          <span className="tabular-nums">Σ {formatSubagentTokenCount(totalTokens)}</span>
+        ) : null}
+        <span className="text-info-foreground">{live ? "Open Agents ▸" : "View ▸"}</span>
+      </span>
+    </button>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
+  workEntry: TimelineWorkEntry;
+  workspaceRoot: string | undefined;
+}) {
+  const { workEntry, workspaceRoot } = props;
+  // Before any hooks: spawn CTA rows render their own component.
+  if (workEntry.agentSpawn) {
+    return <AgentSpawnCtaRow workEntry={workEntry} />;
+  }
+  return <PlainWorkEntryRow workEntry={workEntry} workspaceRoot={workspaceRoot} />;
+});
+
+const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
 }) {
@@ -2365,14 +2479,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : showDestructiveRowStyle
         ? "text-destructive"
         : workEntry.tone === "tool" || showFailedIndicator
-          ? "text-muted-foreground/65"
+          ? "text-icon-muted"
           : iconConfig.className,
   );
   const headingClass = showWarningIndicator
     ? "font-medium text-warning"
     : showDestructiveRowStyle
       ? "font-medium text-destructive"
-      : "font-medium text-foreground/82";
+      : "font-medium text-foreground";
   const turnSettled = !activity.activeTurnInProgress;
   const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
   const showSuccessIndicator =
@@ -2414,11 +2528,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             <p className="flex min-w-0 w-full items-baseline gap-1.5 text-[12px] leading-5">
               <span className={cn("min-w-0 shrink truncate", headingClass)}>{heading}</span>
               {preview && (
-                <span className="min-w-0 flex-1 truncate text-muted-foreground/55">{preview}</span>
+                <span className="min-w-0 flex-1 truncate text-secondary-label">{preview}</span>
               )}
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-px text-muted-foreground/55">
+          <div className="flex shrink-0 items-center gap-px text-icon-muted">
             <span
               className="flex size-4 shrink-0 items-center justify-center"
               aria-hidden={!canExpand}
@@ -2483,7 +2597,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
-          <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground select-text">
+          <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-[11px] leading-relaxed select-text">
             {expandedBody}
           </pre>
         </div>

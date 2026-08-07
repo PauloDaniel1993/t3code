@@ -12,48 +12,55 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveTaskCardExpansionA11y,
-  resolveTimelineEndFollowing,
-  resolveTimelineIsAtExactEnd,
+  resolveTimelineIsAtEnd,
+  TIMELINE_FOLLOW_REARM_THRESHOLD_PX,
   workEntryIsTranscriptVisible,
   workLogEntryIsTaskLike,
   type MessagesTimelineRow,
   type StableMessagesTimelineRowsState,
 } from "./MessagesTimeline.logic";
 
-describe("timeline end following", () => {
-  it("stops following on a manual gesture and re-arms only at the exact end", () => {
+describe("timeline live edge", () => {
+  it("re-arms inside the strict pixel band but not in LegendList's near-end region", () => {
+    const contentLength = 2_000;
+    const scrollLength = 800;
+
     expect(
-      resolveTimelineEndFollowing({
-        current: true,
-        manualNavigation: true,
-        isAtExactEnd: undefined,
+      resolveTimelineIsAtEnd({
+        isAtEnd: false,
+        contentLength,
+        scroll: contentLength - scrollLength - TIMELINE_FOLLOW_REARM_THRESHOLD_PX,
+        scrollLength,
       }),
-    ).toBe(false);
-    // LegendList still reports "near end" a notch up; only the exact end re-arms.
-    expect(
-      resolveTimelineEndFollowing({ current: false, manualNavigation: false, isAtExactEnd: false }),
-    ).toBe(false);
-    expect(
-      resolveTimelineEndFollowing({ current: false, manualNavigation: false, isAtExactEnd: true }),
     ).toBe(true);
     expect(
-      resolveTimelineEndFollowing({
-        current: false,
-        manualNavigation: false,
-        isAtExactEnd: undefined,
+      resolveTimelineIsAtEnd({
+        isAtEnd: false,
+        contentLength,
+        scroll: contentLength - scrollLength - TIMELINE_FOLLOW_REARM_THRESHOLD_PX - 1,
+        scrollLength,
+      }),
+    ).toBe(false);
+    expect(
+      resolveTimelineIsAtEnd({
+        isAtEnd: false,
+        contentLength,
+        scroll: 900,
+        scrollLength,
       }),
     ).toBe(false);
   });
 
-  it("measures the exact end from the list extent", () => {
+  it("subtracts the composer inset and falls back to the strict list flag", () => {
     expect(
-      resolveTimelineIsAtExactEnd({ contentLength: 1000, scroll: 800, scrollLength: 200 }),
+      resolveTimelineIsAtEnd(
+        { isAtEnd: false, contentLength: 2_100, scroll: 1_170, scrollLength: 800 },
+        100,
+      ),
     ).toBe(true);
-    expect(
-      resolveTimelineIsAtExactEnd({ contentLength: 1000, scroll: 680, scrollLength: 200 }),
-    ).toBe(false);
-    expect(resolveTimelineIsAtExactEnd(undefined)).toBeUndefined();
-    expect(resolveTimelineIsAtExactEnd({ scroll: 10, scrollLength: 200 })).toBeUndefined();
+    expect(resolveTimelineIsAtEnd({ isAtEnd: true })).toBe(true);
+    expect(resolveTimelineIsAtEnd({ isAtEnd: false })).toBe(false);
+    expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
   });
 });
 

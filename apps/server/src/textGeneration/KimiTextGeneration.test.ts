@@ -52,7 +52,7 @@ it.layer(NodeServices.layer)("KimiTextGeneration", (it) => {
             message: "Add Kimi subscription",
             modelSelection: {
               instanceId: ProviderInstanceId.make("kimi"),
-              model: "kimi-default",
+              model: "composer-2",
             },
           });
         }),
@@ -65,6 +65,18 @@ it.layer(NodeServices.layer)("KimiTextGeneration", (it) => {
       expect(requestLog).toContain('"methodId":"login"');
       expect(requestLog).toContain('"method":"session/new"');
       expect(requestLog).toContain('"method":"session/prompt"');
+      const requestLines = requestLog.trim().split(/\r?\n/u);
+      const modelConfigIndex = requestLines.findIndex(
+        (line) =>
+          line.includes('"method":"session/set_config_option"') &&
+          line.includes('"configId":"model"') &&
+          line.includes('"value":"composer-2"'),
+      );
+      const promptIndex = requestLines.findIndex((line) =>
+        line.includes('"method":"session/prompt"'),
+      );
+      expect(modelConfigIndex).toBeGreaterThanOrEqual(0);
+      expect(modelConfigIndex).toBeLessThan(promptIndex);
       // Windows terminates the process tree without delivering a POSIX signal
       // to the fixture; POSIX hosts can additionally assert the child finalizer.
       if (hostPlatform !== "win32") {

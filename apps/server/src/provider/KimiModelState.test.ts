@@ -1,7 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
@@ -74,10 +73,7 @@ describe("KimiModelState", () => {
   it("never offers the execution mode as a selectable model option", () => {
     // `mode` is Kimi's permission policy: `auto`/`yolo` make it approve tool
     // calls internally, which would bypass the thread's approval prompts.
-    const descriptors = buildKimiModels(
-      [],
-      configOptions,
-    )[0]?.capabilities?.optionDescriptors;
+    const descriptors = buildKimiModels([], configOptions)[0]?.capabilities?.optionDescriptors;
     expect(descriptors?.some((descriptor) => descriptor.id === "mode")).toBe(false);
     expect(isKimiModeConfigOption(configOptions[2]!)).toBe(true);
     expect(isKimiModeConfigOption(configOptions[1]!)).toBe(false);
@@ -87,17 +83,28 @@ describe("KimiModelState", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const state = yield* makeKimiModelState(["kimi-custom"]);
-        const updateFiber = yield* state.streamChanges.pipe(Stream.runHead, Effect.forkChild);
+        const updatesFiber = yield* state.streamChanges.pipe(
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
         yield* Effect.yieldNow;
 
         yield* state.publishConfigOptions(configOptions);
-        const update = yield* Fiber.join(updateFiber);
+        yield* state.publishConfigOptions(configOptions);
+        const updatedConfigOptions = configOptions.map((option) =>
+          option.id === "thinking" ? { ...option, currentValue: "high" } : option,
+        );
+        yield* state.publishConfigOptions(updatedConfigOptions);
+        const updates = Array.from(yield* Fiber.join(updatesFiber));
         const current = yield* state.getSnapshot;
 
-        expect(Option.getOrThrow(update).models.map((model) => model.slug)).toEqual(
+        expect(updates).toHaveLength(2);
+        expect(updates[0]?.models.map((model) => model.slug)).toEqual(
           current.models.map((model) => model.slug),
         );
-        expect(current.configOptions).toEqual(configOptions);
+        expect(updates[1]?.configOptions).toEqual(updatedConfigOptions);
+        expect(current.configOptions).toEqual(updatedConfigOptions);
       }),
     ),
   );

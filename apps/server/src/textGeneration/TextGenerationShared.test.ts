@@ -90,6 +90,63 @@ describe("makeJsonTextGeneration", () => {
     }),
   );
 
+  it.effect("forwards policy, change request template, and previous title to prompts", () =>
+    Effect.gen(function* () {
+      const prompts: Array<string> = [];
+      const responses = [
+        '{"subject":"Update provider","body":""}',
+        '{"title":"Update provider","body":"## Summary\\n- Updated"}',
+        '{"title":"Updated provider title"}',
+      ];
+      const service = makeJsonTextGeneration({
+        providerLabel: "Kimi",
+        defaultTimeoutMs: 1_000,
+        runRaw: (prompt) =>
+          Effect.sync(() => {
+            prompts.push(prompt);
+            return responses.shift() ?? "";
+          }),
+      });
+      const policy = {
+        kind: "custom" as const,
+        commitInstructions: "Use a provider scope.",
+        changeRequestInstructions: "Mention compatibility.",
+        inferRepositoryConventions: false,
+      };
+
+      yield* service.generateCommitMessage({
+        cwd: "/repo",
+        branch: "dev",
+        stagedSummary: "summary",
+        stagedPatch: "patch",
+        policy,
+        modelSelection,
+      });
+      yield* service.generatePrContent({
+        cwd: "/repo",
+        baseBranch: "main",
+        headBranch: "dev",
+        commitSummary: "summary",
+        diffSummary: "diff",
+        diffPatch: "patch",
+        changeRequestTemplate: "## Summary",
+        policy,
+        modelSelection,
+      });
+      yield* service.generateThreadTitle({
+        cwd: "/repo",
+        message: "updated thread contents",
+        previousTitle: "Old provider title",
+        modelSelection,
+      });
+
+      expect(prompts[0]).toContain("Use a provider scope.");
+      expect(prompts[1]).toContain("Mention compatibility.");
+      expect(prompts[1]).toContain("Repository change request template:\n## Summary");
+      expect(prompts[2]).toContain('The previous title was "Old provider title".');
+    }),
+  );
+
   it.effect("rejects empty output without retrying a permanent failure", () =>
     Effect.gen(function* () {
       const harness = run([""]);

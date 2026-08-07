@@ -215,6 +215,8 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   readonly pane?: "screen" | "sidebar";
   /** Draws the "Pending" divider above the first queued row. */
   readonly showPendingDivider: boolean;
+  /** Keeps row hairlines inside a section; section headers draw their own rule. */
+  readonly showTrailingDivider?: boolean;
   readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
 }) {
@@ -302,7 +304,9 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
           ) : (
             <View className="bg-screen">
               <View className="px-5 py-2.5">{rowContent}</View>
-              <View className="ml-5 h-px bg-border-subtle" />
+              {props.showTrailingDivider !== false ? (
+                <View className="ml-5 h-px bg-border-subtle" />
+              ) : null}
             </View>
           )}
         </Pressable>
@@ -323,6 +327,8 @@ function ThreadListV2RowComponent(props: {
   readonly variant: "card" | "slim";
   /** Snoozed-shelf row: shows its wake time and offers Wake. */
   readonly snoozed?: boolean;
+  /** Pinned-block row: shows the pin glyph and offers Unpin. */
+  readonly pinned?: boolean;
   /** Preformatted against the parent minute tick so this memoized row's
       countdown keeps moving. */
   readonly snoozeWakeLabelText?: string;
@@ -343,6 +349,8 @@ function ThreadListV2RowComponent(props: {
       into the drawer surface, selection filled with the accent color —
       matching the v1 sidebar rows. */
   readonly pane?: "screen" | "sidebar";
+  /** Keeps row hairlines inside a section; section headers draw their own rule. */
+  readonly showTrailingDivider?: boolean;
   /** Highlights the thread open in the detail pane (iPad split view). The
       compact Home list never sets it — phones navigate away on select. */
   readonly selected?: boolean;
@@ -355,11 +363,15 @@ function ThreadListV2RowComponent(props: {
   readonly onUnsnoozeThread: (thread: EnvironmentThreadShell) => void;
   readonly onUnsettleThread: (thread: EnvironmentThreadShell) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
+  readonly onPinThread: (thread: EnvironmentThreadShell) => void;
+  readonly onUnpinThread: (thread: EnvironmentThreadShell) => void;
   /** False on environments whose server predates thread.settle/unsettle:
       swipe + menu fall back to Archive instead of failing on use. */
   readonly settlementSupported: boolean;
   /** False on servers that predate thread.snooze/unsnooze. */
   readonly snoozeSupported: boolean;
+  /** False on servers that predate thread.pin/unpin. */
+  readonly pinningSupported: boolean;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   /** Reports this row's live PR state up so the partition can auto-settle
@@ -389,9 +401,12 @@ function ThreadListV2RowComponent(props: {
     onUnsnoozeThread,
     onUnsettleThread,
     onArchiveThread,
+    onPinThread,
+    onUnpinThread,
     onChangeRequestState,
   } = props;
   const snoozedRow = props.snoozed === true;
+  const pinnedRow = props.pinned === true;
 
   const pr = useThreadPr(thread, props.projectCwd ?? props.project?.workspaceRoot ?? null);
   const prState = pr?.state ?? null;
@@ -404,6 +419,7 @@ function ThreadListV2RowComponent(props: {
   const drawerColor = useThemeColor("--color-drawer");
   const pressedBackgroundColor = useThemeColor("--color-subtle");
   const selectedBackgroundColor = useThemeColor("--color-user-bubble");
+  const pinTintColor = useThemeColor("--color-foreground-muted");
   const sidebarPane = props.pane === "sidebar";
   const selected = props.selected === true;
 
@@ -419,6 +435,8 @@ function ThreadListV2RowComponent(props: {
   );
   const handleUnsnooze = useCallback(() => onUnsnoozeThread(thread), [onUnsnoozeThread, thread]);
   const handleUnsettle = useCallback(() => onUnsettleThread(thread), [onUnsettleThread, thread]);
+  const handlePin = useCallback(() => onPinThread(thread), [onPinThread, thread]);
+  const handleUnpin = useCallback(() => onUnpinThread(thread), [onUnpinThread, thread]);
   const handleArchive = useCallback(() => onArchiveThread(thread), [onArchiveThread, thread]);
 
   // Swipe: the v2 primary action is the lifecycle transition. Every settled
@@ -455,6 +473,20 @@ function ThreadListV2RowComponent(props: {
       })),
     [snoozePresets],
   );
+  // Pinned cards keep the full lifecycle menu; only the pin item flips to
+  // Unpin. (Settling a pinned thread clears the pin server-side; snoozing
+  // hides the card until wake with the pin intact.)
+  const pinMenuItem = useMemo<MenuAction[]>(
+    () =>
+      props.pinningSupported
+        ? [
+            pinnedRow
+              ? { id: "unpin", title: "Unpin", image: "pin.slash" }
+              : { id: "pin", title: "Pin", image: "pin" },
+          ]
+        : [],
+    [pinnedRow, props.pinningSupported],
+  );
   const snoozableCardMenuActions = useMemo<MenuAction[]>(
     () => [
       { id: "settle", title: "Settle", image: "checkmark" },
@@ -464,15 +496,22 @@ function ThreadListV2RowComponent(props: {
         image: "clock",
         subactions: snoozePresetActions,
       },
+      ...pinMenuItem,
       { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
     ],
-    [snoozePresetActions],
+    [pinMenuItem, snoozePresetActions],
+  );
+  const cardMenuActions = useMemo<MenuAction[]>(
+    () => [CARD_MENU_ACTIONS[0]!, ...pinMenuItem, ...CARD_MENU_ACTIONS.slice(1)],
+    [pinMenuItem],
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
       if (nativeEvent.event === "unsnooze") handleUnsnooze();
+      if (nativeEvent.event === "pin") handlePin();
+      if (nativeEvent.event === "unpin") handleUnpin();
       if (nativeEvent.event === "archive") handleArchive();
       if (nativeEvent.event === "delete") handleDelete();
       const snoozeSelection = resolveThreadListV2SnoozeMenuSelection({
@@ -489,8 +528,10 @@ function ThreadListV2RowComponent(props: {
     [
       handleArchive,
       handleDelete,
+      handlePin,
       handleSettle,
       handleSnooze,
+      handleUnpin,
       handleUnsettle,
       handleUnsnooze,
       snoozePresets,
@@ -581,6 +622,9 @@ function ThreadListV2RowComponent(props: {
         >
           {props.projectTitle ?? props.project?.title ?? ""}
         </Text>
+        {pinnedRow ? (
+          <SymbolView name="pin" size={11} tintColor={pinTintColor} type="monochrome" />
+        ) : null}
         <Text
           className={cn(
             "text-xs tabular-nums",
@@ -772,7 +816,9 @@ function ThreadListV2RowComponent(props: {
              actions reveal behind the row. */
           <View className="bg-screen">
             <View className="px-5 py-2.5">{cardContent}</View>
-            <View className="ml-5 h-px bg-border-subtle" />
+            {props.showTrailingDivider !== false ? (
+              <View className="ml-5 h-px bg-border-subtle" />
+            ) : null}
           </View>
         )}
       </Pressable>
@@ -920,7 +966,7 @@ function ThreadListV2RowComponent(props: {
                     ? SLIM_MENU_ACTIONS
                     : swipeActions.secondary === "snooze"
                       ? snoozableCardMenuActions
-                      : CARD_MENU_ACTIONS
+                      : cardMenuActions
             }
             onPressAction={handleMenuAction}
             shouldOpenOnLongPress

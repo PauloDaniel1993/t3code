@@ -3,7 +3,10 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 
 import type { ChatAttachment } from "@t3tools/contracts";
-import { lookupAttachmentFileType } from "@t3tools/shared/attachmentFileTypes";
+import {
+  getAttachmentFileExtension,
+  lookupAttachmentFileType,
+} from "@t3tools/shared/attachmentFileTypes";
 
 import {
   normalizeAttachmentRelativePath,
@@ -37,11 +40,14 @@ export function toSafeThreadAttachmentSegment(threadId: string): string | null {
   return segment;
 }
 
+export function toCanonicalThreadAttachmentSegment(threadId: string): string | null {
+  const segment = toSafeThreadAttachmentSegment(threadId);
+  return segment === threadId ? segment : null;
+}
+
 export function createAttachmentId(threadId: string): string | null {
-  const threadSegment = toSafeThreadAttachmentSegment(threadId);
-  if (threadSegment !== threadId) {
-    return null;
-  }
+  const threadSegment = toCanonicalThreadAttachmentSegment(threadId);
+  if (!threadSegment) return null;
   return `${threadSegment}-${NodeCrypto.randomUUID()}`;
 }
 
@@ -61,7 +67,7 @@ export function isAttachmentOwnedByThread(input: {
   readonly attachmentId: string;
   readonly threadId: string;
 }): boolean {
-  const expectedThreadSegment = toSafeThreadAttachmentSegment(input.threadId);
+  const expectedThreadSegment = toCanonicalThreadAttachmentSegment(input.threadId);
   const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(input.attachmentId);
   return expectedThreadSegment !== null && attachmentThreadSegment === expectedThreadSegment;
 }
@@ -75,15 +81,18 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
       });
       return `${attachment.id}${extension}`;
     }
-    case "document":
+    case "document": {
+      if (getAttachmentFileExtension(attachment.name) !== "pdf") {
+        throw new Error(`Attachment '${attachment.name}' does not have a .pdf final extension.`);
+      }
       return `${attachment.id}.pdf`;
+    }
     case "file": {
       const fileType = lookupAttachmentFileType(attachment.name);
-      const extensionIndex = attachment.name.lastIndexOf(".");
-      if (!fileType || extensionIndex <= 0 || extensionIndex === attachment.name.length - 1) {
+      const extension = getAttachmentFileExtension(attachment.name);
+      if (!fileType || !extension) {
         throw new Error(`Attachment '${attachment.name}' does not have a registered extension.`);
       }
-      const extension = attachment.name.slice(extensionIndex + 1).toLowerCase();
       return `${attachment.id}.${extension}`;
     }
   }

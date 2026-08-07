@@ -90,6 +90,7 @@ export function BetaSettingsPanel() {
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
   const threadTasksEnabled = useClientSettings((settings) => settings.threadTasksEnabled);
+  const planModeEnabled = useClientSettings((settings) => settings.planModeEnabled);
   const updateSettings = useUpdateClientSettings();
 
   // The task caps are server settings: the decider enforces them, and that is
@@ -158,7 +159,7 @@ export function BetaSettingsPanel() {
           </>
         ) : null}
         <SettingsRow
-          title="Thread tasks"
+          {...searchableSetting("thread-tasks")}
           description="Delegate work to a sub-thread that runs on its own and returns its results here, waking this thread when it finishes. You and the agent can both start one. Needs an up-to-date server. Turning this off hides the task surface — task threads stay in the sidebar as ordinary threads, and nothing is lost."
           control={
             <Switch
@@ -173,7 +174,7 @@ export function BetaSettingsPanel() {
         {threadTasksEnabled ? (
           <>
             <SettingsRow
-              title="Tasks running at once"
+              {...searchableSetting("thread-task-max-running")}
               description={`How many tasks one thread may have queued or running at the same time. Creating one past the limit is refused until a slot frees up — the agent is told to wait or cancel. Between ${MIN_THREAD_TASK_MAX_RUNNING} and ${MAX_THREAD_TASK_MAX_RUNNING}; every running task is a full provider session, so raise it as far as your machine and your plan can carry.`}
               control={
                 <BoundedNumberInput
@@ -186,7 +187,7 @@ export function BetaSettingsPanel() {
               }
             />
             <SettingsRow
-              title="Tasks in total per thread"
+              {...searchableSetting("thread-task-max-total")}
               description={`How many tasks one thread may create over its whole life, counting finished and deleted ones. This is the backstop on a task waking its parent, which starts another task, and so on. Leave it empty to keep it at ${THREAD_TASK_TOTAL_PER_RUNNING}× the concurrent limit — currently ${resolvedLimits.maxTotal}.`}
               control={
                 <BoundedNumberInput
@@ -202,6 +203,17 @@ export function BetaSettingsPanel() {
             />
           </>
         ) : null}
+        <SettingsRow
+          {...searchableSetting("restore-plan-mode")}
+          description="Legacy feature. Brings back the Build/Plan toggle in the composer along with the /plan and /default commands and the Shift+Tab shortcut. While off, every thread runs in build mode."
+          control={
+            <Switch
+              checked={planModeEnabled}
+              onCheckedChange={(checked) => updateSettings({ planModeEnabled: Boolean(checked) })}
+              aria-label="Restore plan mode (legacy)"
+            />
+          }
+        />
       </SettingsSection>
     </SettingsPageContainer>
   );

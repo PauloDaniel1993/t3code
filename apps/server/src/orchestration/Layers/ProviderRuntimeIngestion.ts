@@ -7,6 +7,8 @@ import {
   type OrchestrationMessage,
   type OrchestrationProposedPlanId,
   CheckpointRef,
+  classifyTaskAgentKind,
+  EventId,
   isToolLifecycleItemType,
   ThreadId,
   type ThreadTokenUsageSnapshot,
@@ -33,6 +35,8 @@ import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
+import { ThreadPlanProgressService } from "../ThreadPlanProgress.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -131,6 +135,8 @@ type RuntimeIngestionInput =
       event: TurnStartRequestedDomainEvent;
     };
 
+type TaskProgressRuntimeEvent = Extract<ProviderRuntimeEvent, { type: "task.progress" }>;
+
 const TERMINAL_RUNTIME_EVENT_TYPES: ReadonlySet<ProviderRuntimeEvent["type"]> = new Set([
   "session.exited",
   "turn.completed",
@@ -185,6 +191,16 @@ function mergeRuntimeIngestionInput(
   return undefined;
 }
 
+function taskProgressHasActivityState(payload: TaskProgressRuntimeEvent["payload"]): boolean {
+  return (
+    payload.typedUsage === undefined ||
+    payload.summary !== undefined ||
+    payload.lastToolName !== undefined ||
+    payload.status !== undefined ||
+    payload.error !== undefined
+  );
+}
+
 function toScheduledInput(
   input: RuntimeIngestionInput,
 ): ScheduledProviderInput<RuntimeIngestionInput> {
@@ -200,7 +216,19 @@ function toScheduledInput(
   }
 
   const deliveryClass = classifyProviderEvent(input.event);
-  const replacementKey = providerEventReplacementKey(input.event);
+  const baseReplacementKey = providerEventReplacementKey(input.event);
+  // Upstream models task activity and typed usage as independent latest-state
+  // streams. A combined event is left uncoalesced; a usage-only event gets a
+  // distinct key so the fork scheduler cannot replace one stream with the
+  // other while a lane is under pressure.
+  const replacementKey =
+    input.event.type === "task.progress" && input.event.payload.typedUsage !== undefined
+      ? taskProgressHasActivityState(input.event.payload)
+        ? undefined
+        : baseReplacementKey === undefined
+          ? undefined
+          : `${baseReplacementKey}:usage`
+      : baseReplacementKey;
   const mergeKey = providerEventMergeKey(input.event);
   return {
     value: input,
@@ -449,6 +477,57 @@ function requestKindFromCanonicalRequestType(
   }
 }
 
+/**
+ * Copies the optional TaskAgentLinkage bundle from a task.* runtime payload
+ * into the persisted activity payload. Identity fields ride on every row so
+ * client folds survive activity retention; absent fields stay absent.
+ */
+function taskLinkageActivityFields(payload: Record<string, unknown>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {
+    // Server-stamped classification: persisted rows are self-describing, so
+    // clients trust the stamp instead of re-deriving agent-vs-background
+    // from taskType denylists and marker heuristics (legacy rows without a
+    // stamp keep the client fallback).
+    agentKind: classifyTaskAgentKind({
+      taskType: typeof payload.taskType === "string" ? payload.taskType : undefined,
+      agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
+    }),
+  };
+  for (const key of [
+    "retryOfTaskId",
+    "taskType",
+    "agentId",
+    "title",
+    "role",
+    "model",
+    "effort",
+    "toolUseId",
+    "subagentType",
+    "parentAgentId",
+    "workflowName",
+    "prompt",
+    "skipTranscript",
+    "nativeAgent",
+    "agentIndex",
+    "phaseIndex",
+    "phaseTitle",
+    "phases",
+    "attempt",
+    "runHandles",
+    "outputFile",
+    "agentPath",
+    "timelineBypass",
+    "typedUsage",
+    "status",
+    "error",
+  ] as const) {
+    if (payload[key] !== undefined) {
+      fields[key] = payload[key];
+    }
+  }
+  return fields;
+}
+
 export function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
   taskTitle?: string,
@@ -669,6 +748,7 @@ export function runtimeEventToActivities(
             ...(event.payload.nativeAgent !== undefined
               ? { nativeAgent: event.payload.nativeAgent }
               : {}),
+            ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -677,37 +757,137 @@ export function runtimeEventToActivities(
     }
 
     case "task.progress": {
+      const linkage = taskLinkageActivityFields(event.payload as Record<string, unknown>);
+      // Usage and activity are independent latest-state streams. Keeping them
+      // under separate stable ids prevents a command/reasoning update from
+      // replacing the last known token count (and prevents a usage-only tick
+      // from blanking the last meaningful activity).
+      const identityLinkage = { ...linkage };
+      delete identityLinkage.typedUsage;
+      delete identityLinkage.status;
+      delete identityLinkage.error;
+      const title =
+        event.payload.description.trim().length > 0
+          ? { title: truncateDetail(event.payload.description, 120) }
+          : {};
+      const hasProgressState = taskProgressHasActivityState(event.payload);
+      return [
+        ...(hasProgressState
+          ? [
+              {
+                // Stable per-task id: activity is "latest state", not
+                // history, so each meaningful tick replaces the last. This
+                // bounds a large fleet to one activity row per task.
+                id: EventId.make(`task-progress:${event.threadId}:${event.payload.taskId}`),
+                createdAt: event.createdAt,
+                tone: "info" as const,
+                kind: "task.progress" as const,
+                summary:
+                  event.payload.description.trim().length > 0
+                    ? truncateDetail(event.payload.description, 120)
+                    : "Reasoning update",
+                payload: {
+                  taskId: event.payload.taskId,
+                  ...title,
+                  description: event.payload.description,
+                  detail: truncateDetail(event.payload.summary ?? event.payload.description),
+                  ...(event.payload.summary
+                    ? { summary: truncateDetail(event.payload.summary) }
+                    : {}),
+                  ...(event.payload.lastToolName
+                    ? { lastToolName: event.payload.lastToolName }
+                    : {}),
+                  ...(event.payload.status ? { status: event.payload.status } : {}),
+                  ...(event.payload.error ? { error: event.payload.error } : {}),
+                  ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
+                  ...identityLinkage,
+                },
+                turnId: toTurnId(event.turnId) ?? null,
+                ...maybeSequence,
+              },
+            ]
+          : []),
+        ...(event.payload.typedUsage !== undefined
+          ? [
+              {
+                id: EventId.make(`task-usage:${event.threadId}:${event.payload.taskId}`),
+                createdAt: event.createdAt,
+                tone: "info" as const,
+                kind: "task.progress" as const,
+                summary: "Task usage updated",
+                payload: {
+                  taskId: event.payload.taskId,
+                  ...title,
+                  ...identityLinkage,
+                  usageSnapshot: true,
+                  typedUsage: event.payload.typedUsage,
+                },
+                turnId: toTurnId(event.turnId) ?? null,
+                ...maybeSequence,
+              },
+            ]
+          : []),
+      ];
+    }
+
+    case "task.updated": {
       return [
         {
-          id: stableReplaceableActivityId(event) ?? event.eventId,
+          id: event.eventId,
           createdAt: event.createdAt,
-          tone: "info",
-          kind: "task.progress",
+          tone: event.payload.status === "failed" ? "error" : "info",
+          kind: "task.updated",
           summary:
-            event.payload.description.trim().length > 0
-              ? truncateDetail(event.payload.description, 120)
-              : "Reasoning update",
+            event.payload.status === "failed"
+              ? "Task failed"
+              : event.payload.status
+                ? `Task ${event.payload.status}`
+                : "Task updated",
           payload: {
             taskId: event.payload.taskId,
-            ...(event.payload.description.trim().length > 0
-              ? { title: truncateDetail(event.payload.description, 120) }
+            ...(event.payload.description
+              ? {
+                  description: event.payload.description,
+                  detail: truncateDetail(event.payload.description),
+                }
               : {}),
-            description: event.payload.description,
-            detail: truncateDetail(event.payload.summary ?? event.payload.description),
-            ...(event.payload.toolUseId !== undefined
-              ? { toolUseId: event.payload.toolUseId }
+            ...(event.payload.endedAt ? { endedAt: event.payload.endedAt } : {}),
+            ...(event.payload.isBackgrounded !== undefined
+              ? { isBackgrounded: event.payload.isBackgrounded }
               : {}),
-            ...(event.payload.subagentType !== undefined
-              ? { subagentType: event.payload.subagentType }
+            ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "tool.progress": {
+      const isTaskHeartbeat = event.payload.taskId !== undefined;
+      return [
+        {
+          // Agent-owned heartbeats stay bounded to one row per task. Parent
+          // tool progress keeps the fork's provider-aware stable identity
+          // when the adapter supplied enough canonical tool identity.
+          id: isTaskHeartbeat
+            ? EventId.make(`tool-progress:${event.threadId}:${event.payload.taskId}`)
+            : (stableToolActivityId(event) ?? event.eventId),
+          createdAt: event.createdAt,
+          tone: isTaskHeartbeat ? "info" : "tool",
+          kind: "tool.progress",
+          summary: event.payload.summary ?? event.payload.toolName ?? "Tool progress",
+          payload: {
+            ...(event.payload.taskId !== undefined ? { taskId: event.payload.taskId } : {}),
+            ...(event.payload.toolName ? { toolName: event.payload.toolName } : {}),
+            ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
+            ...(event.payload.elapsedSeconds !== undefined
+              ? { elapsedSeconds: event.payload.elapsedSeconds }
+              : {}),
+            ...(event.payload.parentToolUseId !== undefined
+              ? { parentToolUseId: event.payload.parentToolUseId }
               : {}),
             ...(event.payload.summary !== undefined ? { summary: event.payload.summary } : {}),
-            ...(event.payload.lastToolName !== undefined
-              ? { lastToolName: event.payload.lastToolName }
-              : {}),
-            ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
-            ...(event.payload.nativeAgent !== undefined
-              ? { nativeAgent: event.payload.nativeAgent }
-              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -718,7 +898,7 @@ export function runtimeEventToActivities(
     case "task.completed": {
       return [
         {
-          id: stableReplaceableActivityId(event) ?? event.eventId,
+          id: event.eventId,
           createdAt: event.createdAt,
           tone: event.payload.status === "failed" ? "error" : "info",
           kind: "task.completed",
@@ -760,34 +940,7 @@ export function runtimeEventToActivities(
               : {}),
             ...(event.payload.error !== undefined ? { error: event.payload.error } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "tool.progress": {
-      return [
-        {
-          id: stableToolActivityId(event) ?? event.eventId,
-          createdAt: event.createdAt,
-          tone: "tool",
-          kind: "tool.progress",
-          summary: event.payload.summary ?? event.payload.toolName ?? "Tool in progress",
-          payload: {
-            ...(event.payload.toolUseId !== undefined
-              ? { toolUseId: event.payload.toolUseId }
-              : {}),
-            ...(event.payload.parentToolUseId !== undefined
-              ? { parentToolUseId: event.payload.parentToolUseId }
-              : {}),
-            ...(event.payload.toolName !== undefined ? { toolName: event.payload.toolName } : {}),
-            ...(event.payload.elapsedSeconds !== undefined
-              ? { elapsedSeconds: event.payload.elapsedSeconds }
-              : {}),
-            ...(event.payload.taskId !== undefined ? { taskId: event.payload.taskId } : {}),
-            ...(event.payload.summary !== undefined ? { summary: event.payload.summary } : {}),
+            ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -857,6 +1010,11 @@ export function runtimeEventToActivities(
             ...(event.itemId !== undefined ? { toolUseId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
+            ...(event.payload.parentToolUseId
+              ? { parentToolUseId: event.payload.parentToolUseId }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -887,6 +1045,10 @@ export function runtimeEventToActivities(
             ...(event.payload.data !== undefined
               ? { data: boundedTerminalToolData(event.payload.data) }
               : {}),
+            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
+            ...(event.payload.parentToolUseId
+              ? { parentToolUseId: event.payload.parentToolUseId }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -913,6 +1075,10 @@ export function runtimeEventToActivities(
             itemType: event.payload.itemType,
             ...(event.itemId !== undefined ? { toolUseId: event.itemId } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
+            ...(event.payload.parentToolUseId
+              ? { parentToolUseId: event.payload.parentToolUseId }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -928,6 +1094,8 @@ export function runtimeEventToActivities(
 }
 
 const make = Effect.gen(function* () {
+  const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
+  const threadPlanProgress = yield* ThreadPlanProgressService;
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -2144,6 +2312,58 @@ const make = Effect.gen(function* () {
           yield* rememberTaskDescription(thread.id, event.payload.taskId, description);
         }
       }
+      // Working-indicator plan progress: current step while the turn runs,
+      // cleared on settle so a finished plan never lingers as stale UI.
+      // Events carrying a turn id that conflicts with the active turn are
+      // stale (superseded turn) and must neither overwrite nor clear the
+      // active turn's progress; session.exited always clears.
+      if (event.type === "session.exited") {
+        threadPlanProgress.clearThreadPlanProgress(thread.id);
+      } else if (!conflictsWithActiveTurn) {
+        if (event.type === "turn.plan.updated") {
+          threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
+        } else if (event.type === "turn.completed" || event.type === "turn.aborted") {
+          threadPlanProgress.clearThreadPlanProgress(thread.id);
+        }
+      }
+
+      // Sidebar background liveness: fed from the same lifecycle stream,
+      // read by the shell query at mapping time (no persistence).
+      switch (event.type) {
+        case "task.started":
+        case "task.progress":
+        case "task.updated":
+        case "task.completed": {
+          const payload = event.payload as {
+            taskId: string;
+            taskType?: string;
+            status?: string;
+            agentId?: string;
+          };
+          threadBackgroundLiveness.recordTaskLiveness({
+            threadId: thread.id,
+            taskId: payload.taskId,
+            taskType: payload.taskType,
+            status: payload.status,
+            agentId: payload.agentId,
+            kind:
+              event.type === "task.started"
+                ? "started"
+                : event.type === "task.progress"
+                  ? "progress"
+                  : event.type === "task.updated"
+                    ? "updated"
+                    : "completed",
+          });
+          break;
+        }
+        case "session.exited":
+          threadBackgroundLiveness.clearThreadLiveness(thread.id);
+          break;
+        default:
+          break;
+      }
+
       let taskTitle: string | undefined;
       if (event.type === "task.completed") {
         taskTitle = yield* lookupTaskDescription(thread.id, event.payload.taskId);
@@ -2154,10 +2374,12 @@ const make = Effect.gen(function* () {
       }
 
       const activities = runtimeEventToActivities(event, taskTitle);
-      const stableActivityId = stableReplaceableActivityId(event);
       yield* Effect.forEach(activities, (activity) =>
         Effect.gen(function* () {
-          const isStableUpsert = stableActivityId === activity.id;
+          // Runtime event ids represent append-only history. Any derived id is
+          // a latest-state slot and must preserve its original ordering while
+          // replacing the payload, including upstream task usage/heartbeats.
+          const isStableUpsert = activity.id !== event.eventId;
           const existing = isStableUpsert
             ? Option.getOrUndefined(
                 yield* projectionThreadActivityRepository.getByActivityId({

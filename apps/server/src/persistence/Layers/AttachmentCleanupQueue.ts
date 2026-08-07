@@ -106,17 +106,11 @@ const makeAttachmentCleanupQueueRepository = Effect.gen(function* () {
       ),
     );
 
-  const discard: AttachmentCleanupQueueRepositoryShape["discard"] = (input) =>
-    deleteIntent(input).pipe(
-      Effect.mapError(toPersistenceSqlError("AttachmentCleanupQueueRepository.discard:query")),
-    );
-
   return {
     enqueue,
     listPending,
     markSucceeded,
     recordFailure,
-    discard,
   } satisfies AttachmentCleanupQueueRepositoryShape;
 });
 
