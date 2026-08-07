@@ -1,15 +1,7 @@
-import type { AppearanceColorScheme, DesktopBridge } from "@t3tools/contracts";
+import type { DesktopBridge } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { resolveActiveAppearanceTheme } from "../appearance/appearanceThemes";
-import { setColorScheme } from "../appearance/appearanceOperations";
-import {
-  reconcileAppearanceColorScheme,
-  updateAppearance,
-  useClientSettings,
-  useClientSettingsHydrated,
-} from "./useSettings";
 import {
   applyThemePalette,
   CUSTOM_THEMES_STORAGE_KEY,
@@ -41,7 +33,7 @@ type ThemeSnapshot = {
 
 type DesktopThemeBridge = Pick<DesktopBridge, "setTheme">;
 
-const THEME_STORAGE_KEY = "t3code:theme";
+const STORAGE_KEY = "t3code:theme";
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
 const DEFAULT_THEME_SNAPSHOT: ThemeSnapshot = {
   theme: "system",
@@ -140,32 +132,6 @@ function isThemePreferenceMode(value: string | null): value is ThemePreferenceMo
   return value === "light" || value === "dark" || value === "system";
 }
 
-function isAppearanceColorScheme(value: string): value is AppearanceColorScheme {
-  return value === "light" || value === "dark" || value === "system";
-}
-
-/**
- * Read only explicitly persisted compatibility inputs. The contract-backed
- * preference wins when none of these keys exists; an existing upstream key
- * wins when both versions are present, including when its value is `system`.
- */
-function readPersistedAppearanceMode(theme: Theme): ThemePreferenceMode | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const appearanceMode = window.localStorage.getItem(THEME_APPEARANCE_MODE_STORAGE_KEY);
-    if (isThemePreferenceMode(appearanceMode)) return appearanceMode;
-
-    const followSystem = window.localStorage.getItem(THEME_FOLLOW_SYSTEM_STORAGE_KEY);
-    if (followSystem === "true") return "system";
-    if (followSystem === "false") return getThemePreferenceMode(theme) ?? "light";
-
-    const legacyTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return legacyTheme !== null && isAppearanceColorScheme(legacyTheme) ? legacyTheme : null;
-  } catch {
-    return null;
-  }
-}
-
 export function readAppearanceModePreference(theme: Theme): ThemePreferenceMode {
   if (typeof window !== "undefined") {
     try {
@@ -199,11 +165,11 @@ export function readThemePreference(): Theme {
   if (typeof window === "undefined") return DEFAULT_THEME_SNAPSHOT.theme;
   let raw: string | null;
   try {
-    raw = window.localStorage.getItem(THEME_STORAGE_KEY);
+    raw = window.localStorage.getItem(STORAGE_KEY);
   } catch (cause) {
     throw new ThemeStorageError({
       operation: "read",
-      storageKey: THEME_STORAGE_KEY,
+      storageKey: STORAGE_KEY,
       cause,
     });
   }
@@ -216,12 +182,12 @@ export function readThemePreference(): Theme {
 export function writeThemePreference(theme: Theme): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    window.localStorage.setItem(STORAGE_KEY, theme);
     themeStorageReadFailure = null;
   } catch (cause) {
     throw new ThemeStorageError({
       operation: "write",
-      storageKey: THEME_STORAGE_KEY,
+      storageKey: STORAGE_KEY,
       theme,
       cause,
     });
@@ -239,7 +205,7 @@ function getStored(): Theme {
       ? cause
       : new ThemeStorageError({
           operation: "read",
-          storageKey: THEME_STORAGE_KEY,
+          storageKey: STORAGE_KEY,
           cause,
         });
     themeStorageReadFailure = error;
@@ -446,23 +412,14 @@ function handleSystemAppearanceChange() {
 }
 
 function handleStorageChange(e: StorageEvent) {
-  if (e.key === THEME_STORAGE_KEY) {
+  if (e.key === STORAGE_KEY) {
     themeStorageReadFailure = null;
-    if (e.newValue !== null && isAppearanceColorScheme(e.newValue)) {
-      reconcileAppearanceColorScheme(e.newValue);
-    }
     applyTheme(getStored(), true);
     emitChange();
   } else if (e.key === THEME_FOLLOW_SYSTEM_STORAGE_KEY) {
     applyTheme(getStored(), true);
     emitChange();
-  } else if (e.key === THEME_APPEARANCE_MODE_STORAGE_KEY) {
-    if (e.newValue !== null && isThemePreferenceMode(e.newValue)) {
-      reconcileAppearanceColorScheme(e.newValue);
-    }
-    applyTheme(getStored(), true);
-    emitChange();
-  } else if (e.key === THEME_HALVES_STORAGE_KEY) {
+  } else if (e.key === THEME_APPEARANCE_MODE_STORAGE_KEY || e.key === THEME_HALVES_STORAGE_KEY) {
     applyTheme(getStored(), true);
     emitChange();
   } else if (e.key === CUSTOM_THEMES_STORAGE_KEY || e.key === null) {
@@ -503,8 +460,6 @@ function subscribe(listener: () => void): () => void {
 
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-  const appearance = useClientSettings((settings) => settings.appearance);
-  const hydrated = useClientSettingsHydrated();
   const theme = snapshot.theme;
 
   const resolvedTheme: "light" | "dark" = resolveThemeAppearance(
@@ -540,7 +495,7 @@ export function useTheme() {
         ? cause
         : new ThemeStorageError({
             operation: "write",
-            storageKey: THEME_STORAGE_KEY,
+            storageKey: STORAGE_KEY,
             theme: next,
             cause,
           });
@@ -551,9 +506,6 @@ export function useTheme() {
         ...safeErrorLogAttributes(error),
       });
       return false;
-    }
-    if (isAppearanceColorScheme(next)) {
-      updateAppearance((current) => setColorScheme(current, next));
     }
     applyTheme(next, true);
     emitChange();
@@ -580,7 +532,6 @@ export function useTheme() {
       return false;
     }
     themeStorageReadFailure = null;
-    updateAppearance((current) => setColorScheme(current, nextAppearanceMode));
     applyTheme(getStored(), true);
     emitChange();
     return true;
@@ -661,53 +612,7 @@ export function useTheme() {
     emitChange();
   }, []);
 
-  // Reconcile the two persisted generations once hydration identifies the
-  // contract-backed value. Explicit upstream keys win even when they contain
-  // a default value; otherwise the contract value seeds the upstream mirror.
-  useEffect(() => {
-    if (!hydrated) return;
-    const persistedMode = readPersistedAppearanceMode(theme);
-    if (persistedMode !== null) {
-      if (persistedMode !== appearance.colorScheme) {
-        updateAppearance((current) => setColorScheme(current, persistedMode));
-      }
-      return;
-    }
-    try {
-      writeAppearanceModePreference(appearance.colorScheme);
-    } catch (cause) {
-      const error = isThemeStorageError(cause)
-        ? cause
-        : new ThemeStorageError({
-            operation: "write",
-            storageKey: THEME_APPEARANCE_MODE_STORAGE_KEY,
-            cause,
-          });
-      console.error(error.message, {
-        operation: error.operation,
-        storageKey: error.storageKey,
-        ...safeErrorLogAttributes(error),
-      });
-      return;
-    }
-    lastAppliedTheme = null;
-    applyTheme(theme, true);
-    emitChange();
-  }, [appearance.colorScheme, hydrated, theme]);
-
-  // Density has no legacy storage twin. Expose the resolved contract value as
-  // a stable document hook while the upstream theme library remains the only
-  // owner of palette colors and custom themes.
-  useEffect(() => {
-    if (!hydrated || typeof document === "undefined") return;
-    const density = resolveActiveAppearanceTheme(appearance).density;
-    document.documentElement.dataset.appearanceDensity = density;
-    document.documentElement.style.setProperty(
-      "--app-density-scale",
-      density === "compact" ? "0.85" : density === "comfortable" ? "1.2" : "1",
-    );
-  }, [appearance, hydrated]);
-
+  // Keep DOM in sync on mount/change
   useEffect(() => {
     applyTheme(theme);
   }, [snapshot.appearanceMode, theme]);

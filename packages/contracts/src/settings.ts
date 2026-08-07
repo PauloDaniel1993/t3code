@@ -1,6 +1,5 @@
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
@@ -111,226 +110,6 @@ export const EnvironmentIdentificationMode = Schema.Literals(["artwork", "pill",
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
 
-export const BUILT_IN_APPEARANCE_THEME_IDS = [
-  "default",
-  "readable",
-  "compact",
-  "terminal",
-] as const;
-export const AppearanceBuiltInThemeId = Schema.Literals(BUILT_IN_APPEARANCE_THEME_IDS);
-export type AppearanceBuiltInThemeId = typeof AppearanceBuiltInThemeId.Type;
-
-export const APPEARANCE_FONT_SIZE_BOUNDS = {
-  uiFontSizePx: { min: 12, max: 20, default: 14 },
-  chatFontSizePx: { min: 13, max: 24, default: 14 },
-  codeFontSizePx: { min: 11, max: 22, default: 12 },
-  terminalFontSizePx: { min: 11, max: 22, default: 12 },
-} as const;
-
-export const DEFAULT_UI_FONT_STACK =
-  '"DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
-export const DEFAULT_MONO_FONT_STACK =
-  '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace';
-export const DEFAULT_TERMINAL_FONT_STACK = DEFAULT_MONO_FONT_STACK;
-export const DEFAULT_TERMINAL_FONT_FAMILY = DEFAULT_TERMINAL_FONT_STACK;
-
-export const AppearanceColorScheme = Schema.Literals(["system", "light", "dark"]);
-export type AppearanceColorScheme = typeof AppearanceColorScheme.Type;
-
-export const AppearanceDensity = Schema.Literals(["compact", "default", "comfortable"]);
-export type AppearanceDensity = typeof AppearanceDensity.Type;
-
-export const AppearanceDiffMarkerStyle = Schema.Literals(["color", "color-and-markers"]);
-export type AppearanceDiffMarkerStyle = typeof AppearanceDiffMarkerStyle.Type;
-
-export const HexColor = Schema.String.check(
-  Schema.isPattern(/^#[0-9a-fA-F]{6}$/, { expected: "a #RRGGBB hex color" }),
-);
-export type HexColor = typeof HexColor.Type;
-
-const FONT_FAMILY_FALLBACK_LIST_PATTERN =
-  /^(?:"[A-Za-z0-9 _-]+"|[A-Za-z0-9 _-]+)(?:\s*,\s*(?:"[A-Za-z0-9 _-]+"|[A-Za-z0-9 _-]+))*$/;
-
-export const AppearanceFontFamily = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(256),
-  Schema.isPattern(FONT_FAMILY_FALLBACK_LIST_PATTERN, {
-    expected: "a valid CSS font-family fallback list",
-  }),
-);
-export type AppearanceFontFamily = typeof AppearanceFontFamily.Type;
-
-export const AppearanceCustomThemeId = Schema.String.check(
-  Schema.isPattern(/^custom-[a-z0-9][a-z0-9-]{2,63}$/, {
-    expected: "a lowercase custom theme id",
-  }),
-);
-export type AppearanceCustomThemeId = typeof AppearanceCustomThemeId.Type;
-
-const makeFontSizeSchema = (bounds: { readonly min: number; readonly max: number }) =>
-  Schema.Number.check(
-    Schema.isFinite(),
-    Schema.isBetween({ minimum: bounds.min, maximum: bounds.max }),
-  );
-
-export const AppearanceThemeVariant = Schema.Struct({
-  accent: HexColor,
-  background: HexColor,
-  foreground: HexColor,
-  surface: HexColor,
-  muted: HexColor,
-  contrast: Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: 0.5, maximum: 2 })),
-  translucentSidebar: Schema.Boolean,
-});
-export type AppearanceThemeVariant = typeof AppearanceThemeVariant.Type;
-
-export const AppearanceTheme = Schema.Struct({
-  id: AppearanceCustomThemeId,
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
-  uiFontFamily: AppearanceFontFamily,
-  monoFontFamily: AppearanceFontFamily,
-  terminalFontFamily: AppearanceFontFamily,
-  uiFontSizePx: makeFontSizeSchema(APPEARANCE_FONT_SIZE_BOUNDS.uiFontSizePx),
-  chatFontSizePx: makeFontSizeSchema(APPEARANCE_FONT_SIZE_BOUNDS.chatFontSizePx),
-  codeFontSizePx: makeFontSizeSchema(APPEARANCE_FONT_SIZE_BOUNDS.codeFontSizePx),
-  terminalFontSizePx: makeFontSizeSchema(APPEARANCE_FONT_SIZE_BOUNDS.terminalFontSizePx),
-  density: AppearanceDensity,
-  diffMarkerStyle: AppearanceDiffMarkerStyle,
-  variants: Schema.Struct({
-    light: AppearanceThemeVariant,
-    dark: AppearanceThemeVariant,
-  }),
-});
-export type AppearanceTheme = typeof AppearanceTheme.Type;
-
-const builtInAppearanceThemeIdSet = new Set<string>(BUILT_IN_APPEARANCE_THEME_IDS);
-const collidesWithBuiltInAppearanceThemeId = (id: string): boolean =>
-  builtInAppearanceThemeIdSet.has(id.toLowerCase());
-
-const AppearanceSettingsStruct = Schema.Struct({
-  colorScheme: AppearanceColorScheme,
-  activeThemeId: Schema.String,
-  customThemeOrder: Schema.Array(AppearanceCustomThemeId),
-  customThemes: Schema.Record(AppearanceCustomThemeId, AppearanceTheme),
-}).check(
-  Schema.makeFilter(
-    (appearance) => {
-      const customThemeIds = Object.keys(appearance.customThemes);
-      const orderedIds = appearance.customThemeOrder;
-      return (
-        customThemeIds.every(
-          (id) =>
-            appearance.customThemes[id]?.id === id && !collidesWithBuiltInAppearanceThemeId(id),
-        ) &&
-        new Set(orderedIds).size === orderedIds.length &&
-        orderedIds.length === customThemeIds.length &&
-        orderedIds.every((id) => appearance.customThemes[id] !== undefined) &&
-        (builtInAppearanceThemeIdSet.has(appearance.activeThemeId) ||
-          appearance.customThemes[appearance.activeThemeId] !== undefined)
-      );
-    },
-    { expected: "a complete, internally consistent appearance state" },
-  ),
-);
-
-export const StrictAppearanceSettingsSchema = AppearanceSettingsStruct;
-export type AppearanceSettings = typeof StrictAppearanceSettingsSchema.Type;
-
-export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
-  colorScheme: "system",
-  activeThemeId: "default",
-  customThemeOrder: [],
-  customThemes: {},
-};
-
-const AppearanceSettingsEncoded = Schema.Struct({
-  colorScheme: Schema.optionalKey(Schema.Unknown),
-  activeThemeId: Schema.optionalKey(Schema.Unknown),
-  customThemeOrder: Schema.optionalKey(Schema.Unknown),
-  customThemes: Schema.optionalKey(Schema.Unknown),
-});
-
-let appearanceThemeDecoder: ((input: unknown) => Option.Option<AppearanceTheme>) | undefined;
-const decodeAppearanceTheme = (input: unknown): Option.Option<AppearanceTheme> => {
-  appearanceThemeDecoder ??= Schema.decodeUnknownOption(AppearanceTheme);
-  return appearanceThemeDecoder(input);
-};
-type AppearanceSettingsEncodedType = typeof AppearanceSettingsEncoded.Type;
-type StrictAppearanceSettingsEncoded = typeof StrictAppearanceSettingsSchema.Encoded;
-
-export const AppearanceSettingsSchema = AppearanceSettingsEncoded.pipe(
-  Schema.decodeTo(
-    StrictAppearanceSettingsSchema,
-    SchemaTransformation.transformOrFail<
-      StrictAppearanceSettingsEncoded,
-      AppearanceSettingsEncodedType
-    >({
-      decode: (encoded) => {
-        const customThemes: Record<string, AppearanceTheme> = {};
-        if (
-          typeof encoded.customThemes === "object" &&
-          encoded.customThemes !== null &&
-          !Array.isArray(encoded.customThemes)
-        ) {
-          for (const [key, candidate] of Object.entries(encoded.customThemes)) {
-            const decoded = decodeAppearanceTheme(candidate);
-            if (
-              Option.isSome(decoded) &&
-              decoded.value.id === key &&
-              !collidesWithBuiltInAppearanceThemeId(decoded.value.id)
-            ) {
-              customThemes[key] = decoded.value;
-            }
-          }
-        }
-
-        const requestedOrder = Array.isArray(encoded.customThemeOrder)
-          ? encoded.customThemeOrder.filter((id): id is string => typeof id === "string")
-          : [];
-        const orderedIds: string[] = [];
-        const seenIds = new Set<string>();
-        for (const id of requestedOrder) {
-          if (customThemes[id] !== undefined && !seenIds.has(id)) {
-            seenIds.add(id);
-            orderedIds.push(id);
-          }
-        }
-        for (const id of Object.keys(customThemes).sort()) {
-          if (!seenIds.has(id)) {
-            orderedIds.push(id);
-          }
-        }
-
-        const requestedActiveThemeId =
-          typeof encoded.activeThemeId === "string" ? encoded.activeThemeId : "default";
-        const activeThemeId =
-          builtInAppearanceThemeIdSet.has(requestedActiveThemeId) ||
-          customThemes[requestedActiveThemeId] !== undefined
-            ? requestedActiveThemeId
-            : "default";
-        const colorScheme =
-          encoded.colorScheme === "light" || encoded.colorScheme === "dark"
-            ? encoded.colorScheme
-            : "system";
-
-        return Effect.succeed({
-          colorScheme,
-          activeThemeId,
-          customThemeOrder: orderedIds,
-          customThemes,
-        });
-      },
-      encode: (appearance) =>
-        Effect.succeed({
-          colorScheme: appearance.colorScheme,
-          activeThemeId: appearance.activeThemeId,
-          customThemeOrder: [...appearance.customThemeOrder],
-          customThemes: { ...appearance.customThemes },
-        }),
-    }),
-  ),
-  Schema.withDecodingDefault(Effect.succeed({})),
-);
-
 /**
  * A user-chosen font family (a single name or a comma-separated list). Empty
  * means "use the app default"; clients compose their own fallback stacks.
@@ -339,7 +118,6 @@ export const FontFamilyPreference = Schema.String.check(Schema.isMaxLength(200))
 export type FontFamilyPreference = typeof FontFamilyPreference.Type;
 
 export const ClientSettingsSchema = Schema.Struct({
-  appearance: AppearanceSettingsSchema,
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -435,10 +213,6 @@ export const ClientSettingsSchema = Schema.Struct({
   threadTasksEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
-  ),
-  /** @deprecated Kept for legacy migration; new code reads `appearance`. */
-  terminalFontFamily: TrimmedString.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_TERMINAL_FONT_FAMILY)),
   ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
@@ -1068,7 +842,6 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
-  appearance: Schema.optionalKey(StrictAppearanceSettingsSchema),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
@@ -1118,7 +891,6 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarV2ConfiguredByUser: Schema.optionalKey(Schema.Boolean),
   threadTasksEnabled: Schema.optionalKey(Schema.Boolean),
   timestampFormat: Schema.optionalKey(TimestampFormat),
-  terminalFontFamily: Schema.optionalKey(TrimmedString),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

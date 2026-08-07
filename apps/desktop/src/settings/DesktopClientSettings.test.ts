@@ -169,37 +169,6 @@ describe("DesktopClientSettings", () => {
         if (Option.isSome(persisted)) {
           assert.equal(persisted.value.timestampFormat, "24-hour");
         }
-        const snapshot = yield* settings.getWithMeta;
-        assert.isTrue(Option.isSome(snapshot));
-        if (Option.isSome(snapshot)) {
-          assert.isFalse(snapshot.value.appearanceWasPersisted);
-        }
-      }),
-    ),
-  );
-
-  it.effect("detects raw Appearance presence before recovery decoding", () =>
-    withClientSettings(
-      Effect.gen(function* () {
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const settings = yield* DesktopClientSettings.DesktopClientSettings;
-        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
-        yield* fileSystem.writeFileString(
-          environment.clientSettingsPath,
-          `{
-            "appearance": {
-              "customThemes": 42
-            }
-          }\n`,
-        );
-
-        const snapshot = yield* settings.getWithMeta;
-        assert.isTrue(Option.isSome(snapshot));
-        if (Option.isSome(snapshot)) {
-          assert.isTrue(snapshot.value.appearanceWasPersisted);
-          assert.deepEqual(snapshot.value.settings.appearance, DEFAULT_CLIENT_SETTINGS.appearance);
-        }
       }),
     ),
   );

@@ -52,28 +52,6 @@ describe("clientPersistenceStorage", () => {
     expect(readBrowserClientSettings()).toEqual(settings);
   });
 
-  it("reports raw Appearance presence before recovery decoding", async () => {
-    const testWindow = getTestWindow();
-    const { readBrowserClientSettingsWithMeta } = await import("./clientPersistenceStorage");
-
-    testWindow.localStorage.setItem(
-      "t3code:client-settings:v1",
-      JSON.stringify({ timestampFormat: "24-hour" }),
-    );
-    expect(readBrowserClientSettingsWithMeta()).toMatchObject({
-      appearanceWasPersisted: false,
-      settings: { timestampFormat: "24-hour" },
-    });
-
-    testWindow.localStorage.setItem(
-      "t3code:client-settings:v1",
-      JSON.stringify({ appearance: { customThemes: 42 } }),
-    );
-    const recovered = readBrowserClientSettingsWithMeta();
-    expect(recovered.appearanceWasPersisted).toBe(true);
-    expect(recovered.settings?.appearance).toEqual(DEFAULT_CLIENT_SETTINGS.appearance);
-  });
-
   it("reports structured decode failures while preserving the fallback", async () => {
     const testWindow = getTestWindow();
     testWindow.localStorage.setItem("t3code:client-settings:v1", "not-json");

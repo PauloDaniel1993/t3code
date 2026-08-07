@@ -18,22 +18,17 @@ import {
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import {
-  type AppearanceSettings,
   type ClientSettingsPatch,
   type ClientSettings,
   DEFAULT_CLIENT_SETTINGS,
   type EnvironmentIdentificationMode,
-  StrictAppearanceSettingsSchema,
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { APP_STAGE_LABEL } from "~/branding";
 import { resolveSidebarV2Enabled } from "~/branding.logic";
-import { ensureLocalApi, readClientSettingsWithMeta } from "~/localApi";
-import * as Schema from "effect/Schema";
+import { ensureLocalApi } from "~/localApi";
 import * as Struct from "effect/Struct";
-import { migrateLegacyAppearance } from "~/appearance/appearanceMigration";
-import { THEME_STORAGE_KEY } from "~/appearance/legacyTheme";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -50,13 +45,7 @@ let clientSettingsHydrationPromise: Promise<void> | null = null;
 let clientSettingsHydrationGeneration = 0;
 let pendingHydrationPatch: ClientSettingsPatch = {};
 let pendingHydrationNeedsPersist = false;
-const pendingAppearanceMutations: Array<{
-  readonly updater: (appearance: AppearanceSettings) => AppearanceSettings;
-  readonly persist: boolean;
-}> = [];
 let clientSettingsPersistChain: Promise<void> = Promise.resolve();
-
-const decodeStrictAppearance = Schema.decodeUnknownSync(StrictAppearanceSettingsSchema);
 
 function emitClientSettingsChange() {
   for (const listener of clientSettingsListeners) {
@@ -77,19 +66,6 @@ function getClientSettingsSnapshot(): ClientSettings {
 function replaceClientSettingsSnapshot(settings: ClientSettings): void {
   clientSettingsSnapshot = settings;
   emitClientSettingsChange();
-}
-
-function readLegacyThemeMode(): string | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  try {
-    return window.localStorage.getItem(THEME_STORAGE_KEY);
-  } catch {
-    // useTheme owns user-visible storage diagnostics. Migration safely falls
-    // back to the default system mode when the legacy mirror is unavailable.
-    return null;
-  }
 }
 
 function enqueueClientSettingsPersist(settings: ClientSettings): void {
@@ -134,28 +110,15 @@ async function hydrateClientSettings(): Promise<void> {
   const hydrationGeneration = clientSettingsHydrationGeneration;
   const nextHydration = (async () => {
     let hydratedSnapshot = DEFAULT_CLIENT_SETTINGS;
-    let migrationNeedsPersist = false;
 
     try {
-      const { settings, appearanceWasPersisted } = await readClientSettingsWithMeta();
+      const settings = await ensureLocalApi().persistence.getClientSettings();
       if (hydrationGeneration !== clientSettingsHydrationGeneration) {
         return;
       }
 
       if (settings !== null) {
         hydratedSnapshot = { ...DEFAULT_CLIENT_SETTINGS, ...settings };
-      }
-      if (!appearanceWasPersisted) {
-        hydratedSnapshot = {
-          ...hydratedSnapshot,
-          appearance: migrateLegacyAppearance({
-            rawAppearancePresent: false,
-            legacyThemeMode: readLegacyThemeMode(),
-            legacyTerminalFontFamily: hydratedSnapshot.terminalFontFamily,
-            defaults: hydratedSnapshot.appearance,
-          }),
-        };
-        migrationNeedsPersist = true;
       }
     } catch (error) {
       console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} hydrate failed`, {
@@ -171,32 +134,13 @@ async function hydrateClientSettings(): Promise<void> {
       return;
     }
 
-    let replayedAppearance = hydratedSnapshot.appearance;
-    let replayedAppearanceNeedsPersist = false;
-    for (const { updater, persist } of pendingAppearanceMutations) {
-      try {
-        replayedAppearance = decodeStrictAppearance(updater(replayedAppearance));
-        replayedAppearanceNeedsPersist ||= persist;
-      } catch (error) {
-        console.error(
-          `${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} hydrate appearance mutation failed`,
-          {
-            operation: "hydrate-replay",
-            ...safeErrorLogAttributes(error),
-          },
-        );
-      }
-    }
     const nextSnapshot: ClientSettings = {
       ...hydratedSnapshot,
       ...pendingHydrationPatch,
-      appearance: replayedAppearance,
     };
-    const shouldPersist =
-      migrationNeedsPersist || pendingHydrationNeedsPersist || replayedAppearanceNeedsPersist;
+    const shouldPersist = pendingHydrationNeedsPersist;
     pendingHydrationPatch = {};
     pendingHydrationNeedsPersist = false;
-    pendingAppearanceMutations.length = 0;
 
     // Mark hydrated and enqueue the hydration write before notifying snapshot
     // listeners. A synchronous listener mutation will therefore queue after
@@ -219,20 +163,13 @@ async function hydrateClientSettings(): Promise<void> {
   return clientSettingsHydrationPromise;
 }
 
-function normalizeClientSettingsPatch(patch: ClientSettingsPatch): ClientSettingsPatch {
-  return patch.appearance === undefined
-    ? patch
-    : { ...patch, appearance: decodeStrictAppearance(patch.appearance) };
-}
-
 function updateClientSettingsSnapshot(
   patch: ClientSettingsPatch,
   options: { readonly persist: boolean },
 ): void {
-  const normalizedPatch = normalizeClientSettingsPatch(patch);
   const nextSnapshot: ClientSettings = {
     ...getClientSettingsSnapshot(),
-    ...normalizedPatch,
+    ...patch,
   };
   replaceClientSettingsSnapshot(nextSnapshot);
 
@@ -243,33 +180,10 @@ function updateClientSettingsSnapshot(
     return;
   }
 
-  const { appearance, ...nonAppearancePatch } = normalizedPatch;
-  pendingHydrationPatch = { ...pendingHydrationPatch, ...nonAppearancePatch };
-  if (Object.keys(nonAppearancePatch).length > 0) {
+  pendingHydrationPatch = { ...pendingHydrationPatch, ...patch };
+  if (Object.keys(patch).length > 0) {
     pendingHydrationNeedsPersist ||= options.persist;
   }
-  if (appearance !== undefined) {
-    pendingAppearanceMutations.push({ updater: () => appearance, persist: options.persist });
-  }
-  void hydrateClientSettings();
-}
-
-function updateAppearanceSnapshot(
-  updater: (appearance: AppearanceSettings) => AppearanceSettings,
-  persist: boolean,
-): void {
-  const appearance = decodeStrictAppearance(updater(getClientSettingsSnapshot().appearance));
-  const nextSnapshot = { ...getClientSettingsSnapshot(), appearance };
-  replaceClientSettingsSnapshot(nextSnapshot);
-
-  if (clientSettingsHydrated) {
-    if (persist) {
-      enqueueClientSettingsPersist(nextSnapshot);
-    }
-    return;
-  }
-
-  pendingAppearanceMutations.push({ updater, persist });
   void hydrateClientSettings();
 }
 
@@ -305,22 +219,6 @@ function splitPatch(patch: UnifiedSettingsPatch): {
  */
 export function getClientSettings(): ClientSettings {
   return getClientSettingsSnapshot();
-}
-
-export function updateAppearance(
-  updater: (appearance: AppearanceSettings) => AppearanceSettings,
-): void {
-  updateAppearanceSnapshot(updater, true);
-}
-
-export function reconcileAppearanceColorScheme(
-  colorScheme: AppearanceSettings["colorScheme"],
-): void {
-  updateAppearanceSnapshot((appearance) => ({ ...appearance, colorScheme }), false);
-}
-
-export function useUpdateAppearance() {
-  return useCallback(updateAppearance, []);
 }
 
 export function useClientSettingsHydrated(): boolean {
@@ -477,7 +375,6 @@ export function __resetClientSettingsPersistenceForTests(): void {
   clientSettingsHydrationPromise = null;
   pendingHydrationPatch = {};
   pendingHydrationNeedsPersist = false;
-  pendingAppearanceMutations.length = 0;
   clientSettingsPersistChain = Promise.resolve();
   clientSettingsListeners.clear();
   clientSettingsHydrationListeners.clear();
@@ -490,7 +387,6 @@ export function __setClientSettingsForTests(settings: ClientSettings): void {
   clientSettingsHydrationPromise = null;
   pendingHydrationPatch = {};
   pendingHydrationNeedsPersist = false;
-  pendingAppearanceMutations.length = 0;
 }
 
 export async function __hydrateClientSettingsForTests(): Promise<void> {

@@ -104,64 +104,6 @@ describe("LocalApi", () => {
     expect(setClientSettings).toHaveBeenCalledWith(DEFAULT_CLIENT_SETTINGS);
   });
 
-  it("infers absent Appearance from an old desktop host without metadata or an Appearance key", async () => {
-    const { appearance: _appearance, ...legacySettings } = DEFAULT_CLIENT_SETTINGS;
-    const getClientSettings = vi.fn().mockResolvedValue(legacySettings);
-    testWindow().desktopBridge = { getClientSettings } as unknown as DesktopBridge;
-
-    const { readClientSettingsWithMeta } = await import("./localApi");
-
-    await expect(readClientSettingsWithMeta()).resolves.toEqual({
-      settings: legacySettings,
-      appearanceWasPersisted: false,
-    });
-  });
-
-  it("infers persisted Appearance from an old desktop host without metadata but with an Appearance key", async () => {
-    const getClientSettings = vi.fn().mockResolvedValue(DEFAULT_CLIENT_SETTINGS);
-    testWindow().desktopBridge = { getClientSettings } as unknown as DesktopBridge;
-
-    const { readClientSettingsWithMeta } = await import("./localApi");
-
-    await expect(readClientSettingsWithMeta()).resolves.toEqual({
-      settings: DEFAULT_CLIENT_SETTINGS,
-      appearanceWasPersisted: true,
-    });
-  });
-
-  it("honors explicitly false desktop Appearance metadata outside the LocalApi settings value", async () => {
-    const getClientSettings = vi.fn().mockResolvedValue({
-      ...DEFAULT_CLIENT_SETTINGS,
-      appearanceWasPersisted: false,
-    });
-    testWindow().desktopBridge = { getClientSettings } as unknown as DesktopBridge;
-
-    const { createLocalApi, readClientSettingsWithMeta } = await import("./localApi");
-
-    await expect(readClientSettingsWithMeta()).resolves.toEqual({
-      settings: DEFAULT_CLIENT_SETTINGS,
-      appearanceWasPersisted: false,
-    });
-    await expect(createLocalApi().persistence.getClientSettings()).resolves.toEqual(
-      DEFAULT_CLIENT_SETTINGS,
-    );
-  });
-
-  it("honors explicitly true desktop Appearance metadata", async () => {
-    const getClientSettings = vi.fn().mockResolvedValue({
-      ...DEFAULT_CLIENT_SETTINGS,
-      appearanceWasPersisted: true,
-    });
-    testWindow().desktopBridge = { getClientSettings } as unknown as DesktopBridge;
-
-    const { readClientSettingsWithMeta } = await import("./localApi");
-
-    await expect(readClientSettingsWithMeta()).resolves.toEqual({
-      settings: DEFAULT_CLIENT_SETTINGS,
-      appearanceWasPersisted: true,
-    });
-  });
-
   it("persists client settings in browser storage", async () => {
     const { createLocalApi } = await import("./localApi");
     const api = createLocalApi();

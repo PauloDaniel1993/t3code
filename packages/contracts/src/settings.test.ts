@@ -12,12 +12,7 @@ import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsPatch,
   ClientSettingsSchema,
-  DEFAULT_APPEARANCE_SETTINGS,
-  DEFAULT_MONO_FONT_STACK,
   DEFAULT_SERVER_SETTINGS,
-  DEFAULT_TERMINAL_FONT_FAMILY,
-  DEFAULT_TERMINAL_FONT_STACK,
-  DEFAULT_UI_FONT_STACK,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
@@ -26,53 +21,8 @@ const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
-const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
-
-const validTheme = (id = "custom-valid", name = "Valid") => ({
-  id,
-  name,
-  uiFontFamily: DEFAULT_UI_FONT_STACK,
-  monoFontFamily: DEFAULT_MONO_FONT_STACK,
-  terminalFontFamily: DEFAULT_TERMINAL_FONT_STACK,
-  uiFontSizePx: 14,
-  chatFontSizePx: 14,
-  codeFontSizePx: 12,
-  terminalFontSizePx: 12,
-  density: "default",
-  diffMarkerStyle: "color",
-  variants: {
-    light: {
-      accent: "#1b4ed8",
-      background: "#ffffff",
-      foreground: "#262626",
-      surface: "#ffffff",
-      muted: "#f5f5f5",
-      contrast: 1,
-      translucentSidebar: false,
-    },
-    dark: {
-      accent: "#366ffb",
-      background: "#161616",
-      foreground: "#f5f5f5",
-      surface: "#1b1b1b",
-      muted: "#1f1f1f",
-      contrast: 1,
-      translucentSidebar: false,
-    },
-  },
-});
-
-const decodeAppearanceWithThemes = (customThemes: Record<string, unknown>) =>
-  decodeClientSettings({
-    appearance: {
-      colorScheme: "system",
-      activeThemeId: "custom-valid",
-      customThemeOrder: Object.keys(customThemes),
-      customThemes,
-    },
-  }).appearance;
 
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
@@ -125,6 +75,22 @@ describe("ClientSettings environment identification", () => {
   });
 });
 
+describe("ClientSettings appearance ownership", () => {
+  it("drops the removed fork appearance payload from persisted settings and patches", () => {
+    const legacyAppearance = {
+      colorScheme: "dark",
+      activeThemeId: "compact",
+      customThemeOrder: [],
+      customThemes: {},
+    };
+
+    expect(decodeClientSettings({ appearance: legacyAppearance })).not.toHaveProperty("appearance");
+    expect(decodeClientSettingsPatch({ appearance: legacyAppearance })).not.toHaveProperty(
+      "appearance",
+    );
+  });
+});
+
 describe("ClientSettings sidebar v2", () => {
   it("defaults the beta off with a three-day auto-settle threshold", () => {
     const settings = decodeClientSettings({});
@@ -166,186 +132,6 @@ describe("ClientSettings sidebar v2", () => {
   it.each([-1, 0, 91])("rejects an auto-settle threshold outside 1..90: %s", (value) => {
     expect(() => decodeClientSettings({ sidebarAutoSettleAfterDays: value })).toThrow();
     expect(() => decodeClientSettingsPatch({ sidebarAutoSettleAfterDays: value })).toThrow();
-  });
-});
-
-describe("ClientSettings appearance", () => {
-  it("decodes a missing appearance field to the complete default state", () => {
-    expect(decodeClientSettings({}).appearance).toEqual(DEFAULT_APPEARANCE_SETTINGS);
-    expect(decodeClientSettings({}).appearance.activeThemeId).toBe("default");
-  });
-
-  it.each(["#FFF", "#11223344", "rgb(1, 2, 3)"])(
-    "discards a custom theme with invalid hex color %s while preserving a valid sibling",
-    (accent) => {
-      const invalid = validTheme("custom-invalid", "Invalid");
-      invalid.variants.light.accent = accent;
-      const appearance = decodeAppearanceWithThemes({
-        "custom-invalid": invalid,
-        "custom-valid": validTheme(),
-      });
-
-      expect(appearance.customThemes).not.toHaveProperty("custom-invalid");
-      expect(appearance.customThemes).toHaveProperty("custom-valid");
-    },
-  );
-
-  it.each([
-    ["uiFontSizePx", 11],
-    ["chatFontSizePx", 25],
-    ["codeFontSizePx", 10],
-    ["terminalFontSizePx", 23],
-  ] as const)("discards a theme with out-of-bounds %s", (field, value) => {
-    const invalid = { ...validTheme("custom-invalid", "Invalid"), [field]: value };
-    const appearance = decodeAppearanceWithThemes({
-      "custom-invalid": invalid,
-      "custom-valid": validTheme(),
-    });
-
-    expect(appearance.customThemes).not.toHaveProperty("custom-invalid");
-    expect(appearance.customThemes).toHaveProperty("custom-valid");
-  });
-
-  it.each([Number.NaN, Number.POSITIVE_INFINITY])(
-    "discards a theme with non-finite font size %s",
-    (uiFontSizePx) => {
-      const appearance = decodeAppearanceWithThemes({
-        "custom-invalid": { ...validTheme("custom-invalid", "Invalid"), uiFontSizePx },
-        "custom-valid": validTheme(),
-      });
-      expect(appearance.customThemes).not.toHaveProperty("custom-invalid");
-      expect(appearance.customThemes).toHaveProperty("custom-valid");
-    },
-  );
-
-  it("discards a theme with invalid density", () => {
-    const appearance = decodeAppearanceWithThemes({
-      "custom-invalid": { ...validTheme("custom-invalid", "Invalid"), density: "dense" },
-      "custom-valid": validTheme(),
-    });
-    expect(appearance.customThemes).not.toHaveProperty("custom-invalid");
-    expect(appearance.customThemes).toHaveProperty("custom-valid");
-  });
-
-  it("discards a theme with a missing variant field", () => {
-    const invalid = validTheme("custom-invalid", "Invalid");
-    const { surface: _surface, ...incompleteLight } = invalid.variants.light;
-    const appearance = decodeAppearanceWithThemes({
-      "custom-invalid": {
-        ...invalid,
-        variants: { ...invalid.variants, light: incompleteLight },
-      },
-      "custom-valid": validTheme(),
-    });
-    expect(appearance.customThemes).not.toHaveProperty("custom-invalid");
-    expect(appearance.customThemes).toHaveProperty("custom-valid");
-  });
-
-  it.each([
-    ["bad-id", "bad-id"],
-    ["Default", "Default"],
-    ["custom-key", "custom-other"],
-  ])("discards invalid or mismatched custom id %s/%s", (key, id) => {
-    const appearance = decodeAppearanceWithThemes({
-      [key]: validTheme(id, "Invalid"),
-      "custom-valid": validTheme(),
-    });
-    expect(appearance.customThemes).not.toHaveProperty(key);
-    expect(appearance.customThemes).toHaveProperty("custom-valid");
-  });
-
-  it("falls back to default for an unknown active theme id", () => {
-    const decoded = decodeClientSettings({
-      appearance: {
-        colorScheme: "dark",
-        activeThemeId: "custom-missing",
-        customThemeOrder: ["custom-valid"],
-        customThemes: { "custom-valid": validTheme() },
-      },
-    });
-    expect(decoded.appearance.activeThemeId).toBe("default");
-    expect(decoded.appearance.colorScheme).toBe("dark");
-  });
-
-  it("deduplicates and prunes order, then appends missing themes lexicographically", () => {
-    const decoded = decodeClientSettings({
-      appearance: {
-        colorScheme: "system",
-        activeThemeId: "custom-beta",
-        customThemeOrder: ["custom-beta", "custom-missing", "custom-beta", "custom-alpha"],
-        customThemes: {
-          "custom-zulu": validTheme("custom-zulu", "Zulu"),
-          "custom-beta": validTheme("custom-beta", "Beta"),
-          "custom-alpha": validTheme("custom-alpha", "Alpha"),
-          "custom-charlie": validTheme("custom-charlie", "Charlie"),
-        },
-      },
-    });
-    expect(decoded.appearance.customThemeOrder).toEqual([
-      "custom-beta",
-      "custom-alpha",
-      "custom-charlie",
-      "custom-zulu",
-    ]);
-  });
-
-  it("round-trips a complete valid custom theme", () => {
-    const decoded = decodeClientSettings({
-      appearance: {
-        colorScheme: "light",
-        activeThemeId: "custom-valid",
-        customThemeOrder: ["custom-valid"],
-        customThemes: { "custom-valid": validTheme() },
-      },
-    });
-    const encoded = encodeClientSettings(decoded);
-    expect(decodeClientSettings(encoded)).toEqual(decoded);
-  });
-});
-
-describe("ClientSettingsPatch appearance", () => {
-  it.each([
-    { customThemes: 42 },
-    {},
-    {
-      colorScheme: "system",
-      activeThemeId: "default",
-      customThemeOrder: [],
-      customThemes: 42,
-    },
-    {
-      colorScheme: "system",
-      activeThemeId: "custom-missing",
-      customThemeOrder: [],
-      customThemes: {},
-    },
-  ])("rejects malformed appearance patch %#", (appearance) => {
-    expect(() => decodeClientSettingsPatch({ appearance })).toThrow();
-  });
-
-  it("accepts a complete valid appearance replacement", () => {
-    const appearance = {
-      colorScheme: "dark" as const,
-      activeThemeId: "custom-valid",
-      customThemeOrder: ["custom-valid"],
-      customThemes: { "custom-valid": validTheme() },
-    };
-    expect(decodeClientSettingsPatch({ appearance }).appearance).toEqual(appearance);
-  });
-});
-
-describe("ClientSettings legacy terminal font", () => {
-  it("defaults the deprecated field", () => {
-    expect(decodeClientSettings({}).terminalFontFamily).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
-  });
-
-  it("decodes and trims a persisted legacy value", () => {
-    expect(
-      decodeClientSettings({ terminalFontFamily: "  Consolas, monospace  " }).terminalFontFamily,
-    ).toBe("Consolas, monospace");
-    expect(decodeClientSettingsPatch({ terminalFontFamily: "  Menlo  " }).terminalFontFamily).toBe(
-      "Menlo",
-    );
   });
 });
 

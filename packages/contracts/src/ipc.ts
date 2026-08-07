@@ -91,7 +91,7 @@ import { EnvironmentId } from "./baseSchemas.ts";
 import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
-import { ClientSettingsSchema, type ClientSettings } from "./settings.ts";
+import type { ClientSettings } from "./settings.ts";
 import type {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -166,16 +166,6 @@ export const DesktopRuntimeArchSchema = Schema.Literals(["arm64", "x64", "other"
 export const DesktopThemeSchema = Schema.Literals(["light", "dark", "system"]);
 export const DesktopUpdateChannelSchema = Schema.Literals(["latest", "nightly"]);
 export const DesktopAppStageLabelSchema = Schema.Literals(["Alpha", "Dev", "Nightly"]);
-
-/**
- * Additive metadata returned by newer desktop hosts. Older hosts return a plain
- * ClientSettings object, so renderer callers must treat the flag as optional.
- */
-export const DesktopClientSettingsResultSchema = Schema.Struct({
-  ...ClientSettingsSchema.fields,
-  appearanceWasPersisted: Schema.optionalKey(Schema.Boolean),
-});
-export type DesktopClientSettingsResult = typeof DesktopClientSettingsResultSchema.Type;
 
 export interface DesktopAppBranding {
   baseName: string;
@@ -1011,7 +1001,7 @@ export interface DesktopBridge {
   // The primary backend is identified by id === PRIMARY_LOCAL_ENVIRONMENT_ID.
   getLocalEnvironmentBootstraps: () => readonly DesktopEnvironmentBootstrap[];
   getLocalEnvironmentBearerToken: () => Promise<string>;
-  getClientSettings: () => Promise<DesktopClientSettingsResult | null>;
+  getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
   getConnectionCatalog?: () => Promise<string | null>;
   setConnectionCatalog?: (catalog: string) => Promise<boolean>;

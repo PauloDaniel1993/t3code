@@ -1,4 +1,3 @@
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 function createStorage(overrides: Partial<Storage> = {}): Storage {
@@ -20,94 +19,8 @@ function createStorage(overrides: Partial<Storage> = {}): Storage {
   };
 }
 
-function mockSettingsStore(
-  initialMode: "light" | "dark" | "system",
-  hydrated: boolean,
-  appearanceOverrides: Partial<typeof DEFAULT_CLIENT_SETTINGS.appearance> = {},
-) {
-  let settings = {
-    ...DEFAULT_CLIENT_SETTINGS,
-    appearance: {
-      ...DEFAULT_CLIENT_SETTINGS.appearance,
-      colorScheme: initialMode,
-      ...appearanceOverrides,
-    },
-  };
-  const updateAppearance = vi.fn(
-    (updater: (appearance: typeof settings.appearance) => typeof settings.appearance) => {
-      settings = { ...settings, appearance: updater(settings.appearance) };
-    },
-  );
-  const reconcileAppearanceColorScheme = vi.fn((colorScheme: typeof initialMode) => {
-    settings = { ...settings, appearance: { ...settings.appearance, colorScheme } };
-  });
-  vi.doMock("./useSettings", () => ({
-    reconcileAppearanceColorScheme,
-    updateAppearance,
-    useClientSettings: <T>(selector: (value: typeof settings) => T) => selector(settings),
-    useClientSettingsHydrated: () => hydrated,
-  }));
-  return {
-    get settings() {
-      return settings;
-    },
-    reconcileAppearanceColorScheme,
-    updateAppearance,
-  };
-}
-
-function installHookReactMock() {
-  let subscribeToTheme: ((listener: () => void) => () => void) | undefined;
-  vi.doMock("react", () => ({
-    useCallback: <A>(callback: A) => callback,
-    useEffect: (effect: () => void) => {
-      effect();
-    },
-    useSyncExternalStore: (
-      subscribe: (listener: () => void) => () => void,
-      getSnapshot: () => unknown,
-    ) => {
-      subscribeToTheme = subscribe;
-      return getSnapshot();
-    },
-  }));
-  return {
-    get subscribeToTheme() {
-      return subscribeToTheme;
-    },
-  };
-}
-
-function classListStub() {
-  return {
-    add: vi.fn(),
-    remove: vi.fn(),
-    toggle: vi.fn(),
-  };
-}
-
-function documentElementStub() {
-  const classList = classListStub();
-  const style = {
-    backgroundColor: "",
-    removeProperty: vi.fn(),
-    setProperty: vi.fn(),
-  };
-  return {
-    classList,
-    element: {
-      classList,
-      dataset: {} as Record<string, string>,
-      offsetHeight: 1,
-      style,
-    },
-    style,
-  };
-}
-
 afterEach(() => {
   vi.doUnmock("react");
-  vi.doUnmock("./useSettings");
   vi.resetModules();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -211,7 +124,6 @@ describe("theme failure handling", () => {
     let readSnapshot: (() => unknown) | undefined;
     let subscribeToTheme: ((listener: () => void) => () => void) | undefined;
     let storageHandler: ((event: StorageEvent) => void) | undefined;
-    mockSettingsStore("system", false);
     vi.doMock("react", () => ({
       useCallback: <A>(callback: A) => callback,
       useEffect: () => undefined,
@@ -290,138 +202,5 @@ describe("theme failure handling", () => {
       expect(attributes).not.toHaveProperty("cause");
       expect(JSON.stringify(attributes)).not.toContain(cause.message);
     }
-  });
-});
-
-describe("contract appearance compatibility", () => {
-  it("uses the contract color scheme when no modular preference has been persisted", async () => {
-    const store = mockSettingsStore("dark", true);
-    installHookReactMock();
-    const localStorage = createStorage();
-    const setItem = vi.spyOn(localStorage, "setItem");
-    const { classList, element } = documentElementStub();
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
-    });
-    vi.stubGlobal("window", {
-      addEventListener: vi.fn(),
-      localStorage,
-      matchMedia: () => ({
-        matches: false,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      }),
-      removeEventListener: vi.fn(),
-    });
-    vi.stubGlobal("document", { documentElement: element });
-
-    const { useTheme } = await import("./useTheme");
-    useTheme();
-
-    expect(setItem).toHaveBeenCalledWith("t3code:theme-appearance-mode", "dark");
-    expect(store.updateAppearance).not.toHaveBeenCalled();
-    expect(classList.toggle).toHaveBeenCalledWith("dark", true);
-  });
-
-  it("lets an explicit modular preference reconcile the contract without a persistence echo", async () => {
-    const store = mockSettingsStore("dark", true);
-    installHookReactMock();
-    const localStorage = createStorage();
-    localStorage.setItem("t3code:theme-appearance-mode", "light");
-    const setItem = vi.spyOn(localStorage, "setItem");
-    const { element } = documentElementStub();
-    vi.stubGlobal("window", {
-      addEventListener: vi.fn(),
-      localStorage,
-      matchMedia: () => ({
-        matches: false,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      }),
-      removeEventListener: vi.fn(),
-    });
-    vi.stubGlobal("document", { documentElement: element });
-
-    const { useTheme } = await import("./useTheme");
-    useTheme();
-
-    expect(store.settings.appearance.colorScheme).toBe("light");
-    expect(store.updateAppearance).toHaveBeenCalledOnce();
-    expect(setItem).not.toHaveBeenCalled();
-  });
-
-  it("exposes the resolved contract density without owning theme colors", async () => {
-    mockSettingsStore("system", true, { activeThemeId: "compact" });
-    installHookReactMock();
-    const localStorage = createStorage();
-    const { element, style } = documentElementStub();
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
-    });
-    vi.stubGlobal("window", {
-      addEventListener: vi.fn(),
-      localStorage,
-      matchMedia: () => ({
-        matches: false,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      }),
-      removeEventListener: vi.fn(),
-    });
-    vi.stubGlobal("document", { documentElement: element });
-
-    const { useTheme } = await import("./useTheme");
-    useTheme();
-
-    expect(element.dataset.appearanceDensity).toBe("compact");
-    expect(style.setProperty).toHaveBeenCalledWith("--app-density-scale", "0.85");
-  });
-
-  it("reconciles modular appearance storage events without a persistence echo", async () => {
-    const store = mockSettingsStore("system", true);
-    const react = installHookReactMock();
-    const localStorage = createStorage();
-    const setItem = vi.spyOn(localStorage, "setItem");
-    const { classList, element } = documentElementStub();
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
-    });
-    vi.stubGlobal("window", {
-      addEventListener: vi.fn(),
-      localStorage,
-      matchMedia: () => ({
-        matches: false,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      }),
-      removeEventListener: vi.fn(),
-    });
-    vi.stubGlobal("document", { documentElement: element });
-
-    const { useTheme } = await import("./useTheme");
-    useTheme();
-    const unsubscribe = react.subscribeToTheme?.(() => undefined);
-    const storageListener = vi
-      .mocked(window.addEventListener)
-      .mock.calls.find(([type]) => type === "storage")?.[1] as EventListener | undefined;
-    setItem.mockClear();
-    store.updateAppearance.mockClear();
-    classList.toggle.mockClear();
-
-    localStorage.setItem("t3code:theme-appearance-mode", "dark");
-    setItem.mockClear();
-    storageListener?.({
-      key: "t3code:theme-appearance-mode",
-      newValue: "dark",
-    } as unknown as Event);
-
-    expect(store.reconcileAppearanceColorScheme).toHaveBeenCalledWith("dark");
-    expect(store.updateAppearance).not.toHaveBeenCalled();
-    expect(classList.toggle).toHaveBeenCalledWith("dark", true);
-    expect(setItem).not.toHaveBeenCalled();
-    unsubscribe?.();
   });
 });

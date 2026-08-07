@@ -8,10 +8,8 @@ import type { StarMapNodeStatus } from "./starMapGraph";
  * through `resolveStarMapTheme`; nothing here is called per frame.
  *
  * Status hues bind to `--success` / `--warning` / `--info` / `--destructive`
- * because `APPEARANCE_MANAGED_SEMANTIC_PROPERTIES`
- * (`apps/web/src/appearance/applyAppearance.ts:18-37`) does not manage them:
- * they are theme-invariant, so a user's custom appearance theme cannot turn
- * the status palette into mush.
+ * so the active modular theme supplies the same semantic palette used by the
+ * rest of the interface.
  *
  * Everything in this module is pure and DOM-free so it runs under the Node
  * test harness. The canvas element only ever sees pre-parsed colors.
