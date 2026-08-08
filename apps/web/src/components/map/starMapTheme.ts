@@ -215,6 +215,8 @@ export function parseCssColor(raw: string): StarMapColor | null {
  */
 export interface StarMapTheme {
   readonly background: StarMapColor;
+  /** Achievement gold applied to every graph mark once the map is complete. */
+  readonly completion: StarMapColor;
   readonly star: StarMapColor;
   readonly starfieldFar: StarMapColor;
   readonly starfieldNear: StarMapColor;
@@ -227,6 +229,7 @@ export interface StarMapTheme {
 /** Token custom-property names, mirrored by the `[data-star-map]` CSS block. */
 export const STAR_MAP_THEME_TOKENS = {
   background: "--star-map-background",
+  completion: "--star-map-completion",
   star: "--star-map-star",
   starfieldFar: "--star-map-starfield-far",
   starfieldNear: "--star-map-starfield-near",
@@ -246,6 +249,7 @@ export const STAR_MAP_THEME_TOKENS = {
  */
 export const DEFAULT_STAR_MAP_THEME: StarMapTheme = {
   background: color(16, 20, 29),
+  completion: color(245, 196, 81),
   star: color(238, 242, 249),
   starfieldFar: color(168, 180, 205, 0.45),
   starfieldNear: color(214, 224, 240, 0.7),
@@ -275,6 +279,7 @@ export function resolveStarMapTheme(readToken: (token: string) => string): StarM
   const defaults = DEFAULT_STAR_MAP_THEME;
   return {
     background: read(STAR_MAP_THEME_TOKENS.background, defaults.background),
+    completion: read(STAR_MAP_THEME_TOKENS.completion, defaults.completion),
     star: read(STAR_MAP_THEME_TOKENS.star, defaults.star),
     starfieldFar: read(STAR_MAP_THEME_TOKENS.starfieldFar, defaults.starfieldFar),
     starfieldNear: read(STAR_MAP_THEME_TOKENS.starfieldNear, defaults.starfieldNear),

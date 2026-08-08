@@ -54,6 +54,8 @@ import {
  */
 export function NewThreadTaskDialog(props: {
   parentThreadRef: ScopedThreadRef;
+  /** One-time seed; later prop changes never overwrite edits in an open dialog. */
+  initialDraft?: NewThreadTaskDraft;
   onClose: () => void;
   onCreate: (input: {
     readonly parentThreadId: ThreadId;
@@ -64,9 +66,11 @@ export function NewThreadTaskDialog(props: {
     readonly modelSelection?: ModelSelection;
   }) => Promise<string | null>;
 }) {
-  const { onClose, onCreate, parentThreadRef } = props;
+  const { initialDraft, onClose, onCreate, parentThreadRef } = props;
   const thread = useThread(parentThreadRef);
-  const [draft, setDraft] = useState<NewThreadTaskDraft>(EMPTY_NEW_THREAD_TASK_DRAFT);
+  const [draft, setDraft] = useState<NewThreadTaskDraft>(
+    () => initialDraft ?? EMPTY_NEW_THREAD_TASK_DRAFT,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [selectionRejected, setSelectionRejected] = useState(false);

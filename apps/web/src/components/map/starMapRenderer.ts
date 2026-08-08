@@ -431,6 +431,10 @@ const DRAW_MARGIN = 48;
 
 interface StarMapBrushes {
   readonly background: string;
+  readonly completion: string;
+  readonly completionEdge: string;
+  readonly completionLabel: string;
+  readonly completionVariants: ReadonlyArray<string>;
   readonly edge: string;
   readonly edgeSatisfied: string;
   readonly undermine: string;
@@ -457,6 +461,8 @@ export interface StarMapRendererOptions {
   readonly container: HTMLElement;
   readonly graph: StarMapGraph | null;
   readonly layout: StarMapLayoutResult | null;
+  /** True when the authoritative map counts contain only terminal tickets. */
+  readonly complete?: boolean;
   /** Initial camera; when omitted the engine fits the map once it has a size. */
   readonly camera?: StarMapCamera;
   readonly selection?: string | null;
@@ -482,6 +488,7 @@ export class StarMapRenderer {
   private ctx: CanvasRenderingContext2D | null = null;
   private graph: StarMapGraph | null;
   private layout: StarMapLayoutResult | null;
+  private complete: boolean;
   /** Explicit camera, or null while the engine auto-fits the content. */
   private cameraValue: StarMapCamera | null;
   private selection: string | null;
@@ -489,6 +496,7 @@ export class StarMapRenderer {
   private theme: StarMapTheme;
   private brushes: StarMapBrushes;
   private glowSprites: Partial<Record<StarMapNodeStatus, HTMLCanvasElement>> = {};
+  private completionGlowSprite: HTMLCanvasElement | null = null;
   private labelFont = "11px sans-serif";
 
   private viewport: StarMapSize = { width: 0, height: 0 };
@@ -534,6 +542,7 @@ export class StarMapRenderer {
     this.container = options.container;
     this.graph = options.graph;
     this.layout = options.layout;
+    this.complete = options.complete ?? false;
     this.cameraValue = options.camera ?? null;
     this.selection = options.selection ?? null;
     this.surfaceActive = options.surfaceActive ?? true;
@@ -675,9 +684,10 @@ export class StarMapRenderer {
 
   // -- inputs from the mount --------------------------------------------------
 
-  setGraph(graph: StarMapGraph | null, layout: StarMapLayoutResult | null): void {
+  setGraph(graph: StarMapGraph | null, layout: StarMapLayoutResult | null, complete = false): void {
     this.graph = graph;
     this.layout = layout;
+    this.complete = complete;
     this.rebuildGraphGeometry();
     this.invalidate();
   }
@@ -912,6 +922,10 @@ export class StarMapRenderer {
     }
     return {
       background: formatCssColor(theme.background),
+      completion: formatCssColor(theme.completion),
+      completionEdge: formatCssColor(withAlpha(theme.completion, 0.8)),
+      completionLabel: formatCssColor(withAlpha(theme.completion, 0.95)),
+      completionVariants: formatCssColorVariants(theme.completion),
       edge: formatCssColor(theme.edge),
       edgeSatisfied: formatCssColor(withAlpha(theme.status.resolved, 0.85)),
       undermine: formatCssColor(withAlpha(theme.status.out_of_scope, 0.8)),
@@ -930,22 +944,27 @@ export class StarMapRenderer {
   private buildGlowSprites(): void {
     const sprites: Partial<Record<StarMapNodeStatus, HTMLCanvasElement>> = {};
     for (const status of STAR_MAP_STATUSES) {
-      const sprite = document.createElement("canvas");
-      sprite.width = GLOW_SPRITE_SIZE;
-      sprite.height = GLOW_SPRITE_SIZE;
-      const context = sprite.getContext("2d");
-      if (context === null) continue;
-      const center = GLOW_SPRITE_SIZE / 2;
-      const color: StarMapColor = this.theme.status[status];
-      const gradient = context.createRadialGradient(center, center, 0, center, center, center);
-      gradient.addColorStop(0, formatCssColor(color, 0.8));
-      gradient.addColorStop(0.35, formatCssColor(color, 0.25));
-      gradient.addColorStop(1, formatCssColor(color, 0));
-      context.fillStyle = gradient;
-      context.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
-      sprites[status] = sprite;
+      const sprite = this.buildGlowSprite(this.theme.status[status]);
+      if (sprite !== null) sprites[status] = sprite;
     }
     this.glowSprites = sprites;
+    this.completionGlowSprite = this.buildGlowSprite(this.theme.completion);
+  }
+
+  private buildGlowSprite(color: StarMapColor): HTMLCanvasElement | null {
+    const sprite = document.createElement("canvas");
+    sprite.width = GLOW_SPRITE_SIZE;
+    sprite.height = GLOW_SPRITE_SIZE;
+    const context = sprite.getContext("2d");
+    if (context === null) return null;
+    const center = GLOW_SPRITE_SIZE / 2;
+    const gradient = context.createRadialGradient(center, center, 0, center, center, center);
+    gradient.addColorStop(0, formatCssColor(color, 0.8));
+    gradient.addColorStop(0.35, formatCssColor(color, 0.25));
+    gradient.addColorStop(1, formatCssColor(color, 0));
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
+    return sprite;
   }
 
   // -- per-graph geometry -------------------------------------------------------
@@ -1061,10 +1080,14 @@ export class StarMapRenderer {
       const to = worldToScreen(camera, this.viewport, edge.to);
       if (this.offScreen(from, control, to, width, height)) continue;
       if (edge.kind === "undermines") {
-        ctx.strokeStyle = this.brushes.undermine;
+        ctx.strokeStyle = this.complete ? this.brushes.completionEdge : this.brushes.undermine;
         ctx.setLineDash([4, 4]);
       } else {
-        ctx.strokeStyle = edge.satisfied ? this.brushes.edgeSatisfied : this.brushes.edge;
+        ctx.strokeStyle = this.complete
+          ? this.brushes.completionEdge
+          : edge.satisfied
+            ? this.brushes.edgeSatisfied
+            : this.brushes.edge;
       }
       ctx.beginPath();
       ctx.moveTo(from.x, from.y);
@@ -1086,14 +1109,14 @@ export class StarMapRenderer {
       control: worldToScreen(camera, this.viewport, edge.control),
       to: worldToScreen(camera, this.viewport, edge.to),
     }));
+    const variants = this.complete ? this.brushes.completionVariants : this.brushes.starVariants;
     for (const particle of this.particles) {
       const edge = screenEdges[particle.edgeIndex]!;
       const point = quadraticBezierPoint(edge.from, edge.control, edge.to, particle.t);
       if (point.x < -DRAW_MARGIN || point.x > width + DRAW_MARGIN) continue;
       if (point.y < -DRAW_MARGIN || point.y > height + DRAW_MARGIN) continue;
       const alpha = particleAlpha(particle.t) * 0.9;
-      ctx.fillStyle =
-        this.brushes.starVariants[alphaVariantIndex(alpha, this.brushes.starVariants.length)]!;
+      ctx.fillStyle = variants[alphaVariantIndex(alpha, variants.length)]!;
       ctx.beginPath();
       ctx.arc(point.x, point.y, 1.6, 0, TAU);
       ctx.fill();
@@ -1123,15 +1146,15 @@ export class StarMapRenderer {
         continue;
       }
 
-      const dimmed = node.status === "out_of_scope";
+      const dimmed = !this.complete && node.status === "out_of_scope";
       const coreRadius = node.isFrontier ? 3.4 : 2.8;
       const glowSize = coreRadius * (node.isFrontier ? 7 : 5.5);
-      const sprite = this.glowSprites[node.status];
+      const sprite = this.complete ? this.completionGlowSprite : this.glowSprites[node.status];
       ctx.globalAlpha = dimmed ? 0.55 : 1;
-      if (sprite !== undefined) {
+      if (sprite !== null && sprite !== undefined) {
         ctx.drawImage(sprite, screen.x - glowSize / 2, screen.y - glowSize / 2, glowSize, glowSize);
       }
-      ctx.fillStyle = this.brushes.core[node.status];
+      ctx.fillStyle = this.complete ? this.brushes.completion : this.brushes.core[node.status];
       ctx.beginPath();
       ctx.arc(screen.x, screen.y, coreRadius, 0, TAU);
       ctx.fill();
@@ -1141,7 +1164,7 @@ export class StarMapRenderer {
       ctx.fill();
       ctx.globalAlpha = 1;
 
-      if (node.isFrontier) {
+      if (!this.complete && node.isFrontier) {
         const pulse = frontierPulse(clock, hash32(node.id));
         if (pulse.alpha > 0.02) {
           const variants = this.brushes.pulseVariants[node.status];
@@ -1155,7 +1178,7 @@ export class StarMapRenderer {
       }
 
       if (node.isUndermined) {
-        ctx.strokeStyle = this.brushes.undermine;
+        ctx.strokeStyle = this.complete ? this.brushes.completionEdge : this.brushes.undermine;
         ctx.lineWidth = 1;
         ctx.setLineDash([2, 3]);
         ctx.beginPath();
@@ -1186,7 +1209,7 @@ export class StarMapRenderer {
     if (this.labelNodes.length === 0) return;
     ctx.font = this.labelFont;
     ctx.textBaseline = "middle";
-    ctx.fillStyle = this.brushes.label;
+    ctx.fillStyle = this.complete ? this.brushes.completionLabel : this.brushes.label;
     // Cached so the mount can hit-test exactly the labels that were drawn,
     // rather than recomputing placement (and risking a different answer).
     this.labelPlacements = placeStarMapLabels({

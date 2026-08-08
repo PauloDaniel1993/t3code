@@ -27,6 +27,12 @@ Choose a map, then choose a star or list item to open its ticket. Use **Back** t
 Pressing `Escape` also moves back one level instead of closing the right panel. When a ticket names
 a blocker, choose that blocker to open its ticket.
 
+From a ticket, choose **Open as file** to open its source in the Files surface. Choose **Open as
+task** to start the task dialog with the ticket title and context already filled in. You can edit
+the brief, choose the model and reasoning level, and decide how much of the current thread the task
+should receive before creating it. The task action is available on top-level threads when thread
+tasks are enabled and supported by the connected environment.
+
 ## Read the Constellation
 
 Each star is a ticket. Its colour shows the ticket's current state:
@@ -42,6 +48,9 @@ still tells you whether that ticket is open or already claimed.
 
 Lines connect blockers to the tickets waiting on them. Select a ticket when you want the exact
 blocker names and decision details.
+
+When every ticket is resolved or out of scope, the complete constellation turns gold. The map also
+shows **Done** in the Maps list, so completed efforts remain recognizable before you open them.
 
 ## Use List View
 

@@ -10,7 +10,15 @@ import type {
   WayfinderLint,
   WayfinderNode,
 } from "@t3tools/contracts";
-import { ChevronLeft, Focus, Map as MapIcon, RefreshCw, TriangleAlert, X } from "lucide-react";
+import {
+  ChevronLeft,
+  CircleCheck,
+  Focus,
+  Map as MapIcon,
+  RefreshCw,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -39,7 +47,12 @@ import {
   zoomCameraAt,
   type StarMapCamera,
 } from "./starMapCamera";
-import { buildStarMapGraph, type StarMapGraph, type StarMapGraphNode } from "./starMapGraph";
+import {
+  buildStarMapGraph,
+  isWayfinderMapComplete,
+  type StarMapGraph,
+  type StarMapGraphNode,
+} from "./starMapGraph";
 import { hitTestStarMapLabels } from "./starMapLabels";
 import {
   STAR_MAP_CAMERA_EASE_MS,
@@ -294,6 +307,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   }, [snapshot]);
 
   const selectedMap = snapshot?.maps.find((map) => map.id === state.selectedMapId) ?? null;
+  const selectedMapComplete = selectedMap !== null && isWayfinderMapComplete(selectedMap);
   const graph = useMemo(
     () => (selectedMap !== null ? buildStarMapGraph(selectedMap) : null),
     [selectedMap],
@@ -342,6 +356,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       container: host,
       graph,
       layout,
+      complete: selectedMapComplete,
       ...(stashedCamera !== undefined ? { camera: stashedCamera } : {}),
       selection: canvasSelection,
       surfaceActive: mapSurfaceActive,
@@ -461,8 +476,8 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   }, [view, selectedMapId]);
 
   useEffect(() => {
-    rendererRef.current?.setGraph(graph, layout);
-  }, [graph, layout]);
+    rendererRef.current?.setGraph(graph, layout, selectedMapComplete);
+  }, [graph, layout, selectedMapComplete]);
   useEffect(() => {
     rendererRef.current?.setSelection(canvasSelection);
   }, [canvasSelection]);
@@ -634,22 +649,32 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   } else {
     body = (
       <ul aria-label="Maps" className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
-        {snapshot.maps.map((map) => (
-          <li key={map.id}>
-            <button
-              type="button"
-              aria-label={`${map.title}, ${map.counts.total} tickets, ${map.counts.frontier} frontier`}
-              onClick={() => dispatch({ type: "selectMap", mapId: map.id })}
-              className="flex w-full flex-col gap-0.5 rounded-md px-2 py-2 text-left hover:bg-accent/60"
-            >
-              <span className="text-sm font-medium text-foreground">{map.title}</span>
-              <span className="text-xs text-muted-foreground">
-                {map.counts.total} tickets · {map.counts.frontier} frontier · {map.counts.resolved}{" "}
-                resolved
-              </span>
-            </button>
-          </li>
-        ))}
+        {snapshot.maps.map((map) => {
+          const complete = isWayfinderMapComplete(map);
+          return (
+            <li key={map.id}>
+              <button
+                type="button"
+                data-wayfinder-map-complete={complete ? "" : undefined}
+                aria-label={`${map.title}, ${map.counts.total} tickets, ${map.counts.frontier} frontier${complete ? ", done" : ""}`}
+                onClick={() => dispatch({ type: "selectMap", mapId: map.id })}
+                className="flex w-full flex-col gap-0.5 rounded-md px-2 py-2 text-left hover:bg-accent/60"
+              >
+                <span className="text-sm font-medium text-foreground">{map.title}</span>
+                <span className="text-xs text-muted-foreground">
+                  {map.counts.total} tickets · {map.counts.frontier} frontier ·{" "}
+                  {map.counts.resolved} resolved
+                </span>
+                {complete ? (
+                  <span className="mt-1.5 flex w-full items-center gap-1 border-t border-border/60 pt-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                    <CircleCheck className="size-3.5" aria-hidden />
+                    Done
+                  </span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     );
   }

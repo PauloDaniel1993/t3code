@@ -1,7 +1,7 @@
 import type { WayfinderEdge, WayfinderNode } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildStarMapGraph, hash32 } from "./starMapGraph";
+import { buildStarMapGraph, hash32, isWayfinderMapComplete } from "./starMapGraph";
 
 function makeNode(ordinal: number, overrides?: Partial<WayfinderNode>): WayfinderNode {
   return {
@@ -29,6 +29,37 @@ describe("hash32", () => {
     expect(hash32("15")).toBe(hash32("15"));
     expect(hash32("15")).not.toBe(hash32("16"));
     expect(hash32("")).toBe(hash32(""));
+  });
+});
+
+describe("isWayfinderMapComplete", () => {
+  const map = (counts: {
+    total: number;
+    open: number;
+    claimed: number;
+    resolved: number;
+    outOfScope: number;
+  }) => ({ counts: { ...counts, frontier: 0 } });
+
+  it("requires a non-empty map with every ticket in a terminal state", () => {
+    expect(
+      isWayfinderMapComplete(map({ total: 3, open: 0, claimed: 0, resolved: 2, outOfScope: 1 })),
+    ).toBe(true);
+    expect(
+      isWayfinderMapComplete(map({ total: 3, open: 1, claimed: 0, resolved: 2, outOfScope: 0 })),
+    ).toBe(false);
+    expect(
+      isWayfinderMapComplete(map({ total: 3, open: 0, claimed: 1, resolved: 2, outOfScope: 0 })),
+    ).toBe(false);
+    expect(
+      isWayfinderMapComplete(map({ total: 0, open: 0, claimed: 0, resolved: 0, outOfScope: 0 })),
+    ).toBe(false);
+  });
+
+  it("rejects inconsistent terminal counts instead of guessing", () => {
+    expect(
+      isWayfinderMapComplete(map({ total: 4, open: 0, claimed: 0, resolved: 3, outOfScope: 0 })),
+    ).toBe(false);
   });
 });
 

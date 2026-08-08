@@ -18,6 +18,21 @@ export type StarMapGraphNode = WayfinderNode;
 export type StarMapGraphEdge = WayfinderEdge;
 export type StarMapNodeStatus = WayfinderNode["status"];
 
+/**
+ * Completion comes from the map's full counts, not its rendered node slice:
+ * large maps may be truncated, and every visible ticket being terminal does
+ * not prove the omitted tickets are terminal too.
+ */
+export function isWayfinderMapComplete(map: Pick<WayfinderMap, "counts">): boolean {
+  const { counts } = map;
+  return (
+    counts.total > 0 &&
+    counts.open === 0 &&
+    counts.claimed === 0 &&
+    counts.resolved + counts.outOfScope === counts.total
+  );
+}
+
 export interface StarMapAdjacency {
   readonly blocks: ReadonlyArray<StarMapGraphEdge>;
   readonly undermines: ReadonlyArray<StarMapGraphEdge>;
