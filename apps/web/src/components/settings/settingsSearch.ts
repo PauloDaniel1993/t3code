@@ -5,7 +5,6 @@ export type SettingsPath =
   | "/settings/providers"
   | "/settings/source-control"
   | "/settings/connections"
-  | "/settings/beta"
   | "/settings/archived";
 
 export interface SettingsSearchItem {
@@ -26,7 +25,6 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/providers": "Providers",
   "/settings/source-control": "Source Control",
   "/settings/connections": "Connections",
-  "/settings/beta": "Beta",
   "/settings/archived": "Archive",
 };
 
@@ -101,6 +99,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
+    id: "auto-settle-inactive-threads",
+    title: "Auto-settle inactive threads",
+    to: "/settings/general",
+  },
+  {
     id: "time-format",
     title: "Time format",
     to: "/settings/general",
@@ -167,6 +170,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
+    id: "legacy-sidebar",
+    title: "Sidebar (legacy)",
+    to: "/settings/general",
+  },
+  {
     id: "keybindings",
     title: "Keybindings",
     to: "/settings/keybindings",
@@ -187,30 +195,19 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/connections",
   },
   {
-    id: "sidebar-v2",
-    title: "Sidebar v2",
-    to: "/settings/beta",
-  },
-  {
-    id: "auto-settle-inactive-threads",
-    title: "Auto-settle inactive threads",
-    to: "/settings/beta",
-    targetId: "sidebar-v2",
-  },
-  {
     id: "thread-tasks",
     title: "Thread tasks",
-    to: "/settings/beta",
+    to: "/settings/general",
   },
   {
     id: "thread-task-max-running",
     title: "Tasks running at once",
-    to: "/settings/beta",
+    to: "/settings/general",
   },
   {
     id: "thread-task-max-total",
     title: "Tasks in total per thread",
-    to: "/settings/beta",
+    to: "/settings/general",
   },
   {
     id: "archive",

@@ -6,9 +6,15 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   type BackgroundActivityProfile,
   type DesktopUpdateChannel,
+  MAX_THREAD_TASK_MAX_RUNNING,
+  MAX_THREAD_TASK_MAX_TOTAL,
+  MIN_THREAD_TASK_MAX_RUNNING,
+  MIN_THREAD_TASK_MAX_TOTAL,
   ProviderDriverKind,
+  resolveThreadTaskLimits,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
+  THREAD_TASK_TOTAL_PER_RUNNING,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -24,11 +30,13 @@ import {
   MAX_GLASS_OPACITY,
   MAX_INTERFACE_FONT_SIZE,
   MAX_PROMPT_FONT_SIZE,
+  MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MAX_TERMINAL_FONT_SIZE,
   MIN_CODE_FONT_SIZE,
   MIN_GLASS_OPACITY,
   MIN_INTERFACE_FONT_SIZE,
   MIN_PROMPT_FONT_SIZE,
+  MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MIN_TERMINAL_FONT_SIZE,
 } from "@t3tools/contracts/settings";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
@@ -98,6 +106,7 @@ import {
   isMonospaceFamily,
   resolveDefaultFamilyLabel,
   resolveTerminalFontPreference,
+  resolveTerminalFontSizePreference,
   TYPOGRAPHY_ADVANCED_STORAGE_KEY,
 } from "../../appearanceFonts";
 import { CodeFontPreview, PromptFontPreview, TerminalFontPreview } from "./SettingsFontPreviews";
@@ -463,6 +472,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
         ? ["Project Grouping"]
         : []),
+      ...(settings.sidebarAutoSettleAfterDays !==
+      DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
+        ? ["Auto-settle inactive threads"]
+        : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
       ...(settings.fontFamilySans !== DEFAULT_UNIFIED_SETTINGS.fontFamilySans ||
       settings.fontSizeInterface !== DEFAULT_UNIFIED_SETTINGS.fontSizeInterface
@@ -535,6 +548,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.glassOpacity,
       settings.enableLegacyTokenStreaming,
       settings.enableProviderUpdateChecks,
+      settings.sidebarAutoSettleAfterDays,
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
@@ -614,6 +628,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
+      sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       enableLegacyTokenStreaming: DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
@@ -1279,7 +1294,11 @@ function SimpleFontRows() {
                 code: settings.fontFamilyCode,
                 terminal: settings.fontFamilyTerminal,
               })}
-              size={settings.fontSizeTerminal}
+              size={resolveTerminalFontSizePreference({
+                advanced: false,
+                code: settings.fontSizeCode,
+                terminal: settings.fontSizeTerminal,
+              })}
             />
           </>
         }
@@ -1521,11 +1540,63 @@ function FontFamilySettingsRow({
   );
 }
 
-// Both legacy rows sit behind the fold, so a settings-search jump has to
+const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
+
+function BoundedNumberInput({
+  value,
+  min,
+  max,
+  label,
+  placeholder,
+  onCommit,
+  onClear,
+}: {
+  value: number | null;
+  min: number;
+  max: number;
+  label: string;
+  placeholder?: string;
+  onCommit: (value: number) => void;
+  onClear?: () => void;
+}) {
+  const persisted = value === null ? "" : String(value);
+  const [draft, setDraft] = useState(persisted);
+  useEffect(() => {
+    setDraft(persisted);
+  }, [persisted]);
+
+  return (
+    <Input
+      type="number"
+      min={min}
+      max={max}
+      className="w-full sm:w-24"
+      value={draft}
+      {...(placeholder === undefined ? {} : { placeholder })}
+      onChange={(event) => {
+        const next = event.target.value;
+        setDraft(next);
+        if (next.trim() === "") {
+          onClear?.();
+          return;
+        }
+        const parsed = Number(next);
+        if (Number.isInteger(parsed) && parsed >= min && parsed <= max) {
+          onCommit(parsed);
+        }
+      }}
+      onBlur={() => setDraft(persisted)}
+      aria-label={label}
+    />
+  );
+}
+
+// The legacy rows sit behind the fold, so a settings-search jump has to
 // expand the section before its target can mount and scroll.
 const LEGACY_FEATURE_TARGET_IDS: ReadonlySet<string> = new Set([
   "legacy-plan-mode",
   "legacy-token-streaming",
+  "legacy-sidebar",
 ]);
 
 /**
@@ -1604,6 +1675,19 @@ function LegacyFeaturesSection() {
                 />
               }
             />
+            <SettingsRow
+              {...searchableSetting("legacy-sidebar")}
+              description="Brings back the original sidebar with per-project thread trees. The default sidebar shows one flat list: active work as rich cards, settled threads as compact rows."
+              control={
+                <Switch
+                  checked={settings.legacySidebarEnabled}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ legacySidebarEnabled: Boolean(checked) })
+                  }
+                  aria-label="Sidebar (legacy)"
+                />
+              }
+            />
           </div>
         </CollapsiblePanel>
       </Collapsible>
@@ -1651,6 +1735,10 @@ export function GeneralSettingsPanel() {
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
+  const resolvedThreadTaskLimits = resolveThreadTaskLimits({
+    maxRunning: settings.threadTaskMaxRunning,
+    maxTotal: settings.threadTaskMaxTotal,
+  });
   const activeBackgroundActivityProfile = resolvedBackgroundActivity.profile;
   const backgroundActivityProfileOption = resolveBackgroundActivityProfileOption(settings);
   const backgroundActivityDescription =
@@ -1702,6 +1790,96 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+
+        <SettingsRow
+          {...searchableSetting("auto-settle-inactive-threads")}
+          description="Sidebar threads with no activity for this long settle automatically. Threads on merged or closed PRs always settle."
+          resetAction={
+            settings.sidebarAutoSettleAfterDays !==
+            DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ? (
+              <SettingResetButton
+                label="auto-settle"
+                onClick={() =>
+                  updateSettings({
+                    sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.sidebarAutoSettleAfterDays !== null}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  sidebarAutoSettleAfterDays: checked ? AUTO_SETTLE_DEFAULT_DAYS : null,
+                })
+              }
+              aria-label="Auto-settle inactive threads"
+            />
+          }
+        />
+        {settings.sidebarAutoSettleAfterDays !== null ? (
+          <SettingsRow
+            title="Days of inactivity before auto-settle"
+            description="Any new activity un-settles a thread automatically."
+            control={
+              <BoundedNumberInput
+                value={settings.sidebarAutoSettleAfterDays}
+                min={MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS}
+                max={MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS}
+                label="Days of inactivity before auto-settle"
+                onCommit={(days) => updateSettings({ sidebarAutoSettleAfterDays: days })}
+              />
+            }
+          />
+        ) : null}
+
+        <SettingsRow
+          {...searchableSetting("thread-tasks")}
+          description="Delegate work to task threads that run in their own provider sessions and return results to the parent thread. Turning this off hides the task surface without deleting task threads."
+          control={
+            <Switch
+              checked={settings.threadTasksEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ threadTasksEnabled: Boolean(checked) })
+              }
+              aria-label="Enable thread tasks"
+            />
+          }
+        />
+        {settings.threadTasksEnabled ? (
+          <>
+            <SettingsRow
+              {...searchableSetting("thread-task-max-running")}
+              description={`How many tasks one thread may have queued or running at once. Between ${MIN_THREAD_TASK_MAX_RUNNING} and ${MAX_THREAD_TASK_MAX_RUNNING}.`}
+              control={
+                <BoundedNumberInput
+                  value={settings.threadTaskMaxRunning}
+                  min={MIN_THREAD_TASK_MAX_RUNNING}
+                  max={MAX_THREAD_TASK_MAX_RUNNING}
+                  label="Tasks one thread can run at once"
+                  onCommit={(value) => updateSettings({ threadTaskMaxRunning: value })}
+                />
+              }
+            />
+            <SettingsRow
+              {...searchableSetting("thread-task-max-total")}
+              description={`How many tasks one thread may create over its lifetime. Leave empty to derive ${THREAD_TASK_TOTAL_PER_RUNNING}× the concurrent limit, currently ${resolvedThreadTaskLimits.maxTotal}.`}
+              control={
+                <BoundedNumberInput
+                  value={settings.threadTaskMaxTotal}
+                  min={MIN_THREAD_TASK_MAX_TOTAL}
+                  max={MAX_THREAD_TASK_MAX_TOTAL}
+                  placeholder={String(resolvedThreadTaskLimits.maxTotal)}
+                  label="Tasks one thread can create in total"
+                  onCommit={(value) => updateSettings({ threadTaskMaxTotal: value })}
+                  onClear={() => updateSettings({ threadTaskMaxTotal: null })}
+                />
+              }
+            />
+          </>
+        ) : null}
 
         <SettingsRow
           {...searchableSetting("time-format")}

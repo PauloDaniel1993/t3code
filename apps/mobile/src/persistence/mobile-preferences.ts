@@ -35,12 +35,13 @@ export interface Preferences {
   readonly projectGroupingEnabled?: boolean;
   readonly projectGroupingMode?: SidebarProjectGroupingMode;
   /**
-   * Device-local mirror of the web beta's `sidebarV2Enabled`. Mobile has no
-   * client-settings sync, so the flat v2 thread list is opted out of per
-   * device. Undefined means the user has never chosen, which resolves to on —
-   * see `resolveThreadListV2Enabled`.
+   * Device-local mirror of the web `legacySidebarEnabled` setting. Mobile has
+   * no client-settings sync, so the legacy grouped thread list is opted into
+   * per device. Deliberately a fresh key (was `threadListV2Enabled`, an
+   * opt-out): sanitizing drops the old key, so every device resets to the
+   * default flat list — see `resolveThreadListV2Enabled`.
    */
-  readonly threadListV2Enabled?: boolean;
+  readonly legacyThreadListEnabled?: boolean;
   /** Device-local counterpart of web's local-only thread-tasks beta flag. */
   readonly threadTasksEnabled?: boolean;
   /** JSON-safe form of the task-agent read-state map. */
@@ -141,7 +142,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     collapsedProjectGroups?: readonly string[];
     projectGroupingEnabled?: boolean;
     projectGroupingMode?: SidebarProjectGroupingMode;
-    threadListV2Enabled?: boolean;
+    legacyThreadListEnabled?: boolean;
     threadTasksEnabled?: boolean;
     taskAgentReadMarkers?: TaskAgentReadMarkers;
   } = {};
@@ -180,8 +181,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   ) {
     preferences.projectGroupingMode = parsed.projectGroupingMode;
   }
-  if (typeof parsed.threadListV2Enabled === "boolean") {
-    preferences.threadListV2Enabled = parsed.threadListV2Enabled;
+  if (typeof parsed.legacyThreadListEnabled === "boolean") {
+    preferences.legacyThreadListEnabled = parsed.legacyThreadListEnabled;
   }
   if (typeof parsed.threadTasksEnabled === "boolean") {
     preferences.threadTasksEnabled = parsed.threadTasksEnabled;

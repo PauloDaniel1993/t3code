@@ -85,6 +85,17 @@ describe("searchSettings", () => {
     });
   });
 
+  it("routes thread task controls to General after the beta page retirement", () => {
+    expect(searchSettings("thread tasks")[0]).toMatchObject({
+      id: "thread-tasks",
+      to: "/settings/general",
+    });
+    expect(searchSettings("tasks running")[0]).toMatchObject({
+      id: "thread-task-max-running",
+      to: "/settings/general",
+    });
+  });
+
   it("keeps flat font preferences in the modular appearance panel", () => {
     expect(searchSettings("font").map(({ id, to }) => ({ id, to }))).toEqual([
       { id: "interface-font", to: "/settings/appearance" },

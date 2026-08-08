@@ -144,25 +144,24 @@ describe("task-agent mobile preferences", () => {
     });
 
     await expect(Effect.runPromise(harness.store.load)).resolves.toEqual({
-      threadListV2Enabled: true,
       taskAgentReadMarkers: { parent: "2026-07-31T12:05:00.000Z" },
     });
   });
 
-  it("keeps the mobile beta flags persisted and independent", async () => {
+  it("keeps the legacy-list and task flags persisted and independent", async () => {
     const harness = await makeHarness({
-      initialPreferences: { threadListV2Enabled: true },
+      initialPreferences: { legacyThreadListEnabled: true },
     });
 
     await Effect.runPromise(harness.store.savePatch({ threadTasksEnabled: true }));
     expect(await Effect.runPromise(harness.store.load)).toMatchObject({
-      threadListV2Enabled: true,
+      legacyThreadListEnabled: true,
       threadTasksEnabled: true,
     });
 
-    await Effect.runPromise(harness.store.savePatch({ threadListV2Enabled: false }));
+    await Effect.runPromise(harness.store.savePatch({ legacyThreadListEnabled: false }));
     expect(await Effect.runPromise(harness.store.load)).toMatchObject({
-      threadListV2Enabled: false,
+      legacyThreadListEnabled: false,
       threadTasksEnabled: true,
     });
   });

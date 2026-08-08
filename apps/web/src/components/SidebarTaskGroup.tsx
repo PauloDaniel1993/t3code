@@ -21,7 +21,7 @@ import { formatTaskElapsedLabel, resolveTaskRowPresentation } from "./SidebarTas
  * How tall the group may get before it scrolls: two thread cards' worth.
  *
  * An active thread card declares `contain-intrinsic-size: auto 96px` in
- * `SidebarV2`, so two of them is 12rem. Expressing the bound in cards rather
+ * `Sidebar`, so two of them is 12rem. Expressing the bound in cards rather
  * than in rows is what keeps the group readable as a group — it can never take
  * more vertical space than the two threads it would otherwise hide.
  */
