@@ -1,13 +1,18 @@
 import { useParams } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
   ScopedThreadRef,
   WayfinderLint,
   WayfinderNode,
 } from "@t3tools/contracts";
-import { ChevronLeft, Focus, Map as MapIcon, TriangleAlert, X } from "lucide-react";
+import { ChevronLeft, Focus, Map as MapIcon, RefreshCw, TriangleAlert, X } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -18,9 +23,11 @@ import {
 } from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
+import { toastManager } from "~/components/ui/toast";
 import { cn } from "~/lib/utils";
 import { selectActiveRightPanel, useRightPanelStore } from "~/rightPanelStore";
 import { useEnvironmentQuery } from "~/state/query";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { wayfinderEnvironment } from "~/state/wayfinder";
 import { resolveThreadRouteTarget } from "~/threadRoutes";
 
@@ -202,8 +209,33 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const mapsQuery = useEnvironmentQuery(
     wayfinderEnvironment.maps({ environmentId: props.environmentId, input: { cwd: props.cwd } }),
   );
+  const refreshMaps = useAtomCommand(wayfinderEnvironment.refreshMaps, { reportFailure: false });
   const snapshot = mapsQuery.data;
   const [state, dispatch] = useReducer(starMapPanelReducer, initialStarMapPanelState);
+  const reloadInFlightRef = useRef(false);
+  const [isReloading, setIsReloading] = useState(false);
+  const handleReloadMap = useCallback(() => {
+    if (reloadInFlightRef.current) return;
+    reloadInFlightRef.current = true;
+    setIsReloading(true);
+    void (async () => {
+      const result = await refreshMaps({
+        environmentId: props.environmentId,
+        input: { cwd: props.cwd },
+      });
+      reloadInFlightRef.current = false;
+      setIsReloading(false);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: "Could not reload map",
+          description:
+            error instanceof Error ? error.message : "The map could not be read from disk.",
+        });
+      }
+    })();
+  }, [props.cwd, props.environmentId, refreshMaps]);
 
   // The panel needs its thread's right-panel scope for two things: the
   // surface-active gate below and the ticket detail's open-as-file action.
@@ -647,6 +679,16 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         {headerMeta !== null ? (
           <span className="shrink-0 text-xs text-muted-foreground">{headerMeta}</span>
         ) : null}
+        <button
+          type="button"
+          aria-label={isReloading ? "Reloading map" : "Reload map"}
+          title={isReloading ? "Reloading map" : "Reload map"}
+          disabled={isReloading}
+          onClick={handleReloadMap}
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+        >
+          <RefreshCw className={cn("size-3.5", isReloading && "animate-spin")} aria-hidden />
+        </button>
         {state.level === "map" && selectedMap !== null ? (
           <div
             role="group"

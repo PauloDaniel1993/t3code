@@ -248,6 +248,18 @@ function wayfinderMapsFailureContext(error: WayfinderMaps.WayfinderMapsError): {
   }
 }
 
+function toWayfinderMapsError(
+  cwd: string,
+  cause: WayfinderMaps.WayfinderMapsError,
+): WayfinderMapsError {
+  return new WayfinderMapsError({
+    cwd,
+    ...wayfinderMapsFailureContext(cause),
+    message: cause.message,
+    cause,
+  });
+}
+
 function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntriesBrowseError): {
   readonly failure: FilesystemBrowseFailure;
   readonly parentPath?: string;
@@ -1972,17 +1984,18 @@ const makeWsRpcLayer = (
                   WayfinderMaps.WAYFINDER_MAPS_DEFAULT_BOOTSTRAP_PROBE_INTERVAL,
                 ),
               })
-              .pipe(
-                Stream.mapError(
-                  (cause) =>
-                    new WayfinderMapsError({
-                      cwd: input.cwd,
-                      ...wayfinderMapsFailureContext(cause),
-                      message: cause.message,
-                      cause,
-                    }),
-                ),
-              ),
+              .pipe(Stream.mapError((cause) => toWayfinderMapsError(input.cwd, cause))),
+            {
+              "rpc.aggregate": "workspace",
+            },
+          ),
+        [WS_METHODS.wayfinderRefreshMaps]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.wayfinderRefreshMaps,
+            wayfinderMaps.refresh(input.cwd).pipe(
+              Effect.mapError((cause) => toWayfinderMapsError(input.cwd, cause)),
+              Effect.as({}),
+            ),
             {
               "rpc.aggregate": "workspace",
             },

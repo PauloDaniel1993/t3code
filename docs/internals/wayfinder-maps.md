@@ -27,6 +27,9 @@ fields feed the same status and blocker model as the other dialects.
 The service watches only the `.plan` and `.scratch` directories, each with its own supervised
 watcher and missing-directory re-arm probe. It never watches the workspace root because Effect's
 recursive filesystem watcher would also traverse directories such as `node_modules` and `.git`.
+The header reload action sends a workspace-scoped RPC through the active environment. It runs the
+same bounded refresh as the watchers and publishes a snapshot only when the parsed content changed,
+so manual reloads work remotely without resending an unchanged graph.
 The map, ticket, node, byte, and title caps apply once to the combined snapshot across both
 discovery roots.
 

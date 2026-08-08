@@ -5,7 +5,8 @@ to pick up, what is already settled, and what a ticket is waiting on without ope
 one at a time.
 
 The Map surface is read-only. Your agent creates and updates the map; T3 Code keeps the view in
-sync as it changes.
+sync as it changes. If an issue changed but the view has not caught up, choose **Reload map** in
+the header to read the map and its issues from disk again.
 
 ## Open the Map Surface
 
