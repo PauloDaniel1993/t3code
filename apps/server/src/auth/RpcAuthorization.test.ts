@@ -30,6 +30,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("allows refreshing wayfinder maps with workspace read access", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.wayfinderRefreshMaps)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.subscribeWayfinderMaps)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

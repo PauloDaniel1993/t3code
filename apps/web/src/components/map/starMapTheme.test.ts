@@ -103,6 +103,7 @@ describe("resolveStarMapTheme", () => {
       return "rgb(1 2 3)";
     });
     expect(theme.background).toEqual({ r: 16, g: 20, b: 29, a: 1 });
+    expect(theme.completion).toEqual({ r: 1, g: 2, b: 3, a: 1 });
     expect(theme.status.open).toEqual({ r: 43, g: 127, b: 255, a: 1 });
     expect(theme.star).toEqual({ r: 1, g: 2, b: 3, a: 1 });
   });
@@ -113,6 +114,7 @@ describe("resolveStarMapTheme", () => {
     );
     expect(theme.status.resolved).toEqual(DEFAULT_STAR_MAP_THEME.status.resolved);
     expect(theme.background).toEqual(DEFAULT_STAR_MAP_THEME.background);
+    expect(theme.completion).toEqual(DEFAULT_STAR_MAP_THEME.completion);
     expect(theme.status.open).toEqual(DEFAULT_STAR_MAP_THEME.status.open);
   });
 });

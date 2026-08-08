@@ -261,6 +261,9 @@ export const WS_METHODS = {
   sourceControlCloneRepository: "sourceControl.cloneRepository",
   sourceControlPublishRepository: "sourceControl.publishRepository",
 
+  // Wayfinder methods
+  wayfinderRefreshMaps: "wayfinder.refreshMaps",
+
   // Streaming subscriptions
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
@@ -838,6 +841,12 @@ export const WsSubscribeWayfinderMapsRpc = Rpc.make(WS_METHODS.subscribeWayfinde
   stream: true,
 });
 
+export const WsWayfinderRefreshMapsRpc = Rpc.make(WS_METHODS.wayfinderRefreshMaps, {
+  payload: WayfinderMapsInput,
+  success: Schema.Struct({}),
+  error: Schema.Union([WayfinderMapsError, EnvironmentAuthorizationError]),
+});
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
@@ -914,6 +923,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
   WsSubscribeWayfinderMapsRpc,
+  WsWayfinderRefreshMapsRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetWorkflowScriptRpc,
   WsOrchestrationGetTurnDiffRpc,

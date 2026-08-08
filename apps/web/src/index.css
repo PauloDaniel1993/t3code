@@ -1083,10 +1083,13 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
    carries this attribute and reads the tokens once per theme change.
    Status hues bind to --success / --warning / --info / --destructive so the
    active modular theme supplies the same semantic palette used elsewhere.
+   Completion gold is an achievement state for the graph as a whole, not a
+   ticket status, so it has its own stable token.
    Keep values in sync with DEFAULT_STAR_MAP_THEME in
    apps/web/src/components/map/starMapTheme.ts. */
 [data-star-map] {
   --star-map-background: #10141d;
+  --star-map-completion: #f5c451;
   --star-map-star: #eef2f9;
   --star-map-starfield-far: rgb(168 180 205 / 0.45);
   --star-map-starfield-near: rgb(214 224 240 / 0.7);
