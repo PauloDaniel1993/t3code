@@ -684,7 +684,6 @@ export function WorkflowActivityBrowserFixture() {
   const [scrollMode, setScrollMode] = useState<TimelineScrollMode>("following-end");
   const [anchorMessageId, setAnchorMessageId] = useState<MessageId | null>(null);
   const [anchorIndex, setAnchorIndex] = useState<number | null>(null);
-  const [anchorSize, setAnchorSize] = useState<number | null>(null);
   const [isAtEnd, setIsAtEnd] = useState(true);
   const [domSnapshot, setDomSnapshot] = useState<FixtureDomSnapshot>(EMPTY_DOM_SNAPSHOT);
   const [controlNote, setControlNote] = useState("Ready for deterministic browser steps.");
@@ -762,7 +761,6 @@ export function WorkflowActivityBrowserFixture() {
   useLayoutEffect(() => {
     activeAnchorIndexRef.current = null;
     setAnchorIndex(null);
-    setAnchorSize(null);
     if (scrollModeRef.current === "free-scrolling") {
       setAnchorMessageId(null);
       setIsAtEnd(false);
@@ -806,7 +804,6 @@ export function WorkflowActivityBrowserFixture() {
         setAnchorMessageId(null);
         activeAnchorIndexRef.current = null;
         setAnchorIndex(null);
-        setAnchorSize(null);
         setIsAtEnd(true);
         void list?.scrollToEnd?.({ animated: false });
         setControlNote("Following-end mode selected; the production list was sent to its end.");
@@ -816,7 +813,6 @@ export function WorkflowActivityBrowserFixture() {
         setAnchorMessageId(null);
         activeAnchorIndexRef.current = null;
         setAnchorIndex(null);
-        setAnchorSize(null);
         setIsAtEnd(false);
         const currentScroll = list?.getState()?.scroll ?? 0;
         void list?.scrollToOffset({
@@ -831,7 +827,6 @@ export function WorkflowActivityBrowserFixture() {
         .find((message) => message.role === "user")?.id;
       activeAnchorIndexRef.current = null;
       setAnchorIndex(null);
-      setAnchorSize(null);
       setAnchorMessageId(anchor ?? null);
       setControlNote(
         anchor
@@ -1310,7 +1305,7 @@ export function WorkflowActivityBrowserFixture() {
                   label="Anchor"
                   value={
                     anchorMessageId
-                      ? `${anchorIndex ?? "pending"} / ${anchorSize ?? "?"}px`
+                      ? `${anchorMessageId} / row ${anchorIndex ?? "pending"}`
                       : "none"
                   }
                 />
@@ -1361,9 +1356,6 @@ export function WorkflowActivityBrowserFixture() {
                     if (messageId !== anchorMessageId) return;
                     activeAnchorIndexRef.current = nextAnchorIndex;
                     setAnchorIndex(nextAnchorIndex);
-                  }}
-                  onAnchorSizeChanged={(messageId, size) => {
-                    if (messageId === anchorMessageId) setAnchorSize(size);
                   }}
                   contentInsetEndAdjustment={FIXTURE_COMPOSER_INSET_PX}
                   liveFollowEnabled={scrollMode !== "free-scrolling"}

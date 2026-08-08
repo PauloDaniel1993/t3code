@@ -311,6 +311,66 @@ describe("buildThreadListV2Items", () => {
     expect(layout.settledCount).toBe(0);
   });
 
+  it("renders a task child only inside the enabled task surface", () => {
+    const parent = makeThread({ id: ThreadId.make("parent"), title: "Parent" });
+    const child = makeThread({
+      id: ThreadId.make("child"),
+      title: "Child task",
+      parentThreadId: parent.id,
+    });
+    const nestedTaskThreadKeys = new Set([`${environmentId}:${child.id}`]);
+
+    const withTaskSurface = buildThreadListV2Items({
+      threads: [parent, child],
+      nestedTaskThreadKeys,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+    const withoutTaskSurface = buildThreadListV2Items({
+      threads: [parent, child],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+
+    expect(withTaskSurface.items.map((item) => item.thread.id)).toEqual(["parent"]);
+    expect(withoutTaskSurface.items.map((item) => item.thread.id)).toEqual(["child", "parent"]);
+  });
+
+  it("excludes a nested task child's stale pin from the top-level pinned order", () => {
+    const parent = makeThread({
+      id: ThreadId.make("parent"),
+      title: "Parent",
+      pinnedAt: "2026-06-01T12:00:00.000Z",
+      pinOrderKey: "b",
+    });
+    const child = makeThread({
+      id: ThreadId.make("child"),
+      title: "Child task",
+      parentThreadId: parent.id,
+      pinnedAt: "2026-06-01T12:00:00.000Z",
+      pinOrderKey: "a",
+    });
+    const other = makeThread({
+      id: ThreadId.make("other"),
+      title: "Other",
+      pinnedAt: "2026-06-01T12:00:00.000Z",
+      pinOrderKey: "c",
+    });
+
+    const layout = buildThreadListV2Items({
+      threads: [parent, child, other],
+      nestedTaskThreadKeys: new Set([`${environmentId}:${child.id}`]),
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+
+    expect(layout.items.map((item) => item.thread.id)).toEqual(["parent", "other"]);
+    expect(layout.items.every((item) => item.pinned)).toBe(true);
+  });
+
   it("snooze hides a pinned thread and wake restores it to the pinned block", () => {
     const snoozedInput = {
       threads: [

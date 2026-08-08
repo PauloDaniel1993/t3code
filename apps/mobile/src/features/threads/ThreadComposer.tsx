@@ -702,11 +702,22 @@ const AvailableThreadComposer = memo(function AvailableThreadComposer(props: Thr
       style={{
         paddingTop: isExpanded ? 8 : 6,
         paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : 6),
-        experimental_backgroundImage: isDarkMode
-          ? "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.9) 100%)"
-          : "linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 55%, rgba(255,255,255,0.9) 100%)",
       }}
     >
+      {/* The backdrop gradient lives on a plain View: Reanimated's Animated.View
+          silently drops experimental_backgroundImage on Android, which left this
+          strip fully transparent and the feed text legible through the composer. */}
+      <View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            experimental_backgroundImage: isDarkMode
+              ? "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.9) 100%)"
+              : "linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 55%, rgba(255,255,255,0.9) 100%)",
+          },
+        ]}
+      />
       <Animated.View
         className="relative w-full self-center"
         layout={COMPOSER_LAYOUT_TRANSITION}

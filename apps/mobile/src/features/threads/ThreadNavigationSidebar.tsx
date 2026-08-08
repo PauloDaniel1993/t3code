@@ -12,6 +12,7 @@ import type { MenuAction } from "@react-native-menu/menu";
 import { useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 import { Platform, Pressable, StyleSheet, TextInput, View, useColorScheme } from "react-native";
@@ -58,8 +59,10 @@ import { buildHomeProjectScopes, buildHomeThreadGroups } from "../home/homeThrea
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "../home/thread-swipe-actions";
 import { usePendingTaskListActions } from "../home/usePendingTaskListActions";
 import { useThreadListActions } from "../home/useThreadListActions";
-import { WorkspaceConnectionStatus } from "../home/WorkspaceConnectionStatus";
-import { shouldShowWorkspaceConnectionStatus } from "../home/workspace-connection-status";
+import {
+  getConnectionAwareBrandHeaderOptions,
+  WorkspaceConnectionTitle,
+} from "../home/WorkspaceConnectionTitle";
 import { SidebarHeaderActions } from "./sidebar-header-actions";
 import { SidebarFilterButton } from "./sidebar-filter-button";
 import { createSidebarHeaderItems } from "./sidebar-native-header-items";
@@ -324,6 +327,7 @@ function ThreadNavigationSidebarPane(
     unsettleThread,
     pinThread,
     unpinThread,
+    movePinnedThread,
   } = useThreadListActions();
   const threadListV2Enabled = useThreadListV2Enabled();
   const threadTasksEnabled = useThreadTasksEnabled();
@@ -584,6 +588,15 @@ function ThreadNavigationSidebarPane(
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const threadTaskEnvironmentIds = useMemo(() => {
+    const supported = new Set<EnvironmentId>();
+    for (const [environmentId, config] of serverConfigs) {
+      if (config.environment.capabilities.threadTasks === true) {
+        supported.add(environmentId);
+      }
+    }
+    return supported;
+  }, [serverConfigs]);
   const settlementEnvironmentIds = useMemo(() => {
     const supported = new Set<EnvironmentId>();
     for (const [environmentId, config] of serverConfigs) {
@@ -611,6 +624,57 @@ function ThreadNavigationSidebarPane(
     }
     return supported;
   }, [serverConfigs]);
+  const pinReorderEnvironmentIds = useMemo(() => {
+    const supported = new Set<EnvironmentId>();
+    for (const [environmentId, config] of serverConfigs) {
+      if (config.environment.capabilities.threadPinReorder === true) {
+        supported.add(environmentId);
+      }
+    }
+    return supported;
+  }, [serverConfigs]);
+  // Keep the task projection on the same minute boundary as v2 partitioning;
+  // this advances elapsed labels without reading time during a render pass.
+  const taskAgentNowMs = useMemo(() => Date.parse(`${nowMinute}:00.000Z`), [nowMinute]);
+  const taskAgentSurface = useMemo(() => {
+    if (!threadListV2Enabled || !threadTasksEnabled) return null;
+    return buildTaskAgentSurfaceRows(
+      buildTaskAgentModel({
+        // Top-level shells retain native-agent rollups on older environments;
+        // only capable environments contribute nested durable task children.
+        threads: threads.filter(
+          (thread) =>
+            thread.archivedAt === null &&
+            (thread.parentThreadId == null || threadTaskEnvironmentIds.has(thread.environmentId)),
+        ),
+        nowMs: taskAgentNowMs,
+        readState: taskAgentReadState,
+      }),
+    );
+  }, [
+    taskAgentNowMs,
+    taskAgentReadState,
+    threadListV2Enabled,
+    threadTaskEnvironmentIds,
+    threadTasksEnabled,
+    threads,
+  ]);
+  const taskAgentParentThreadIdByTaskThreadKey = useMemo(() => {
+    const parentThreadIdByTaskThreadKey = new Map<string, EnvironmentThreadShell["id"]>();
+    if (taskAgentSurface === null) return parentThreadIdByTaskThreadKey;
+
+    for (const row of taskAgentSurface.threads) {
+      if (row.kind !== "rollup-thread") continue;
+      for (const task of row.rollup.tasks) {
+        parentThreadIdByTaskThreadKey.set(`${row.thread.environmentId}:${task.id}`, row.thread.id);
+      }
+    }
+    return parentThreadIdByTaskThreadKey;
+  }, [taskAgentSurface]);
+  const nestedTaskThreadKeys = useMemo(
+    () => new Set(taskAgentParentThreadIdByTaskThreadKey.keys()),
+    [taskAgentParentThreadIdByTaskThreadKey],
+  );
   const threadListV2Layout = useMemo(() => {
     if (!threadListV2Enabled)
       return {
@@ -624,6 +688,7 @@ function ThreadNavigationSidebarPane(
       };
     return buildThreadListV2Items({
       threads: threads.filter((thread) => thread.archivedAt === null),
+      nestedTaskThreadKeys,
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
@@ -648,6 +713,7 @@ function ThreadNavigationSidebarPane(
     options.selectedEnvironmentId,
     props.searchQuery,
     matchedThreadKeys,
+    nestedTaskThreadKeys,
     settledVisibleCount,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
@@ -655,6 +721,21 @@ function ThreadNavigationSidebarPane(
     threads,
     selectedProjectScope,
   ]);
+  // Canonical arranged pinned order for Move up/down flags. Search and scope
+  // filtering must not change the global move target; task children are the
+  // only shells excluded because they never participate in the top-level run.
+  const arrangedPinnedKeys = useMemo(() => {
+    const pinned = sortPinnedThreadsByOrderKey(
+      threads.filter(
+        (thread) =>
+          thread.parentThreadId == null &&
+          thread.pinnedAt != null &&
+          thread.archivedAt === null &&
+          pinReorderEnvironmentIds.has(thread.environmentId),
+      ),
+    );
+    return pinned.map((thread) => `${thread.environmentId}:${thread.id}`);
+  }, [pinReorderEnvironmentIds, threads]);
   // Re-partition the moment the earliest snooze expires (clamped to the
   // signed-32-bit setTimeout range; far-future wakes re-arm at the clamp).
   const nextSnoozeWakeAt = threadListV2Layout.nextSnoozeWakeAt;
@@ -669,19 +750,6 @@ function ThreadNavigationSidebarPane(
     // unchanged: after a clamped fire (wake beyond the 32-bit setTimeout
     // range) the boundary string is identical and the chain would die.
   }, [nextSnoozeWakeAt, snoozeWakeTick]);
-  // Keep the task projection on the same minute boundary as v2 partitioning;
-  // this advances elapsed labels without reading time during a render pass.
-  const taskAgentNowMs = useMemo(() => Date.parse(`${nowMinute}:00.000Z`), [nowMinute]);
-  const taskAgentSurface = useMemo(() => {
-    if (!threadListV2Enabled || !threadTasksEnabled) return null;
-    return buildTaskAgentSurfaceRows(
-      buildTaskAgentModel({
-        threads,
-        nowMs: taskAgentNowMs,
-        readState: taskAgentReadState,
-      }),
-    );
-  }, [taskAgentNowMs, taskAgentReadState, threadListV2Enabled, threadTasksEnabled, threads]);
   const [taskAgentExpandedByThreadKey, setTaskAgentExpandedByThreadKey] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map());
@@ -699,25 +767,6 @@ function ThreadNavigationSidebarPane(
     }
     return presentationByThreadKey;
   }, [taskAgentExpandedByThreadKey, taskAgentSurface]);
-  const taskAgentParentThreadIdByTaskThreadKey = useMemo(() => {
-    const parentThreadIdByTaskThreadKey = new Map<string, EnvironmentThreadShell["id"]>();
-    if (taskAgentSurface === null) return parentThreadIdByTaskThreadKey;
-
-    for (const row of taskAgentSurface.threads) {
-      if (row.kind !== "rollup-thread") continue;
-      for (const task of row.rollup.tasks) {
-        if (!("tap" in task.navigation)) continue;
-        parentThreadIdByTaskThreadKey.set(
-          scopedThreadKey(
-            task.navigation.tap.params.environmentId,
-            task.navigation.tap.params.threadId,
-          ),
-          row.thread.id,
-        );
-      }
-    }
-    return parentThreadIdByTaskThreadKey;
-  }, [taskAgentSurface]);
   const taskAgentParentThreadIdByTaskThreadKeyRef = useRef(taskAgentParentThreadIdByTaskThreadKey);
   taskAgentParentThreadIdByTaskThreadKeyRef.current = taskAgentParentThreadIdByTaskThreadKey;
   const taskAgentPeekParamsByRow = useMemo(
@@ -818,7 +867,6 @@ function ThreadNavigationSidebarPane(
     threadListV2Enabled,
     threadListV2Layout,
   ]);
-  const showsConnectionStatus = shouldShowWorkspaceConnectionStatus(catalogState);
   const listMenuActions = useMemo<MenuAction[]>(
     () => [
       {
@@ -1154,11 +1202,20 @@ function ThreadNavigationSidebarPane(
               onSettleThread={settleThread}
               snoozeSupported={snoozeEnvironmentIds.has(thread.environmentId)}
               pinningSupported={pinningEnvironmentIds.has(thread.environmentId)}
+              pinReorderSupported={pinReorderEnvironmentIds.has(thread.environmentId)}
+              canMovePinnedUp={
+                arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`) > 0
+              }
+              canMovePinnedDown={(() => {
+                const index = arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`);
+                return index !== -1 && index < arrangedPinnedKeys.length - 1;
+              })()}
               onSnoozeThread={snoozeThread}
               onUnsnoozeThread={unsnoozeThread}
               onUnsettleThread={unsettleThread}
               onPinThread={pinThread}
               onUnpinThread={unpinThread}
+              onMovePinnedThread={movePinnedThread}
               onChangeRequestState={handleChangeRequestState}
               projectCwd={projectCwdByKey.get(scopeKey) ?? null}
               onSwipeableClose={handleSwipeableClose}
@@ -1288,6 +1345,7 @@ function ThreadNavigationSidebarPane(
     },
     [
       archiveThread,
+      arrangedPinnedKeys,
       confirmDeletePendingTask,
       confirmDeleteThread,
       handleChangeRequestState,
@@ -1296,7 +1354,9 @@ function ThreadNavigationSidebarPane(
       handleTaskAgentRowPress,
       handleSwipeableClose,
       handleSwipeableWillOpen,
+      movePinnedThread,
       openPendingTask,
+      pinReorderEnvironmentIds,
       pinThread,
       pinningEnvironmentIds,
       projectByKey,
@@ -1389,6 +1449,13 @@ function ThreadNavigationSidebarPane(
         <NativeStackScreenOptions
           optionsVersion={nativeHeaderItems}
           options={{
+            // Re-applies the shell's static brand slot with the
+            // connection-status swap so reconnects surface in the header
+            // instead of shifting the list.
+            ...getConnectionAwareBrandHeaderOptions({
+              onOpenEnvironments: props.onOpenEnvironmentSettings,
+              fallbackTitleStyle: { fontSize: 18, fontWeight: "800" },
+            }),
             headerSearchBarOptions: {
               ref: searchBarRef,
               autoCapitalize: "none",
@@ -1439,17 +1506,6 @@ function ThreadNavigationSidebarPane(
                 scrollEventThrottle={16}
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
-                ListHeaderComponent={
-                  showsConnectionStatus ? (
-                    <View className="px-1.5 pt-0.5 pb-2">
-                      <WorkspaceConnectionStatus
-                        onPress={props.onOpenEnvironmentSettings}
-                        state={catalogState}
-                        variant="sidebar"
-                      />
-                    </View>
-                  ) : null
-                }
                 ListEmptyComponent={listEmpty}
               />
             </GestureDetector>
@@ -1540,9 +1596,19 @@ function ThreadNavigationSidebarPane(
           </Svg>
         </View>
         <View className="h-[50px] flex-row items-end gap-0.5 pr-2 pl-5">
-          <Text className="flex-1 text-[34px] font-t3-bold text-foreground" numberOfLines={1}>
-            Threads
-          </Text>
+          {/* Title slot doubles as the connection status surface: while an
+              environment reconnects, "Threads" fades to a status label in
+              place (no layout shift in the list below). */}
+          <WorkspaceConnectionTitle
+            grow
+            onPress={props.onOpenEnvironmentSettings}
+            size="pageTitle"
+            brand={
+              <Text className="flex-1 text-[34px] font-t3-bold text-foreground" numberOfLines={1}>
+                Threads
+              </Text>
+            }
+          />
           <SidebarHeaderButtonGroup colorScheme={colorScheme}>
             <ControlPillMenu actions={listMenuActions} onPressAction={handleListMenuAction}>
               <SidebarFilterButton
@@ -1571,16 +1637,6 @@ function ThreadNavigationSidebarPane(
             value={props.searchQuery}
           />
         </View>
-
-        {showsConnectionStatus ? (
-          <View className="px-3.5 pt-2.5">
-            <WorkspaceConnectionStatus
-              onPress={props.onOpenEnvironmentSettings}
-              state={catalogState}
-              variant="sidebar"
-            />
-          </View>
-        ) : null}
       </View>
     </View>
   );

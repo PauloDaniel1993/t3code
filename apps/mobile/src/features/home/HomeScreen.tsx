@@ -12,6 +12,7 @@ import {
   threadSearchMatchKey,
   type EnvironmentThreadSearchMatch,
 } from "@t3tools/client-runtime/state/thread-search";
+import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 import type {
   EnvironmentId,
   SidebarProjectGroupingMode,
@@ -86,8 +87,6 @@ import {
   type HomeProjectSortOrder,
 } from "./homeThreadList";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-swipe-actions";
-import { WorkspaceConnectionStatus } from "./WorkspaceConnectionStatus";
-import { shouldShowWorkspaceConnectionStatus } from "./workspace-connection-status";
 
 /* ─── Types ──────────────────────────────────────────────────────────── */
 
@@ -112,7 +111,6 @@ interface HomeScreenProps {
   readonly onProjectSortOrderChange: (sortOrder: HomeProjectSortOrder) => void;
   readonly onThreadSortOrderChange: (sortOrder: SidebarThreadSortOrder) => void;
   readonly onAddConnection: () => void;
-  readonly onOpenEnvironments: () => void;
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
@@ -129,6 +127,10 @@ interface HomeScreenProps {
   readonly onUnsettleThread: (thread: EnvironmentThreadShell) => void;
   readonly onPinThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly onUnpinThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  readonly onMovePinnedThread: (
+    thread: EnvironmentThreadShell,
+    direction: "up" | "down",
+  ) => Promise<boolean>;
   readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
@@ -606,6 +608,12 @@ export function HomeScreen(props: HomeScreenProps) {
     },
     [props.onPinThread],
   );
+  const handleMovePinnedThread = useCallback(
+    (thread: EnvironmentThreadShell, direction: "up" | "down") => {
+      void props.onMovePinnedThread(thread, direction);
+    },
+    [props.onMovePinnedThread],
+  );
   const handleUnpinThread = useCallback(
     (thread: EnvironmentThreadShell) => {
       void props.onUnpinThread(thread);
@@ -653,16 +661,40 @@ export function HomeScreen(props: HomeScreenProps) {
   // The task/agent projection shares the v2 minute clock so elapsed labels can
   // advance without reading a clock during render or invalidating every row.
   const taskAgentNowMs = useMemo(() => Date.parse(`${nowMinute}:00.000Z`), [nowMinute]);
+  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const threadTaskEnvironmentIds = useMemo(() => {
+    const supported = new Set<EnvironmentId>();
+    for (const [environmentId, config] of serverConfigs) {
+      if (config.environment.capabilities.threadTasks === true) {
+        supported.add(environmentId);
+      }
+    }
+    return supported;
+  }, [serverConfigs]);
   const taskAgentSurface = useMemo(() => {
     if (!threadListV2Enabled || !threadTasksEnabled) return null;
     return buildTaskAgentSurfaceRows(
       buildTaskAgentModel({
-        threads: props.threads,
+        // Keep every top-level shell so native-agent rollups still work on
+        // older environments, but only give the hierarchy task children that
+        // their server can actually surface.
+        threads: props.threads.filter(
+          (thread) =>
+            thread.archivedAt === null &&
+            (thread.parentThreadId == null || threadTaskEnvironmentIds.has(thread.environmentId)),
+        ),
         nowMs: taskAgentNowMs,
         readState: taskAgentReadState,
       }),
     );
-  }, [props.threads, taskAgentNowMs, taskAgentReadState, threadListV2Enabled, threadTasksEnabled]);
+  }, [
+    props.threads,
+    taskAgentNowMs,
+    taskAgentReadState,
+    threadListV2Enabled,
+    threadTaskEnvironmentIds,
+    threadTasksEnabled,
+  ]);
   const [taskAgentExpandedByThreadKey, setTaskAgentExpandedByThreadKey] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map());
@@ -687,18 +719,15 @@ export function HomeScreen(props: HomeScreenProps) {
     for (const row of taskAgentSurface.threads) {
       if (row.kind !== "rollup-thread") continue;
       for (const task of row.rollup.tasks) {
-        if (!("tap" in task.navigation)) continue;
-        parentThreadIdByTaskThreadKey.set(
-          scopedThreadKey(
-            task.navigation.tap.params.environmentId,
-            task.navigation.tap.params.threadId,
-          ),
-          row.thread.id,
-        );
+        parentThreadIdByTaskThreadKey.set(`${row.thread.environmentId}:${task.id}`, row.thread.id);
       }
     }
     return parentThreadIdByTaskThreadKey;
   }, [taskAgentSurface]);
+  const nestedTaskThreadKeys = useMemo(
+    () => new Set(taskAgentParentThreadIdByTaskThreadKey.keys()),
+    [taskAgentParentThreadIdByTaskThreadKey],
+  );
   const taskAgentParentThreadIdByTaskThreadKeyRef = useRef(taskAgentParentThreadIdByTaskThreadKey);
   taskAgentParentThreadIdByTaskThreadKeyRef.current = taskAgentParentThreadIdByTaskThreadKey;
   const taskAgentPeekParamsByRow = useMemo(
@@ -744,7 +773,6 @@ export function HomeScreen(props: HomeScreenProps) {
   );
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
-  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
   const settlementEnvironmentIds = useMemo(() => {
     const supported = new Set<EnvironmentId>();
     for (const [environmentId, config] of serverConfigs) {
@@ -772,6 +800,15 @@ export function HomeScreen(props: HomeScreenProps) {
     }
     return supported;
   }, [serverConfigs]);
+  const pinReorderEnvironmentIds = useMemo(() => {
+    const supported = new Set<EnvironmentId>();
+    for (const [environmentId, config] of serverConfigs) {
+      if (config.environment.capabilities.threadPinReorder === true) {
+        supported.add(environmentId);
+      }
+    }
+    return supported;
+  }, [serverConfigs]);
   const threadListV2Layout = useMemo(() => {
     if (!threadListV2Enabled)
       return {
@@ -787,6 +824,7 @@ export function HomeScreen(props: HomeScreenProps) {
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
       threads: props.threads.filter((thread) => thread.archivedAt === null),
+      nestedTaskThreadKeys,
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -814,9 +852,25 @@ export function HomeScreen(props: HomeScreenProps) {
     props.selectedEnvironmentId,
     props.threads,
     matchedThreadKeys,
+    nestedTaskThreadKeys,
     threadListV2Enabled,
     v2ScopedProjectGroup,
   ]);
+  // Canonical arranged pinned order for Move up/down flags. Search and scope
+  // filtering must not change the global move target; task children are the
+  // only shells excluded because they never participate in the top-level run.
+  const arrangedPinnedKeys = useMemo(() => {
+    const pinned = sortPinnedThreadsByOrderKey(
+      props.threads.filter(
+        (thread) =>
+          thread.parentThreadId == null &&
+          thread.pinnedAt != null &&
+          thread.archivedAt === null &&
+          pinReorderEnvironmentIds.has(thread.environmentId),
+      ),
+    );
+    return pinned.map((thread) => `${thread.environmentId}:${thread.id}`);
+  }, [pinReorderEnvironmentIds, props.threads]);
   // Re-partition the moment the earliest snooze expires (clamped to the
   // signed-32-bit setTimeout range; far-future wakes re-arm at the clamp).
   const nextSnoozeWakeAt = threadListV2Layout.nextSnoozeWakeAt;
@@ -961,11 +1015,18 @@ export function HomeScreen(props: HomeScreenProps) {
           onSettleThread={handleSettleThread}
           snoozeSupported={snoozeEnvironmentIds.has(thread.environmentId)}
           pinningSupported={pinningEnvironmentIds.has(thread.environmentId)}
+          pinReorderSupported={pinReorderEnvironmentIds.has(thread.environmentId)}
+          canMovePinnedUp={arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`) > 0}
+          canMovePinnedDown={(() => {
+            const index = arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`);
+            return index !== -1 && index < arrangedPinnedKeys.length - 1;
+          })()}
           onSnoozeThread={handleSnoozeThread}
           onUnsnoozeThread={handleUnsnoozeThread}
           onUnsettleThread={handleUnsettleThread}
           onPinThread={handlePinThread}
           onUnpinThread={handleUnpinThread}
+          onMovePinnedThread={handleMovePinnedThread}
           onChangeRequestState={handleChangeRequestState}
           projectCwd={
             projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ?? null
@@ -987,6 +1048,8 @@ export function HomeScreen(props: HomeScreenProps) {
     [
       handleChangeRequestState,
       handleDeleteThread,
+      arrangedPinnedKeys,
+      handleMovePinnedThread,
       handlePinThread,
       handleSettleThread,
       handleSnoozeThread,
@@ -998,6 +1061,7 @@ export function HomeScreen(props: HomeScreenProps) {
       handleSwipeableWillOpen,
       handleUnsettleThread,
       pinningEnvironmentIds,
+      pinReorderEnvironmentIds,
       projectByKey,
       projectCwdByKey,
       props.onArchiveThread,
@@ -1167,20 +1231,13 @@ export function HomeScreen(props: HomeScreenProps) {
       ? null
       : (props.savedConnectionsById[props.selectedEnvironmentId]?.environmentLabel ??
         "this environment");
-  const shouldShowConnectionStatus = shouldShowWorkspaceConnectionStatus(props.catalogState);
+  // Connection state surfaces in the header title slot
+  // (WorkspaceConnectionTitle) — nothing renders inside the list, so
+  // reconnects never shift the rows.
   const emptyState = deriveEmptyState({
     catalogState: props.catalogState,
     projectCount: props.projects.length,
   });
-  const connectionStatus =
-    shouldShowConnectionStatus && Platform.OS !== "ios" ? (
-      <View
-        className="absolute left-0 right-0 items-center"
-        style={{ bottom: Math.max(insets.bottom, 18) + 76 }}
-      >
-        <WorkspaceConnectionStatus state={props.catalogState} onPress={props.onOpenEnvironments} />
-      </View>
-    ) : null;
 
   if (!hasAnyThreads) {
     return (
@@ -1199,41 +1256,17 @@ export function HomeScreen(props: HomeScreenProps) {
             onAction={!props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined}
             variant="plain"
           />
-          {emptyState.loading && !shouldShowConnectionStatus ? (
+          {emptyState.loading ? (
             <View className="mt-4 items-center">
               <ActivityIndicator color={accentColor} />
             </View>
           ) : null}
-          {shouldShowConnectionStatus && Platform.OS === "ios" ? (
-            <View className="mt-4">
-              <WorkspaceConnectionStatus
-                state={props.catalogState}
-                onPress={props.onOpenEnvironments}
-                variant="sidebar"
-              />
-            </View>
-          ) : null}
         </View>
-        {connectionStatus}
       </View>
     );
   }
 
-  const listHeader = (
-    <>
-      {Platform.OS === "ios" ? null : <HomeTopContentSpacer />}
-
-      {shouldShowConnectionStatus && Platform.OS === "ios" ? (
-        <View className="pb-4">
-          <WorkspaceConnectionStatus
-            state={props.catalogState}
-            onPress={props.onOpenEnvironments}
-            variant="sidebar"
-          />
-        </View>
-      ) : null}
-    </>
-  );
+  const listHeader = Platform.OS === "ios" ? null : <HomeTopContentSpacer />;
 
   // Project scoping lives in the header filter menu (no inline chip row on
   // mobile — the menu is the one filter surface).
@@ -1314,7 +1347,6 @@ export function HomeScreen(props: HomeScreenProps) {
             }}
           />
         </SwipeableScrollGateProvider>
-        {connectionStatus}
       </View>
     );
   }
@@ -1369,7 +1401,6 @@ export function HomeScreen(props: HomeScreenProps) {
           }
         />
       </SwipeableScrollGateProvider>
-      {connectionStatus}
     </View>
   );
 }

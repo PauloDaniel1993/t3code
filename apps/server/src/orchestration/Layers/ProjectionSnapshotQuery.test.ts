@@ -46,6 +46,36 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
+      const combinedTask = {
+        parentThreadId: ThreadId.make("thread-parent"),
+        title: "Inspect projection persistence",
+        prompt: "Verify the combined upstream and fork fields.",
+        context: { kind: "none" as const },
+        contextTruncated: false,
+        createdBy: "agent" as const,
+        status: "running" as const,
+        requestedAt: "2026-02-24T00:00:01.000Z",
+        startedAt: "2026-02-24T00:00:02.000Z",
+        finishedAt: null,
+        result: null,
+        delivery: null,
+      };
+      const combinedTaskSummary = {
+        total: 2,
+        running: 1,
+        latestResultAt: null,
+        latestDeliveredAt: "2026-02-24T00:00:03.000Z",
+      };
+      const combinedNativeAgents = [
+        {
+          taskId: "native-1",
+          turnId: asTurnId("turn-1"),
+          status: "running" as const,
+          description: "Inspect persistence",
+          startedAt: "2026-02-24T00:00:02.000Z",
+          updatedAt: "2026-02-24T00:00:03.000Z",
+        },
+      ];
 
       yield* sql`DELETE FROM projection_projects`;
       yield* sql`DELETE FROM projection_state`;
@@ -90,6 +120,12 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pending_approval_count,
           pending_user_input_count,
           has_actionable_proposed_plan,
+          pinned_at,
+          pin_order_key,
+          parent_thread_id,
+          task_json,
+          task_summary_json,
+          native_agents_json,
           created_at,
           updated_at,
           deleted_at
@@ -108,6 +144,12 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           1,
           0,
           0,
+          '2026-02-24T00:00:01.000Z',
+          'gm',
+          ${combinedTask.parentThreadId},
+          ${encodeUnknownJson(combinedTask)},
+          ${encodeUnknownJson(combinedTaskSummary)},
+          ${encodeUnknownJson(combinedNativeAgents)},
           '2026-02-24T00:00:02.000Z',
           '2026-02-24T00:00:03.000Z',
           NULL
@@ -294,9 +336,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
-          parentThreadId: null,
-          task: null,
-          taskSummary: null,
+          parentThreadId: combinedTask.parentThreadId,
+          task: combinedTask,
+          taskSummary: combinedTaskSummary,
+          nativeAgents: combinedNativeAgents,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -325,7 +368,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
-          pinnedAt: null,
+          pinnedAt: "2026-02-24T00:00:01.000Z",
+          pinOrderKey: "gm",
           titleRegeneration: null,
           deletedAt: null,
           messages: [
@@ -440,9 +484,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
-          parentThreadId: null,
-          task: null,
-          taskSummary: null,
+          parentThreadId: combinedTask.parentThreadId,
+          task: combinedTask,
+          taskSummary: combinedTaskSummary,
+          nativeAgents: combinedNativeAgents,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -471,7 +516,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
-          pinnedAt: null,
+          pinnedAt: "2026-02-24T00:00:01.000Z",
+          pinOrderKey: "gm",
           titleRegeneration: null,
           session: {
             threadId: ThreadId.make("thread-1"),

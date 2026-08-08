@@ -111,11 +111,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
-    id: "assistant-output",
-    title: "Assistant output",
-    to: "/settings/general",
-  },
-  {
     id: "provider-update-checks",
     title: "Provider update checks",
     to: "/settings/general",
@@ -162,6 +157,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
+    id: "legacy-plan-mode",
+    title: "Plan mode (legacy)",
+    to: "/settings/general",
+  },
+  {
+    id: "legacy-token-streaming",
+    title: "Stream token by token (legacy)",
+    to: "/settings/general",
+  },
+  {
     id: "keybindings",
     title: "Keybindings",
     to: "/settings/keybindings",
@@ -205,11 +210,6 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "thread-task-max-total",
     title: "Tasks in total per thread",
-    to: "/settings/beta",
-  },
-  {
-    id: "restore-plan-mode",
-    title: "Restore plan mode (legacy)",
     to: "/settings/beta",
   },
   {

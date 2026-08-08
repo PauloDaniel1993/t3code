@@ -90,7 +90,6 @@ export function BetaSettingsPanel() {
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
   const threadTasksEnabled = useClientSettings((settings) => settings.threadTasksEnabled);
-  const planModeEnabled = useClientSettings((settings) => settings.planModeEnabled);
   const updateSettings = useUpdateClientSettings();
 
   // The task caps are server settings: the decider enforces them, and that is
@@ -203,17 +202,6 @@ export function BetaSettingsPanel() {
             />
           </>
         ) : null}
-        <SettingsRow
-          {...searchableSetting("restore-plan-mode")}
-          description="Legacy feature. Brings back the Build/Plan toggle in the composer along with the /plan and /default commands and the Shift+Tab shortcut. While off, every thread runs in build mode."
-          control={
-            <Switch
-              checked={planModeEnabled}
-              onCheckedChange={(checked) => updateSettings({ planModeEnabled: Boolean(checked) })}
-              aria-label="Restore plan mode (legacy)"
-            />
-          }
-        />
       </SettingsSection>
     </SettingsPageContainer>
   );
