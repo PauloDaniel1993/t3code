@@ -6132,12 +6132,16 @@ function ChatViewContent(props: ChatViewProps) {
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
       />
-    ) : activeRightPanelSurface?.kind === "map" && activeProject && activeWorkspaceRoot ? (
+    ) : activeRightPanelSurface?.kind === "map" && activeProject && activeProjectCwd ? (
       <Suspense fallback={null}>
+        {/* Keyed on the project root, not the resolved one: the map panel picks
+            between the thread's worktree and the project root itself, and
+            remounting on that choice would throw away camera and selection. */}
         <StarMapPanel
-          key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
+          key={`${activeProject.environmentId}:${activeProjectCwd}`}
           environmentId={activeProject.environmentId}
-          cwd={activeWorkspaceRoot}
+          projectCwd={activeProjectCwd}
+          worktreeCwd={activeThreadWorktreePath}
         />
       </Suspense>
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&

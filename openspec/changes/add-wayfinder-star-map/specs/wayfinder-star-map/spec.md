@@ -72,14 +72,53 @@ The system SHALL offer the map surface from the right-panel empty-state actions 
 - **WHEN** the add-surface menu opens
 - **THEN** the map entry's presence is decided without waiting on a server response
 
+### Requirement: Let a worktree thread choose which root the map reads
+
+A thread running in a worktree has two candidate roots — its own worktree and the project workspace root — and `.plan/` is frequently absent from the worktree because it was never committed to the branch. The map surface SHALL offer an explicit control to switch between the two roots, and SHALL show that control only when the thread's worktree differs from the project workspace root. The chosen root SHALL persist per thread. Without a choice the surface SHALL read the thread's own worktree, falling back to the project root only when the worktree reports no maps and the project root reports at least one; that automatic pick SHALL be decided once per thread rather than re-evaluated as snapshots arrive. Switching roots SHALL reset panel navigation rather than report the previous root's map as removed from disk. While reading a root other than the thread's own, the ticket level SHALL disclose which root the content came from and SHALL NOT offer the hand-off actions that address the thread's own root — opening the ticket in the file surface, and opening it as a task, whose brief cites the ticket's relative path for an agent working in that root.
+
+#### Scenario: Thread with no worktree
+
+- **WHEN** the active thread runs in the project workspace root itself
+- **THEN** the panel reads the project root and shows no root control
+
+#### Scenario: Worktree without a plan directory
+
+- **WHEN** a worktree thread's own root reports no maps and the project root reports at least one
+- **THEN** the panel reads the project root, and a later snapshot does not move it back on its own
+
+#### Scenario: Explicit choice wins and persists
+
+- **WHEN** the user picks a root for a thread
+- **THEN** the panel reads that root, keeps it across reloads for that thread, and leaves other threads unaffected
+
+#### Scenario: Switching roots resets navigation
+
+- **WHEN** the user switches roots while a map or ticket is open
+- **THEN** the panel returns to the map list without claiming the previously selected map was removed from disk
+
+#### Scenario: Reading the project root from a worktree thread
+
+- **WHEN** the panel reads the project root for a thread whose worktree differs from it
+- **THEN** the ticket level names the root its content came from and offers neither the open-as-file nor the open-as-task action
+
+#### Scenario: Reload targets the visible root
+
+- **WHEN** the user reloads the map while the panel reads a root other than the thread's own
+- **THEN** the reload re-reads the root currently on screen rather than the thread's own root
+
 ### Requirement: Distinguish absent maps from unparseable maps
 
-The map surface SHALL present distinct empty states for a project containing no map and for a project whose map was found but could not be parsed. The unparseable state SHALL surface the reported lints. The system MUST NOT present a single generic empty state for both conditions.
+The map surface SHALL present distinct empty states for a project containing no map and for a project whose map was found but could not be parsed. The unparseable state SHALL surface the reported lints. The system MUST NOT present a single generic empty state for both conditions. The absent-map state SHALL name the root it searched.
 
 #### Scenario: Project has no map
 
 - **WHEN** the subscription reports no maps for the active project
 - **THEN** the panel explains that this project has no wayfinder map
+
+#### Scenario: Worktree has no map
+
+- **WHEN** the panel is reading a worktree root that reports no maps
+- **THEN** the empty state names the worktree rather than the project and points at the root control
 
 #### Scenario: Map found but unparseable
 
@@ -117,7 +156,7 @@ The map surface SHALL present three levels — a list of maps, a single map, and
 
 ### Requirement: Open ticket content without a dedicated retrieval endpoint
 
-The map surface SHALL render a selected ticket's content by reading its relative path through the existing workspace file read path and rendering it through the existing markdown renderer. The system MUST NOT add a wayfinder-specific ticket retrieval RPC. The surface SHALL offer a way to open the ticket as a file in the right panel, and the resulting behaviour with respect to any open file-explorer surface SHALL be documented.
+The map surface SHALL render a selected ticket's content by reading its relative path through the existing workspace file read path and rendering it through the existing markdown renderer. The system MUST NOT add a wayfinder-specific ticket retrieval RPC. The surface SHALL offer a way to open the ticket as a file in the right panel whenever it is reading the thread's own root, and the resulting behaviour with respect to any open file-explorer surface SHALL be documented.
 
 #### Scenario: View a ticket
 

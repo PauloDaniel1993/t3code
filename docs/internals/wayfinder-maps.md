@@ -33,6 +33,34 @@ so manual reloads work remotely without resending an unchanged graph.
 The map, ticket, node, byte, and title caps apply once to the combined snapshot across both
 discovery roots.
 
+## Root Scope
+
+The subscription is workspace-scoped and takes the root from the client, so choosing between a
+thread's worktree and its project workspace root is entirely a client decision — `ws.ts` passes
+`input.cwd` through untouched and `WayfinderMapsMap` keys one supervised watcher per normalised
+root.
+
+Web reads one root at a time. A thread whose worktree differs from the project root gets a control
+at the map list; the choice persists on the thread's `map` right-panel surface (`scope`), and its
+absence is meaningful — it means the panel may still pick automatically. The automatic pick prefers
+the thread's own worktree and only leaves it when the worktree reports no maps and the project root
+reports at least one, which is the common case because `.plan/` is rarely committed to a feature
+branch. It is latched per worktree rather than re-derived, so a map appearing later never moves the
+panel under the user.
+
+Both roots are subscribed only while that choice is pending. The atom family keys on cwd, so
+latching onto the project root reuses the probe's subscription rather than opening a second one,
+and the worktree's watcher is released instead of being left running behind a snapshot nobody
+reads.
+
+Every relative path in a snapshot belongs to the root it came from, so the ticket level reads
+through the same cwd the snapshot did, and the header's reload sends that cwd rather than the
+thread's. The two hand-offs are what cannot follow: `openFile` is wired to
+`thread.worktreePath ?? project.workspaceRoot`, and the task draft cites the ticket's relative path
+for an agent working in that same root. So while the panel reads the other root, the ticket level
+discloses it and withdraws both actions rather than opening — or briefing an agent against — a
+same-named file with different contents.
+
 ## Client Support
 
 Web owns the right-panel surface. Desktop wraps the web client, so it presents the same Map surface

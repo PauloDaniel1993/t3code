@@ -12,6 +12,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import type { StarMapScope } from "./components/map/StarMapPanel.logic";
 import { resolveStorage } from "./lib/storage";
 
 export const RIGHT_PANEL_KINDS = [
@@ -45,7 +46,9 @@ export type RightPanelSurface =
       revealLine: number | null;
       revealRequestId: number;
     }
-  | { id: "map"; kind: "map" }
+  // `scope` is absent until the user picks a root, which keeps the automatic
+  // choice re-decidable per thread instead of freezing the first one forever.
+  | { id: "map"; kind: "map"; scope?: StarMapScope }
   | { id: "agents"; kind: "agents" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
@@ -72,6 +75,7 @@ interface RightPanelStoreState {
   ) => void;
   activateTerminal: (ref: ScopedThreadRef, surfaceId: string, terminalId: string) => void;
   closeTerminal: (ref: ScopedThreadRef, surfaceId: string, terminalId: string) => void;
+  setMapScope: (ref: ScopedThreadRef, scope: StarMapScope) => void;
   activateSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeOtherSurfaces: (ref: ScopedThreadRef, surfaceId: string) => void;
@@ -205,6 +209,14 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                           ? surface.revealRequestId
                           : 0;
                       return [{ ...surface, revealLine, revealRequestId }];
+                    }
+                    if (surface.kind === "map") {
+                      // An unrecognised scope falls back to no choice at all,
+                      // which re-arms the automatic pick rather than pinning
+                      // the panel to a root that no longer means anything.
+                      return surface.scope === "worktree" || surface.scope === "project"
+                        ? [{ id: "map" as const, kind: "map" as const, scope: surface.scope }]
+                        : [{ id: "map" as const, kind: "map" as const }];
                     }
                     if (surface.kind !== "terminal") return [surface];
                     if (
@@ -395,6 +407,19 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             };
           }),
         })),
+      setMapScope: (ref, scope) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const surface = current.surfaces.find((entry) => entry.kind === "map");
+            if (!surface || surface.kind !== "map" || surface.scope === scope) return current;
+            return {
+              ...current,
+              surfaces: current.surfaces.map((entry) =>
+                entry.kind === "map" ? { ...entry, scope } : entry,
+              ),
+            };
+          }),
+        })),
       activateSurface: (ref, surfaceId) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
@@ -578,6 +603,21 @@ export function selectActiveRightPanel(
   const state = selectThreadRightPanelState(byThreadKey, ref);
   if (!state.isOpen) return null;
   return state.surfaces.find((surface) => surface.id === state.activeSurfaceId)?.kind ?? null;
+}
+
+/**
+ * The map surface's persisted root choice, whether or not it is the active
+ * surface — the panel can stay mounted behind another surface, and its scope
+ * outlives that.
+ */
+export function selectMapSurfaceScope(
+  byThreadKey: Record<string, ThreadRightPanelState>,
+  ref: ScopedThreadRef | null | undefined,
+): StarMapScope | null {
+  const surface = selectThreadRightPanelState(byThreadKey, ref).surfaces.find(
+    (entry) => entry.kind === "map",
+  );
+  return surface?.kind === "map" ? (surface.scope ?? null) : null;
 }
 
 export function selectActiveRightPanelSurface(

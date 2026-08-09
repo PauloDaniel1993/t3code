@@ -34,6 +34,13 @@ export interface StarMapTicketDetailProps {
   readonly node: StarMapGraphNode;
   /** Current thread's panel scope; the open-as-file action hides without it. */
   readonly threadRef: ScopedThreadRef | null;
+  /**
+   * Set when `cwd` is not the root the rest of the thread's surfaces use, which
+   * happens when a worktree thread reads the project root's maps. The file
+   * surface can only show the thread's own root, so this both explains where
+   * the body came from and takes the open-as-file hand-off away.
+   */
+  readonly rootNotice: string | null;
   readonly onSelectTicket: (ticketId: string) => void;
 }
 
@@ -143,8 +150,18 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                 {statusText(node)}
                 {node.isFrontier ? " · frontier" : ""}
               </p>
+              {props.rootNotice !== null ? (
+                <p className="mt-0.5 truncate text-xs text-muted-foreground/80">
+                  {props.rootNotice}
+                </p>
+              ) : null}
             </div>
-            {props.threadRef !== null ? (
+            {/* Both hand-offs address the thread's own root — `openFile` opens
+                the file surface there, and the task draft cites the ticket's
+                relative path for an agent working there. Reading the other
+                root makes both of them point at a file that may not exist or
+                may differ, so the pair goes together. */}
+            {props.threadRef !== null && props.rootNotice === null ? (
               <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
                 <button
                   type="button"

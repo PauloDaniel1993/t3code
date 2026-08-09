@@ -6,6 +6,7 @@ import {
   migratePersistedRightPanelState,
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
+  selectMapSurfaceScope,
   selectThreadRightPanelState,
   useRightPanelStore,
 } from "./rightPanelStore";
@@ -97,6 +98,38 @@ describe("rightPanelStore", () => {
               revealRequestId: 0,
             },
           ],
+        },
+      },
+    });
+  });
+
+  it("keeps a valid map scope and re-arms the automatic pick for an unknown one", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "map",
+            surfaces: [{ id: "map", kind: "map", scope: "project" }],
+          },
+          "env-1:thread-B": {
+            isOpen: true,
+            activeSurfaceId: "map",
+            surfaces: [{ id: "map", kind: "map", scope: "somewhere-else" }],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "map",
+          surfaces: [{ id: "map", kind: "map", scope: "project" }],
+        },
+        "env-1:thread-B": {
+          isOpen: true,
+          activeSurfaceId: "map",
+          surfaces: [{ id: "map", kind: "map" }],
         },
       },
     });
@@ -389,6 +422,32 @@ describe("rightPanelStore", () => {
     useRightPanelStore.getState().toggle(refA, "preview");
     useRightPanelStore.getState().toggle(refA, "agents");
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("agents");
+  });
+
+  it("records the map surface's root choice per thread", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().open(refB, "map");
+    expect(selectMapSurfaceScope(useRightPanelStore.getState().byThreadKey, refA)).toBeNull();
+
+    useRightPanelStore.getState().setMapScope(refA, "project");
+    expect(selectMapSurfaceScope(useRightPanelStore.getState().byThreadKey, refA)).toBe("project");
+    expect(selectMapSurfaceScope(useRightPanelStore.getState().byThreadKey, refB)).toBeNull();
+  });
+
+  it("keeps the map scope readable while another surface is active", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().setMapScope(refA, "project");
+    useRightPanelStore.getState().open(refA, "diff");
+
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("diff");
+    expect(selectMapSurfaceScope(useRightPanelStore.getState().byThreadKey, refA)).toBe("project");
+  });
+
+  it("setMapScope is a no-op without a map surface", () => {
+    useRightPanelStore.getState().open(refA, "diff");
+    const before = useRightPanelStore.getState().byThreadKey;
+    useRightPanelStore.getState().setMapScope(refA, "worktree");
+    expect(useRightPanelStore.getState().byThreadKey).toBe(before);
   });
 
   it("removeThread clears persisted state", () => {
