@@ -241,6 +241,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
         {props.project ? (
           <ProjectFavicon
             environmentId={pendingTask.message.environmentId}
+            faviconPath={props.project.faviconPath}
             size={15}
             projectTitle={projectTitle}
             workspaceRoot={props.project.workspaceRoot}
@@ -652,6 +653,7 @@ function ThreadListV2RowComponent(props: {
         {props.project ? (
           <ProjectFavicon
             environmentId={thread.environmentId}
+            faviconPath={props.project.faviconPath}
             size={15}
             projectTitle={props.projectTitle ?? props.project.title}
             workspaceRoot={props.project.workspaceRoot}
@@ -788,6 +790,7 @@ function ThreadListV2RowComponent(props: {
           <View className="opacity-40">
             <ProjectFavicon
               environmentId={thread.environmentId}
+              faviconPath={props.project.faviconPath}
               size={15}
               projectTitle={props.projectTitle ?? props.project.title}
               workspaceRoot={props.project.workspaceRoot}

@@ -8,6 +8,7 @@ import * as Path from "effect/Path";
 import { describe } from "vite-plus/test";
 
 import {
+  assetResponseHeaders,
   attachmentContentDisposition,
   createAssetFileResponse,
   isLoopbackHostname,
@@ -137,4 +138,23 @@ describe("attachment asset responses", () => {
       expect(disposition).toContain(".._reportX-Evil: injected.txt");
     }).pipe(Effect.provide(assetResponseLayer)),
   );
+});
+
+describe("assetResponseHeaders", () => {
+  it("sandboxes SVG assets", () => {
+    expect(assetResponseHeaders("/attachments/user-image.svg")).toMatchObject({
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      "X-Content-Type-Options": "nosniff",
+    });
+    expect(assetResponseHeaders("/attachments/user-image.SVG")).toHaveProperty(
+      "Content-Security-Policy",
+    );
+  });
+
+  it("does not apply document policy to raster images", () => {
+    expect(assetResponseHeaders("/attachments/user-image.png")).toEqual({
+      "Cache-Control": "private, max-age=3600",
+      "X-Content-Type-Options": "nosniff",
+    });
+  });
 });

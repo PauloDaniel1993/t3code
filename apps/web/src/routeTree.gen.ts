@@ -23,6 +23,7 @@ import { Route as SettingsDiagnosticsRouteImport } from './routes/settings.diagn
 import { Route as SettingsConnectionsRouteImport } from './routes/settings.connections'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
 import { Route as SettingsAppearanceRouteImport } from './routes/settings.appearance'
+import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
 import { Route as DevWorkflowActivityRouteImport } from './routes/dev.workflow-activity'
 import { Route as ConnectCallbackRouteImport } from './routes/connect_.callback'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
@@ -97,6 +98,11 @@ const SettingsAppearanceRoute = SettingsAppearanceRouteImport.update({
   path: '/appearance',
   getParentRoute: () => SettingsRoute,
 } as any)
+const ProjectsProjectKeyRoute = ProjectsProjectKeyRouteImport.update({
+  id: '/projects/$projectKey',
+  path: '/projects/$projectKey',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DevWorkflowActivityRoute = DevWorkflowActivityRouteImport.update({
   id: '/dev/workflow-activity',
   path: '/dev/workflow-activity',
@@ -127,6 +133,7 @@ export interface FileRoutesByFullPath {
   '/usage': typeof UsageRoute
   '/connect/callback': typeof ConnectCallbackRoute
   '/dev/workflow-activity': typeof DevWorkflowActivityRoute
+  '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -145,6 +152,7 @@ export interface FileRoutesByTo {
   '/usage': typeof UsageRoute
   '/connect/callback': typeof ConnectCallbackRoute
   '/dev/workflow-activity': typeof DevWorkflowActivityRoute
+  '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -166,6 +174,7 @@ export interface FileRoutesById {
   '/usage': typeof UsageRoute
   '/connect_/callback': typeof ConnectCallbackRoute
   '/dev/workflow-activity': typeof DevWorkflowActivityRoute
+  '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -188,6 +197,7 @@ export interface FileRouteTypes {
     | '/usage'
     | '/connect/callback'
     | '/dev/workflow-activity'
+    | '/projects/$projectKey'
     | '/settings/appearance'
     | '/settings/archived'
     | '/settings/connections'
@@ -206,6 +216,7 @@ export interface FileRouteTypes {
     | '/usage'
     | '/connect/callback'
     | '/dev/workflow-activity'
+    | '/projects/$projectKey'
     | '/settings/appearance'
     | '/settings/archived'
     | '/settings/connections'
@@ -226,6 +237,7 @@ export interface FileRouteTypes {
     | '/usage'
     | '/connect_/callback'
     | '/dev/workflow-activity'
+    | '/projects/$projectKey'
     | '/settings/appearance'
     | '/settings/archived'
     | '/settings/connections'
@@ -247,6 +259,7 @@ export interface RootRouteChildren {
   UsageRoute: typeof UsageRoute
   ConnectCallbackRoute: typeof ConnectCallbackRoute
   DevWorkflowActivityRoute: typeof DevWorkflowActivityRoute
+  ProjectsProjectKeyRoute: typeof ProjectsProjectKeyRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -349,6 +362,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsAppearanceRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/projects/$projectKey': {
+      id: '/projects/$projectKey'
+      path: '/projects/$projectKey'
+      fullPath: '/projects/$projectKey'
+      preLoaderRoute: typeof ProjectsProjectKeyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/dev/workflow-activity': {
       id: '/dev/workflow-activity'
       path: '/dev/workflow-activity'
@@ -428,6 +448,7 @@ const rootRouteChildren: RootRouteChildren = {
   UsageRoute: UsageRoute,
   ConnectCallbackRoute: ConnectCallbackRoute,
   DevWorkflowActivityRoute: DevWorkflowActivityRoute,
+  ProjectsProjectKeyRoute: ProjectsProjectKeyRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

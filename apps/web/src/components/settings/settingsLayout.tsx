@@ -161,7 +161,7 @@ export function SettingsRow({
   ...rowProps
 }: Omit<ComponentPropsWithoutRef<"div">, "title"> & {
   title: ReactNode;
-  description: ReactNode;
+  description?: ReactNode;
   descriptionId?: string;
   status?: ReactNode;
   resetAction?: ReactNode;
@@ -187,12 +187,14 @@ export function SettingsRow({
               {resetAction}
             </span>
           </div>
-          <p
-            id={descriptionId}
-            className="max-w-xl text-[13px] leading-[1.45] text-muted-foreground/80"
-          >
-            {description}
-          </p>
+          {description ? (
+            <p
+              id={descriptionId}
+              className="max-w-xl text-[13px] leading-[1.45] text-muted-foreground/80"
+            >
+              {description}
+            </p>
+          ) : null}
           {status ? <div className="pt-0.5 text-xs text-muted-foreground">{status}</div> : null}
         </div>
         {control ? (
@@ -206,7 +208,15 @@ export function SettingsRow({
   );
 }
 
-export function SettingResetButton({ label, onClick }: { label: string; onClick: () => void }) {
+export function SettingResetButton({
+  label,
+  disabled = false,
+  onClick,
+}: {
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
   return (
     <Tooltip>
       <TooltipTrigger
@@ -215,6 +225,7 @@ export function SettingResetButton({ label, onClick }: { label: string; onClick:
             size="icon-xs"
             variant="ghost"
             aria-label={`Reset ${label} to default`}
+            disabled={disabled}
             className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
             onClick={(event) => {
               event.stopPropagation();
