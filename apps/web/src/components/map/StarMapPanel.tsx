@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   CircleCheck,
   Focus,
+  GitMerge,
   Map as MapIcon,
   RefreshCw,
   TriangleAlert,
@@ -288,6 +289,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const [containerWidthPx, setContainerWidthPx] = useState(0);
   const [prefersReducedMotion] = useState(() => detectPrefersReducedMotion());
   const [viewOverride, setViewOverride] = useState<StarMapView | null>(null);
+  const [showAllLinks, setShowAllLinks] = useState(false);
   const view = viewOverride ?? defaultStarMapView({ containerWidthPx, prefersReducedMotion });
 
   useLayoutEffect(() => {
@@ -312,6 +314,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     () => (selectedMap !== null ? buildStarMapGraph(selectedMap) : null),
     [selectedMap],
   );
+  const hiddenLinkCount = graph === null ? 0 : graph.edges.length - graph.backboneEdges.length;
   const graphRevision = graph?.revision ?? null;
   const layout = useMemo(
     () => (graph !== null ? layoutStarMap(graph) : null),
@@ -341,6 +344,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   // Camera survives Map/List toggles, per map — the toggle must not teleport.
   const cameraStashRef = useRef<{ mapId: string; camera: StarMapCamera } | null>(null);
   const selectedMapId = state.selectedMapId;
+  useEffect(() => setShowAllLinks(false), [selectedMapId]);
 
   // 8.8: engine lifecycle plus pan/zoom input. The engine is created once per
   // (view, selected map) entry; graph, layout, selection, and the surface
@@ -359,6 +363,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       complete: selectedMapComplete,
       ...(stashedCamera !== undefined ? { camera: stashedCamera } : {}),
       selection: canvasSelection,
+      showAllLinks,
       surfaceActive: mapSurfaceActive,
     });
     renderer.start();
@@ -481,6 +486,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   useEffect(() => {
     rendererRef.current?.setSelection(canvasSelection);
   }, [canvasSelection]);
+  useEffect(() => {
+    rendererRef.current?.setShowAllLinks(showAllLinks);
+  }, [showAllLinks]);
   useEffect(() => {
     rendererRef.current?.setSurfaceActive(mapSurfaceActive);
   }, [mapSurfaceActive]);
@@ -616,15 +624,40 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                     ref={canvasHostRef}
                     className="absolute inset-0"
                   />
-                  <button
-                    type="button"
-                    aria-label="Reset map view"
-                    title="Reset map view"
-                    onClick={() => rendererRef.current?.fitToContent()}
-                    className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-md border border-border/60 bg-background/80 text-muted-foreground backdrop-blur-xs hover:text-foreground"
-                  >
-                    <Focus className="size-4" aria-hidden />
-                  </button>
+                  <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+                    {hiddenLinkCount > 0 ? (
+                      <button
+                        type="button"
+                        aria-label={
+                          showAllLinks
+                            ? "Show dependency backbone"
+                            : `Show all dependency links, ${hiddenLinkCount} hidden`
+                        }
+                        aria-pressed={showAllLinks}
+                        title={
+                          showAllLinks
+                            ? "Show dependency backbone"
+                            : `Show all dependency links (${hiddenLinkCount} hidden)`
+                        }
+                        onClick={() => setShowAllLinks((current) => !current)}
+                        className={cn(
+                          "flex size-7 items-center justify-center rounded-md border border-border/60 bg-background/80 text-muted-foreground backdrop-blur-xs hover:text-foreground",
+                          showAllLinks && "bg-accent text-foreground",
+                        )}
+                      >
+                        <GitMerge className="size-4" aria-hidden />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      aria-label="Reset map view"
+                      title="Reset map view"
+                      onClick={() => rendererRef.current?.fitToContent()}
+                      className="flex size-7 items-center justify-center rounded-md border border-border/60 bg-background/80 text-muted-foreground backdrop-blur-xs hover:text-foreground"
+                    >
+                      <Focus className="size-4" aria-hidden />
+                    </button>
+                  </div>
                 </div>
               </>
             ) : (

@@ -2,8 +2,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   STAR_MAP_AMBIENT_FRAME_MS,
-  STAR_MAP_EDGE_CURVATURE,
-  STAR_MAP_EDGE_MAX_BEND,
   STAR_MAP_FLOW_SPEED,
   STAR_MAP_FRONTIER_PULSE_MS,
   STAR_MAP_IDLE_AFTER_MS,
@@ -16,14 +14,16 @@ import {
   backingStoreSize,
   createFlowParticles,
   createStarMapRateGovernor,
+  cubicBezierPoint,
+  cubicBezierTangent,
   detectPrefersReducedMotion,
   dprMediaQueryText,
-  edgeCurveControl,
+  edgeCurveControls,
   frontierPulse,
   isSatisfiedBlockerStatus,
   noteStarMapInteraction,
   particleAlpha,
-  quadraticBezierPoint,
+  starMapEdgeVisibility,
   starMapLoopShouldRun,
   starMapShouldRenderStaticFrame,
   starfieldStar,
@@ -166,47 +166,103 @@ describe("isSatisfiedBlockerStatus", () => {
   });
 });
 
-describe("edgeCurveControl", () => {
-  it("offsets the control point perpendicular to the chord, seeded per edge", () => {
-    const control = edgeCurveControl({ x: 0, y: 0 }, { x: 100, y: 0 }, 2);
-    expect(control.x).toBeCloseTo(50, 10);
-    expect(Math.abs(control.y)).toBeCloseTo(100 * STAR_MAP_EDGE_CURVATURE, 10);
-    // The seed picks the side deterministically.
-    expect(edgeCurveControl({ x: 0, y: 0 }, { x: 100, y: 0 }, 3).y).toBe(-control.y);
-    expect(edgeCurveControl({ x: 0, y: 0 }, { x: 100, y: 0 }, 2)).toEqual(control);
-  });
-
-  it("stays perpendicular for diagonal chords", () => {
+describe("edgeCurveControls", () => {
+  it("creates symmetric vertical handles for a cross-rank link", () => {
     const from = { x: -40, y: 10 };
     const to = { x: 60, y: 90 };
-    const control = edgeCurveControl(from, to, 0);
-    const chord = { x: to.x - from.x, y: to.y - from.y };
-    const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
-    const offset = { x: control.x - mid.x, y: control.y - mid.y };
-    expect(offset.x * chord.x + offset.y * chord.y).toBeCloseTo(0, 8);
+    const controls = edgeCurveControls(from, to, 0);
+    expect(controls.fromControl.x).toBe(-40);
+    expect(controls.fromControl.y).toBeCloseTo(72.4);
+    expect(controls.toControl.x).toBe(60);
+    expect(controls.toControl.y).toBeCloseTo(27.6);
   });
 
-  it("caps the bend for long chords and handles zero-length edges", () => {
-    const control = edgeCurveControl({ x: 0, y: 0 }, { x: 1000, y: 0 }, 0);
-    expect(Math.abs(control.y)).toBeCloseTo(STAR_MAP_EDGE_MAX_BEND, 10);
-    expect(edgeCurveControl({ x: 5, y: 5 }, { x: 5, y: 5 }, 1)).toEqual({ x: 5, y: 5 });
+  it("arches same-rank links to a deterministic side", () => {
+    const upward = edgeCurveControls({ x: 0, y: 20 }, { x: 300, y: 20 }, 1);
+    const downward = edgeCurveControls({ x: 0, y: 20 }, { x: 300, y: 20 }, 2);
+    expect(upward.fromControl.y).toBeLessThan(20);
+    expect(upward.toControl.y).toBeLessThan(20);
+    expect(downward.fromControl.y).toBeGreaterThan(20);
+    expect(downward.toControl.y).toBeGreaterThan(20);
+  });
+
+  it("handles zero-length links", () => {
+    expect(edgeCurveControls({ x: 5, y: 5 }, { x: 5, y: 5 }, 1)).toEqual({
+      fromControl: { x: 5, y: 5 },
+      toControl: { x: 5, y: 5 },
+    });
   });
 });
 
-describe("quadraticBezierPoint", () => {
+describe("cubicBezierPoint", () => {
   const from = { x: 0, y: 0 };
-  const control = { x: 50, y: 40 };
+  const fromControl = { x: 0, y: 40 };
+  const toControl = { x: 100, y: 40 };
   const to = { x: 100, y: 0 };
 
   it("lands on the endpoints at t 0 and 1", () => {
-    expect(quadraticBezierPoint(from, control, to, 0)).toEqual(from);
-    expect(quadraticBezierPoint(from, control, to, 1)).toEqual(to);
+    expect(cubicBezierPoint(from, fromControl, toControl, to, 0)).toEqual(from);
+    expect(cubicBezierPoint(from, fromControl, toControl, to, 1)).toEqual(to);
   });
 
   it("evaluates the midpoint blend at t 0.5", () => {
-    const point = quadraticBezierPoint(from, control, to, 0.5);
+    const point = cubicBezierPoint(from, fromControl, toControl, to, 0.5);
     expect(point.x).toBeCloseTo(50, 10);
-    expect(point.y).toBeCloseTo(20, 10);
+    expect(point.y).toBeCloseTo(30, 10);
+  });
+});
+
+describe("cubicBezierTangent", () => {
+  const from = { x: 0, y: 0 };
+  const fromControl = { x: 0, y: 40 };
+  const toControl = { x: 100, y: 40 };
+  const to = { x: 100, y: 0 };
+
+  it("follows the blocker-to-dependent direction along the curve", () => {
+    expect(cubicBezierTangent(from, fromControl, toControl, to, 0)).toEqual({ x: 0, y: 120 });
+    expect(cubicBezierTangent(from, fromControl, toControl, to, 0.5)).toEqual({ x: 150, y: 0 });
+    expect(cubicBezierTangent(from, fromControl, toControl, to, 1)).toEqual({ x: 0, y: -120 });
+  });
+});
+
+describe("starMapEdgeVisibility", () => {
+  const backbone = { from: "t1", to: "t2", backbone: true };
+  const transitive = { from: "t1", to: "t3", backbone: false };
+
+  it("shows only the dependency backbone at rest", () => {
+    expect(starMapEdgeVisibility(backbone.from, backbone.to, backbone.backbone, null, false)).toBe(
+      "normal",
+    );
+    expect(
+      starMapEdgeVisibility(transitive.from, transitive.to, transitive.backbone, null, false),
+    ).toBe("hidden");
+  });
+
+  it("restores every direct relationship touching the focused ticket", () => {
+    expect(
+      starMapEdgeVisibility(transitive.from, transitive.to, transitive.backbone, "t1", false),
+    ).toBe("focused");
+    expect(
+      starMapEdgeVisibility(transitive.from, transitive.to, transitive.backbone, "t3", false),
+    ).toBe("focused");
+    expect(
+      starMapEdgeVisibility(transitive.from, transitive.to, transitive.backbone, "t2", false),
+    ).toBe("hidden");
+    expect(starMapEdgeVisibility(backbone.from, backbone.to, backbone.backbone, "t3", false)).toBe(
+      "dimmed",
+    );
+  });
+
+  it("shows all unrelated links on request while preserving focus", () => {
+    expect(
+      starMapEdgeVisibility(transitive.from, transitive.to, transitive.backbone, null, true),
+    ).toBe("normal");
+    expect(
+      starMapEdgeVisibility(transitive.from, transitive.to, transitive.backbone, "t2", true),
+    ).toBe("dimmed");
+    expect(
+      starMapEdgeVisibility(transitive.from, transitive.to, transitive.backbone, "t1", true),
+    ).toBe("focused");
   });
 });
 

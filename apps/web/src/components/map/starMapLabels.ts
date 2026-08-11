@@ -3,8 +3,9 @@
  * measured (that would need a canvas); widths are estimated from a fixed
  * per-character width so placement is pure, reproducible, and testable in
  * Node. Labels sit at a fixed offset right of their star; collisions are
- * resolved greedily in ascending ticket order, so the lower ticket number
- * always wins and the same input yields the same set of visible labels.
+ * resolved greedily by semantic priority, then ascending ticket order. This
+ * keeps the selected ticket, its neighbors, and frontier work readable before
+ * settled background tickets while remaining deterministic.
  *
  * Below `STAR_MAP_NARROW_LABEL_THRESHOLD` every label degrades to its ticket
  * number — the panel that narrow has no room for titles.
@@ -28,6 +29,8 @@ export interface StarMapLabelNode {
   /** Star position in screen pixels. */
   readonly x: number;
   readonly y: number;
+  /** Higher-priority labels win collisions. Equal priorities use ticket order. */
+  readonly priority?: number;
 }
 
 export interface StarMapLabelPlacement {
@@ -100,13 +103,20 @@ export function placeStarMapLabels(input: {
   readonly viewportWidth: number;
 }): ReadonlyArray<StarMapLabelPlacement> {
   const degraded = input.viewportWidth < STAR_MAP_NARROW_LABEL_THRESHOLD;
-  const ordered = [...input.nodes].sort(
+  const ticketOrdered = [...input.nodes].sort(
     (left, right) =>
       left.ordinal - right.ordinal || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
   );
+  const placementOrdered = [...ticketOrdered].sort(
+    (left, right) =>
+      (right.priority ?? 0) - (left.priority ?? 0) ||
+      left.ordinal - right.ordinal ||
+      (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+  );
 
   const visibleBoxes: Array<LabelBox> = [];
-  return ordered.map((node) => {
+  const placementById = new Map<string, StarMapLabelPlacement>();
+  for (const node of placementOrdered) {
     const text = degraded ? String(node.ordinal) : node.label;
     const box: LabelBox = {
       minX: node.x + STAR_MAP_LABEL_OFFSET_X,
@@ -118,6 +128,14 @@ export function placeStarMapLabels(input: {
     if (!suppressed) {
       visibleBoxes.push(box);
     }
-    return { id: node.id, text, x: box.minX, y: node.y, degraded, suppressed };
-  });
+    placementById.set(node.id, {
+      id: node.id,
+      text,
+      x: box.minX,
+      y: node.y,
+      degraded,
+      suppressed,
+    });
+  }
+  return ticketOrdered.map((node) => placementById.get(node.id)!);
 }
