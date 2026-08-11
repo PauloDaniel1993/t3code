@@ -14,8 +14,16 @@ function labelNode(
   x: number,
   y: number,
   label = `Ticket ${ordinal}`,
+  priority?: number,
 ): StarMapLabelNode {
-  return { id: `t${ordinal}`, ordinal, label, x, y };
+  return {
+    id: `t${ordinal}`,
+    ordinal,
+    label,
+    x,
+    y,
+    ...(priority === undefined ? {} : { priority }),
+  };
 }
 
 describe("placeStarMapLabels", () => {
@@ -50,6 +58,18 @@ describe("placeStarMapLabels", () => {
     const byId = new Map(placements.map((placement) => [placement.id, placement]));
     expect(byId.get("t2")?.suppressed).toBe(false);
     expect(byId.get("t7")?.suppressed).toBe(true);
+  });
+
+  it("lets a selected or frontier label win a collision regardless of ticket number", () => {
+    const placements = placeStarMapLabels({
+      nodes: [labelNode(2, 100, 100, "Settled", 0), labelNode(7, 104, 102, "Frontier", 2)],
+      viewportWidth: 500,
+    });
+    const byId = new Map(placements.map((placement) => [placement.id, placement]));
+    expect(byId.get("t2")?.suppressed).toBe(true);
+    expect(byId.get("t7")?.suppressed).toBe(false);
+    // Output order stays stable for drawing and hit testing.
+    expect(placements.map((placement) => placement.id)).toEqual(["t2", "t7"]);
   });
 
   it("keeps far-apart labels visible", () => {

@@ -20,7 +20,7 @@ The Map surface is available in the web and desktop apps. It is not available in
 The surface has three levels:
 
 1. **Maps** lists the wayfinder maps in the current project, with ticket and frontier counts.
-2. **Map** shows the selected effort as a constellation or a list.
+2. **Map** shows the selected effort as a dependency flow or a list.
 3. **Ticket** shows one decision and what still blocks it.
 
 Choose a map, then choose a star or list item to open its ticket. Use **Back** to move up one level.
@@ -33,7 +33,7 @@ the brief, choose the model and reasoning level, and decide how much of the curr
 should receive before creating it. The task action is available on top-level threads when thread
 tasks are enabled and supported by the connected environment.
 
-## Read the Constellation
+## Read the Dependency Flow
 
 Each star is a ticket. Its colour shows the ticket's current state:
 
@@ -46,10 +46,21 @@ A pulsing star is on the **frontier**: the ticket is not resolved or out of scop
 blockers are resolved or out of scope. The pulse answers "what can I pick up now?"; the colour
 still tells you whether that ticket is open or already claimed.
 
-Lines connect blockers to the tickets waiting on them. Select a ticket when you want the exact
-blocker names and decision details.
+Tickets are arranged in dependency rows: prerequisites sit toward the top and downstream work
+flows below them. Tickets at the same depth share a row, with related branches kept together to
+avoid unnecessary crossings. Curved lines connect blockers to the tickets waiting on them.
 
-When every ticket is resolved or out of scope, the complete constellation turns gold. The map also
+By default, the map shows a reduced dependency backbone that preserves every route through the
+effort, leaving repeated transitive links out of the resting view. Select a ticket to reveal all of
+its directly declared incoming and outgoing links; unrelated parts of the map dim so the local
+relationship is easier to trace. Direction markers on those focused links point from blocker to
+dependent.
+
+Use **Show all dependency links** beside the reset-view control when you need to audit every link
+declared by the ticket files. Ticket detail and List view always retain the exact blocker set,
+whether or not a transitive link is visible in the resting constellation.
+
+When every ticket is resolved or out of scope, the complete map turns gold. The map also
 shows **Done** in the Maps list, so completed efforts remain recognizable before you open them.
 
 ## Use List View
@@ -59,7 +70,7 @@ list carries the same status and blocker information, works with the keyboard an
 and keeps its selection in sync with the map.
 
 List view is the default in a narrow panel. It is also the default when reduced motion is enabled;
-in that mode the constellation remains static and does not animate.
+in that mode the map remains static and does not animate.
 
 ## When No Map Is Available
 

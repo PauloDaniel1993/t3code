@@ -48,3 +48,21 @@ surface. Do not add a mobile map mode as a parity fix. Supporting wayfinder maps
 require a separate product and navigation decision for the mobile inspector.
 
 [mobile-inspector]: ../../apps/mobile/src/features/threads/thread-inspector-content-stack.tsx
+
+## Map Rendering
+
+The normalized graph keeps every declared `blocks` and `undermines` edge authoritative. The web
+renderer derives a separate display backbone by transitively reducing only the acyclic portion of
+the blocks graph. `undermines` edges and edges in or downstream of a cycle are always retained;
+guessing a reduction there could hide the relationship that explains the cycle.
+
+The resting map renders that backbone through a deterministic layered layout. Rank becomes the
+vertical dependency phase, equal-rank tickets share a row, and downward/upward barycentric sweeps
+order each row to reduce crossings. Broad rows use bounded spacing so the 200-ticket cap still fits
+the camera. Edges use cubic curves with vertical row entry and exit handles; only same-rank cycle
+links use a seeded side.
+
+Focusing or selecting a ticket reveals all of its directly declared incoming and outgoing edges
+and dims unrelated content. The all-links toggle restores the complete declared graph. Ticket
+detail, frontier derivation, accessibility labels, and List view continue to consume the
+authoritative edge set rather than the display backbone.
