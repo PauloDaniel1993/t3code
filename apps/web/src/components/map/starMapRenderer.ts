@@ -192,38 +192,114 @@ export function isSatisfiedBlockerStatus(status: StarMapNodeStatus | undefined):
   return status === "resolved" || status === "out_of_scope";
 }
 
-/** Edge bend as a fraction of chord length, capped so long edges stay gentle. */
-export const STAR_MAP_EDGE_CURVATURE = 0.18;
-export const STAR_MAP_EDGE_MAX_BEND = 60;
+export const STAR_MAP_EDGE_CURVE_TENSION = 0.78;
+export const STAR_MAP_EDGE_CURVE_MAX_HANDLE = 220;
 
-/**
- * Quadratic control point for a `blocked_by` curve: offset perpendicular to
- * the chord at its midpoint, the side chosen by the seed so the same edge
- * bends the same way on every render.
- */
-export function edgeCurveControl(from: StarMapPoint, to: StarMapPoint, seed: number): StarMapPoint {
-  const midX = (from.x + to.x) / 2;
-  const midY = (from.y + to.y) / 2;
-  const deltaX = to.x - from.x;
-  const deltaY = to.y - from.y;
-  const length = Math.hypot(deltaX, deltaY);
-  if (length < 1e-9) return { x: midX, y: midY };
-  const side = (seed & 1) === 0 ? 1 : -1;
-  const bend = Math.min(length * STAR_MAP_EDGE_CURVATURE, STAR_MAP_EDGE_MAX_BEND) * side;
-  return { x: midX - (deltaY / length) * bend, y: midY + (deltaX / length) * bend };
+export interface StarMapEdgeCurveControls {
+  readonly fromControl: StarMapPoint;
+  readonly toControl: StarMapPoint;
 }
 
-export function quadraticBezierPoint(
+/**
+ * Smooth dependency curve for the layered layout. Cross-rank links leave and
+ * enter their rows vertically, producing a consistent S curve instead of a
+ * random bend. Same-rank cycle links arc to a seeded side so they remain
+ * visible without sitting directly on top of their row.
+ */
+export function edgeCurveControls(
   from: StarMapPoint,
-  control: StarMapPoint,
+  to: StarMapPoint,
+  seed: number,
+): StarMapEdgeCurveControls {
+  const deltaX = to.x - from.x;
+  const deltaY = to.y - from.y;
+  if (Math.hypot(deltaX, deltaY) < 1e-9) {
+    return { fromControl: from, toControl: to };
+  }
+  if (Math.abs(deltaY) >= 1e-9) {
+    const handle = Math.min(
+      Math.abs(deltaY) * STAR_MAP_EDGE_CURVE_TENSION,
+      STAR_MAP_EDGE_CURVE_MAX_HANDLE,
+    );
+    const direction = Math.sign(deltaY);
+    return {
+      fromControl: { x: from.x, y: from.y + direction * handle },
+      toControl: { x: to.x, y: to.y - direction * handle },
+    };
+  }
+  const direction = Math.sign(deltaX);
+  const handle = Math.abs(deltaX) / 3;
+  const side = (seed & 1) === 0 ? 1 : -1;
+  const lift = Math.min(Math.max(Math.abs(deltaX) * 0.34, 36), 120) * side;
+  return {
+    fromControl: { x: from.x + direction * handle, y: from.y + lift },
+    toControl: { x: to.x - direction * handle, y: to.y + lift },
+  };
+}
+
+export function cubicBezierPoint(
+  from: StarMapPoint,
+  fromControl: StarMapPoint,
+  toControl: StarMapPoint,
   to: StarMapPoint,
   t: number,
 ): StarMapPoint {
   const u = 1 - t;
   return {
-    x: u * u * from.x + 2 * u * t * control.x + t * t * to.x,
-    y: u * u * from.y + 2 * u * t * control.y + t * t * to.y,
+    x:
+      u * u * u * from.x +
+      3 * u * u * t * fromControl.x +
+      3 * u * t * t * toControl.x +
+      t * t * t * to.x,
+    y:
+      u * u * u * from.y +
+      3 * u * u * t * fromControl.y +
+      3 * u * t * t * toControl.y +
+      t * t * t * to.y,
   };
+}
+
+/** Direction of travel along a cubic curve at `t`. */
+export function cubicBezierTangent(
+  from: StarMapPoint,
+  fromControl: StarMapPoint,
+  toControl: StarMapPoint,
+  to: StarMapPoint,
+  t: number,
+): StarMapPoint {
+  const clamped = Math.min(Math.max(t, 0), 1);
+  const u = 1 - clamped;
+  return {
+    x:
+      3 * u * u * (fromControl.x - from.x) +
+      6 * u * clamped * (toControl.x - fromControl.x) +
+      3 * clamped * clamped * (to.x - toControl.x),
+    y:
+      3 * u * u * (fromControl.y - from.y) +
+      6 * u * clamped * (toControl.y - fromControl.y) +
+      3 * clamped * clamped * (to.y - toControl.y),
+  };
+}
+
+export type StarMapEdgeVisibility = "hidden" | "dimmed" | "normal" | "focused";
+
+/**
+ * Resting maps show only the reachability backbone. Focusing a ticket always
+ * restores its exact declared relationships; the all-links toggle restores
+ * every other relationship too, dimmed so the focused neighborhood still wins.
+ */
+export function starMapEdgeVisibility(
+  fromId: string,
+  toId: string,
+  backbone: boolean,
+  selection: string | null,
+  showAllLinks: boolean,
+): StarMapEdgeVisibility {
+  if (selection !== null && (fromId === selection || toId === selection)) {
+    return "focused";
+  }
+  if (!backbone && !showAllLinks) return "hidden";
+  return selection === null ? "normal" : "dimmed";
 }
 
 /** Particles fade in leaving the blocker and out arriving at the dependent. */
@@ -449,11 +525,15 @@ interface StarMapBrushes {
 }
 
 interface StarMapEdgeGeometry {
+  readonly fromId: string;
+  readonly toId: string;
   readonly kind: "blocks" | "undermines";
   readonly from: StarMapPoint;
-  readonly control: StarMapPoint;
+  readonly fromControl: StarMapPoint;
+  readonly toControl: StarMapPoint;
   readonly to: StarMapPoint;
   readonly satisfied: boolean;
+  readonly backbone: boolean;
 }
 
 export interface StarMapRendererOptions {
@@ -466,6 +546,8 @@ export interface StarMapRendererOptions {
   /** Initial camera; when omitted the engine fits the map once it has a size. */
   readonly camera?: StarMapCamera;
   readonly selection?: string | null;
+  /** Whether the resting constellation renders declared transitive links too. */
+  readonly showAllLinks?: boolean;
   /** Mount-reported gate; defaults true and should be driven on surface switches. */
   readonly surfaceActive?: boolean;
   /** Theme override that skips DOM token reads (headless/testing only). */
@@ -492,6 +574,8 @@ export class StarMapRenderer {
   /** Explicit camera, or null while the engine auto-fits the content. */
   private cameraValue: StarMapCamera | null;
   private selection: string | null;
+  private showAllLinks: boolean;
+  private selectionNeighborhood = new Set<string>();
 
   private theme: StarMapTheme;
   private brushes: StarMapBrushes;
@@ -518,8 +602,8 @@ export class StarMapRenderer {
   private onScreen = false;
 
   private edgeGeometry: Array<StarMapEdgeGeometry> = [];
-  /** Satisfied blocks edges, aligned with `particles`' edgeIndex. */
-  private flowEdges: Array<{ from: StarMapPoint; control: StarMapPoint; to: StarMapPoint }> = [];
+  /** Satisfied backbone edges, aligned with `particles`' edgeIndex. */
+  private flowEdges: Array<StarMapEdgeGeometry> = [];
   private particles: Array<StarMapFlowParticle> = [];
   private readonly starfieldStars: ReadonlyArray<ReadonlyArray<StarMapStarfieldStar>>;
   private readonly labelNodes: Array<StarMapLabelNode> = [];
@@ -545,6 +629,7 @@ export class StarMapRenderer {
     this.complete = options.complete ?? false;
     this.cameraValue = options.camera ?? null;
     this.selection = options.selection ?? null;
+    this.showAllLinks = options.showAllLinks ?? false;
     this.surfaceActive = options.surfaceActive ?? true;
     this.themeOverride = options.theme;
     this.reducedMotionOverride = options.reducedMotion;
@@ -707,6 +792,13 @@ export class StarMapRenderer {
 
   setSelection(nodeId: string | null): void {
     this.selection = nodeId;
+    this.rebuildSelectionNeighborhood();
+    this.invalidate();
+  }
+
+  setShowAllLinks(showAllLinks: boolean): void {
+    if (this.showAllLinks === showAllLinks) return;
+    this.showAllLinks = showAllLinks;
     this.invalidate();
   }
 
@@ -975,22 +1067,57 @@ export class StarMapRenderer {
     this.particles = [];
     const graph = this.graph;
     const layout = this.layout;
+    this.rebuildSelectionNeighborhood();
     if (graph === null || layout === null) return;
+    const backboneEdges = new Set(graph.backboneEdges);
     const flowLengths: Array<number> = [];
     for (const edge of graph.edges) {
       const from = layout.positionById.get(edge.from);
       const to = layout.positionById.get(edge.to);
       if (from === undefined || to === undefined) continue;
-      const control = edgeCurveControl(from, to, hash32(`${edge.from}\n${edge.to}`));
+      const controls = edgeCurveControls(from, to, hash32(`${edge.from}\n${edge.to}`));
       const satisfied =
         edge.kind === "blocks" && isSatisfiedBlockerStatus(graph.nodeById.get(edge.from)?.status);
-      this.edgeGeometry.push({ kind: edge.kind, from, control, to, satisfied });
-      if (satisfied) {
-        this.flowEdges.push({ from, control, to });
+      const geometry: StarMapEdgeGeometry = {
+        fromId: edge.from,
+        toId: edge.to,
+        kind: edge.kind,
+        from,
+        ...controls,
+        to,
+        satisfied,
+        backbone: backboneEdges.has(edge),
+      };
+      this.edgeGeometry.push(geometry);
+      // Transitive links become directional when focused via their arrowhead;
+      // keeping ambient particles on the resting backbone avoids paying to
+      // animate links that are normally hidden.
+      if (satisfied && geometry.backbone) {
+        this.flowEdges.push(geometry);
         flowLengths.push(Math.hypot(to.x - from.x, to.y - from.y));
       }
     }
     this.particles = createFlowParticles(flowLengths);
+  }
+
+  private rebuildSelectionNeighborhood(): void {
+    this.selectionNeighborhood.clear();
+    const graph = this.graph;
+    const selection = this.selection;
+    if (graph === null || selection === null || !graph.nodeById.has(selection)) return;
+    this.selectionNeighborhood.add(selection);
+    const adjacency = [graph.incoming.get(selection), graph.outgoing.get(selection)];
+    for (const group of adjacency) {
+      if (group === undefined) continue;
+      for (const edge of [...group.blocks, ...group.undermines]) {
+        this.selectionNeighborhood.add(edge.from);
+        this.selectionNeighborhood.add(edge.to);
+      }
+    }
+  }
+
+  private activeSelection(): string | null {
+    return this.selectionNeighborhood.size > 0 ? this.selection : null;
   }
 
   private contentBounds() {
@@ -1073,12 +1200,23 @@ export class StarMapRenderer {
     width: number,
     height: number,
   ): void {
-    ctx.lineWidth = 1;
+    const selection = this.activeSelection();
     for (const edge of this.edgeGeometry) {
+      const visibility = starMapEdgeVisibility(
+        edge.fromId,
+        edge.toId,
+        edge.backbone,
+        selection,
+        this.showAllLinks,
+      );
+      if (visibility === "hidden") continue;
       const from = worldToScreen(camera, this.viewport, edge.from);
-      const control = worldToScreen(camera, this.viewport, edge.control);
+      const fromControl = worldToScreen(camera, this.viewport, edge.fromControl);
+      const toControl = worldToScreen(camera, this.viewport, edge.toControl);
       const to = worldToScreen(camera, this.viewport, edge.to);
-      if (this.offScreen(from, control, to, width, height)) continue;
+      if (this.offScreen(from, fromControl, toControl, to, width, height)) continue;
+      ctx.globalAlpha = visibility === "dimmed" ? 0.2 : 1;
+      ctx.lineWidth = visibility === "focused" ? 1.6 : 1;
       if (edge.kind === "undermines") {
         ctx.strokeStyle = this.complete ? this.brushes.completionEdge : this.brushes.undermine;
         ctx.setLineDash([4, 4]);
@@ -1091,10 +1229,15 @@ export class StarMapRenderer {
       }
       ctx.beginPath();
       ctx.moveTo(from.x, from.y);
-      ctx.quadraticCurveTo(control.x, control.y, to.x, to.y);
+      ctx.bezierCurveTo(fromControl.x, fromControl.y, toControl.x, toControl.y, to.x, to.y);
       ctx.stroke();
       if (edge.kind === "undermines") ctx.setLineDash([]);
+      if (visibility === "focused") {
+        this.drawFocusedEdgeArrow(ctx, from, fromControl, toControl, to);
+      }
     }
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1;
   }
 
   private drawFlowParticles(
@@ -1104,18 +1247,38 @@ export class StarMapRenderer {
     height: number,
   ): void {
     if (this.particles.length === 0) return;
-    const screenEdges = this.flowEdges.map((edge) => ({
-      from: worldToScreen(camera, this.viewport, edge.from),
-      control: worldToScreen(camera, this.viewport, edge.control),
-      to: worldToScreen(camera, this.viewport, edge.to),
-    }));
+    const selection = this.activeSelection();
+    const screenEdges = this.flowEdges.map((edge) => {
+      const visibility = starMapEdgeVisibility(
+        edge.fromId,
+        edge.toId,
+        edge.backbone,
+        selection,
+        this.showAllLinks,
+      );
+      if (visibility === "hidden") return null;
+      return {
+        from: worldToScreen(camera, this.viewport, edge.from),
+        fromControl: worldToScreen(camera, this.viewport, edge.fromControl),
+        toControl: worldToScreen(camera, this.viewport, edge.toControl),
+        to: worldToScreen(camera, this.viewport, edge.to),
+        visibility,
+      };
+    });
     const variants = this.complete ? this.brushes.completionVariants : this.brushes.starVariants;
     for (const particle of this.particles) {
-      const edge = screenEdges[particle.edgeIndex]!;
-      const point = quadraticBezierPoint(edge.from, edge.control, edge.to, particle.t);
+      const edge = screenEdges[particle.edgeIndex];
+      if (edge === null || edge === undefined) continue;
+      const point = cubicBezierPoint(
+        edge.from,
+        edge.fromControl,
+        edge.toControl,
+        edge.to,
+        particle.t,
+      );
       if (point.x < -DRAW_MARGIN || point.x > width + DRAW_MARGIN) continue;
       if (point.y < -DRAW_MARGIN || point.y > height + DRAW_MARGIN) continue;
-      const alpha = particleAlpha(particle.t) * 0.9;
+      const alpha = particleAlpha(particle.t) * 0.9 * (edge.visibility === "dimmed" ? 0.2 : 1);
       ctx.fillStyle = variants[alphaVariantIndex(alpha, variants.length)]!;
       ctx.beginPath();
       ctx.arc(point.x, point.y, 1.6, 0, TAU);
@@ -1132,6 +1295,7 @@ export class StarMapRenderer {
     const graph = this.graph!;
     const layout = this.layout!;
     const clock = this.governor.ambientClockMs;
+    const selection = this.activeSelection();
     this.labelNodes.length = 0;
     for (const node of graph.nodes) {
       const position = layout.positionById.get(node.id);
@@ -1146,11 +1310,16 @@ export class StarMapRenderer {
         continue;
       }
 
-      const dimmed = !this.complete && node.status === "out_of_scope";
+      const unrelated = selection !== null && !this.selectionNeighborhood.has(node.id);
+      const starAlpha = unrelated
+        ? 0.22
+        : !this.complete && node.status === "out_of_scope"
+          ? 0.55
+          : 1;
       const coreRadius = node.isFrontier ? 3.4 : 2.8;
       const glowSize = coreRadius * (node.isFrontier ? 7 : 5.5);
       const sprite = this.complete ? this.completionGlowSprite : this.glowSprites[node.status];
-      ctx.globalAlpha = dimmed ? 0.55 : 1;
+      ctx.globalAlpha = starAlpha;
       if (sprite !== null && sprite !== undefined) {
         ctx.drawImage(sprite, screen.x - glowSize / 2, screen.y - glowSize / 2, glowSize, glowSize);
       }
@@ -1168,8 +1337,7 @@ export class StarMapRenderer {
         const pulse = frontierPulse(clock, hash32(node.id));
         if (pulse.alpha > 0.02) {
           const variants = this.brushes.pulseVariants[node.status];
-          ctx.strokeStyle =
-            variants[alphaVariantIndex(pulse.alpha * (dimmed ? 0.6 : 1), variants.length)]!;
+          ctx.strokeStyle = variants[alphaVariantIndex(pulse.alpha * starAlpha, variants.length)]!;
           ctx.lineWidth = 1.2;
           ctx.beginPath();
           ctx.arc(screen.x, screen.y, coreRadius * (1.4 + 2.6 * pulse.phase), 0, TAU);
@@ -1178,6 +1346,7 @@ export class StarMapRenderer {
       }
 
       if (node.isUndermined) {
+        ctx.globalAlpha = starAlpha;
         ctx.strokeStyle = this.complete ? this.brushes.completionEdge : this.brushes.undermine;
         ctx.lineWidth = 1;
         ctx.setLineDash([2, 3]);
@@ -1185,6 +1354,7 @@ export class StarMapRenderer {
         ctx.arc(screen.x, screen.y, coreRadius * 2.1, 0, TAU);
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
       }
 
       if (node.id === this.selection) {
@@ -1201,6 +1371,16 @@ export class StarMapRenderer {
         label: node.label,
         x: screen.x,
         y: screen.y,
+        priority:
+          node.id === selection
+            ? 4
+            : this.selectionNeighborhood.has(node.id)
+              ? 3
+              : node.isFrontier
+                ? 2
+                : node.status === "open" || node.status === "claimed"
+                  ? 1
+                  : 0,
       });
     }
   }
@@ -1216,23 +1396,54 @@ export class StarMapRenderer {
       nodes: this.labelNodes,
       viewportWidth: width,
     });
+    const selection = this.activeSelection();
     for (const placement of this.labelPlacements) {
       if (placement.suppressed) continue;
+      ctx.globalAlpha =
+        selection !== null && !this.selectionNeighborhood.has(placement.id) ? 0.22 : 1;
       ctx.fillText(placement.text, placement.x, placement.y);
     }
+    ctx.globalAlpha = 1;
+  }
+
+  private drawFocusedEdgeArrow(
+    ctx: CanvasRenderingContext2D,
+    from: StarMapPoint,
+    fromControl: StarMapPoint,
+    toControl: StarMapPoint,
+    to: StarMapPoint,
+  ): void {
+    const point = cubicBezierPoint(from, fromControl, toControl, to, 0.82);
+    const tangent = cubicBezierTangent(from, fromControl, toControl, to, 0.82);
+    const length = Math.hypot(tangent.x, tangent.y);
+    if (length < 1e-9) return;
+    const alongX = tangent.x / length;
+    const alongY = tangent.y / length;
+    const backX = point.x - alongX * 7;
+    const backY = point.y - alongY * 7;
+    const sideX = -alongY * 3.5;
+    const sideY = alongX * 3.5;
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.beginPath();
+    ctx.moveTo(point.x, point.y);
+    ctx.lineTo(backX + sideX, backY + sideY);
+    ctx.lineTo(backX - sideX, backY - sideY);
+    ctx.closePath();
+    ctx.fill();
   }
 
   private offScreen(
     from: StarMapPoint,
-    control: StarMapPoint,
+    fromControl: StarMapPoint,
+    toControl: StarMapPoint,
     to: StarMapPoint,
     width: number,
     height: number,
   ): boolean {
-    const minX = Math.min(from.x, control.x, to.x);
-    const maxX = Math.max(from.x, control.x, to.x);
-    const minY = Math.min(from.y, control.y, to.y);
-    const maxY = Math.max(from.y, control.y, to.y);
+    const minX = Math.min(from.x, fromControl.x, toControl.x, to.x);
+    const maxX = Math.max(from.x, fromControl.x, toControl.x, to.x);
+    const minY = Math.min(from.y, fromControl.y, toControl.y, to.y);
+    const maxY = Math.max(from.y, fromControl.y, toControl.y, to.y);
     return (
       maxX < -DRAW_MARGIN ||
       minX > width + DRAW_MARGIN ||

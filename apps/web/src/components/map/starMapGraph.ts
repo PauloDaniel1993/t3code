@@ -51,6 +51,12 @@ export interface StarMapGraph {
   readonly nodeById: ReadonlyMap<string, StarMapGraphNode>;
   /** Edges sorted by (from, to, kind); dangling endpoints dropped. */
   readonly edges: ReadonlyArray<StarMapGraphEdge>;
+  /**
+   * Display backbone for the resting constellation. Block edges that add no
+   * reachability are omitted; undermines and edges touching a cycle are kept.
+   * `edges` remains authoritative for blocker details and focused inspection.
+   */
+  readonly backboneEdges: ReadonlyArray<StarMapGraphEdge>;
   /** Edges whose `to` is the key node, split by kind. Every node has an entry. */
   readonly incoming: ReadonlyMap<string, StarMapAdjacency>;
   /** Edges whose `from` is the key node, split by kind. Every node has an entry. */
@@ -76,6 +82,69 @@ function compareStrings(left: string, right: string): number {
 
 function compareNodes(left: StarMapGraphNode, right: StarMapGraphNode): number {
   return left.ordinal - right.ordinal || compareStrings(left.id, right.id);
+}
+
+/**
+ * Produces the unique transitive reduction for the acyclic part of the blocks
+ * graph. Kahn's pass deliberately treats a cycle and everything downstream of
+ * it as unsafe to reduce: preserving those edges is more honest than guessing
+ * which relationship represents the cycle. Maps are capped at 200 nodes, so
+ * Set-based reachability stays small while avoiding a per-edge graph search.
+ */
+function buildBackboneEdges(
+  nodes: ReadonlyArray<StarMapGraphNode>,
+  edges: ReadonlyArray<StarMapGraphEdge>,
+): ReadonlyArray<StarMapGraphEdge> {
+  const indegree = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, [] as Array<StarMapGraphEdge>]));
+  for (const edge of edges) {
+    if (edge.kind !== "blocks") continue;
+    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+    outgoing.get(edge.from)?.push(edge);
+  }
+
+  const queue = nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
+  const topologicalOrder: Array<string> = [];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (id === undefined) continue;
+    topologicalOrder.push(id);
+    for (const edge of outgoing.get(id) ?? []) {
+      const remaining = (indegree.get(edge.to) ?? 0) - 1;
+      indegree.set(edge.to, remaining);
+      if (remaining === 0) queue.push(edge.to);
+    }
+  }
+
+  const acyclicIds = new Set(topologicalOrder);
+  const reachable = new Map<string, Set<string>>();
+  for (const id of topologicalOrder.toReversed()) {
+    const fromHere = new Set<string>();
+    for (const edge of outgoing.get(id) ?? []) {
+      if (!acyclicIds.has(edge.to)) continue;
+      fromHere.add(edge.to);
+      for (const descendant of reachable.get(edge.to) ?? []) {
+        fromHere.add(descendant);
+      }
+    }
+    reachable.set(id, fromHere);
+  }
+
+  const redundant = new Set<StarMapGraphEdge>();
+  for (const id of topologicalOrder) {
+    const candidates = (outgoing.get(id) ?? []).filter((edge) => acyclicIds.has(edge.to));
+    for (const candidate of candidates) {
+      if (
+        candidates.some(
+          (other) => other !== candidate && (reachable.get(other.to)?.has(candidate.to) ?? false),
+        )
+      ) {
+        redundant.add(candidate);
+      }
+    }
+  }
+
+  return edges.filter((edge) => edge.kind !== "blocks" || !redundant.has(edge));
 }
 
 export function buildStarMapGraph(map: Pick<WayfinderMap, "nodes" | "edges">): StarMapGraph {
@@ -104,6 +173,7 @@ export function buildStarMapGraph(map: Pick<WayfinderMap, "nodes" | "edges">): S
       compareStrings(left.to, right.to) ||
       compareStrings(left.kind, right.kind),
   );
+  const backboneEdges = buildBackboneEdges(nodes, edges);
 
   const incoming = new Map<
     string,
@@ -143,5 +213,15 @@ export function buildStarMapGraph(map: Pick<WayfinderMap, "nodes" | "edges">): S
   }
   const revision = `${nodes.length}:${edges.length}:${hash32(revisionParts.join("\n")).toString(36)}`;
 
-  return { nodes, nodeById, edges, incoming, outgoing, byStatus, maxRank, revision };
+  return {
+    nodes,
+    nodeById,
+    edges,
+    backboneEdges,
+    incoming,
+    outgoing,
+    byStatus,
+    maxRank,
+    revision,
+  };
 }

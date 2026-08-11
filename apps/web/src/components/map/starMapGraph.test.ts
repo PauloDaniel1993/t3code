@@ -91,6 +91,67 @@ describe("buildStarMapGraph", () => {
     ]);
   });
 
+  it("reduces transitive block edges into a display backbone without changing the full graph", () => {
+    const graph = buildStarMapGraph({
+      nodes: [makeNode(1), makeNode(2), makeNode(3), makeNode(4)],
+      edges: [blocks(1, 2), blocks(1, 3), blocks(1, 4), blocks(2, 4), blocks(3, 4)],
+    });
+
+    expect(graph.edges).toHaveLength(5);
+    expect(graph.backboneEdges).toEqual([blocks(1, 2), blocks(1, 3), blocks(2, 4), blocks(3, 4)]);
+  });
+
+  it("keeps non-transitive rank-skipping blocks and every undermines edge", () => {
+    const undermine = { from: "t4", to: "t2", kind: "undermines" as const };
+    const graph = buildStarMapGraph({
+      nodes: [makeNode(1), makeNode(2), makeNode(3), makeNode(4)],
+      edges: [blocks(1, 2), blocks(1, 4), blocks(3, 4), undermine],
+    });
+
+    expect(graph.backboneEdges).toEqual(graph.edges);
+  });
+
+  it("preserves edges in and downstream of cycles instead of inventing a reduction", () => {
+    const graph = buildStarMapGraph({
+      nodes: [makeNode(1), makeNode(2), makeNode(3), makeNode(4), makeNode(5)],
+      edges: [blocks(1, 2), blocks(2, 3), blocks(3, 2), blocks(2, 4), blocks(3, 4), blocks(4, 5)],
+    });
+
+    expect(graph.backboneEdges).toEqual(graph.edges);
+  });
+
+  it("shrinks the dense Discord transcription fixture from 30 links to 17", () => {
+    const dependencies: Readonly<Record<number, ReadonlyArray<number>>> = {
+      4: [1, 2],
+      5: [2],
+      6: [4, 5],
+      7: [6],
+      8: [7],
+      9: [5, 7],
+      10: [3, 9, 16],
+      11: [8, 9, 10],
+      12: [4, 5, 9, 11],
+      13: [4, 5, 7, 8, 9, 10, 11, 12],
+      14: [13],
+      15: [14],
+      16: [3],
+    };
+    const edges = Object.entries(dependencies).flatMap(([to, fromIds]) =>
+      fromIds.map((from) => blocks(from, Number(to))),
+    );
+    const graph = buildStarMapGraph({
+      nodes: Array.from({ length: 16 }, (_, index) => makeNode(index + 1)),
+      edges,
+    });
+
+    expect(graph.edges).toHaveLength(30);
+    expect(graph.backboneEdges).toHaveLength(17);
+    expect(graph.backboneEdges).toContainEqual(blocks(16, 10));
+    expect(graph.backboneEdges).not.toContainEqual(blocks(4, 13));
+    expect(graph.backboneEdges).not.toContainEqual(blocks(11, 13));
+    expect(graph.backboneEdges).toContainEqual(blocks(12, 13));
+  });
+
   it("builds incoming and outgoing adjacency split by edge kind, including isolated nodes", () => {
     const graph = buildStarMapGraph({
       nodes: [makeNode(1), makeNode(2), makeNode(3)],
