@@ -379,8 +379,6 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
 
 const RuntimeAgentDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
-  Layer.provideMerge(ServerSettingsLayerLive),
-  Layer.provideMerge(ThreadTaskLimitsSourceLive.pipe(Layer.provide(ServerSettingsLayerLive))),
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
@@ -408,6 +406,10 @@ const RuntimeAgentDependenciesLive = ReactorLayerLive.pipe(
   // no longer transitively provides it. Exposing it at the runtime level
   // keeps a single Live for all opencode consumers.
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
+  // Keep this after ProviderRuntimeLayerLive: provideMerge supplies its
+  // services to the layers already composed above, including the authoritative
+  // orchestration engine, and re-exports them for the tasks MCP toolkit.
+  Layer.provideMerge(ThreadTaskLimitsSourceLive.pipe(Layer.provideMerge(ServerSettingsLayerLive))),
 );
 
 const RuntimeCoreDependenciesLive = RuntimeAgentDependenciesLive.pipe(
