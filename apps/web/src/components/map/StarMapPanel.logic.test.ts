@@ -2,8 +2,11 @@ import type { WayfinderMap, WayfinderMapsSnapshot, WayfinderNode } from "@t3tool
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  autoStarMapScope,
   initialStarMapPanelState,
+  resolveStarMapScope,
   starMapPanelReducer,
+  workspaceRootLabel,
   type StarMapPanelState,
 } from "./StarMapPanel.logic";
 
@@ -197,5 +200,89 @@ describe("starMapPanelReducer", () => {
         initialStarMapPanelState,
       );
     });
+  });
+
+  describe("reset", () => {
+    it("drops the whole navigation stack when the panel switches roots", () => {
+      expect(starMapPanelReducer(atTicketLevel, { type: "reset" })).toEqual(
+        initialStarMapPanelState,
+      );
+    });
+
+    it("clears a map-removed notice that belonged to the previous root", () => {
+      expect(starMapPanelReducer(afterMapRemoved, { type: "reset" })).toEqual(
+        initialStarMapPanelState,
+      );
+    });
+
+    it("is a no-op at the map list, so the mount-time reset changes nothing", () => {
+      expect(starMapPanelReducer(initialStarMapPanelState, { type: "reset" })).toBe(
+        initialStarMapPanelState,
+      );
+    });
+  });
+});
+
+const roots = { projectCwd: "/repo", worktreeCwd: "/repo/.t3/worktrees/feature-a" };
+
+describe("resolveStarMapScope", () => {
+  it("reads the project root and hides the control when the thread has no worktree", () => {
+    expect(resolveStarMapScope({ projectCwd: "/repo", worktreeCwd: null, scope: null })).toEqual({
+      scope: "project",
+      cwd: "/repo",
+      canToggle: false,
+    });
+  });
+
+  it("hides the control when the worktree path is the project root itself", () => {
+    expect(
+      resolveStarMapScope({ projectCwd: "/repo", worktreeCwd: "/repo", scope: "worktree" }),
+    ).toEqual({ scope: "project", cwd: "/repo", canToggle: false });
+  });
+
+  it("defaults an undecided worktree thread to its own root", () => {
+    expect(resolveStarMapScope({ ...roots, scope: null })).toEqual({
+      scope: "worktree",
+      cwd: roots.worktreeCwd,
+      canToggle: true,
+    });
+  });
+
+  it("reads the project root when that is the chosen scope", () => {
+    expect(resolveStarMapScope({ ...roots, scope: "project" })).toEqual({
+      scope: "project",
+      cwd: "/repo",
+      canToggle: true,
+    });
+  });
+});
+
+describe("autoStarMapScope", () => {
+  it("waits while either snapshot is still loading", () => {
+    expect(autoStarMapScope({ worktreeMapCount: null, projectMapCount: 3 })).toBeNull();
+    expect(autoStarMapScope({ worktreeMapCount: 0, projectMapCount: null })).toBeNull();
+  });
+
+  it("falls back to the project root only when the worktree is empty and it is not", () => {
+    expect(autoStarMapScope({ worktreeMapCount: 0, projectMapCount: 3 })).toBe("project");
+  });
+
+  it("keeps the thread's own root whenever the worktree has maps", () => {
+    expect(autoStarMapScope({ worktreeMapCount: 1, projectMapCount: 9 })).toBe("worktree");
+  });
+
+  it("keeps the thread's own root when neither has maps, so the empty state names it", () => {
+    expect(autoStarMapScope({ worktreeMapCount: 0, projectMapCount: 0 })).toBe("worktree");
+  });
+});
+
+describe("workspaceRootLabel", () => {
+  it("labels a root by its last segment on either path separator", () => {
+    expect(workspaceRootLabel("/repo/.t3/worktrees/feature-a")).toBe("feature-a");
+    expect(workspaceRootLabel("C:\\repo\\.t3\\worktrees\\feature-a")).toBe("feature-a");
+  });
+
+  it("ignores a trailing separator", () => {
+    expect(workspaceRootLabel("/repo/feature-a/")).toBe("feature-a");
   });
 });

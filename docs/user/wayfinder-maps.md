@@ -72,10 +72,27 @@ and keeps its selection in sync with the map.
 List view is the default in a narrow panel. It is also the default when reduced motion is enabled;
 in that mode the map remains static and does not animate.
 
+## Threads Working in a Worktree
+
+A thread that works in its own worktree has two places a map could live: that worktree, and the
+project itself. A worktree usually starts as a clean copy of a branch, so a map your agent has not
+committed exists in the project but not in the worktree.
+
+When the two differ, the Maps level shows a control naming the worktree on one side and
+**Project** on the other. Choose which one the surface reads. T3 Code remembers the choice for that
+thread. Until you choose, the surface reads the thread's own worktree, and switches to the project
+only when the worktree has no map and the project has one.
+
+While you are reading the project's maps from a worktree thread, a ticket says where its content
+came from, and the **Open as file** and **Open as task** actions are unavailable — both act on the
+thread's own worktree, where that ticket may not exist or may differ. **Reload map** always re-reads
+whichever root you are looking at.
+
 ## When No Map Is Available
 
 You can open the Map surface even when the current project has no wayfinder map. It shows **No
-wayfinder map in this project** until an agent creates one.
+wayfinder map in this project** until an agent creates one. For a thread reading its own worktree,
+the message names the worktree instead, and points at the control above.
 
 If T3 Code finds a map but cannot read it, the surface shows the parsing warnings instead of the
 no-map message. If only part of a map can be read, the usable tickets still appear and the warnings

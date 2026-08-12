@@ -207,7 +207,7 @@ The system SHALL watch `<root>/.plan` for changes and MUST NOT install a watcher
 
 ### Requirement: Expose maps through one authorized streaming subscription
 
-The system SHALL expose a single streaming RPC that emits a wayfinder maps snapshot for the requesting thread's workspace and re-emits on change. The subscription SHALL resolve its workspace root the same way other workspace-scoped subscriptions do, preferring the thread's worktree path over the project workspace root, and every relative path in the snapshot MUST be interpreted against that same root. The method SHALL declare an authorization scope. The snapshot MUST NOT include ticket body text or node positions.
+The system SHALL expose a single streaming RPC that emits a wayfinder maps snapshot for a requested workspace root and re-emits on change. The subscription SHALL read the root the client asks for — either the thread's worktree path or the project workspace root — and every relative path in the snapshot MUST be interpreted against that same root. Two roots subscribed at once SHALL be independent: separate snapshots, separate watchers, and no path from one resolved against the other. The method SHALL declare an authorization scope. The snapshot MUST NOT include ticket body text or node positions.
 
 #### Scenario: Subscribe and receive an initial snapshot
 
@@ -216,7 +216,7 @@ The system SHALL expose a single streaming RPC that emits a wayfinder maps snaps
 
 #### Scenario: Worktree thread paths
 
-- **WHEN** the subscribing thread has a worktree path distinct from the project workspace root
+- **WHEN** the client subscribes with a worktree path distinct from the project workspace root
 - **THEN** the map path and every node path in the snapshot resolve against the worktree path
 
 #### Scenario: Snapshot excludes ticket bodies

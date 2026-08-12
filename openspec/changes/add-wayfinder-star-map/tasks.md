@@ -125,3 +125,19 @@ produced zero edges and `Status: claimed` parsed as `open`, so the graph was los
 - [x] 11.5 Extend discovery in `WayfinderMaps.ts` to probe `<root>/.scratch` alongside `<root>/.plan`, and to accept an `issues/` ticket directory as well as `tickets/`.
 - [x] 11.6 Extend `WayfinderMaps.test.ts` to discover a `.scratch/<effort>/issues/` map, and confirm `.plan/` and `.scratch/` maps coexist in one snapshot without id collisions.
 - [x] 11.7 Document the third dialect and the `.scratch/` location in `docs/internals/wayfinder-maps.md`; confirm `docs/user/` copy stays location-agnostic.
+
+## 12. Worktree Root Scope
+
+Added after implementation: the panel followed `thread.worktreePath ?? project.workspaceRoot` and
+nothing else, so a worktree thread read its own root — which is usually a clean checkout without the
+uncommitted `.plan/` — and the map went empty the moment work moved into a worktree. The two roots
+are both legitimate, so the choice is the user's.
+
+- [x] 12.1 Add `resolveStarMapScope`, `autoStarMapScope`, and `workspaceRootLabel` to `StarMapPanel.logic.ts`, plus a `reset` reducer action for the root switch, and cover them in `StarMapPanel.logic.test.ts`.
+- [x] 12.2 Widen the persisted map surface to `{ id: "map"; kind: "map"; scope?: StarMapScope }` with a `setMapScope` action, a `selectMapSurfaceScope` selector, and migration that re-arms the automatic pick for an unrecognised scope; cover all three in `rightPanelStore.test.ts`.
+- [x] 12.3 Pass both roots from `ChatView.tsx` and key the panel on the project root, so choosing a root does not remount the panel and discard camera and selection.
+- [x] 12.4 Subscribe to the second root only while the choice is undecided, relying on the cwd-keyed atom family so latching onto the project root reuses that subscription instead of opening another.
+- [x] 12.5 Render the root control at the map list only, labelled with the worktree's own name, and name the searched root in the absent-map empty state.
+- [x] 12.6 Disclose the root on the ticket level and withdraw open-as-file whenever the panel is not reading the thread's own root, because the file surface can only address that root.
+- [x] 12.7 Update `docs/internals/wayfinder-maps.md` and `docs/user/wayfinder-maps.md` for the two roots and the control.
+- [ ] 12.8 Walk it in a worktree thread whose `.plan/` lives only in the project root: confirm the automatic fall-back, the control, persistence across a reload, and that switching roots does not claim the map was removed from disk.

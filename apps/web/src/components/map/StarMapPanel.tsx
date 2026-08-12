@@ -34,7 +34,11 @@ import {
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { toastManager } from "~/components/ui/toast";
 import { cn } from "~/lib/utils";
-import { selectActiveRightPanel, useRightPanelStore } from "~/rightPanelStore";
+import {
+  selectActiveRightPanel,
+  selectMapSurfaceScope,
+  useRightPanelStore,
+} from "~/rightPanelStore";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { wayfinderEnvironment } from "~/state/wayfinder";
@@ -69,16 +73,26 @@ import {
 } from "./starMapInteraction";
 import { layoutStarMap } from "./starMapLayout";
 import { StarMapRenderer, detectPrefersReducedMotion } from "./starMapRenderer";
-import { initialStarMapPanelState, starMapPanelReducer } from "./StarMapPanel.logic";
+import {
+  autoStarMapScope,
+  initialStarMapPanelState,
+  resolveStarMapScope,
+  starMapPanelReducer,
+  workspaceRootLabel,
+  type StarMapScope,
+} from "./StarMapPanel.logic";
 
 export interface StarMapPanelProps {
   readonly environmentId: EnvironmentId;
+  /** The project's own workspace root. */
+  readonly projectCwd: string;
   /**
-   * Root the server reads `.plan` from. Callers pass
-   * `thread.worktreePath ?? project.workspaceRoot`, the same root ticket
-   * relative paths resolve against.
+   * The thread's worktree, or null when it runs in the project root. The panel
+   * reads one of the two — see `resolveStarMapScope` — and whichever it picks
+   * is the root every relative path in the snapshot resolves against, ticket
+   * detail included.
    */
-  readonly cwd: string;
+  readonly worktreeCwd: string | null;
 }
 
 function ticketStatusText(node: WayfinderNode): string {
@@ -135,14 +149,14 @@ function LintList(props: { lints: ReadonlyArray<WayfinderLint> }) {
   );
 }
 
-function NoMapEmptyState() {
+function NoMapEmptyState(props: { rootLabel: string; hint: string | null }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
       <MapIcon className="size-6 text-muted-foreground" aria-hidden />
-      <p className="text-sm font-medium text-foreground">No wayfinder map in this project</p>
+      <p className="text-sm font-medium text-foreground">No wayfinder map in {props.rootLabel}</p>
       <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-        Wayfinder maps live in the project&apos;s .plan directory. Once one exists, its tickets and
-        blockers show up here.
+        {props.hint ??
+          "Wayfinder maps live in the project's .plan directory. Once one exists, its tickets and blockers show up here."}
       </p>
     </div>
   );
@@ -220,36 +234,8 @@ function TicketList(props: {
 }
 
 export default function StarMapPanel(props: StarMapPanelProps) {
-  const mapsQuery = useEnvironmentQuery(
-    wayfinderEnvironment.maps({ environmentId: props.environmentId, input: { cwd: props.cwd } }),
-  );
   const refreshMaps = useAtomCommand(wayfinderEnvironment.refreshMaps, { reportFailure: false });
-  const snapshot = mapsQuery.data;
   const [state, dispatch] = useReducer(starMapPanelReducer, initialStarMapPanelState);
-  const reloadInFlightRef = useRef(false);
-  const [isReloading, setIsReloading] = useState(false);
-  const handleReloadMap = useCallback(() => {
-    if (reloadInFlightRef.current) return;
-    reloadInFlightRef.current = true;
-    setIsReloading(true);
-    void (async () => {
-      const result = await refreshMaps({
-        environmentId: props.environmentId,
-        input: { cwd: props.cwd },
-      });
-      reloadInFlightRef.current = false;
-      setIsReloading(false);
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        toastManager.add({
-          type: "error",
-          title: "Could not reload map",
-          description:
-            error instanceof Error ? error.message : "The map could not be read from disk.",
-        });
-      }
-    })();
-  }, [props.cwd, props.environmentId, refreshMaps]);
 
   // The panel needs its thread's right-panel scope for two things: the
   // surface-active gate below and the ticket detail's open-as-file action.
@@ -282,6 +268,90 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     threadRef !== null ? selectActiveRightPanel(storeState.byThreadKey, threadRef) === "map" : true,
   );
 
+  // Scope: which of the thread's two roots the panel reads. A worktree branched
+  // before the plan existed has no `.plan/` of its own, so reading the thread's
+  // own root — correct for the agent's edits — can leave the panel empty while
+  // the project root has the whole constellation. The user picks; the panel
+  // only guesses the first time.
+  const { projectCwd, worktreeCwd } = props;
+  const persistedScope = useRightPanelStore((storeState) =>
+    selectMapSurfaceScope(storeState.byThreadKey, threadRef),
+  );
+  // Latch for the automatic choice, and for a manual one when the route has no
+  // thread ref to persist against. Keyed by worktree so switching threads
+  // inside one project re-decides instead of inheriting the last thread's root.
+  const [scopeLatch, setScopeLatch] = useState<{
+    readonly worktreeCwd: string | null;
+    readonly scope: StarMapScope;
+  } | null>(null);
+  const latchedScope =
+    scopeLatch !== null && scopeLatch.worktreeCwd === worktreeCwd ? scopeLatch.scope : null;
+  const explicitScope = persistedScope ?? latchedScope;
+  const { scope, cwd, canToggle } = resolveStarMapScope({
+    projectCwd,
+    worktreeCwd,
+    scope: explicitScope,
+  });
+
+  const mapsQuery = useEnvironmentQuery(
+    wayfinderEnvironment.maps({ environmentId: props.environmentId, input: { cwd } }),
+  );
+  // The second root is only subscribed while the panel is still deciding, and
+  // the atom family keys on cwd — so latching onto the project root reuses this
+  // exact subscription instead of opening a second one, and the worktree's
+  // watcher is dropped rather than left running behind an unread snapshot.
+  const probeCwd = canToggle && explicitScope === null ? projectCwd : null;
+  const probeQuery = useEnvironmentQuery(
+    probeCwd !== null
+      ? wayfinderEnvironment.maps({ environmentId: props.environmentId, input: { cwd: probeCwd } })
+      : null,
+  );
+  const snapshot = mapsQuery.data;
+
+  const probeMapCount = probeQuery.data?.maps.length ?? null;
+  const activeMapCount = snapshot?.maps.length ?? null;
+  useEffect(() => {
+    if (probeCwd === null) return;
+    const auto = autoStarMapScope({
+      worktreeMapCount: activeMapCount,
+      projectMapCount: probeMapCount,
+    });
+    if (auto !== null) setScopeLatch({ worktreeCwd, scope: auto });
+  }, [probeCwd, worktreeCwd, activeMapCount, probeMapCount]);
+
+  const chooseScope = (next: StarMapScope) => {
+    setScopeLatch({ worktreeCwd, scope: next });
+    if (threadRef !== null) useRightPanelStore.getState().setMapScope(threadRef, next);
+  };
+
+  // Reload re-reads whichever root the panel is currently showing, not the
+  // thread's own — otherwise the button would refresh a root the user cannot
+  // see and report success for a snapshot that never changed on screen.
+  const reloadInFlightRef = useRef(false);
+  const [isReloading, setIsReloading] = useState(false);
+  const handleReloadMap = useCallback(() => {
+    if (reloadInFlightRef.current) return;
+    reloadInFlightRef.current = true;
+    setIsReloading(true);
+    void (async () => {
+      const result = await refreshMaps({
+        environmentId: props.environmentId,
+        input: { cwd },
+      });
+      reloadInFlightRef.current = false;
+      setIsReloading(false);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: "Could not reload map",
+          description:
+            error instanceof Error ? error.message : "The map could not be read from disk.",
+        });
+      }
+    })();
+  }, [cwd, props.environmentId, refreshMaps]);
+
   // View (map/list): the user's toggle wins; until they touch it the view
   // follows the panel width and the reduced-motion preference, so resizing
   // below the narrow threshold falls back to the list on its own.
@@ -307,6 +377,13 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   useEffect(() => {
     if (snapshot !== null) dispatch({ type: "syncSnapshot", snapshot });
   }, [snapshot]);
+
+  // Declared after the snapshot sync so a root switch is what lands: the map
+  // selected in the old root is absent from the new snapshot, and the sync's
+  // "removed from disk" notice would be a lie about a file that still exists.
+  useEffect(() => {
+    dispatch({ type: "reset" });
+  }, [cwd]);
 
   const selectedMap = snapshot?.maps.find((map) => map.id === state.selectedMapId) ?? null;
   const selectedMapComplete = selectedMap !== null && isWayfinderMapComplete(selectedMap);
@@ -342,7 +419,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
   // Camera survives Map/List toggles, per map — the toggle must not teleport.
-  const cameraStashRef = useRef<{ mapId: string; camera: StarMapCamera } | null>(null);
+  // Keyed by root as well, because the same map id can exist in both roots with
+  // a different constellation behind it.
+  const cameraStashRef = useRef<{ key: string; camera: StarMapCamera } | null>(null);
   const selectedMapId = state.selectedMapId;
   useEffect(() => setShowAllLinks(false), [selectedMapId]);
 
@@ -353,9 +432,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   useEffect(() => {
     const host = canvasHostRef.current;
     if (view !== "map" || selectedMapId === null || host === null) return;
+    const cameraStashKey = `${cwd}:${selectedMapId}`;
     const stash = cameraStashRef.current;
-    const stashedCamera =
-      stash !== null && stash.mapId === selectedMapId ? stash.camera : undefined;
+    const stashedCamera = stash !== null && stash.key === cameraStashKey ? stash.camera : undefined;
     const renderer = new StarMapRenderer({
       container: host,
       graph,
@@ -474,11 +553,11 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerCancel);
-      cameraStashRef.current = { mapId: selectedMapId, camera: renderer.getCamera() };
+      cameraStashRef.current = { key: cameraStashKey, camera: renderer.getCamera() };
       rendererRef.current = null;
       renderer.destroy();
     };
-  }, [view, selectedMapId]);
+  }, [view, selectedMapId, cwd]);
 
   useEffect(() => {
     rendererRef.current?.setGraph(graph, layout, selectedMapComplete);
@@ -548,6 +627,23 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     headerMeta = ticketStatusText(selectedNode);
   }
 
+  // Reading the project root from a worktree thread is the one combination that
+  // can mislead: the file the agent edits is the worktree's copy, not this one.
+  const worktreeLabel = worktreeCwd !== null ? workspaceRootLabel(worktreeCwd) : null;
+  const rootNotice =
+    canToggle && scope === "project"
+      ? `From the project root, not ${worktreeLabel ?? "this worktree"}`
+      : null;
+  const emptyStateRootLabel = !canToggle
+    ? "this project"
+    : scope === "worktree"
+      ? "this worktree"
+      : "the project root";
+  const emptyStateHint =
+    canToggle && scope === "worktree"
+      ? "This thread's worktree has no .plan directory of its own. If the map lives in the project root, switch the panel to it above."
+      : null;
+
   const hasUsableNodes = snapshot?.maps.some((map) => map.nodes.length > 0) ?? false;
   const lints = snapshot?.lints ?? [];
   // Scoped to the open map, because "found a map but could not parse it" is a
@@ -573,7 +669,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       </div>
     );
   } else if (snapshot.maps.length === 0 && lints.length === 0) {
-    body = <NoMapEmptyState />;
+    body = <NoMapEmptyState rootLabel={emptyStateRootLabel} hint={emptyStateHint} />;
   } else if (!hasUsableNodes && lints.length > 0) {
     body = <UnparseableMapEmptyState lints={lints} />;
   } else if (
@@ -668,7 +764,8 @@ export default function StarMapPanel(props: StarMapPanelProps) {
             <div data-star-map-detail="" className="flex min-h-0 flex-1 flex-col">
               <StarMapTicketDetail
                 environmentId={props.environmentId}
-                cwd={props.cwd}
+                cwd={cwd}
+                rootNotice={rootNotice}
                 graph={graph}
                 node={detailNode}
                 threadRef={threadRef}
@@ -736,6 +833,39 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         </h2>
         {headerMeta !== null ? (
           <span className="shrink-0 text-xs text-muted-foreground">{headerMeta}</span>
+        ) : null}
+        {/* Scope sits at the map list only: switching roots sends the panel
+            back here anyway, and it keeps the two segmented controls from
+            fighting over a narrow subheader. */}
+        {state.level === "maps" && canToggle ? (
+          <div
+            role="group"
+            aria-label="Star map root"
+            className="flex min-w-0 shrink items-center gap-0.5 rounded-md border border-border/60 p-0.5"
+          >
+            {(
+              [
+                { value: "worktree", label: worktreeLabel ?? "Worktree" },
+                { value: "project", label: "Project" },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={scope === option.value}
+                title={option.value === "worktree" ? (worktreeCwd ?? undefined) : projectCwd}
+                onClick={() => chooseScope(option.value)}
+                className={cn(
+                  "h-5 max-w-24 truncate rounded-sm px-2 text-xs",
+                  scope === option.value
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         ) : null}
         <button
           type="button"
