@@ -358,7 +358,9 @@ describe("GitHubCli.layer", () => {
         detail:
           "GraphQL: Could not resolve to a PullRequest with the number of 4888. (repository.pullRequest)",
       });
-      mockRun.mockReturnValueOnce(Effect.fail(cause));
+      mockRun.mockImplementation((input) =>
+        input.command === "git" ? Effect.succeed(processOutput("")) : Effect.fail(cause),
+      );
 
       const gh = yield* GitHubCli.GitHubCli;
       const error = yield* gh
@@ -374,6 +376,38 @@ describe("GitHubCli.layer", () => {
       assert.strictEqual(error.cwd, "/repo");
       assert.strictEqual(error.cause, cause);
       assert.equal(error.message.includes(cause.detail), false);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("surfaces an actionable rate-limit error without exposing provider stderr", () =>
+    Effect.gen(function* () {
+      const cause = new VcsProcessExitError({
+        operation: "GitHubCli.execute",
+        command: "gh",
+        cwd: "/repo",
+        exitCode: 1,
+        failureKind: "rate-limited",
+        detail: "API rate limit exceeded.",
+        stderrLength: 82,
+        stderrTruncated: false,
+      });
+      mockRun.mockImplementation((input) =>
+        input.command === "git" ? Effect.succeed(processOutput("")) : Effect.fail(cause),
+      );
+
+      const gh = yield* GitHubCli.GitHubCli;
+      const error = yield* gh
+        .listOpenPullRequests({
+          cwd: "/repo",
+          headSelector: "feature/rate-limited",
+        })
+        .pipe(Effect.flip);
+
+      assert.strictEqual(error._tag, "GitHubCliRateLimitError");
+      assert.include(error.detail, "GitHub API rate limit exceeded");
+      assert.include(error.detail, "gh api rate_limit");
+      assert.strictEqual(error.cause, cause);
+      assert.notInclude(error.message, "user ID");
     }).pipe(Effect.provide(layer)),
   );
 });
@@ -429,9 +463,7 @@ describe("listOpenPullRequests repository scoping", () => {
         if (input.command === "git") {
           return Effect.succeed(
             processOutput(
-              input.args.includes("remote.origin.url")
-                ? "https://github.com/fork/repo.git\n"
-                : "",
+              input.args.includes("remote.origin.url") ? "https://github.com/fork/repo.git\n" : "",
             ),
           );
         }
