@@ -11,6 +11,7 @@ import { LegendList } from "@legendapp/list/react-native";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/unstable/reactivity";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -30,7 +31,7 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useProjects, useThreadShells } from "../../state/entities";
-import { useThreadTasksEnabled } from "../../state/preferences";
+import { mobilePreferencesAtom, resolveThreadTasksEnabled } from "../../state/preferences";
 import { useThreadSearch } from "../../state/queries";
 import { useTaskAgentReadState } from "../../state/use-task-agent-read-state";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
@@ -331,7 +332,12 @@ function ThreadNavigationSidebarPane(
     regenerateThreadTitle,
   } = useThreadListActions();
   const threadListV2Enabled = useThreadListV2Enabled();
-  const threadTasksEnabled = useThreadTasksEnabled();
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const preferences = AsyncResult.isSuccess(preferencesResult)
+    ? preferencesResult.value
+    : undefined;
+  const threadTasksEnabled = resolveThreadTasksEnabled(preferences?.threadTasksEnabled);
+  const autoSettleOnMerge = preferences?.autoSettleOnMerge !== false;
   const { readState: taskAgentReadState, markThreadsVisited } = useTaskAgentReadState();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
@@ -530,8 +536,8 @@ function ThreadNavigationSidebarPane(
 
   // Thread List v2 (beta) support — same model as the compact Home list
   // (HomeScreen.tsx): flat creation-order card block + settled recency tail.
-  // PR states stream in per-row; merged/closed PRs auto-settle their thread
-  // on the next partition.
+  // PR states stream in per-row. The next partition applies the configured
+  // merge rule and the always-on close rule.
   const [changeRequestStateByKey, setChangeRequestStateByKey] = useState<
     ReadonlyMap<string, "open" | "closed" | "merged">
   >(() => new Map());
@@ -634,6 +640,10 @@ function ThreadNavigationSidebarPane(
     }
     return supported;
   }, [serverConfigs]);
+  const liveThreads = useMemo(
+    () => threads.filter((thread) => thread.archivedAt === null),
+    [threads],
+  );
   // Keep the task projection on the same minute boundary as v2 partitioning;
   // this advances elapsed labels without reading time during a render pass.
   const taskAgentNowMs = useMemo(() => Date.parse(`${nowMinute}:00.000Z`), [nowMinute]);
@@ -643,10 +653,9 @@ function ThreadNavigationSidebarPane(
       buildTaskAgentModel({
         // Top-level shells retain native-agent rollups on older environments;
         // only capable environments contribute nested durable task children.
-        threads: threads.filter(
+        threads: liveThreads.filter(
           (thread) =>
-            thread.archivedAt === null &&
-            (thread.parentThreadId == null || threadTaskEnvironmentIds.has(thread.environmentId)),
+            thread.parentThreadId == null || threadTaskEnvironmentIds.has(thread.environmentId),
         ),
         nowMs: taskAgentNowMs,
         readState: taskAgentReadState,
@@ -655,10 +664,10 @@ function ThreadNavigationSidebarPane(
   }, [
     taskAgentNowMs,
     taskAgentReadState,
+    liveThreads,
     threadListV2Enabled,
     threadTaskEnvironmentIds,
     threadTasksEnabled,
-    threads,
   ]);
   const titleRegenerationEnvironmentIds = useMemo(() => {
     const supported = new Set<EnvironmentId>();
@@ -697,13 +706,14 @@ function ThreadNavigationSidebarPane(
         nextSnoozeWakeAt: null,
       };
     return buildThreadListV2Items({
-      threads: threads.filter((thread) => thread.archivedAt === null),
+      threads: liveThreads,
       nestedTaskThreadKeys,
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
       matchedThreadKeys,
       changeRequestStateByKey,
+      autoSettleOnMerge,
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
       settledLimit: settledVisibleCount,
@@ -715,6 +725,7 @@ function ThreadNavigationSidebarPane(
     });
   }, [
     changeRequestStateByKey,
+    autoSettleOnMerge,
     nowMinute,
     snoozeWakeTick,
     snoozedShelfExpanded,
@@ -728,7 +739,7 @@ function ThreadNavigationSidebarPane(
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
     threadListV2Enabled,
-    threads,
+    liveThreads,
     selectedProjectScope,
   ]);
   // Canonical arranged pinned order for Move up/down flags. Search and scope
@@ -736,16 +747,15 @@ function ThreadNavigationSidebarPane(
   // only shells excluded because they never participate in the top-level run.
   const arrangedPinnedKeys = useMemo(() => {
     const pinned = sortPinnedThreadsByOrderKey(
-      threads.filter(
+      liveThreads.filter(
         (thread) =>
           thread.parentThreadId == null &&
           thread.pinnedAt != null &&
-          thread.archivedAt === null &&
           pinReorderEnvironmentIds.has(thread.environmentId),
       ),
     );
     return pinned.map((thread) => `${thread.environmentId}:${thread.id}`);
-  }, [pinReorderEnvironmentIds, threads]);
+  }, [liveThreads, pinReorderEnvironmentIds]);
   // Re-partition the moment the earliest snooze expires (clamped to the
   // signed-32-bit setTimeout range; far-future wakes re-arm at the clamp).
   const nextSnoozeWakeAt = threadListV2Layout.nextSnoozeWakeAt;

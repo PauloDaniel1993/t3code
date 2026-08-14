@@ -39,6 +39,7 @@ import {
   updateMobilePreferencesAtom,
   useThreadTasksEnabled,
 } from "../../state/preferences";
+import { useLegacyPlanModeEnabled } from "../threads/use-legacy-plan-mode-enabled";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
 import {
   type AppUpdateCheckState,
@@ -526,9 +527,21 @@ function ConfiguredSettingsRouteScreen() {
 }
 
 function GeneralSettingsSection() {
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const autoSettleOnMerge =
+    !AsyncResult.isSuccess(preferencesResult) ||
+    preferencesResult.value.autoSettleOnMerge !== false;
+
   return (
     <SettingsSection title="General">
       <SettingsRow icon="folder" label="Project Grouping" target="SettingsProjectGrouping" />
+      <SettingsSwitchRow
+        icon="arrow.triangle.branch"
+        label="Auto-settle merged threads"
+        value={autoSettleOnMerge}
+        onValueChange={(value) => savePreferences({ autoSettleOnMerge: value })}
+      />
       <SettingsRow icon="chart.bar.xaxis" label="Usage" target="SettingsUsage" />
     </SettingsSection>
   );
@@ -542,6 +555,7 @@ function GeneralSettingsSection() {
 function LegacySettingsSection() {
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const threadListV2Enabled = useThreadListV2Enabled();
+  const planModeEnabled = useLegacyPlanModeEnabled();
   const threadTasksEnabled = useThreadTasksEnabled();
 
   return (
@@ -554,6 +568,12 @@ function LegacySettingsSection() {
           onValueChange={(value) => savePreferences({ legacyThreadListEnabled: value })}
         />
         <SettingsSwitchRow
+          icon="hammer"
+          label="Plan Mode"
+          value={planModeEnabled}
+          onValueChange={(value) => savePreferences({ planModeEnabled: value })}
+        />
+        <SettingsSwitchRow
           icon="checklist"
           label="Thread Tasks"
           value={threadTasksEnabled}
@@ -561,10 +581,9 @@ function LegacySettingsSection() {
         />
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
-        Brings back the original grouped thread list. The default list is flat, in creation order:
-        active work renders as cards, settled threads collapse to compact rows, and enabled Thread
-        Tasks appear nested beneath their parent. Turning Thread Tasks off keeps those threads
-        visible as ordinary rows.
+        Opt into retired interfaces kept for compatibility. Plan Mode restores the Build/Plan
+        control; otherwise every task runs in Build mode. Thread Tasks nests enabled task threads
+        beneath their parent; turning it off keeps those threads visible as ordinary rows.
       </Text>
     </View>
   );
