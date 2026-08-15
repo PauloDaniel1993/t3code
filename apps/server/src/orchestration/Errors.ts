@@ -54,6 +54,21 @@ export class OrchestrationCommandPreviouslyRejectedError extends Schema.TaggedEr
   }
 }
 
+export class OrchestrationCommandIdConflictError extends Schema.TaggedErrorClass<OrchestrationCommandIdConflictError>()(
+  "OrchestrationCommandIdConflictError",
+  {
+    commandId: Schema.String,
+    receiptAggregateKind: Schema.String,
+    receiptAggregateId: Schema.String,
+    commandAggregateKind: Schema.String,
+    commandAggregateId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Command id '${this.commandId}' already used for ${this.receiptAggregateKind} '${this.receiptAggregateId}'; refusing to replay its receipt for ${this.commandAggregateKind} '${this.commandAggregateId}'.`;
+  }
+}
+
 export class OrchestrationProjectorDecodeError extends Schema.TaggedErrorClass<OrchestrationProjectorDecodeError>()(
   "OrchestrationProjectorDecodeError",
   {
@@ -84,6 +99,7 @@ export type OrchestrationDispatchError =
   | ProjectionRepositoryError
   | OrchestrationDispatchCommandError
   | OrchestrationCommandInvariantError
+  | OrchestrationCommandIdConflictError
   | OrchestrationCommandPreviouslyRejectedError
   | OrchestrationProjectorDecodeError
   | OrchestrationListenerCallbackError;

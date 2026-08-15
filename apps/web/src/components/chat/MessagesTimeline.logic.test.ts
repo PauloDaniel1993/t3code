@@ -13,12 +13,24 @@ import {
   resolveAssistantMessageCopyState,
   resolveTaskCardExpansionA11y,
   resolveTimelineIsAtEnd,
+  shouldPreserveAssistantLineBreaks,
   TIMELINE_FOLLOW_REARM_THRESHOLD_PX,
   workEntryIsTranscriptVisible,
   workLogEntryIsTaskLike,
   type MessagesTimelineRow,
   type StableMessagesTimelineRowsState,
 } from "./MessagesTimeline.logic";
+
+describe("shouldPreserveAssistantLineBreaks", () => {
+  it("preserves Claude insight formatting without changing regular markdown", () => {
+    expect(
+      shouldPreserveAssistantLineBreaks(
+        "★ Insight ─────────────────\\nFirst observation\\nSecond observation\\n─────────────────",
+      ),
+    ).toBe(true);
+    expect(shouldPreserveAssistantLineBreaks("A normal\\nmarkdown paragraph")).toBe(false);
+  });
+});
 
 describe("timeline live edge", () => {
   it("re-arms inside the strict pixel band but not in LegendList's near-end region", () => {

@@ -22,7 +22,11 @@ describe("KimiDriver", () => {
   it("uses package-manager updates conservatively and keeps custom paths manual", () => {
     const packageManaged = KIMI_MAINTENANCE_RESOLVER.resolve({ binaryPath: "kimi" });
     expect(packageManaged.packageName).toBe("@moonshot-ai/kimi-code");
-    expect(packageManaged.update?.command).toBe("npm install -g @moonshot-ai/kimi-code@latest");
+    // npm 12 blocks install scripts by default, so provider maintenance allowlists the
+    // package being updated. Kimi is installed the same way, so it inherits the flag.
+    expect(packageManaged.update?.command).toBe(
+      "npm install -g --allow-scripts=@moonshot-ai/kimi-code @moonshot-ai/kimi-code@latest",
+    );
 
     const custom = KIMI_MAINTENANCE_RESOLVER.resolve({
       binaryPath: "/opt/custom/kimi",
@@ -93,6 +97,8 @@ describe("KimiDriver", () => {
       realCommandPath:
         "C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\@moonshot-ai\\kimi-code\\bin\\kimi.js",
     });
-    expect(npmGlobal.update?.command).toBe("npm install -g @moonshot-ai/kimi-code@latest");
+    expect(npmGlobal.update?.command).toBe(
+      "npm install -g --allow-scripts=@moonshot-ai/kimi-code @moonshot-ai/kimi-code@latest",
+    );
   });
 });

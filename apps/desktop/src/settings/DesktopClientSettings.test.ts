@@ -19,6 +19,7 @@ import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 const clientSettings: ClientSettings = {
   ...DEFAULT_CLIENT_SETTINGS,
   autoOpenPlanSidebar: false,
+  confirmQuit: true,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   dismissedProviderUpdateNotificationKeys: [],
