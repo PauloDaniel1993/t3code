@@ -36,6 +36,7 @@ import {
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
+  resolveDesktopExecutableBaseName,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
@@ -158,6 +159,23 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
     assert.equal(resolveDesktopProductName("0.0.17", true), "T3 alpha.local");
+  });
+
+  it("names the packaged executable after the local identity rather than the product", () => {
+    // A local-identity build overrides electron-builder's executableName, so the
+    // emitted exe stops matching the product name. The Windows payload probe stats
+    // this exact file, and looking for the product name there fails a build whose
+    // packaging is perfectly fine.
+    assert.equal(resolveDesktopExecutableBaseName("0.0.17"), "T3 Code (Alpha)");
+    assert.equal(
+      resolveDesktopExecutableBaseName("0.0.17-nightly.20260413.42"),
+      "T3 Code (Nightly)",
+    );
+    assert.equal(resolveDesktopExecutableBaseName("0.0.17", true), "T3 alpha.local");
+    assert.equal(
+      resolveDesktopExecutableBaseName("0.0.17-nightly.20260413.42", true),
+      "T3 alpha.local",
+    );
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {

@@ -2030,6 +2030,16 @@ export function resolveDesktopProductName(version: string, localIdentity = false
     : (desktopPackageJson.productName ?? "T3 Code");
 }
 
+/**
+ * The base name electron-builder gives the emitted executable: `executableName`
+ * when the build config sets one, otherwise `productName`. Only a local-identity
+ * build sets it, so the two diverge exactly there — which is why anything probing
+ * for the packaged executable has to ask this rather than assume the product name.
+ */
+export function resolveDesktopExecutableBaseName(version: string, localIdentity = false): string {
+  return localIdentity ? LOCAL_DESKTOP_EXECUTABLE_NAME : resolveDesktopProductName(version);
+}
+
 export function resolveDesktopAppId(localIdentity = false): string {
   return localIdentity ? LOCAL_DESKTOP_APP_ID : DESKTOP_APP_ID;
 }
@@ -3090,7 +3100,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (options.platform === "win") {
     yield* validateWindowsPackagedPayload({
       stageDistDir,
-      appExecutableName: `${resolveDesktopProductName(appVersion)}.exe`,
+      appExecutableName: `${resolveDesktopExecutableBaseName(appVersion, options.localIdentity)}.exe`,
       targetArch: options.arch,
       verbose: options.verbose,
     });
