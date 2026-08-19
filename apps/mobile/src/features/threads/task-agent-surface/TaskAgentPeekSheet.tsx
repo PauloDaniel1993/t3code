@@ -1,14 +1,8 @@
 import { useCallback } from "react";
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  useColorScheme,
-  View,
-  type ColorValue,
-} from "react-native";
+import { Pressable, ScrollView, StyleSheet, View, type ColorValue } from "react-native";
 
 import { AppText as Text } from "../../../components/AppText";
+import { useAppearancePreferences } from "../../settings/appearance/AppearancePreferencesProvider";
 import { useThemeColor } from "../../../lib/useThemeColor";
 import type {
   TaskAgentRowTone,
@@ -212,8 +206,8 @@ function PeekSheetChrome(props: {
 }
 
 export function TaskAgentPeekUnavailableSheet(props: TaskAgentPeekUnavailableSheetProps) {
-  const colorScheme = useColorScheme() === "light" ? "light" : "dark";
-  const theme = getTaskAgentTheme(colorScheme);
+  const { themeAppearance, themeId } = useAppearancePreferences();
+  const theme = getTaskAgentTheme(themeAppearance, themeId);
 
   return (
     <PeekSheetChrome
@@ -235,8 +229,8 @@ export function TaskAgentPeekUnavailableSheet(props: TaskAgentPeekUnavailableShe
 }
 
 export function TaskAgentPeekSheet(props: TaskAgentPeekSheetProps) {
-  const colorScheme = useColorScheme() === "light" ? "light" : "dark";
-  const theme = getTaskAgentTheme(colorScheme);
+  const { themeAppearance, themeId } = useAppearancePreferences();
+  const theme = getTaskAgentTheme(themeAppearance, themeId);
   const borderColor = useThemeColor("--color-border");
   const { peek } = props;
 

@@ -2,9 +2,10 @@
  * In-session agent derivation.
  *
  * A provider's own subagents (Claude Code's Task tool and friends) reach T3
- * Code only as `task.started` / `task.progress` / `task.completed` activities on
- * the thread that spawned them. This module folds those activities back into one
- * row per agent so the sidebar can show them next to real thread tasks.
+ * Code only as `task.started` / `task.progress` / `task.updated` /
+ * `task.completed` activities on the thread that spawned them. This module folds
+ * those activities back into one row per agent so the sidebar can show them next
+ * to real thread tasks.
  *
  * Everything here is deliberately pure — no Effect, no services — so replay, the
  * projection pipeline, and tests all exercise the same function.
@@ -19,14 +20,18 @@ import type {
   ThreadNativeAgent,
   ThreadNativeAgentStatus,
   ThreadNativeAgentUsage,
-  TurnId,
 } from "@t3tools/contracts";
 
 /**
  * Activity kinds this module folds. Necessary but NOT sufficient — see
  * `startedActivityDescribesAgent`.
  */
-const NATIVE_AGENT_ACTIVITY_KINDS = new Set(["task.started", "task.progress", "task.completed"]);
+const NATIVE_AGENT_ACTIVITY_KINDS = new Set([
+  "task.started",
+  "task.progress",
+  "task.updated",
+  "task.completed",
+]);
 
 export function isNativeAgentActivityKind(kind: string): boolean {
   return NATIVE_AGENT_ACTIVITY_KINDS.has(kind);
@@ -118,11 +123,12 @@ function statusForCompletion(value: unknown): ThreadNativeAgentStatus {
  * implementation means an incrementally-built projection and a full replay can
  * never disagree.
  *
- * Any of the three kinds can admit a new entry, but only while carrying evidence
+ * Agent lifecycle events can admit a new entry, but only while carrying evidence
  * that the run is an agent (see `activityDescribesAgent`) — admitting on an
  * unmarked `task.completed` would let every backgrounded shell back in through
- * its completion event. Accepting marked progress and completion events, rather
- * than `task.started` alone, is what makes the fold tolerate a lifecycle whose
+ * its completion event. `task.updated` only removes an existing live row when
+ * it reports idle; accepting marked progress and completion events, rather than
+ * `task.started` alone, is what makes the fold tolerate a lifecycle whose
  * events arrive out of order or whose start was missed entirely (a resumed
  * thread, a dropped event, an agent already running when T3 attached).
  */
@@ -137,7 +143,30 @@ export function applyNativeAgentActivity(
 
   const index = agents.findIndex((agent) => agent.taskId === taskId);
   const existing = index === -1 ? undefined : agents[index];
+
+  // `idle` is a resumable state, not one of the native-agent outcome states.
+  // Remove a currently running row so the parent rollup agrees with the
+  // background-liveness registry. A late idle update must not erase a result
+  // that has already settled.
+  if (activity.kind === "task.updated") {
+    if (payload.status !== "idle" || existing?.status !== "running") {
+      return agents;
+    }
+    return agents.filter((agent) => agent.taskId !== taskId);
+  }
+
   if (existing === undefined && !activityDescribesAgent(payload)) {
+    return agents;
+  }
+
+  // A status-free progress event is a description tick, not proof that a task
+  // restarted. It may refresh a row that is already live, but it must not
+  // re-admit an idle/settled task whose row was removed or aged out.
+  if (
+    activity.kind === "task.progress" &&
+    payload.status === undefined &&
+    existing?.status !== "running"
+  ) {
     return agents;
   }
 

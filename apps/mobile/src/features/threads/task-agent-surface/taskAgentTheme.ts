@@ -1,3 +1,9 @@
+import {
+  DEFAULT_MOBILE_THEME_ID,
+  getMobileThemeVariables,
+  type MobileThemeId,
+} from "../../../lib/mobileTheme";
+
 export type TaskAgentThemeMode = "light" | "dark";
 
 export interface TaskAgentTextTheme {
@@ -87,6 +93,29 @@ export const TASK_AGENT_THEMES: Readonly<Record<TaskAgentThemeMode, TaskAgentThe
   light: LIGHT_TASK_AGENT_THEME,
 };
 
-export function getTaskAgentTheme(mode: TaskAgentThemeMode): TaskAgentTheme {
-  return TASK_AGENT_THEMES[mode];
+function deriveTaskAgentTheme(mode: TaskAgentThemeMode, themeId: MobileThemeId): TaskAgentTheme {
+  const variables = getMobileThemeVariables(themeId, mode);
+  const taskTheme = TASK_AGENT_THEMES[mode];
+
+  return {
+    background: variables["--color-screen"],
+    card: variables["--color-card"],
+    text: {
+      // Status colors remain task-specific so their meaning does not change with the app theme.
+      ...taskTheme.text,
+      foreground: variables["--color-foreground"],
+      muted: variables["--color-foreground-secondary"],
+      dim: variables["--color-foreground-muted"],
+      statedReason: variables["--color-foreground-muted"],
+    },
+  };
+}
+
+export function getTaskAgentTheme(
+  mode: TaskAgentThemeMode,
+  themeId: MobileThemeId = DEFAULT_MOBILE_THEME_ID,
+): TaskAgentTheme {
+  return themeId === DEFAULT_MOBILE_THEME_ID
+    ? TASK_AGENT_THEMES[mode]
+    : deriveTaskAgentTheme(mode, themeId);
 }

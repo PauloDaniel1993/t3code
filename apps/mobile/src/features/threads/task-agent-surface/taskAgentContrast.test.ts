@@ -17,6 +17,7 @@ import {
   type TaskAgentTextTheme,
   type TaskAgentThemeMode,
 } from "./taskAgentTheme";
+import { getMobileThemeVariables } from "../../../lib/mobileTheme";
 
 const MODES = ["dark", "light"] as const satisfies readonly TaskAgentThemeMode[];
 const SURFACES = ["background", "card"] as const;
@@ -259,4 +260,29 @@ describe("theme surfaces", () => {
       expect(theme.card).toMatch(/^#[\da-f]{6}$/i);
     });
   }
+});
+
+describe("selected mobile theme palette", () => {
+  it("uses the selected built-in surfaces and neutral text in both appearances", () => {
+    const themeId = "grove" as const;
+
+    for (const mode of MODES) {
+      const theme = getTaskAgentTheme(mode, themeId);
+      const variables = getMobileThemeVariables(themeId, mode);
+
+      expect(theme.background).toBe(variables["--color-screen"]);
+      expect(theme.card).toBe(variables["--color-card"]);
+      expect(theme.text.foreground).toBe(variables["--color-foreground"]);
+      expect(theme.background).not.toBe(TASK_AGENT_THEMES[mode].background);
+      expect(theme.text.info).toBe(TASK_AGENT_THEMES[mode].text.info);
+      expect(theme.text.success).toBe(TASK_AGENT_THEMES[mode].text.success);
+      expect(theme.text.warn).toBe(TASK_AGENT_THEMES[mode].text.warn);
+      expect(theme.text.danger).toBe(TASK_AGENT_THEMES[mode].text.danger);
+    }
+  });
+
+  it("keeps the existing task palette when the mobile default theme is selected", () => {
+    expect(getTaskAgentTheme("light", "t3-code")).toBe(TASK_AGENT_THEMES.light);
+    expect(getTaskAgentTheme("dark", "t3-code")).toBe(TASK_AGENT_THEMES.dark);
+  });
 });

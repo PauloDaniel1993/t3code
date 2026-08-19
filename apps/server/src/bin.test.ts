@@ -226,6 +226,15 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
     }),
   );
 
+  it.effect("keeps maintenance and triage registered at the root", () =>
+    Effect.gen(function* () {
+      const { output } = yield* captureStdout(runCli(["--help"], noConnectCli));
+
+      assert.include(output, "maintenance");
+      assert.include(output, "triage");
+    }),
+  );
+
   it.effect("reports fresh headless connect state without requiring local configuration", () =>
     Effect.gen(function* () {
       const baseDir = NodeFS.mkdtempSync(

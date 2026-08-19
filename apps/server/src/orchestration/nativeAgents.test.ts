@@ -2,6 +2,7 @@ import { EventId, TurnId, type OrchestrationThreadActivity } from "@t3tools/cont
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  applyNativeAgentActivity,
   deriveNativeAgents,
   isNativeAgentActivityKind,
   selectVisibleNativeAgents,
@@ -360,6 +361,72 @@ describe("deriveNativeAgents: the canonical nativeAgent marker", () => {
         ),
       ]),
     ).toMatchObject([{ taskId: "child-1", status: "finished" }]);
+  });
+
+  it("does not revive an idle agent from status-free progress", () => {
+    const agents = deriveNativeAgents([
+      activity(
+        "task.started",
+        { taskId: "child-1", nativeAgent: true, description: "Inspect" },
+        "2026-07-30T07:00:00.000Z",
+      ),
+      activity(
+        "task.updated",
+        { taskId: "child-1", status: "idle", nativeAgent: true },
+        "2026-07-30T07:00:10.000Z",
+      ),
+      activity(
+        "task.progress",
+        { taskId: "child-1", nativeAgent: true, description: "late heartbeat" },
+        "2026-07-30T07:00:20.000Z",
+      ),
+    ]);
+
+    expect(agents).toEqual([]);
+  });
+
+  it("does not re-admit status-free progress after a settled row was evicted", () => {
+    const settled = deriveNativeAgents([
+      activity(
+        "task.started",
+        { taskId: "child-1", nativeAgent: true, description: "Inspect" },
+        "2026-07-30T07:00:00.000Z",
+      ),
+      activity(
+        "task.completed",
+        { taskId: "child-1", nativeAgent: true, status: "completed" },
+        "2026-07-30T07:00:10.000Z",
+      ),
+    ]);
+    const evicted = selectVisibleNativeAgents(settled, 0);
+
+    expect(
+      applyNativeAgentActivity(
+        evicted,
+        activity(
+          "task.progress",
+          { taskId: "child-1", nativeAgent: true, description: "late heartbeat" },
+          "2026-07-30T07:00:20.000Z",
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it("still admits a marked live progress event when the start was missed", () => {
+    const agents = deriveNativeAgents([
+      activity(
+        "task.progress",
+        {
+          taskId: "child-1",
+          nativeAgent: true,
+          status: "running",
+          description: "Inspecting",
+        },
+        "2026-07-30T07:00:00.000Z",
+      ),
+    ]);
+
+    expect(agents).toMatchObject([{ taskId: "child-1", status: "running" }]);
   });
 });
 

@@ -71,7 +71,8 @@ async function pathExists(target: string): Promise<boolean> {
 }
 
 async function syncFile(filePath: string): Promise<void> {
-  const handle = await NodeFSP.open(filePath, "r");
+  // Windows maps fsync to FlushFileBuffers, which rejects a read-only handle.
+  const handle = await NodeFSP.open(filePath, "r+");
   try {
     await handle.sync();
   } finally {
@@ -80,6 +81,9 @@ async function syncFile(filePath: string): Promise<void> {
 }
 
 async function syncDirectory(directory: string): Promise<void> {
+  // Windows has no directory-fsync equivalent; NTFS commits rename metadata
+  // without a directory handle, and opening one fails outright.
+  if (process.platform === "win32") return;
   const handle = await NodeFSP.open(directory, "r");
   try {
     await handle.sync();
@@ -321,7 +325,9 @@ export class Launcher {
     // This must happen synchronously at signal receipt. A queued update
     // transition may already be terminating the active child, and that child
     // needs to see the marker in its shutdown finalizer. KillMode=mixed also
-    // ensures systemd signals the launcher before the rest of the cgroup.
+    // ensures systemd signals the launcher before the rest of the cgroup, and
+    // launchd signals only the job's main process (this launcher), so the
+    // marker lands before the child sees any signal on both platforms.
     try {
       NodeFS.writeFileSync(stopMarkerPath(this.#baseDir), "", { mode: 0o600 });
     } catch {

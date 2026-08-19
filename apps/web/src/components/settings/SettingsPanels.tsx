@@ -128,6 +128,7 @@ import {
   backgroundActivitySharedPolicySettings,
   durationToSeconds,
   formatDiagnosticsDescription,
+  getChangedBrowserSettingLabels,
   getChangedTypographySettingLabels,
   normalizeIntervalSeconds,
   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
@@ -217,7 +218,7 @@ function backgroundActivityProfileSettings(profile: BackgroundActivityProfile) {
 
 function AboutVersionTitle() {
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex items-baseline gap-2">
       <span>Version</span>
       <code className="text-[11px] font-medium text-muted-foreground">{APP_VERSION}</code>
     </span>
@@ -290,7 +291,6 @@ function AboutVersionSection() {
         confirmed = await ensureLocalApi().dialogs.confirm(
           getDesktopUpdateInstallConfirmationMessage(
             updateState ?? { availableVersion: null, downloadedVersion: null },
-            navigator.platform,
           ),
         );
       } catch (error) {
@@ -539,11 +539,20 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Quit confirmation"]
         : []),
       ...(isTextGenerationModelDirty ? ["Text generation model"] : []),
+      ...getChangedBrowserSettingLabels(settings),
+      ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
+        ? ["Agent browser access"]
+        : []),
     ],
     [
       isTextGenerationModelDirty,
       isBackgroundActivityDirty,
       settings.autoOpenPlanSidebar,
+      settings.browserDefaultViewport,
+      settings.browserDefaultZoomFactor,
+      settings.browserDefaultAppearance,
+      settings.browserAutoShowFloatingPreview,
+      settings.enableAgentBrowserAccess,
       settings.confirmQuit,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
@@ -669,6 +678,14 @@ export function useSettingsRestore(onRestored?: () => void) {
       fontSizePrompt: DEFAULT_UNIFIED_SETTINGS.fontSizePrompt,
       fontSizeCode: DEFAULT_UNIFIED_SETTINGS.fontSizeCode,
       fontSizeTerminal: DEFAULT_UNIFIED_SETTINGS.fontSizeTerminal,
+      browserDefaultViewport: DEFAULT_UNIFIED_SETTINGS.browserDefaultViewport,
+      browserDefaultZoomFactor: DEFAULT_UNIFIED_SETTINGS.browserDefaultZoomFactor,
+      browserDefaultAppearance: DEFAULT_UNIFIED_SETTINGS.browserDefaultAppearance,
+      browserAutoShowFloatingPreview: DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview,
+      // Re-granted like any other default. The confirmation dialog lists it by
+      // name, so a user restoring defaults is told the agent regains access
+      // rather than discovering it later.
+      enableAgentBrowserAccess: DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess,
     });
     onRestored?.();
   }, [

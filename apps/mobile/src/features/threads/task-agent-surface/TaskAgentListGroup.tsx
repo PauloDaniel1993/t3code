@@ -1,14 +1,9 @@
 import { memo, useCallback, useMemo, useState } from "react";
-import {
-  Pressable,
-  StyleSheet,
-  useColorScheme,
-  View,
-  type GestureResponderEvent,
-} from "react-native";
+import { Pressable, StyleSheet, View, type GestureResponderEvent } from "react-native";
 
 import { AppText as Text } from "../../../components/AppText";
 import { SymbolView } from "../../../components/AppSymbol";
+import { useAppearancePreferences } from "../../settings/appearance/AppearancePreferencesProvider";
 import { useThemeColor } from "../../../lib/useThemeColor";
 import {
   buildTaskAgentListEntries,
@@ -174,8 +169,8 @@ function TaskAgentTurnRow(props: {
 }
 
 function TaskAgentDisclosureChipComponent(props: TaskAgentDisclosureChipProps) {
-  const colorScheme = useColorScheme() === "light" ? "light" : "dark";
-  const theme = getTaskAgentTheme(colorScheme);
+  const { themeAppearance, themeId } = useAppearancePreferences();
+  const theme = getTaskAgentTheme(themeAppearance, themeId);
   const borderColor = useThemeColor("--color-border");
   const surfaceColor = props.pane === "sidebar" ? theme.card : theme.background;
   const interactiveSurfaceColor = props.pane === "sidebar" ? theme.background : theme.card;
@@ -239,8 +234,8 @@ function TaskAgentDisclosureChipComponent(props: TaskAgentDisclosureChipProps) {
 }
 
 function TaskAgentListGroupComponent(props: TaskAgentListGroupProps) {
-  const colorScheme = useColorScheme() === "light" ? "light" : "dark";
-  const theme = getTaskAgentTheme(colorScheme);
+  const { themeAppearance, themeId } = useAppearancePreferences();
+  const theme = getTaskAgentTheme(themeAppearance, themeId);
   const borderColor = useThemeColor("--color-border");
   const [turnExpansionOverrides, setTurnExpansionOverrides] = useState<
     ReadonlyMap<string, boolean>

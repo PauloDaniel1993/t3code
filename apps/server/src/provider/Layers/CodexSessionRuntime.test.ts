@@ -11,8 +11,8 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import {
   buildCodexDeveloperInstructions,
-  CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-  CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  codexDefaultModeDeveloperInstructions,
+  codexPlanModeDeveloperInstructions,
 } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
@@ -199,6 +199,42 @@ describe("buildTurnStartParams", () => {
     });
   });
 
+  it.effect("propagates withheld browser access into collaboration instructions", () =>
+    Effect.gen(function* () {
+      const withoutBrowser = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Use the available tools",
+        interactionMode: "default",
+        browserToolsAvailable: false,
+      });
+      const withBrowser = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Use the available tools",
+        interactionMode: "default",
+        browserToolsAvailable: true,
+      });
+
+      const withoutBrowserInstructions =
+        withoutBrowser.collaborationMode?.settings.developer_instructions;
+      const withBrowserInstructions =
+        withBrowser.collaborationMode?.settings.developer_instructions;
+      NodeAssert.ok(withoutBrowserInstructions);
+      NodeAssert.ok(withBrowserInstructions);
+      NodeAssert.equal(
+        withoutBrowserInstructions,
+        buildCodexDeveloperInstructions(
+          "default",
+          { model: DEFAULT_MODEL, reasoningEffort: "medium" },
+          false,
+        ),
+      );
+      NodeAssert.doesNotMatch(withoutBrowserInstructions, /preview_status|preview_open/);
+      NodeAssert.match(withBrowserInstructions, /preview_status|preview_open/);
+    }),
+  );
+
   it("reports the same fallback model and effort in settings and instructions", () => {
     const params = Effect.runSync(
       buildTurnStartParams({
@@ -273,7 +309,7 @@ describe("buildCodexDeveloperInstructions", () => {
       reasoningEffort: "high",
     });
 
-    NodeAssert.ok(instructions.startsWith(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS));
+    NodeAssert.ok(instructions.startsWith(codexDefaultModeDeveloperInstructions(true)));
     NodeAssert.match(instructions, /T3 Code/);
     NodeAssert.match(instructions, /Codex harness/);
     NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
@@ -285,7 +321,7 @@ describe("buildCodexDeveloperInstructions", () => {
       reasoningEffort: "medium",
     });
 
-    NodeAssert.ok(instructions.startsWith(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS));
+    NodeAssert.ok(instructions.startsWith(codexPlanModeDeveloperInstructions(true)));
     NodeAssert.match(instructions, /as gpt-5\.3-codex with medium reasoning effort/);
   });
 
@@ -316,14 +352,40 @@ describe("buildCodexDeveloperInstructions", () => {
 describe("T3 browser developer instructions", () => {
   it("prefers the product-native preview tools in both collaboration modes", () => {
     for (const instructions of [
-      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      codexDefaultModeDeveloperInstructions(true),
+      codexPlanModeDeveloperInstructions(true),
     ]) {
       NodeAssert.match(instructions, /t3-code/);
       NodeAssert.match(instructions, /preview_status/);
       NodeAssert.match(instructions, /preview_open/);
       NodeAssert.match(instructions, /Do not switch to global browser skills/);
     }
+  });
+
+  it("omits the browser block entirely when the preview tools are not attached", () => {
+    for (const instructions of [
+      codexDefaultModeDeveloperInstructions(false),
+      codexPlanModeDeveloperInstructions(false),
+    ]) {
+      NodeAssert.doesNotMatch(instructions, /preview_status/);
+      NodeAssert.doesNotMatch(instructions, /preview_open/);
+      NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
+      // Steering away from other browser automation must go with the tools;
+      // keeping it would leave the model talked out of its only option.
+      NodeAssert.doesNotMatch(instructions, /Do not switch to global browser skills/);
+      // The rest of the collaboration mode is untouched.
+      NodeAssert.match(instructions, /<collaboration_mode>/);
+      NodeAssert.match(instructions, /<\/collaboration_mode>/);
+    }
+  });
+
+  it("tracks the turn's MCP configuration rather than defaulting to on", () => {
+    const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
+    NodeAssert.match(buildCodexDeveloperInstructions("default", runtime, true), /preview_open/);
+    NodeAssert.doesNotMatch(
+      buildCodexDeveloperInstructions("default", runtime, false),
+      /preview_open/,
+    );
   });
 });
 

@@ -3287,6 +3287,66 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.activeTurnId).toBeNull();
   });
 
+  it("does not revive an idle native-agent rollup from status-free progress", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-idle-native-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId,
+      turnId: asTurnId("turn-idle-native"),
+      payload: {
+        taskId: "idle-native-agent",
+        taskType: "subagent",
+        nativeAgent: true,
+        description: "Inspect the idle transition",
+      },
+    });
+    harness.emit({
+      type: "task.updated",
+      eventId: asEventId("evt-idle-native-updated"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId,
+      turnId: asTurnId("turn-idle-native"),
+      payload: {
+        taskId: "idle-native-agent",
+        taskType: "subagent",
+        nativeAgent: true,
+        status: "idle",
+      },
+    });
+    harness.emit({
+      type: "task.progress",
+      eventId: asEventId("evt-idle-native-progress"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId,
+      turnId: asTurnId("turn-idle-native"),
+      payload: {
+        taskId: "idle-native-agent",
+        taskType: "subagent",
+        nativeAgent: true,
+        description: "Late heartbeat",
+      },
+    });
+
+    await harness.drain();
+    const shellThread = (await harness.readShell()).threads.find((entry) => entry.id === threadId)!;
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId)!;
+
+    expect(shellThread.backgroundLiveness).toBeNull();
+    expect(thread.nativeAgents ?? []).toEqual([]);
+    expect(
+      thread.activities.some(
+        (activity) => activity.id === "task-progress:thread-1:idle-native-agent",
+      ),
+    ).toBe(true);
+  });
+
   it("mirrors a provider title only while the thread still has the default title", async () => {
     const harness = await createHarness({ threadTitle: DEFAULT_THREAD_TITLE });
     const now = "2026-01-01T00:00:00.000Z";

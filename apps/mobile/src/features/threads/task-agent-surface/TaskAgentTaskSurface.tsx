@@ -1,8 +1,9 @@
 import { memo, useCallback, useState } from "react";
-import { Pressable, StyleSheet, useColorScheme, View, type ColorValue } from "react-native";
+import { Pressable, StyleSheet, View, type ColorValue } from "react-native";
 
 import { AppText as Text } from "../../../components/AppText";
 import { SymbolView } from "../../../components/AppSymbol";
+import { useAppearancePreferences } from "../../settings/appearance/AppearancePreferencesProvider";
 import { useThemeColor } from "../../../lib/useThemeColor";
 import type { TaskAgentRowTone, TaskAgentRowViewModel } from "./taskAgentSurface.logic";
 import type {
@@ -171,8 +172,8 @@ function TaskAgentTurn(props: {
 }
 
 function TaskAgentTaskSurfaceComponent(props: TaskAgentTaskSurfaceProps) {
-  const colorScheme = useColorScheme() === "light" ? "light" : "dark";
-  const theme = getTaskAgentTheme(colorScheme);
+  const { themeAppearance, themeId } = useAppearancePreferences();
+  const theme = getTaskAgentTheme(themeAppearance, themeId);
   const borderColor = useThemeColor("--color-border");
   const [turnExpansionOverrides, setTurnExpansionOverrides] = useState<
     ReadonlyMap<string, boolean>

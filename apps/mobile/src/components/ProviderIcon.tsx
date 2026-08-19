@@ -1,5 +1,5 @@
-import { useColorScheme } from "react-native";
 import { Path, Rect, Svg } from "react-native-svg";
+import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 import { resolveProviderIconKind } from "./providerIconPresentation";
 
 type ProviderIconProps = {
@@ -8,7 +8,8 @@ type ProviderIconProps = {
 };
 
 export function ProviderIcon(props: ProviderIconProps) {
-  const isDarkMode = useColorScheme() === "dark";
+  const { themeAppearance } = useAppearancePreferences();
+  const isDarkMode = themeAppearance === "dark";
   const size = props.size ?? 16;
   const iconKind = resolveProviderIconKind(props.provider);
   const mono = isDarkMode ? "#e5e5e5" : "#171717";
