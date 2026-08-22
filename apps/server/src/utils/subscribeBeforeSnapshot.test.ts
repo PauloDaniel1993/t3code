@@ -11,6 +11,7 @@ import * as Stream from "effect/Stream";
 import {
   subscribeBeforeSnapshot,
   subscribeBeforeSnapshotWithoutMutex,
+  subscribeStreamBeforeSnapshot,
 } from "./subscribeBeforeSnapshot.ts";
 
 describe("subscribeBeforeSnapshot", () => {
@@ -77,6 +78,36 @@ describe("subscribeBeforeSnapshot", () => {
         );
 
         expect(subscription.latest).toBe(2);
+        expect(firstChange).toEqual(Option.some(2));
+      }),
+    ),
+  );
+
+  it.effect("buffers a stream before an uncoordinated snapshot can change", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const changes = yield* PubSub.sliding<number>(1);
+        const snapshotStarted = yield* Deferred.make<void>();
+        const finishSnapshot = yield* Deferred.make<void>();
+        const subscriptionFiber = yield* subscribeStreamBeforeSnapshot(
+          Stream.fromPubSub(changes),
+          Deferred.succeed(snapshotStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(finishSnapshot)),
+            Effect.andThen(Effect.succeed(1)),
+          ),
+        ).pipe(Effect.forkChild);
+
+        yield* Deferred.await(snapshotStarted);
+        yield* PubSub.publish(changes, 2);
+        yield* Deferred.succeed(finishSnapshot, undefined);
+
+        const subscription = yield* Fiber.join(subscriptionFiber);
+        const firstChange = yield* subscription.changes.pipe(
+          Stream.runHead,
+          Effect.timeout("1 second"),
+        );
+
+        expect(subscription.latest).toBe(1);
         expect(firstChange).toEqual(Option.some(2));
       }),
     ),

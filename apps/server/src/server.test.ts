@@ -44,6 +44,7 @@ import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -360,11 +361,29 @@ const browserOtlpTracingLayer = Layer.mergeAll(
   Layer.succeed(HttpClient.TracerDisabledWhen, () => true),
 );
 
-const makeAuthTestLayer = () =>
-  EnvironmentAuth.layer.pipe(
+const makeAuthTestLayer = (
+  transform?: (
+    auth: EnvironmentAuth.EnvironmentAuth["Service"],
+  ) => EnvironmentAuth.EnvironmentAuth["Service"],
+) => {
+  const layer = EnvironmentAuth.layer.pipe(
     Layer.provide(SqlitePersistenceMemory),
     Layer.provide(ServerSecretStore.layer),
   );
+  return transform === undefined
+    ? layer
+    : layer.pipe(
+        Layer.flatMap((context) =>
+          Layer.succeedContext(
+            Context.add(
+              context,
+              EnvironmentAuth.EnvironmentAuth,
+              transform(Context.get(context, EnvironmentAuth.EnvironmentAuth)),
+            ),
+          ),
+        ),
+      );
+};
 
 const makeBrowserOtlpPayload = (spanName: string) =>
   Effect.gen(function* () {
@@ -471,6 +490,9 @@ const buildAppUnderTest = (options?: {
     keybindings?: Partial<Keybindings.Keybindings["Service"]>;
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
     serverSettings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
+    environmentAuth?: (
+      auth: EnvironmentAuth.EnvironmentAuth["Service"],
+    ) => EnvironmentAuth.EnvironmentAuth["Service"];
     externalLauncher?: Partial<ExternalLauncher.ExternalLauncher["Service"]>;
     vcsDriver?: Partial<VcsDriver.VcsDriver["Service"]>;
     vcsDriverRegistry?: Partial<VcsDriverRegistry.VcsDriverRegistry["Service"]>;
@@ -1045,7 +1067,7 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.cloudCliTokenManager,
         }),
       ),
-      Layer.provideMerge(makeAuthTestLayer()),
+      Layer.provideMerge(makeAuthTestLayer(options?.layers?.environmentAuth)),
       Layer.provideMerge(ServerSecretStore.layer),
       Layer.provide(workspaceAndProjectServicesLayer),
       Layer.provideMerge(FetchHttpClient.layer),
@@ -4608,6 +4630,54 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(
         failureMessage.includes("Unauthorized") ||
           failureMessage.includes("An error occurred during Open"),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes websocket rpc subscribeAuthAccess without losing setup changes", () =>
+    Effect.gen(function* () {
+      const snapshotStarted = yield* Deferred.make<void>();
+      const releaseSnapshot = yield* Deferred.make<void>();
+      const pairingLinkLabel = "created-during-auth-snapshot";
+
+      yield* buildAppUnderTest({
+        layers: {
+          environmentAuth: (auth) => ({
+            ...auth,
+            listPairingLinks: (input) =>
+              Effect.gen(function* () {
+                const initialLinks = yield* auth.listPairingLinks(input);
+                yield* Deferred.succeed(snapshotStarted, undefined);
+                yield* Deferred.await(releaseSnapshot);
+                yield* auth.createPairingLink({ label: pairingLinkLabel });
+                return initialLinks;
+              }),
+          }),
+        },
+      });
+
+      const streamFiber = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[WS_METHODS.subscribeAuthAccess]({}).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* Deferred.await(snapshotStarted);
+      yield* Deferred.succeed(releaseSnapshot, undefined);
+
+      const events = Array.from(yield* Fiber.join(streamFiber).pipe(Effect.timeout("2 seconds")));
+      assert.equal(events.length, 2);
+      assert.equal(events[0]?.type, "snapshot");
+      assert.equal(events[1]?.type, "pairingLinkUpserted");
+      if (events[1]?.type === "pairingLinkUpserted") {
+        assert.equal(events[1].payload.label, pairingLinkLabel);
+      }
+      assert.equal(
+        events.filter(
+          (event) =>
+            event.type === "pairingLinkUpserted" && event.payload.label === pairingLinkLabel,
+        ).length,
+        1,
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

@@ -7,7 +7,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
+import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import {
+  bootstrapSshBearerSession,
   DesktopSshEnvironmentRequestError,
   fetchSshEnvironmentDescriptor,
 } from "./sshEnvironment.ts";
@@ -63,6 +65,40 @@ describe("SSH environment IPC", () => {
       });
       assert.deepEqual(requestUrls, ["http://127.0.0.1:41773/.well-known/t3/environment"]);
     }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("passes desktop presentation metadata to bearer bootstrap", () => {
+    let requestBody = "";
+    const layer = makeHttpClientLayer((request) =>
+      Effect.sync(() => {
+        if (request.body._tag === "Uint8Array") {
+          requestBody = new TextDecoder().decode(request.body.body);
+        }
+        return jsonResponse(request, {
+          access_token: "bearer-token",
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          scope: "orchestration:read",
+        });
+      }),
+    );
+    const environmentLayer = Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
+      platform: "darwin",
+      appVersion: "1.2.3",
+    } as DesktopEnvironment.DesktopEnvironment["Service"]);
+
+    return Effect.gen(function* () {
+      yield* bootstrapSshBearerSession.handler({
+        httpBaseUrl: "http://127.0.0.1:41773/",
+        credential: "pairing-token",
+      });
+
+      const params = new URLSearchParams(requestBody);
+      assert.equal(params.get("client_label"), "T3 Code Desktop");
+      assert.equal(params.get("client_device_type"), "desktop");
+      assert.equal(params.get("client_os"), "darwin");
+    }).pipe(Effect.provide(Layer.merge(layer, environmentLayer)));
   });
 
   it.effect("wraps schema decode failures in a typed request error", () => {

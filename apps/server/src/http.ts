@@ -277,6 +277,9 @@ export const assetRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
     return yield* createAssetFileResponse(asset).pipe(
+      Effect.map((response) =>
+        HttpServerResponse.setHeaders(response, assetResponseHeaders(asset.path)),
+      ),
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
     );
   }),

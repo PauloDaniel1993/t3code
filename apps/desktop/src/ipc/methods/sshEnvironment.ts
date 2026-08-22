@@ -34,6 +34,7 @@ import * as Schema from "effect/Schema";
 
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
+import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopSshEnvironment from "../../ssh/DesktopSshEnvironment.ts";
 import * as DesktopSshPasswordPrompts from "../../ssh/DesktopSshPasswordPrompts.ts";
 
@@ -44,6 +45,14 @@ type DesktopSshEnvironmentRequestOperation =
   | "issue-websocket-ticket";
 
 type DesktopSshEnvironmentRequestCause = RemoteEnvironmentAuthError | SshHttpBridgeError;
+
+const makeDesktopClientMetadata = (platform: string, appVersion: string) => ({
+  label: "T3 Code Desktop",
+  deviceType: "desktop" as const,
+  os: platform,
+  surface: "desktop" as const,
+  ...(appVersion === "0.0.0" ? {} : { appVersion }),
+});
 
 const isEnvironmentAuthInvalidError = Schema.is(EnvironmentAuthInvalidError);
 const isEnvironmentInternalError = Schema.is(EnvironmentInternalError);
@@ -168,10 +177,12 @@ export const bootstrapSshBearerSession = DesktopIpc.makeIpcMethod({
     httpBaseUrl,
     credential,
   }) {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
     return yield* withLoopbackSshApi("bootstrap-bearer-session", (resolvedHttpBaseUrl) =>
       bootstrapRemoteBearerSession({
         httpBaseUrl: resolvedHttpBaseUrl,
         credential,
+        clientMetadata: makeDesktopClientMetadata(environment.platform, environment.appVersion),
       }),
     )(httpBaseUrl);
   }),

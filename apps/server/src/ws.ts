@@ -136,6 +136,7 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import { subscribeStreamBeforeSnapshot } from "./utils/subscribeBeforeSnapshot.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationGetSnapshotError = Schema.is(OrchestrationGetSnapshotError);
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -658,18 +659,10 @@ const makeWsRpcLayer = (
       const serverCommandId = (tag: string) =>
         randomUUID.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
 
-      const loadAuthAccessSnapshot = () =>
-        Effect.all({
-          pairingLinks: serverAuth.listPairingLinks(),
-          clientSessions: serverAuth.listClientSessions(currentSessionId),
-        }).pipe(
-          Effect.mapError(
-            (error) =>
-              new AuthAccessStreamError({
-                message: error.message,
-              }),
-          ),
-        );
+      const toAuthAccessStreamError = (error: { readonly message: string }) =>
+        new AuthAccessStreamError({
+          message: error.message,
+        });
 
       const appendSetupScriptActivity = (input: {
         readonly threadId: ThreadId;
@@ -2557,11 +2550,24 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,
             Effect.gen(function* () {
-              const initialSnapshot = yield* loadAuthAccessSnapshot();
+              const pairingLinks = yield* subscribeStreamBeforeSnapshot(
+                bootstrapCredentials.streamChanges,
+                serverAuth.listPairingLinks().pipe(Effect.mapError(toAuthAccessStreamError)),
+              );
+              const clientSessions = yield* subscribeStreamBeforeSnapshot(
+                sessions.streamChanges,
+                serverAuth
+                  .listClientSessions(currentSessionId)
+                  .pipe(Effect.mapError(toAuthAccessStreamError)),
+              );
+              const initialSnapshot = {
+                pairingLinks: pairingLinks.latest,
+                clientSessions: clientSessions.latest,
+              };
               const revisionRef = yield* Ref.make(1);
               const accessChanges: Stream.Stream<
                 PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange
-              > = Stream.merge(bootstrapCredentials.streamChanges, sessions.streamChanges);
+              > = Stream.merge(pairingLinks.changes, clientSessions.changes);
 
               const liveEvents: Stream.Stream<AuthAccessStreamEvent> = accessChanges.pipe(
                 Stream.mapEffect((change) =>

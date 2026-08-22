@@ -1,21 +1,52 @@
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ThreadId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import { HttpClient, HttpRouter } from "effect/unstable/http";
 import { describe } from "vite-plus/test";
 
+import * as ServerConfig from "./config.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import { issueAssetUrl } from "./assets/AssetAccess.ts";
+import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import {
   assetResponseHeaders,
+  assetRouteLayer,
   attachmentContentDisposition,
   createAssetFileResponse,
   isLoopbackHostname,
   resolveDevRedirectUrl,
 } from "./http.ts";
+import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 
 const assetResponseLayer = Layer.mergeAll(NodeServices.layer, NodeHttpPlatform.layer);
+const assetRouteConfigLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
+  prefix: "t3-http-route-",
+});
+const assetRouteServerLayer = HttpRouter.serve(assetRouteLayer, {
+  disableListenLog: true,
+  disableLogger: true,
+}).pipe(
+  Layer.provideMerge(ServerSecretStore.layer),
+  Layer.provideMerge(
+    ProjectFaviconResolver.layer.pipe(
+      Layer.provide(WorkspacePaths.layer),
+      Layer.provide(T3ProjectFileLoader.layer),
+    ),
+  ),
+  Layer.provideMerge(WorkspacePaths.layer),
+  Layer.provideMerge(assetRouteConfigLayer),
+);
+const assetRouteTestLayer = assetRouteServerLayer.pipe(
+  Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(NodeServices.layer),
+);
 
 describe("http dev routing", () => {
   it("treats localhost and loopback addresses as local", () => {
@@ -168,4 +199,80 @@ describe("assetResponseHeaders", () => {
       "text/html; charset=utf-8",
     );
   });
+});
+
+describe("signed asset route", () => {
+  it.effect("serves signed workspace SVG and HTML assets with upstream headers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-http-route-assets-" });
+        const svgPath = path.join(root, "diagram.svg");
+        const htmlPath = path.join(root, "page.html");
+        yield* fileSystem.writeFileString(svgPath, '<svg xmlns="http://www.w3.org/2000/svg" />');
+        yield* fileSystem.writeFileString(htmlPath, "<p>héllo</p>");
+
+        const svgUrl = yield* issueAssetUrl({
+          resource: {
+            _tag: "workspace-file",
+            threadId: ThreadId.make("http-route-test"),
+            path: svgPath,
+          },
+          workspaceRoot: root,
+        });
+        const htmlUrl = yield* issueAssetUrl({
+          resource: {
+            _tag: "workspace-file",
+            threadId: ThreadId.make("http-route-test"),
+            path: htmlPath,
+          },
+          workspaceRoot: root,
+        });
+
+        const svgResponse = yield* HttpClient.get(svgUrl.relativeUrl);
+        const htmlResponse = yield* HttpClient.get(htmlUrl.relativeUrl);
+
+        expect(svgResponse.status).toBe(200);
+        expect(svgResponse.headers["content-security-policy"]).toBe(
+          "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        );
+        expect(yield* svgResponse.text).toContain("<svg");
+
+        expect(htmlResponse.status).toBe(200);
+        expect(htmlResponse.headers["content-type"]).toBe("text/html; charset=utf-8");
+        expect(yield* htmlResponse.text).toBe("<p>héllo</p>");
+      }),
+    ).pipe(Effect.provide(assetRouteTestLayer)),
+  );
+
+  it.effect("keeps signed ordinary assets streaming with range requests", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-http-route-range-" });
+        const imagePath = path.join(root, "image.png");
+        yield* fileSystem.writeFile(imagePath, new Uint8Array([0, 1, 2, 3, 4]));
+
+        const imageUrl = yield* issueAssetUrl({
+          resource: {
+            _tag: "workspace-file",
+            threadId: ThreadId.make("http-route-test"),
+            path: imagePath,
+          },
+          workspaceRoot: root,
+        });
+        const fullResponse = yield* HttpClient.get(imageUrl.relativeUrl);
+        const rangeResponse = yield* HttpClient.get(imageUrl.relativeUrl, {
+          headers: { range: "bytes=1-3" },
+        });
+
+        expect(fullResponse.status).toBe(200);
+        expect(yield* fullResponse.arrayBuffer).toEqual(new Uint8Array([0, 1, 2, 3, 4]).buffer);
+        expect(rangeResponse.status).toBe(200);
+        expect(yield* rangeResponse.arrayBuffer).toEqual(new Uint8Array([0, 1, 2, 3, 4]).buffer);
+      }),
+    ).pipe(Effect.provide(assetRouteTestLayer)),
+  );
 });

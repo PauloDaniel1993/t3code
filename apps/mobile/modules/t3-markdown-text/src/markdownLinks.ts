@@ -257,9 +257,18 @@ function fileUrlTarget(href: string): { readonly path: string; readonly hash: st
     if (parsed.protocol.toLowerCase() !== "file:") {
       return null;
     }
-    const path = /^\/[A-Za-z]:[\\/]/.test(parsed.pathname)
-      ? parsed.pathname.slice(1)
+    const hostname = parsed.hostname.toLowerCase() === "localhost" ? "" : parsed.hostname;
+    const rawPath = hostname
+      ? `\\\\${hostname}${parsed.pathname.replaceAll("/", "\\")}`
       : parsed.pathname;
+    if (rawPath.length === 0) {
+      return null;
+    }
+
+    // The URL parser represents a Windows drive path with a leading slash.
+    // Keep the path encoded here; the common source decoding below decodes it
+    // exactly once, including spaces in UNC and POSIX file URLs.
+    const path = /^\/[A-Za-z]:[\\/]/.test(rawPath) ? rawPath.slice(1) : rawPath;
     return { path, hash: parsed.hash };
   } catch {
     return null;
