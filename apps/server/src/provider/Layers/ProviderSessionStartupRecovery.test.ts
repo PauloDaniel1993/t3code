@@ -31,6 +31,7 @@ import {
   type ProjectionTurnById,
 } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
+import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import {
   makeProviderSessionStartupRecovery,
@@ -136,6 +137,9 @@ const makeHarness = Effect.fn("makeStartupRecoveryHarness")(function* (input?: {
   const commands = yield* Ref.make<Array<OrchestrationCommand>>([]);
   const receipts = yield* Ref.make(new Set(input?.claimedCommandIds ?? []));
   const pendingRecoveryCalls = yield* Ref.make(0);
+  const directoryUpserts = yield* Ref.make<Array<ProviderSessionDirectory.ProviderRuntimeBinding>>(
+    [],
+  );
 
   const runtimeRepository: ProviderSessionRuntime.ProviderSessionRuntimeRepository["Service"] = {
     upsert: (row) =>
@@ -287,6 +291,27 @@ const makeHarness = Effect.fn("makeStartupRecoveryHarness")(function* (input?: {
     streamChanges: Stream.empty,
   } satisfies ProviderRegistry["Service"];
 
+  const providerSessionDirectory = {
+    upsert: (binding) => Ref.update(directoryUpserts, (items) => [...items, binding]),
+    getProvider: () => Effect.die("not used"),
+    getBinding: (requestedThreadId) =>
+      Effect.succeed(
+        requestedThreadId === threadId
+          ? Option.some({
+              threadId,
+              provider: ProviderDriverKind.make("kimi"),
+              providerInstanceId: instanceId,
+              status: "running" as const,
+              resumeCursor: { sessionId: "kimi-resume-cursor" },
+              runtimePayload: { activeTurnId: turnId, unrelated: "preserve-me" },
+              runtimeMode: "full-access" as const,
+            })
+          : Option.none(),
+      ),
+    listThreadIds: () => Effect.succeed([]),
+    listBindings: () => Effect.succeed([]),
+  } satisfies ProviderSessionDirectory.ProviderSessionDirectory["Service"];
+
   const engine = {
     readEvents: () => Stream.empty,
     dispatch: (command: OrchestrationCommand) =>
@@ -347,6 +372,10 @@ const makeHarness = Effect.fn("makeStartupRecoveryHarness")(function* (input?: {
     Effect.provideService(ProjectionTurnRepository, turnRepository),
     Effect.provideService(OrchestrationCommandReceiptRepository, commandReceiptRepository),
     Effect.provideService(ProviderRegistry, providerRegistry),
+    Effect.provideService(
+      ProviderSessionDirectory.ProviderSessionDirectory,
+      providerSessionDirectory,
+    ),
     Effect.provideService(ProviderService, providerService),
     Effect.provideService(OrchestrationEngineService, engine),
   );
@@ -360,6 +389,7 @@ const makeHarness = Effect.fn("makeStartupRecoveryHarness")(function* (input?: {
     commands,
     receipts,
     pendingRecoveryCalls,
+    directoryUpserts,
   };
 });
 
@@ -386,6 +416,11 @@ it.effect("interrupts unmatched work idempotently while preserving the Kimi resu
     const runtime = (yield* Ref.get(harness.runtimes))[0];
     assert.strictEqual(runtime?.status, "stopped");
     assert.deepStrictEqual(runtime?.resumeCursor, { sessionId: "kimi-resume-cursor" });
+
+    const directoryBinding = (yield* Ref.get(harness.directoryUpserts))[0];
+    assert.strictEqual(directoryBinding?.status, "stopped");
+    assert.deepStrictEqual(directoryBinding?.runtimePayload, { activeTurnId: null });
+    assert.deepStrictEqual(directoryBinding?.resumeCursor, { sessionId: "kimi-resume-cursor" });
     assert.deepStrictEqual(
       runtime === undefined
         ? undefined

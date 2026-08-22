@@ -232,6 +232,7 @@ export function NewThreadTaskDialog(props: {
                       models={effectiveInstanceEntry.models}
                       model={effectiveModel.model}
                       modelOptions={effectiveModel.options}
+                      planModeEnabled={settings.planModeEnabled}
                       prompt={draft.prompt}
                       onPromptChange={(prompt) => setDraft((current) => ({ ...current, prompt }))}
                       onModelOptionsChange={(nextOptions) =>

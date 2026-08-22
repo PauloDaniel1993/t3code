@@ -1333,7 +1333,6 @@ export function WorkflowActivityBrowserFixture() {
                 <MessagesTimeline
                   key={activeThread.id}
                   isWorking={false}
-                  activeTurnInProgress
                   activeTurnStartedAt={latestTurn.startedAt}
                   listRef={listRef}
                   timelineEntries={timelineEntries}

@@ -6,6 +6,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import {
   createModelSelection,
@@ -28,6 +29,8 @@ import { sortModelsForProviderInstance } from "./modelOrdering";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const DEFAULT_TEXT_GENERATION_INSTANCE_ID = ProviderInstanceId.make("codex");
+const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
+const OPENCODE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(OPENCODE_DRIVER_KIND);
 
 /**
  * Resolve the custom-model list for a given instance, preferring the
@@ -277,6 +280,69 @@ export function getCustomModelOptionsByInstance(
   return out;
 }
 
+/**
+ * Drop the opencode "plan" agent option from a stored model selection.
+ * Used when legacy plan mode is turned off so server-side text-generation
+ * tasks (title, branch, PR) cannot keep dispatching the plan agent.
+ */
+export function withoutPlanAgentSelection(
+  selection: ModelSelection | null | undefined,
+  providers?: ReadonlyArray<ServerProvider>,
+): ModelSelection | null | undefined {
+  if (!selection?.options || !isOpenCodeSelection(selection, providers)) {
+    return selection;
+  }
+  const options = selection.options.filter(
+    (option) => !(option.id === "agent" && option.value === "plan"),
+  );
+  if (options.length === selection.options.length) {
+    return selection;
+  }
+  return createModelSelection(selection.instanceId, selection.model, options);
+}
+
+function isOpenCodeSelection(
+  selection: ModelSelection,
+  providers: ReadonlyArray<ServerProvider> | undefined,
+): boolean {
+  if (providers !== undefined) {
+    return (
+      providers.find((candidate) => candidate.instanceId === selection.instanceId)?.driver ===
+      OPENCODE_DRIVER_KIND
+    );
+  }
+  return selection.instanceId === OPENCODE_DEFAULT_INSTANCE_ID;
+}
+
+// The dropdown hides the opencode "plan" agent while legacy plan mode is off,
+// but the persisted text-generation selections are only healed when the toggle
+// flips. Users who already have plan mode off and a stored "plan" selection
+// never trip the toggle handler, so resolve the heal once per settings load.
+export function resolvePlanAgentHealPatch(input: {
+  readonly planModeEnabled: boolean;
+  readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly textGenerationModelSelection: ModelSelection | null | undefined;
+  readonly sourceControlWriterModelSelection: ModelSelection | null | undefined;
+}): ServerSettingsPatch | null {
+  if (input.planModeEnabled) {
+    return null;
+  }
+  const healedText = withoutPlanAgentSelection(input.textGenerationModelSelection, input.providers);
+  const healedSourceControl = withoutPlanAgentSelection(
+    input.sourceControlWriterModelSelection,
+    input.providers,
+  );
+  const patch: ServerSettingsPatch = {
+    ...(healedText && healedText !== input.textGenerationModelSelection
+      ? { textGenerationModelSelection: healedText }
+      : {}),
+    ...(healedSourceControl && healedSourceControl !== input.sourceControlWriterModelSelection
+      ? { sourceControlWriterModelSelection: healedSourceControl }
+      : {}),
+  };
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
 export function resolveAppModelSelectionState(
   settings: UnifiedSettings,
   providers: ReadonlyArray<ServerProvider>,
@@ -308,6 +374,7 @@ export function resolveAppModelSelectionState(
       model,
       models: entry.models,
       modelOptions: selectedEntry ? selection.options : undefined,
+      planModeEnabled: settings.planModeEnabled,
     });
 
     return createModelSelection(entry.instanceId, model, modelOptionsForDispatch);
@@ -325,6 +392,7 @@ export function resolveAppModelSelectionState(
     model,
     models: getProviderModels(providers, provider),
     modelOptions: keptSelectedProvider ? selection.options : undefined,
+    planModeEnabled: settings.planModeEnabled,
   });
 
   return createModelSelection(defaultInstanceIdForDriver(provider), model, modelOptionsForDispatch);

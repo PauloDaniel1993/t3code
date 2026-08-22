@@ -248,8 +248,39 @@ function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
   return value === undefined ? undefined : TurnId.make(String(value));
 }
 
-function boundedTerminalToolData(data: unknown): unknown {
-  return boundTerminalToolData(data, PROVIDER_EVENT_FLOW_CONTROL.terminalToolDataMaxBytes);
+function boundedTerminalToolData(
+  data: unknown,
+  payloadWithoutData?: Readonly<Record<string, unknown>>,
+): unknown {
+  const maximumBytes = PROVIDER_EVENT_FLOW_CONTROL.terminalToolDataMaxBytes;
+  if (payloadWithoutData === undefined) {
+    return boundTerminalToolData(data, maximumBytes);
+  }
+
+  const fits = (dataMaximumBytes: number): { readonly value: unknown; readonly fits: boolean } => {
+    const value = boundTerminalToolData(data, dataMaximumBytes);
+    const serialized = JSON.stringify({ ...payloadWithoutData, data: value });
+    return {
+      value,
+      fits: serialized !== undefined && Buffer.byteLength(serialized, "utf8") <= maximumBytes,
+    };
+  };
+
+  let low = 0;
+  let high = maximumBytes;
+  let best: unknown;
+  while (low <= high) {
+    const candidate = Math.floor((low + high) / 2);
+    const result = fits(candidate);
+    if (result.fits) {
+      best = result.value;
+      low = candidate + 1;
+    } else {
+      high = candidate - 1;
+    }
+  }
+
+  return best ?? boundTerminalToolData(data, 0);
 }
 
 function toApprovalRequestId(value: string | undefined): ApprovalRequestId | undefined {
@@ -820,6 +851,9 @@ export function runtimeEventToActivities(
                 payload: {
                   taskId: event.payload.taskId,
                   ...title,
+                  ...(event.payload.description !== undefined
+                    ? { description: event.payload.description }
+                    : {}),
                   ...identityLinkage,
                   usageSnapshot: true,
                   typedUsage: event.payload.typedUsage,
@@ -1016,7 +1050,9 @@ export function runtimeEventToActivities(
               ? { providerInstanceId: event.providerInstanceId }
               : {}),
             itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolUseId: event.itemId } : {}),
+            ...(event.itemId !== undefined
+              ? { toolUseId: event.itemId, toolCallId: event.itemId }
+              : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
@@ -1035,6 +1071,25 @@ export function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const payload: Record<string, unknown> = {
+        provider: event.provider,
+        ...(event.providerInstanceId !== undefined
+          ? { providerInstanceId: event.providerInstanceId }
+          : {}),
+        itemType: event.payload.itemType,
+        ...(event.itemId !== undefined
+          ? { toolUseId: event.itemId, toolCallId: event.itemId }
+          : {}),
+        ...(event.payload.status ? { status: event.payload.status } : {}),
+        ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+        ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
+        ...(event.payload.parentToolUseId
+          ? { parentToolUseId: event.payload.parentToolUseId }
+          : {}),
+      };
+      if (event.payload.data !== undefined) {
+        payload.data = boundedTerminalToolData(event.payload.data, payload);
+      }
       return [
         {
           id: stableToolActivityId(event) ?? event.eventId,
@@ -1042,23 +1097,7 @@ export function runtimeEventToActivities(
           tone: "tool",
           kind: "tool.completed",
           summary: event.payload.title ?? "Tool",
-          payload: {
-            provider: event.provider,
-            ...(event.providerInstanceId !== undefined
-              ? { providerInstanceId: event.providerInstanceId }
-              : {}),
-            itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolUseId: event.itemId } : {}),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined
-              ? { data: boundedTerminalToolData(event.payload.data) }
-              : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
-            ...(event.payload.parentToolUseId
-              ? { parentToolUseId: event.payload.parentToolUseId }
-              : {}),
-          },
+          payload,
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
@@ -1082,8 +1121,12 @@ export function runtimeEventToActivities(
               ? { providerInstanceId: event.providerInstanceId }
               : {}),
             itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolUseId: event.itemId } : {}),
+            ...(event.itemId !== undefined
+              ? { toolUseId: event.itemId, toolCallId: event.itemId }
+              : {}),
+            ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }

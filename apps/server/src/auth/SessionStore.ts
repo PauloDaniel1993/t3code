@@ -5,6 +5,7 @@ import {
   type AuthClientMetadata,
   type AuthClientSession,
   type AuthEnvironmentScope,
+  type ClientSurface,
   type ServerAuthSessionMethod,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -396,6 +397,13 @@ export class SessionStore extends Context.Service<
     ) => Effect.Effect<number, SessionCredentialInternalError>;
     readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
     readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
+    readonly recordClientConnection: (
+      sessionId: AuthSessionId,
+      client: {
+        readonly surface?: ClientSurface | undefined;
+        readonly appVersion?: string | undefined;
+      },
+    ) => Effect.Effect<void, never>;
   }
 >()("t3/auth/SessionStore") {}
 
@@ -441,6 +449,8 @@ function toClientMetadata(record: {
   readonly deviceType: AuthClientMetadata["deviceType"];
   readonly os: string | null;
   readonly browser: string | null;
+  readonly surface?: ClientSurface | null;
+  readonly appVersion?: string | null;
 }): AuthClientMetadata {
   return {
     ...(record.label ? { label: record.label } : {}),
@@ -449,6 +459,8 @@ function toClientMetadata(record: {
     deviceType: record.deviceType,
     ...(record.os ? { os: record.os } : {}),
     ...(record.browser ? { browser: record.browser } : {}),
+    ...(record.surface ? { surface: record.surface } : {}),
+    ...(record.appVersion ? { appVersion: record.appVersion } : {}),
   };
 }
 
@@ -544,6 +556,28 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markConnected"),
     );
 
+  // Best-effort: connection metadata must never block or fail a connect.
+  const recordClientConnection: SessionStore["Service"]["recordClientConnection"] = (
+    sessionId,
+    client,
+  ) =>
+    client.surface === undefined && client.appVersion === undefined
+      ? Effect.void
+      : authSessions
+          .setClientConnection({
+            sessionId,
+            surface: client.surface ?? null,
+            appVersion: client.appVersion ?? null,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Failed to record session client connection metadata.").pipe(
+                Effect.annotateLogs({ sessionId, cause }),
+              ),
+            ),
+            Effect.withSpan("SessionStore.recordClientConnection"),
+          );
+
   const markDisconnected: SessionStore["Service"]["markDisconnected"] = (sessionId) =>
     Ref.update(connectedSessionsRef, (current) => {
       const next = new Map(current);
@@ -623,6 +657,8 @@ export const make = Effect.gen(function* () {
             deviceType: client.deviceType,
             os: client.os ?? null,
             browser: client.browser ?? null,
+            surface: client.surface ?? null,
+            appVersion: client.appVersion ?? null,
           },
           issuedAt,
           expiresAt,
@@ -912,6 +948,7 @@ export const make = Effect.gen(function* () {
     revokeAllExcept,
     markConnected,
     markDisconnected,
+    recordClientConnection,
   });
 });
 

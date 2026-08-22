@@ -28,6 +28,7 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import { ProjectionThreadSessionRepository } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
+import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderValidationError } from "../Errors.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -323,6 +324,7 @@ export const makeProviderSessionStartupRecovery = (input: {
     const turnRepository = yield* ProjectionTurnRepository;
     const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
     const providerRegistry = yield* ProviderRegistry;
+    const providerSessionDirectory = yield* ProviderSessionDirectory;
     const providerService = yield* ProviderService;
     const orchestrationEngine = yield* OrchestrationEngineService;
 
@@ -369,6 +371,26 @@ export const makeProviderSessionStartupRecovery = (input: {
         if (liveSessionOwnsRecordedWork({ live, runtime, projected })) {
           continue;
         }
+
+        yield* Effect.gen(function* () {
+          const binding = yield* providerSessionDirectory.getBinding(threadId);
+          if (Option.isSome(binding)) {
+            yield* providerSessionDirectory.upsert({
+              ...binding.value,
+              status: "stopped",
+              runtimePayload: { activeTurnId: null },
+            });
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("provider.session.startup-recovery.directory-cleanup-failed", {
+                  threadId,
+                  cause,
+                }),
+          ),
+        );
 
         const activeTurnId =
           projected?.activeTurnId ??

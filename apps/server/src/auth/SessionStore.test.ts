@@ -2,8 +2,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
@@ -47,6 +51,7 @@ const failingSessionLookupRepositoryLayer = Layer.succeed(AuthSessions.AuthSessi
   revoke: () => Effect.fail(repositoryFailure),
   revokeAllExcept: () => Effect.fail(repositoryFailure),
   setLastConnectedAt: () => Effect.void,
+  setClientConnection: () => Effect.void,
 });
 
 const failingSessionLookupCredentialLayer = Layer.effect(
@@ -314,5 +319,58 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       expect(afterReconnect[0]?.lastConnectedAt).not.toBeNull();
       expect(afterReconnect[0]?.lastConnectedAt?.toString()).not.toBe(firstConnectedAt?.toString());
     }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
+  );
+  it.effect("records client connection metadata without clearing prior values", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const issued = yield* sessions.issue({
+        subject: "client-connection-test",
+        method: "bearer-access-token",
+      });
+      const nextChange = yield* Stream.runHead(sessions.streamChanges).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const readRow = sql<{
+        readonly surface: string | null;
+        readonly appVersion: string | null;
+      }>`
+        SELECT client_surface AS "surface", client_app_version AS "appVersion"
+        FROM auth_sessions
+        WHERE session_id = ${issued.sessionId}
+      `;
+
+      yield* sessions.recordClientConnection(issued.sessionId, {
+        surface: "mobile",
+        appVersion: "1.2.0",
+      });
+      expect((yield* readRow)[0]).toEqual({ surface: "mobile", appVersion: "1.2.0" });
+      expect((yield* sessions.verify(issued.token)).client).toMatchObject({
+        surface: "mobile",
+        appVersion: "1.2.0",
+      });
+
+      // A partial report (old or minimal client) must not null out stored data.
+      yield* sessions.recordClientConnection(issued.sessionId, { appVersion: "1.3.0" });
+      expect((yield* readRow)[0]).toEqual({ surface: "mobile", appVersion: "1.3.0" });
+
+      yield* sessions.recordClientConnection(issued.sessionId, {});
+      expect((yield* readRow)[0]).toEqual({ surface: "mobile", appVersion: "1.3.0" });
+
+      const activeSessions = yield* sessions.listActive();
+      expect(activeSessions[0]?.client).toMatchObject({
+        surface: "mobile",
+        appVersion: "1.3.0",
+      });
+
+      yield* sessions.markConnected(issued.sessionId);
+      const change = Option.getOrThrow(yield* Fiber.join(nextChange));
+      expect(change.type).toBe("clientUpserted");
+      if (change.type === "clientUpserted") {
+        expect(change.clientSession.client).toMatchObject({
+          surface: "mobile",
+          appVersion: "1.3.0",
+        });
+      }
+    }).pipe(Effect.provide(Layer.mergeAll(makeSessionStoreLayer(), SqlitePersistenceMemory))),
   );
 });

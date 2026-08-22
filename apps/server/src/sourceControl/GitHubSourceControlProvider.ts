@@ -67,6 +67,16 @@ function parseGitHubAuth(input: SourceControlAuthProbeInput) {
     });
   }
 
+  // gh gained `auth status --json` in 2.81.0. Older versions reject the flag and exit
+  // non-zero, which reads exactly like a signed-out CLI. Name the real problem instead.
+  if (input.exitCode !== 0 && output.includes("unknown flag: --json")) {
+    return providerAuth({
+      status: "unknown",
+      detail:
+        "GitHub CLI is too old to report sign-in status. Update `gh` to 2.81.0 or newer (for example `brew upgrade gh`) and rescan.",
+    });
+  }
+
   if (input.exitCode !== 0) {
     return providerAuth({
       status: "unauthenticated",
@@ -126,72 +136,70 @@ export const make = Effect.gen(function* () {
       }
 
       const stateArg: ChangeRequestState | "all" = input.state;
-      return github
-        .pullRequestQueryRepositoryArgs({ cwd: input.cwd })
-        .pipe(
-          Effect.flatMap((repositoryArgSets) =>
-            Effect.forEach(repositoryArgSets, (repositoryArgs) =>
-              github.execute({
-                cwd: input.cwd,
-                args: [
-                  "pr",
-                  "list",
-                  ...repositoryArgs,
-                  "--head",
-                  input.headSelector,
-                  "--state",
-                  stateArg,
-                  "--limit",
-                  String(input.limit ?? 20),
-                  "--json",
-                  "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
-                ],
-              }),
-            ),
+      return github.pullRequestQueryRepositoryArgs({ cwd: input.cwd }).pipe(
+        Effect.flatMap((repositoryArgSets) =>
+          Effect.forEach(repositoryArgSets, (repositoryArgs) =>
+            github.execute({
+              cwd: input.cwd,
+              args: [
+                "pr",
+                "list",
+                ...repositoryArgs,
+                "--head",
+                input.headSelector,
+                "--state",
+                stateArg,
+                "--limit",
+                String(input.limit ?? 20),
+                "--json",
+                "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
+              ],
+            }),
           ),
-          Effect.flatMap((results) => {
-            const raws = results
-              .map((result) => result.stdout.trim())
-              .filter((raw) => raw.length > 0);
-            if (raws.length === 0) {
-              return Effect.succeed([]);
-            }
-            return Effect.forEach(raws, (raw) =>
-              Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
-                Effect.flatMap((decoded) =>
-                  Result.isSuccess(decoded)
-                    ? Effect.succeed(
-                        decoded.success.map((item) => ({
-                          ...toChangeRequest(item),
-                          updatedAt: item.updatedAt,
-                        })),
-                      )
-                    : Effect.fail(
-                        new GitHubCli.GitHubChangeRequestListDecodeError({
-                          command: "gh",
-                          cwd: input.cwd,
-                          cause: decoded.failure,
-                        }),
-                      ),
-                ),
+        ),
+        Effect.flatMap((results) => {
+          const raws = results
+            .map((result) => result.stdout.trim())
+            .filter((raw) => raw.length > 0);
+          if (raws.length === 0) {
+            return Effect.succeed([]);
+          }
+          return Effect.forEach(raws, (raw) =>
+            Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
+              Effect.flatMap((decoded) =>
+                Result.isSuccess(decoded)
+                  ? Effect.succeed(
+                      decoded.success.map((item) => ({
+                        ...toChangeRequest(item),
+                        updatedAt: item.updatedAt,
+                      })),
+                    )
+                  : Effect.fail(
+                      new GitHubCli.GitHubChangeRequestListDecodeError({
+                        command: "gh",
+                        cwd: input.cwd,
+                        cause: decoded.failure,
+                      }),
+                    ),
               ),
-            ).pipe(Effect.map(GitHubCli.mergePullRequestsByUrl));
-          }),
-          Effect.mapError(
-            (error) =>
-              new SourceControlProviderError({
-                provider: "github",
-                operation: "listChangeRequests",
-                command: error.command,
-                cwd: input.cwd,
-                reference: SourceControlProvider.transportSafeSourceControlErrorValue(
-                  input.headSelector,
-                ),
-                detail: error.detail,
-                cause: error,
-              }),
-          ),
-        );
+            ),
+          ).pipe(Effect.map(GitHubCli.mergePullRequestsByUrl));
+        }),
+        Effect.mapError(
+          (error) =>
+            new SourceControlProviderError({
+              provider: "github",
+              operation: "listChangeRequests",
+              command: error.command,
+              cwd: input.cwd,
+              reference: SourceControlProvider.transportSafeSourceControlErrorValue(
+                input.headSelector,
+              ),
+              detail: error.detail,
+              cause: error,
+            }),
+        ),
+      );
     };
 
   return SourceControlProvider.SourceControlProvider.of({
