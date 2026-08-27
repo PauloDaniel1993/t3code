@@ -24,6 +24,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { PROVIDER_EVENT_FLOW_CONTROL } from "../../orchestration/ProviderEventFlowControl.ts";
 import {
   collectSessionConfigOptionValues,
+  decideToolCallUpdateEmission,
   extractModeConfigId,
   extractModelConfigId,
   findSessionConfigOption,
@@ -32,20 +33,19 @@ import {
   parseSessionUpdateEvent,
   sessionModeStateFromConfigOptions,
   sessionUpdateIsReplay,
+  toolCallProgressLength,
   waitForSessionLoadReplayIdle,
   type SessionLoadGate,
   type AcpParsedSessionEvent,
   type AcpSessionModeState,
   type AcpToolCallState,
 } from "./AcpRuntimeModel.ts";
-import {
-  clearAcpToolProgress,
-  coalesceAcpToolProgress,
-  emptyAcpToolProgressCoalescerState,
-  flushAllAcpToolProgress,
-  flushDueAcpToolProgress,
-  type AcpToolProgressCoalescerState,
-} from "./AcpToolProgressCoalescer.ts";
+
+interface AcpToolCallTrackedState {
+  readonly state: AcpToolCallState;
+  readonly lastEmittedDetailLength: number | undefined;
+  readonly skippedSinceEmit: number;
+}
 
 function formatConfigOptionValue(value: string | boolean): string {
   return JSON.stringify(value);
@@ -252,6 +252,7 @@ export class AcpSessionRuntime extends Context.Service<
      */
     readonly setSessionModel: (
       modelId: string,
+      meta?: EffectAcpSchema.SetSessionModelRequest["_meta"],
     ) => Effect.Effect<EffectAcpSchema.SetSessionModelResponse, EffectAcpErrors.AcpError>;
     /**
      * Sends a generic ACP extension request and records it through the request logger.
@@ -307,8 +308,7 @@ export const make = (
       PROVIDER_EVENT_FLOW_CONTROL.acpSessionEventQueueCapacity,
     );
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
-    const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
-    const toolProgressCoalescerRef = yield* Ref.make(emptyAcpToolProgressCoalescerState());
+    const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallTrackedState>());
     const assistantItemRuntimeId = yield* crypto.randomUUIDv4.pipe(
       Effect.mapError(
         (cause) =>
@@ -322,41 +322,10 @@ export const make = (
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
     const promptSerializationSemaphore = yield* Semaphore.make(1);
-    const toolProgressSemaphore = yield* Semaphore.make(1);
     const activePromptFiberRef = yield* Ref.make<
       Option.Option<Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>>
     >(Option.none());
     const sessionLoadGateRef = yield* Ref.make<Option.Option<SessionLoadGate>>(Option.none());
-    const toolProgressIntervalMs = PROVIDER_EVENT_FLOW_CONTROL.acpToolProgressCoalesceIntervalMs;
-
-    const offerToolProgressEvents = (
-      events: ReadonlyArray<Extract<AcpParsedSessionEvent, { readonly _tag: "ToolCallUpdated" }>>,
-    ) => Effect.forEach(events, (event) => Queue.offer(eventQueue, event), { discard: true });
-
-    const flushDueToolProgress = toolProgressSemaphore.withPermits(1)(
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const events = yield* Ref.modify(toolProgressCoalescerRef, (state) => {
-          const transition = flushDueAcpToolProgress(state, now, toolProgressIntervalMs);
-          return [transition.events, transition.state] as const;
-        });
-        yield* offerToolProgressEvents(events);
-      }),
-    );
-
-    const flushAllToolProgress = toolProgressSemaphore.withPermits(1)(
-      Ref.modify(toolProgressCoalescerRef, (state) => {
-        const transition = flushAllAcpToolProgress(state);
-        return [transition.events, transition.state] as const;
-      }).pipe(Effect.flatMap(offerToolProgressEvents)),
-    );
-
-    yield* Effect.sleep(Duration.millis(toolProgressIntervalMs)).pipe(
-      Effect.andThen(flushDueToolProgress),
-      Effect.forever,
-      Effect.forkIn(runtimeScope),
-    );
-    yield* Effect.addFinalizer(() => flushAllToolProgress.pipe(Effect.ignore));
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
@@ -458,9 +427,6 @@ export const make = (
           applyConfigOptions,
           modeStateRef,
           toolCallsRef,
-          toolProgressCoalescerRef,
-          toolProgressSemaphore,
-          toolProgressIntervalMs,
           assistantSegmentRef,
           assistantItemRuntimeId,
           params: notification,
@@ -833,7 +799,6 @@ export const make = (
       getEvents: () => Stream.fromQueue(eventQueue),
       drainEvents: Effect.gen(function* () {
         const acknowledge = yield* Deferred.make<void>();
-        yield* flushAllToolProgress;
         yield* Queue.offer(eventQueue, {
           _tag: "EventStreamBarrier",
           acknowledge,
@@ -879,7 +844,7 @@ export const make = (
                 closeActiveAssistantSegment({
                   queue: eventQueue,
                   assistantSegmentRef,
-                }).pipe(Effect.andThen(flushAllToolProgress)),
+                }),
               ),
             );
           }),
@@ -894,12 +859,6 @@ export const make = (
             yield* acp.agent
               .cancel({ sessionId: started.sessionId })
               .pipe(Effect.ignore, Effect.forkIn(runtimeScope));
-            yield* toolProgressSemaphore.withPermits(1)(
-              Ref.modify(toolProgressCoalescerRef, (state) => {
-                const transition = flushAllAcpToolProgress(state);
-                return [transition.events, clearAcpToolProgress(transition.state)] as const;
-              }).pipe(Effect.flatMap(offerToolProgressEvents)),
-            );
           }),
         ),
       ),
@@ -911,12 +870,6 @@ export const make = (
             if (Option.isSome(activePromptFiber)) {
               yield* Fiber.await(activePromptFiber.value).pipe(Effect.asVoid);
             }
-            yield* toolProgressSemaphore.withPermits(1)(
-              Ref.modify(toolProgressCoalescerRef, (state) => {
-                const transition = flushAllAcpToolProgress(state);
-                return [transition.events, clearAcpToolProgress(transition.state)] as const;
-              }).pipe(Effect.flatMap(offerToolProgressEvents)),
-            );
           }),
         ),
       ),
@@ -927,7 +880,8 @@ export const make = (
               return Effect.succeed({} satisfies EffectAcpSchema.SetSessionModeResponse);
             }
             const modeConfigId =
-              (startState._tag === "Started" ? startState.result.modeConfigId : undefined) ?? "mode";
+              (startState._tag === "Started" ? startState.result.modeConfigId : undefined) ??
+              "mode";
             return setConfigOption(modeConfigId, modeId).pipe(
               Effect.tap(() => updateCurrentModeId(modeId)),
               Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
@@ -940,12 +894,13 @@ export const make = (
           Effect.flatMap((started) => setConfigOption(started.modelConfigId ?? "model", model)),
           Effect.asVoid,
         ),
-      setSessionModel: (modelId) =>
+      setSessionModel: (modelId, meta) =>
         getStartedState.pipe(
           Effect.flatMap((started) => {
             const requestPayload = {
               sessionId: started.sessionId,
               modelId,
+              ...(meta !== undefined ? { _meta: meta } : {}),
             } satisfies EffectAcpSchema.SetSessionModelRequest;
             return runLoggedRequest(
               "session/set_model",
@@ -997,9 +952,6 @@ const handleSessionUpdate = ({
   applyConfigOptions,
   modeStateRef,
   toolCallsRef,
-  toolProgressCoalescerRef,
-  toolProgressSemaphore,
-  toolProgressIntervalMs,
   assistantSegmentRef,
   assistantItemRuntimeId,
   params,
@@ -1009,10 +961,7 @@ const handleSessionUpdate = ({
     configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
   ) => Effect.Effect<void>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
-  readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
-  readonly toolProgressCoalescerRef: Ref.Ref<AcpToolProgressCoalescerState>;
-  readonly toolProgressSemaphore: Semaphore.Semaphore;
-  readonly toolProgressIntervalMs: number;
+  readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallTrackedState>>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly assistantItemRuntimeId: string;
   readonly params: EffectAcpSchema.SessionNotification;
@@ -1035,38 +984,38 @@ const handleSessionUpdate = ({
           queue,
           assistantSegmentRef,
         });
-        const merged = yield* Ref.modify(toolCallsRef, (current) => {
-          const previous = current.get(event.toolCall.toolCallId);
+        const { merged, decision } = yield* Ref.modify(toolCallsRef, (current) => {
+          const tracked = current.get(event.toolCall.toolCallId);
+          const previous = tracked?.state;
           const nextToolCall = mergeToolCallState(previous, event.toolCall);
+          const decision = decideToolCallUpdateEmission({
+            previous,
+            next: nextToolCall,
+            lastEmittedDetailLength: tracked?.lastEmittedDetailLength,
+            skippedSinceEmit: tracked?.skippedSinceEmit ?? 0,
+          });
           const next = new Map(current);
           if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
             next.delete(nextToolCall.toolCallId);
           } else {
-            next.set(nextToolCall.toolCallId, nextToolCall);
+            next.set(nextToolCall.toolCallId, {
+              state: nextToolCall,
+              lastEmittedDetailLength: decision.emit
+                ? toolCallProgressLength(nextToolCall)
+                : tracked?.lastEmittedDetailLength,
+              skippedSinceEmit: decision.skippedSinceEmit,
+            });
           }
-          return [nextToolCall, next] as const;
+          return [{ merged: nextToolCall, decision }, next] as const;
         });
-        yield* toolProgressSemaphore.withPermits(1)(
-          Effect.gen(function* () {
-            const now = yield* Clock.currentTimeMillis;
-            const events = yield* Ref.modify(toolProgressCoalescerRef, (state) => {
-              const transition = coalesceAcpToolProgress(
-                state,
-                {
-                  _tag: "ToolCallUpdated",
-                  toolCall: merged,
-                  rawPayload: event.rawPayload,
-                },
-                now,
-                toolProgressIntervalMs,
-              );
-              return [transition.events, transition.state] as const;
-            });
-            yield* Effect.forEach(events, (coalescedEvent) => Queue.offer(queue, coalescedEvent), {
-              discard: true,
-            });
-          }),
-        );
+        if (!decision.emit) {
+          continue;
+        }
+        yield* Queue.offer(queue, {
+          _tag: "ToolCallUpdated",
+          toolCall: merged,
+          rawPayload: event.rawPayload,
+        });
         continue;
       }
       if (event._tag === "ContentDelta") {

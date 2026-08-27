@@ -43,6 +43,30 @@ A single user-to-assistant work cycle inside a thread. It starts with user input
 
 A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
 
+#### Attachment
+
+A typed file associated with a message. [The orchestration contracts][1] define `ChatAttachment` as the durable `image`, `document`, or generic `file` metadata stored in thread history, while `UploadChatAttachment` is the client-to-server form used before normalization. See [Normalizer.ts][26].
+
+#### Linked pull request
+
+Pull request metadata explicitly associated with a thread: project, repository, number, and URL. Clients use the link for thread status, and an environment can automatically settle the thread when that pull request merges. See [the contracts][1] and [thread-sidebar.md][27].
+
+#### Native agent
+
+A provider's own in-session subagent. Unlike a task, it is not a thread and does not have an independently steerable transcript, model, or provider session. T3 Code observes its lifecycle through activities and projects a bounded current view onto the parent thread. See [the contracts][1] and [nativeAgents.ts][28].
+
+#### Pending upload
+
+A temporary attachment stored before its turn is accepted. It has a pending attachment ID and an expiring upload URL; normalization validates the complete attachment set, then claims accepted files into thread-owned IDs as part of staging the turn. See [the asset contracts][29] and [Normalizer.ts][26].
+
+#### Task
+
+A child thread owned by a parent thread and running its own provider session. A task can be created by the user or the parent agent, receives explicitly selected context, and delivers its result back to the parent. Tasks cannot create nested tasks. See [the orchestration contracts][1] and [the task contracts][30].
+
+#### Unsettled
+
+The active state entered when a settled thread is restored or wakes because new activity arrives. The `thread.unsettled` event clears `settledAt`; `unsettledAt` records the latest re-entry so web and mobile place the thread at the top of the active list without changing its creation time. See [projector.ts][4] and [threadSort.ts][31].
+
 ### Orchestration
 
 Orchestration is the server-side domain layer that turns runtime activity into stable app state. The main entry point is [OrchestrationEngine.ts][7], with core logic in [decider.ts][8] and [projector.ts][4].
@@ -116,6 +140,18 @@ Controls how assistant text reaches the thread timeline. In [the contracts][1], 
 #### Snapshot
 
 A point-in-time view of state. The word is used in multiple layers, including orchestration, provider, and checkpointing. See [ProjectionSnapshotQuery.ts][10], [ProviderAdapter.ts][15], and [CheckpointStore.ts][19].
+
+#### Compaction
+
+Replacing older provider-session context with a summary to reduce active token usage without changing the thread's durable timeline. Claude can compact automatically at a configured threshold, through `/compact`, or before resuming an older session. See [providers-claude.md][32].
+
+#### Feedback
+
+A Codex provider operation that uploads a thread and its Codex logs to OpenAI and returns a shareable feedback ID. Users invoke it with `/feedback`, optionally followed by a reason. See [ProviderService.ts][14] and [providers-codex.md][33].
+
+#### Model manifest
+
+The per-driver list of current model slugs that decides which models land in the model picker's legacy section. Bundled at `apps/server/src/provider/model-manifest.json` and refreshed at runtime from the same file on `main`, so classification updates ship as commits instead of releases. See the [provider architecture][16] model manifest section.
 
 ### Wayfinder maps
 
@@ -204,3 +240,11 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [23]: ../../apps/server/src/checkpointing/Diffs.ts
 [24]: ./overview.md
 [25]: ./wayfinder-maps.md
+[26]: ../../apps/server/src/orchestration/Normalizer.ts
+[27]: ../user/thread-sidebar.md
+[28]: ../../packages/client-runtime/src/state/native-agents/nativeAgents.ts
+[29]: ../../packages/contracts/src/assets.ts
+[30]: ../../packages/contracts/src/threadTasks.ts
+[31]: ../../packages/client-runtime/src/state/threadSort.ts
+[32]: ../user/providers-claude.md
+[33]: ../user/providers-codex.md

@@ -16,6 +16,7 @@ import { it } from "@effect/vitest";
 import {
   CodexSettings,
   EventId,
+  type ProviderApprovalDecision,
   type ProviderEvent,
   ProviderDriverKind,
   type ProviderSession,
@@ -24,6 +25,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -157,6 +159,15 @@ function retryableChildError(child: string): WireNotification {
   } as unknown as WireNotification;
 }
 
+const decodeMcpElicitationResponse = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      id: Schema.Number,
+      result: Schema.Unknown,
+    }),
+  ),
+);
+
 /**
  * The captured sequence, extended with the shapes the live capture didn't
  * include: a collabAgentToolCall with receiverThreadIds (feeds the legacy
@@ -258,6 +269,7 @@ function makeMappingRuntime(
     interruptTurn: () => Effect.void,
     readThread: Effect.succeed({ threadId: ROOT, turns: [] }),
     rollbackThread: () => Effect.succeed({ threadId: ROOT, turns: [] }),
+    uploadFeedback: () => Effect.die("not used"),
     respondToRequest: () => Effect.void,
     respondToUserInput: () => Effect.void,
     events: Stream.fromQueue(eventQueue),
@@ -884,16 +896,18 @@ describe("CodexSessionRuntime collab integration", () => {
       NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
       const interruptsPath = `${scriptPath}.interrupts`;
       NodeFS.rmSync(interruptsPath, { force: true });
+      const isWindows = (yield* HostProcessPlatform) === "win32";
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           NodeFS.rmSync(scriptPath, { force: true });
           NodeFS.rmSync(interruptsPath, { force: true });
+          removePreparedPeerBinary(isWindows);
         }),
       );
 
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-codex-queued-stop"),
-        binaryPath: peerPath,
+        binaryPath: preparePeerBinary(isWindows),
         cwd: "/tmp",
         runtimeMode: "full-access",
         environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
@@ -916,4 +930,118 @@ describe("CodexSessionRuntime collab integration", () => {
       yield* runtime.close;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  const elicitationCases = [
+    {
+      decision: "accept",
+      response: { action: "accept", content: { approval: "once" } },
+    },
+    {
+      decision: "acceptForSession",
+      response: {
+        action: "accept",
+        _meta: { persist: "session" },
+        content: { approval: "session" },
+      },
+    },
+    {
+      decision: "acceptAlways",
+      response: {
+        action: "accept",
+        _meta: { persist: "always" },
+        content: { approval: "always" },
+      },
+    },
+    { decision: "decline", response: { action: "decline" } },
+    { decision: "cancel", response: { action: "cancel" } },
+  ] satisfies ReadonlyArray<{
+    readonly decision: ProviderApprovalDecision;
+    readonly response: Record<string, unknown>;
+  }>;
+
+  for (const { decision, response } of elicitationCases) {
+    it.live(`returns the MCP elicitation ${decision} response to Codex`, () =>
+      Effect.gen(function* () {
+        const scriptedRequest = {
+          id: 7001,
+          method: "mcpServer/elicitation/request",
+          params: {
+            mode: "form",
+            message: "Allow ChatGPT to use Safari?",
+            serverName: "computer-use",
+            threadId: ROOT,
+            turnId: wireFixture.responses.turnStart.turn.id,
+            _meta: { app_name: "Safari", persist: ["session", "always"] },
+            requestedSchema: {
+              type: "object",
+              properties: {
+                approval: {
+                  type: "string",
+                  enum: ["once", "session", "always"],
+                },
+              },
+              required: ["approval"],
+            },
+          },
+        };
+        const script = {
+          rootThreadId: ROOT,
+          holdTurnOpen: true,
+          completeTurnOnServerResponse: true,
+          notifications: [],
+          serverRequests: [scriptedRequest],
+        };
+        const responsesPath = `${scriptPath}.responses`;
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+        NodeFS.rmSync(responsesPath, { force: true });
+        const isWindows = (yield* HostProcessPlatform) === "win32";
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            NodeFS.rmSync(scriptPath, { force: true });
+            NodeFS.rmSync(responsesPath, { force: true });
+            removePreparedPeerBinary(isWindows);
+          }),
+        );
+
+        const runtime = yield* makeCodexSessionRuntime({
+          threadId: ThreadId.make("thread-codex-mcp-elicitation"),
+          binaryPath: preparePeerBinary(isWindows),
+          cwd: "/tmp",
+          runtimeMode: "auto",
+          environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+        });
+        const approvalRequested = yield* Deferred.make<ProviderEvent>();
+        const turnCompleted = yield* Deferred.make<void>();
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) =>
+            event.method === "mcpServer/elicitation/request"
+              ? Deferred.succeed(approvalRequested, event).pipe(Effect.asVoid)
+              : event.method === "turn/completed"
+                ? Deferred.succeed(turnCompleted, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+
+        yield* runtime.start();
+        yield* runtime.sendTurn({ input: "Open Safari" });
+        const approval = yield* Deferred.await(approvalRequested);
+        assert.equal(approval.requestKind, "mcp-elicitation");
+        assert.isDefined(approval.requestId);
+        if (approval.requestId === undefined) return;
+
+        yield* runtime.respondToRequest(approval.requestId, decision);
+        yield* Deferred.await(turnCompleted);
+
+        const recordedResponse = yield* decodeMcpElicitationResponse(
+          NodeFS.readFileSync(responsesPath, "utf8"),
+        );
+        assert.equal(recordedResponse.id, scriptedRequest.id);
+        assert.deepEqual(recordedResponse.result, response);
+
+        yield* runtime.close;
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+  }
 });

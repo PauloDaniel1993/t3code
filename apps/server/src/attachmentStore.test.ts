@@ -8,10 +8,14 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   attachmentRelativePath,
   createAttachmentId,
+  createPendingAttachmentId,
   isAttachmentOwnedByThread,
+  parseAttachmentUuid,
+  planAttachmentClaim,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPath,
   resolveAttachmentPathById,
+  sweepStalePendingAttachments,
 } from "./attachmentStore.ts";
 
 const THREAD_ONE_ID = "thread-1-00000000-0000-4000-8000-000000000001";
@@ -45,6 +49,16 @@ describe("attachmentStore", () => {
 
   it("returns null for thread ids that require lowercase normalization", () => {
     expect(createAttachmentId("Thread.Foo")).toBeNull();
+  });
+
+  it("reserves the pending attachment segment without weakening canonical thread ids", () => {
+    const pendingId = createPendingAttachmentId();
+    expect(parseThreadSegmentFromAttachmentId(pendingId)).toBe("pending");
+    expect(parseAttachmentUuid(pendingId)).toMatch(/^[a-f0-9-]{36}$/);
+    expect(createAttachmentId("pending")).toBeNull();
+    expect(parseThreadSegmentFromAttachmentId(createAttachmentId("pending_thread") ?? "")).toBe(
+      "pending_thread",
+    );
   });
 
   it("uses implementation-owned extensions and ignores traversal-shaped display names", () => {
@@ -198,6 +212,77 @@ describe("attachmentStore", () => {
         resolveAttachmentPathById({ attachmentsDir, attachmentId: "thread-1-missing" }),
       ).toBeNull();
       expect(resolveAttachmentPathById({ attachmentsDir, attachmentId: "../outside" })).toBeNull();
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("plans pending attachment claims with direct filename lookups", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-claim-"),
+    );
+    try {
+      const uuid = "00000000-0000-4000-8000-000000000001";
+      const pendingPath = NodePath.join(attachmentsDir, `pending-${uuid}.png`);
+      NodeFS.writeFileSync(pendingPath, Buffer.from("pixels"));
+
+      const claim = planAttachmentClaim({
+        attachmentsDir,
+        threadId: "thread-1",
+        attachmentId: `pending-${uuid}`,
+      });
+      expect(claim).toMatchObject({
+        ok: true,
+        currentPath: pendingPath,
+      });
+      if (!claim.ok) {
+        return;
+      }
+      expect(parseThreadSegmentFromAttachmentId(claim.finalId)).toBe("thread-1");
+      expect(parseAttachmentUuid(claim.finalId)).not.toBe(uuid);
+      expect(claim.finalPath).toBe(NodePath.join(attachmentsDir, `${claim.finalId}.png`));
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects lossy thread ids before planning a pending claim", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-ownership-"),
+    );
+    try {
+      const attachmentId = "a-b-00000000-0000-4000-8000-000000000003";
+      NodeFS.writeFileSync(NodePath.join(attachmentsDir, `${attachmentId}.png`), "pixels");
+
+      expect(planAttachmentClaim({ attachmentsDir, threadId: "a b", attachmentId })).toEqual({
+        ok: false,
+        reason: "invalid thread id",
+      });
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("removes expired pending and partial files without touching thread attachments", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-sweep-"),
+    );
+    try {
+      const now = 1_800_000_000_000;
+      const oldTimeSeconds = (now - 2 * 24 * 60 * 60 * 1000) / 1000;
+      const uuid = "00000000-0000-4000-8000-000000000002";
+      const pendingPath = NodePath.join(attachmentsDir, `pending-${uuid}.png`);
+      const threadPath = NodePath.join(attachmentsDir, `thread-1-${uuid}.png`);
+      const partialPath = NodePath.join(attachmentsDir, `${uuid}.part`);
+      for (const filePath of [pendingPath, threadPath, partialPath]) {
+        NodeFS.writeFileSync(filePath, Buffer.from("pixels"));
+        NodeFS.utimesSync(filePath, oldTimeSeconds, oldTimeSeconds);
+      }
+
+      expect(sweepStalePendingAttachments({ attachmentsDir, nowMs: now })).toEqual({ deleted: 2 });
+      expect(NodeFS.existsSync(pendingPath)).toBe(false);
+      expect(NodeFS.existsSync(partialPath)).toBe(false);
+      expect(NodeFS.existsSync(threadPath)).toBe(true);
     } finally {
       NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
     }

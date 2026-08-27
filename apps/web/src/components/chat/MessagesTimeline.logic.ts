@@ -1100,6 +1100,13 @@ export function deriveMessagesTimelineRows(input: {
           }
 
           if (hiddenEntries.length > 0) {
+            const latestToolEntry = visibleGroupedEntries.findLast(workLogEntryIsToolLike);
+            const onlyTaskEntries = visibleGroupedEntries.every(workLogEntryIsTaskLike);
+            const hasHiddenTaskFailure = hiddenEntries.some(
+              (entry) =>
+                workLogEntryIsTaskLike(entry) && workEntryDisplayIndicatesToolFailure(entry),
+            );
+
             nextRows.push({
               kind: "work-toggle",
               id: `work-toggle:${timelineEntry.id}`,
@@ -1110,10 +1117,15 @@ export function deriveMessagesTimelineRows(input: {
               onlyToolEntries: visibleGroupedEntries.every(workLogEntryIsToolLike),
               summary: null,
               summaryKind: null,
-              hasFailure: hiddenEntries.some((entry) =>
-                workEntryDisplayIndicatesToolFailure(entry),
-              ),
-              onlyTaskEntries: visibleGroupedEntries.every(workLogEntryIsTaskLike),
+              hasFailure:
+                hasHiddenTaskFailure ||
+                (latestToolEntry !== undefined &&
+                  workEntryDisplayIndicatesToolFailure(latestToolEntry) &&
+                  hiddenEntries.some(
+                    (entry) =>
+                      workLogEntryIsToolLike(entry) && workEntryDisplayIndicatesToolFailure(entry),
+                  )),
+              onlyTaskEntries,
             });
           }
         }

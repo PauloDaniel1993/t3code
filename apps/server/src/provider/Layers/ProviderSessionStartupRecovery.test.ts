@@ -237,6 +237,7 @@ const makeHarness = Effect.fn("makeStartupRecoveryHarness")(function* (input?: {
     getCapabilities: () => Effect.die("not used"),
     getInstanceInfo: () => Effect.die("not used"),
     rollbackConversation: () => Effect.die("not used"),
+    uploadFeedback: () => Effect.die("not used"),
     streamEvents: Stream.empty,
   } satisfies ProviderService["Service"];
 

@@ -11,6 +11,7 @@ import {
   resolveMarkdownFileLinkTarget,
   rewriteMarkdownFileHrefForRendering,
   rewriteMarkdownFileUriHref,
+  shouldOpenMarkdownFileLinkInBrowserByDefault,
   shouldOpenMarkdownFileLinkInEditor,
 } from "./markdown-links";
 
@@ -100,6 +101,15 @@ describe("shouldOpenMarkdownFileLinkInEditor", () => {
     expect(
       shouldOpenMarkdownFileLinkInEditor({ metaKey: true, ctrlKey: false }, "Linux x86_64"),
     ).toBe(false);
+  });
+});
+
+describe("shouldOpenMarkdownFileLinkInBrowserByDefault", () => {
+  it("keeps PDFs browser-first while source files open in the file viewer", () => {
+    expect(shouldOpenMarkdownFileLinkInBrowserByDefault("report.pdf")).toBe(true);
+    expect(shouldOpenMarkdownFileLinkInBrowserByDefault("report.PDF?download=1")).toBe(true);
+    expect(shouldOpenMarkdownFileLinkInBrowserByDefault("report.html")).toBe(false);
+    expect(shouldOpenMarkdownFileLinkInBrowserByDefault("report.xml")).toBe(false);
   });
 });
 
@@ -231,6 +241,20 @@ describe("resolveMarkdownFileLinkTarget", () => {
       basename: "My Folder",
     });
   });
+
+  it.each(["md", "html", "xml"])(
+    "resolves a bare spaced .%s filename from the markdown renderer",
+    (extension) => {
+      const href = renderMarkdownLinkHref(`[checklist](<Updated cutover checklist.${extension}>)`);
+
+      expect(href).toBe(`Updated%20cutover%20checklist.${extension}`);
+      expect(resolveMarkdownFileLinkMeta(href, "/repo/project")).toMatchObject({
+        targetPath: `/repo/project/Updated cutover checklist.${extension}`,
+        workspaceRelativePath: `Updated cutover checklist.${extension}`,
+        basename: `Updated cutover checklist.${extension}`,
+      });
+    },
+  );
 
   it("formats tooltip display paths relative to the cwd for slash-prefixed windows paths", () => {
     expect(

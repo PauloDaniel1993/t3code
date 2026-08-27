@@ -145,6 +145,7 @@ function createProviderServiceHarness() {
       });
     },
     rollbackConversation: () => unsupported(),
+    uploadFeedback: () => unsupported(),
     get streamEvents() {
       // The acknowledgment segment is pulled only after runForEach has
       // delivered the preceding event to the ingestion worker's enqueue callback.

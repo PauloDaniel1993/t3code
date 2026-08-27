@@ -425,7 +425,7 @@ describe("AcpSessionRuntime", () => {
     ),
   );
 
-  it.effect("suppresses generic placeholder tool updates until completion", () =>
+  it.effect("emits status-only tool updates through completion", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
       yield* runtime.start();
@@ -435,13 +435,22 @@ describe("AcpSessionRuntime", () => {
       });
       expect(promptResult).toMatchObject({ stopReason: "end_turn" });
 
-      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 1)));
-      expect(notes.map((note) => note._tag)).toEqual(["ToolCallUpdated"]);
-      const toolCall = notes[0];
-      expect(toolCall?._tag).toBe("ToolCallUpdated");
-      if (toolCall?._tag === "ToolCallUpdated") {
-        expect(toolCall.toolCall.status).toBe("completed");
-        expect(toolCall.toolCall.title).toBe("Read file");
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 3)));
+      expect(notes.map((note) => note._tag)).toEqual([
+        "ToolCallUpdated",
+        "ToolCallUpdated",
+        "ToolCallUpdated",
+      ]);
+      const toolCalls = notes.flatMap((note) =>
+        note._tag === "ToolCallUpdated" ? [note.toolCall] : [],
+      );
+      expect(toolCalls.map((toolCall) => toolCall.status)).toEqual([
+        "pending",
+        "inProgress",
+        "completed",
+      ]);
+      for (const toolCall of toolCalls) {
+        expect(toolCall.title).toBe("Read file");
       }
     }).pipe(
       Effect.provide(
@@ -451,6 +460,56 @@ describe("AcpSessionRuntime", () => {
             args: mockAgentArgs,
             env: {
               T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS: "1",
+            },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("coalesces cumulative tool progress once and preserves the terminal snapshot", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+
+      const promptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "run a chatty tool" }],
+      });
+      expect(promptResult).toMatchObject({ stopReason: "end_turn" });
+
+      const events = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 4)));
+      const toolCalls = events.flatMap((event) =>
+        event._tag === "ToolCallUpdated" ? [event.toolCall] : [],
+      );
+      expect(toolCalls).toHaveLength(4);
+      expect(toolCalls.map((toolCall) => toolCall.status)).toEqual([
+        "pending",
+        "inProgress",
+        "inProgress",
+        "completed",
+      ]);
+      expect(toolCalls[1]?.data).toMatchObject({
+        content: [{ content: { text: "x" } }],
+      });
+      expect(toolCalls[2]?.data).toMatchObject({
+        content: [{ content: { text: "x".repeat(11) } }],
+      });
+      expect(toolCalls[3]?.data).toMatchObject({
+        content: [{ content: { text: "x".repeat(12) } }],
+      });
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: {
+              T3_ACP_EMIT_CUMULATIVE_TOOL_PROGRESS: "1",
             },
           },
           cwd: process.cwd(),

@@ -55,6 +55,12 @@ const readMigrationState = Effect.gen(function* () {
     FROM pragma_table_info('projection_thread_messages')
     WHERE name = 'source'
   `;
+  const upstreamThreadColumns = yield* sql<{ readonly name: string }>`
+    SELECT name
+    FROM pragma_table_info('projection_threads')
+    WHERE name IN ('linked_pull_request_json', 'unsettled_at')
+    ORDER BY name ASC
+  `;
   const baseLedger = yield* sql<{
     readonly migration_id: number;
     readonly name: string;
@@ -78,6 +84,7 @@ const readMigrationState = Effect.gen(function* () {
     threadTaskColumns,
     threadTaskIndexes,
     messageSourceColumns,
+    upstreamThreadColumns,
     baseLedger,
     forkLedger,
     recoveryColumns,
@@ -100,6 +107,10 @@ const assertForkMigrationApplied = (state: Effect.Success<typeof readMigrationSt
     { name: "idx_projection_threads_parent_thread_id" },
   ]);
   assert.deepStrictEqual(state.messageSourceColumns, [{ name: "source" }]);
+  assert.deepStrictEqual(state.upstreamThreadColumns, [
+    { name: "linked_pull_request_json" },
+    { name: "unsettled_at" },
+  ]);
   assert.deepStrictEqual(state.forkLedger, [
     {
       migration_id: 1,

@@ -1,14 +1,24 @@
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import {
+  type ChatImageAttachment,
   type ClientOrchestrationCommand,
   type IsoDateTime,
   type OrchestrationCommand,
+  type UploadChatAttachment,
   OrchestrationDispatchCommandError,
 } from "@t3tools/contracts";
 
 import { stageValidatedAttachments, type AttachmentStage } from "../attachmentStaging.ts";
-import { validateUploadAttachments } from "../attachmentValidation.ts";
+import {
+  PENDING_ATTACHMENT_THREAD_SEGMENT,
+  parseThreadSegmentFromAttachmentId,
+  resolveAttachmentPath,
+  resolveAttachmentPathById,
+} from "../attachmentStore.ts";
+import { validateUploadAttachments, type ValidatedAttachment } from "../attachmentValidation.ts";
+import { ServerConfig } from "../config.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export const canonicalizeClientCommandTimestamps = (
@@ -44,7 +54,69 @@ export interface NormalizedDispatchCommand {
   readonly attachmentStage?: AttachmentStage;
 }
 
-export const normalizeDispatchCommand = Effect.fn("normalizeDispatchCommand")(function* (
+function attachmentError(name: string, detail: string, cause?: unknown) {
+  return new OrchestrationDispatchCommandError({
+    message: `Attachment '${name}' cannot be sent: ${detail}.`,
+    ...(cause !== undefined ? { cause } : {}),
+  });
+}
+
+const validatePendingImageAttachment = Effect.fn("Normalizer.validatePendingImageAttachment")(
+  function* (attachment: ChatImageAttachment, attachmentsDir: string) {
+    if (parseThreadSegmentFromAttachmentId(attachment.id) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
+      return yield* attachmentError(attachment.name, "attachment must be a pending upload");
+    }
+
+    const currentPath = resolveAttachmentPathById({
+      attachmentsDir,
+      attachmentId: attachment.id,
+    });
+    if (!currentPath) {
+      return yield* attachmentError(attachment.name, "attachment not found (removed or expired)");
+    }
+
+    const normalizedAttachment = {
+      ...attachment,
+      mimeType: attachment.mimeType.toLowerCase(),
+    };
+    const expectedPath = resolveAttachmentPath({
+      attachmentsDir,
+      attachment: normalizedAttachment,
+    });
+    if (expectedPath !== currentPath) {
+      return yield* attachmentError(attachment.name, "image type does not match the upload");
+    }
+
+    const fileSystem = yield* FileSystem.FileSystem;
+    const info = yield* fileSystem
+      .stat(currentPath)
+      .pipe(
+        Effect.mapError((cause) => attachmentError(attachment.name, "attachment not found", cause)),
+      );
+    if (info.type !== "File" || Number(info.size) !== attachment.sizeBytes) {
+      return yield* attachmentError(attachment.name, "stored size does not match");
+    }
+
+    const bytes = yield* fileSystem
+      .readFile(currentPath)
+      .pipe(
+        Effect.mapError((cause) => attachmentError(attachment.name, "attachment not found", cause)),
+      );
+    if (bytes.byteLength !== attachment.sizeBytes) {
+      return yield* attachmentError(attachment.name, "stored size does not match");
+    }
+
+    return {
+      type: "image",
+      name: attachment.name,
+      mimeType: normalizedAttachment.mimeType,
+      sizeBytes: bytes.byteLength,
+      bytes,
+    } satisfies ValidatedAttachment;
+  },
+);
+
+export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchCommand")(function* (
   command: ClientOrchestrationCommand,
 ) {
   const receivedAt = DateTime.formatIso(yield* DateTime.now);
@@ -112,11 +184,41 @@ export const normalizeDispatchCommand = Effect.fn("normalizeDispatchCommand")(fu
     return { command: canonicalCommand as OrchestrationCommand };
   }
 
-  // Validation deliberately completes for the entire array before this function
-  // allocates any attachment IDs or performs any filesystem operation.
-  const validatedAttachments = yield* validateUploadAttachments(
-    canonicalCommand.message.attachments,
-  );
+  const serverConfig = yield* ServerConfig;
+  const inlineAttachments: UploadChatAttachment[] = [];
+  const validatedByIndex: Array<ValidatedAttachment | null> = [];
+
+  // Pending uploads require filesystem reads, but no attachment id is
+  // allocated and no file is written until every attachment has validated.
+  for (const attachment of canonicalCommand.message.attachments) {
+    if ("dataUrl" in attachment) {
+      inlineAttachments.push(attachment);
+      validatedByIndex.push(null);
+    } else {
+      validatedByIndex.push(
+        yield* validatePendingImageAttachment(attachment, serverConfig.attachmentsDir),
+      );
+    }
+  }
+
+  const validatedInlineAttachments = yield* validateUploadAttachments(inlineAttachments);
+  let inlineIndex = 0;
+  const validatedAttachments: ValidatedAttachment[] = [];
+  for (const attachment of validatedByIndex) {
+    if (attachment !== null) {
+      validatedAttachments.push(attachment);
+      continue;
+    }
+    const inlineAttachment = validatedInlineAttachments[inlineIndex];
+    inlineIndex += 1;
+    if (!inlineAttachment) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Validated attachment order did not match the client command.",
+      });
+    }
+    validatedAttachments.push(inlineAttachment);
+  }
+
   if (validatedAttachments.length === 0) {
     return {
       command: {
@@ -144,5 +246,5 @@ export const normalizeDispatchCommand = Effect.fn("normalizeDispatchCommand")(fu
       },
     } satisfies OrchestrationCommand,
     attachmentStage: staged.stage,
-  };
+  } satisfies NormalizedDispatchCommand;
 });

@@ -54,6 +54,10 @@ export interface Preferences {
   readonly threadTasksEnabled?: boolean;
   /** JSON-safe form of the task-agent read-state map. */
   readonly taskAgentReadMarkers?: TaskAgentReadMarkers;
+  /** Undefined preserves the default expanded Settled shelf. */
+  readonly threadListV2SettledShelfExpanded?: boolean;
+  /** Undefined preserves the default collapsed Snoozed shelf. */
+  readonly threadListV2SnoozedShelfExpanded?: boolean;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -159,6 +163,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     planModeEnabled?: boolean;
     threadTasksEnabled?: boolean;
     taskAgentReadMarkers?: TaskAgentReadMarkers;
+    threadListV2SettledShelfExpanded?: boolean;
+    threadListV2SnoozedShelfExpanded?: boolean;
   } = {};
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
@@ -238,6 +244,12 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     !Array.isArray(parsed.taskAgentReadMarkers)
   ) {
     preferences.taskAgentReadMarkers = normalizeTaskAgentReadMarkers(parsed.taskAgentReadMarkers);
+  }
+  if (typeof parsed.threadListV2SettledShelfExpanded === "boolean") {
+    preferences.threadListV2SettledShelfExpanded = parsed.threadListV2SettledShelfExpanded;
+  }
+  if (typeof parsed.threadListV2SnoozedShelfExpanded === "boolean") {
+    preferences.threadListV2SnoozedShelfExpanded = parsed.threadListV2SnoozedShelfExpanded;
   }
   return preferences;
 }
