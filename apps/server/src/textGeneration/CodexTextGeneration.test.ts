@@ -1,3 +1,4 @@
+// @effect-diagnostics preferSchemaOverJson:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -7,6 +8,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { createModelSelection } from "@t3tools/shared/model";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { expect } from "vite-plus/test";
 
 import { CodexSettings, ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
@@ -48,8 +50,120 @@ function makeFakeCodexBinary(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
-    const codexPath = path.join(binDir, "codex");
+    const windows = (yield* HostProcessPlatform) === "win32";
+    const codexPath = path.join(binDir, windows ? "codex.cmd" : "codex");
     yield* fs.makeDirectory(binDir, { recursive: true });
+
+    if (windows) {
+      const runnerPath = path.join(binDir, "fake-codex.cjs");
+      yield* fs.writeFileString(
+        runnerPath,
+        [
+          'const fs = require("node:fs");',
+          "const args = process.argv.slice(2);",
+          'let outputPath = "";',
+          "let seenImage = false;",
+          'let seenServiceTier = "";',
+          'let seenReasoningEffort = "";',
+          "for (let index = 0; index < args.length; index += 1) {",
+          '  if (args[index] === "--image") {',
+          "    seenImage = Boolean(args[index + 1]);",
+          "    index += 1;",
+          "    continue;",
+          "  }",
+          '  if (args[index] === "--config") {',
+          '    const value = args[index + 1] ?? "";',
+          '    if (value.startsWith("service_tier=")) seenServiceTier = value;',
+          '    if (value.startsWith("model_reasoning_effort=")) seenReasoningEffort = value;',
+          "    index += 1;",
+          "    continue;",
+          "  }",
+          '  if (args[index] === "--output-last-message") {',
+          '    outputPath = args[index + 1] ?? "";',
+          "    index += 1;",
+          "  }",
+          "}",
+          'const stdinContent = fs.readFileSync(0, "utf8");',
+          ...(input.requireArg !== undefined
+            ? [
+                `if (!args.includes(${JSON.stringify(input.requireArg)})) {`,
+                `  process.stderr.write(${JSON.stringify(`missing arg: ${input.requireArg}\n`)});`,
+                "  process.exit(8);",
+                "}",
+              ]
+            : []),
+          ...(input.forbidArg !== undefined
+            ? [
+                `if (args.includes(${JSON.stringify(input.forbidArg)})) {`,
+                `  process.stderr.write(${JSON.stringify(`forbidden arg: ${input.forbidArg}\n`)});`,
+                "  process.exit(9);",
+                "}",
+              ]
+            : []),
+          ...(input.requireImage
+            ? [
+                "if (!seenImage) {",
+                '  process.stderr.write("missing --image input\\n");',
+                "  process.exit(2);",
+                "}",
+              ]
+            : []),
+          ...(input.requireServiceTier
+            ? [
+                `if (seenServiceTier !== ${JSON.stringify(`service_tier="${input.requireServiceTier}"`)}) {`,
+                "  process.stderr.write(`unexpected service tier config: ${seenServiceTier}\\n`);",
+                "  process.exit(5);",
+                "}",
+              ]
+            : []),
+          ...(input.requireReasoningEffort !== undefined
+            ? [
+                `if (seenReasoningEffort !== ${JSON.stringify(`model_reasoning_effort="${input.requireReasoningEffort}"`)}) {`,
+                "  process.stderr.write(`unexpected reasoning effort config: ${seenReasoningEffort}\\n`);",
+                "  process.exit(6);",
+                "}",
+              ]
+            : []),
+          ...(input.forbidReasoningEffort
+            ? [
+                "if (seenReasoningEffort) {",
+                "  process.stderr.write(`reasoning effort config should be omitted: ${seenReasoningEffort}\\n`);",
+                "  process.exit(7);",
+                "}",
+              ]
+            : []),
+          ...(input.stdinMustContain !== undefined
+            ? [
+                `if (!stdinContent.includes(${JSON.stringify(input.stdinMustContain)})) {`,
+                '  process.stderr.write("stdin missing expected content\\n");',
+                "  process.exit(3);",
+                "}",
+              ]
+            : []),
+          ...(input.stdinMustNotContain !== undefined
+            ? [
+                `if (stdinContent.includes(${JSON.stringify(input.stdinMustNotContain)})) {`,
+                '  process.stderr.write("stdin contained forbidden content\\n");',
+                "  process.exit(4);",
+                "}",
+              ]
+            : []),
+          ...(input.stderr !== undefined
+            ? [`process.stderr.write(${JSON.stringify(`${input.stderr}\n`)});`]
+            : []),
+          `if (outputPath) fs.writeFileSync(outputPath, ${JSON.stringify(input.output)}, "utf8");`,
+          `process.exit(${input.exitCode ?? 0});`,
+          "",
+        ].join("\n"),
+      );
+      yield* fs.writeFileString(
+        codexPath,
+        ["@echo off", `"${process.execPath}" "${runnerPath}" %*`, "exit /b %errorlevel%", ""].join(
+          "\r\n",
+        ),
+      );
+      return codexPath;
+    }
 
     yield* fs.writeFileString(
       codexPath,
@@ -222,8 +336,8 @@ it.effect("keeps Codex secondary materialization image-only", () =>
       path,
       attachments: [
         {
-          type: "document",
-          id: "codex-secondary-document",
+          type: "file",
+          id: "codex-secondary-pdf",
           name: "requirements.pdf",
           mimeType: "application/pdf",
           sizeBytes: 24,

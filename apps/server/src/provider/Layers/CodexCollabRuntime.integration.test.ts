@@ -54,27 +54,9 @@ const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 type WireNotification = (typeof wireFixture.notifications)[number];
 
-function isChildTurnStarted(entry: WireNotification, child: string): boolean {
-  return (
-    entry.method === "turn/started" && (entry.params as { threadId?: string }).threadId === child
-  );
-}
-
 function isChildTurnCompleted(entry: WireNotification, child: string): boolean {
   return (
     entry.method === "turn/completed" && (entry.params as { threadId?: string }).threadId === child
-  );
-}
-
-function isChildRegistration(entry: WireNotification, child: string): boolean {
-  const item = (entry.params as { item?: { type?: string; agentThreadId?: string } }).item;
-  return item?.type === "subAgentActivity" && item.agentThreadId === child;
-}
-
-function isChildTokenUsage(entry: WireNotification, child: string): boolean {
-  return (
-    entry.method === "thread/tokenUsage/updated" &&
-    (entry.params as { threadId?: string }).threadId === child
   );
 }
 
@@ -203,6 +185,81 @@ function buildScript() {
       ...extras,
     ],
   };
+}
+
+function capturedStartedActivity(childId = CHILD_A) {
+  const captured = wireFixture.notifications.find((entry) => {
+    const item = (entry.params as { item?: { type?: string; kind?: string } }).item;
+    return item?.type === "subAgentActivity" && item.kind === "started";
+  });
+  assert.isDefined(captured);
+  return {
+    ...captured,
+    params: {
+      ...captured.params,
+      item: {
+        ...captured.params.item,
+        agentThreadId: childId,
+        agentPath: "/root/model-check",
+      },
+    },
+  };
+}
+
+function capturedSpawnedThread(childId = CHILD_A) {
+  const captured = wireFixture.notifications.find((entry) => entry.method === "thread/started");
+  assert.isDefined(captured);
+  return {
+    ...captured,
+    params: {
+      thread: {
+        ...captured.params.thread,
+        id: childId,
+        sessionId: childId,
+        parentThreadId: ROOT,
+        agentNickname: "model-check",
+        agentRole: "verifier",
+        source: {
+          subAgent: {
+            thread_spawn: {
+              agent_nickname: "model-check",
+              agent_path: "/root/model-check",
+              agent_role: "verifier",
+              depth: 1,
+              parent_thread_id: ROOT,
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+function childSettings(threadId: string, model: string, effort: string) {
+  return {
+    method: "thread/settings/updated",
+    params: {
+      threadId,
+      threadSettings: {
+        approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
+        collaborationMode: { mode: "default", settings: { model } },
+        cwd: "/workspace/repo",
+        effort,
+        model,
+        modelProvider: "openai",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      },
+    },
+  };
+}
+
+function readRecordedRequests() {
+  return NodeFS.readFileSync(`${scriptPath}.requests`, "utf8")
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { method: string; params: Record<string, unknown> });
 }
 
 const scriptPath = NodePath.join(import.meta.dirname, "../testFixtures/.collab-script.json");
@@ -426,6 +483,240 @@ describe("CodexAdapter native collab mapping", () => {
 });
 
 describe("CodexSessionRuntime collab integration", () => {
+  it.effect("looks up child model metadata once after activity registration", () =>
+    Effect.gen(function* () {
+      const script = {
+        rootThreadId: ROOT,
+        recordRequests: true,
+        notifications: [
+          capturedStartedActivity(),
+          capturedStartedActivity(),
+          {
+            ...capturedStartedActivity(CHILD_B),
+            params: {
+              ...capturedStartedActivity(CHILD_B).params,
+              item: { ...capturedStartedActivity(CHILD_B).params.item, kind: "interacted" },
+            },
+          },
+          { method: "thread/closed", params: { threadId: CHILD_B } },
+          capturedSpawnedThread(ROOT),
+        ],
+        childResumeSnapshots: {
+          [CHILD_A]: { model: "gpt-5.6-luna", reasoningEffort: "low" },
+        },
+      };
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+      NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          NodeFS.rmSync(scriptPath, { force: true });
+          NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+        }),
+      );
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-collab-model-activity"),
+        binaryPath: peerPath,
+        cwd: "/tmp",
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const metadataFiber = yield* runtime.events.pipe(
+        Stream.filter(
+          (event) =>
+            event.method === "collabAgent/metadataUpdated" &&
+            (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+
+      const session = yield* runtime.start();
+      assert.equal(session.model, "gpt-5.6-sol");
+      yield* runtime.sendTurn({ input: "start one child" });
+      const metadataEvents = Array.from(yield* Fiber.join(metadataFiber));
+      assert.deepInclude(metadataEvents[0]?.payload, {
+        agentThreadId: CHILD_A,
+        model: "gpt-5.6-luna",
+        effort: "low",
+      });
+      assert.deepEqual(readRecordedRequests(), [
+        {
+          method: "thread/resume",
+          params: { threadId: CHILD_A, excludeTurns: true },
+        },
+      ]);
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps child settings and reroutes newer than the resume snapshot", () =>
+    Effect.gen(function* () {
+      const statusChanged = wireFixture.notifications.find(
+        (entry) =>
+          entry.method === "thread/status/changed" &&
+          (entry.params as { threadId?: string }).threadId === CHILD_A,
+      );
+      assert.isDefined(statusChanged);
+      const script = {
+        rootThreadId: ROOT,
+        recordRequests: true,
+        notifications: [
+          childSettings(CHILD_A, "child-before", "medium"),
+          capturedSpawnedThread(),
+          childSettings(CHILD_A, "child-after", "high"),
+          {
+            method: "model/rerouted",
+            params: {
+              threadId: CHILD_A,
+              turnId: `${CHILD_A}-turn`,
+              fromModel: "child-after",
+              toModel: "child-rerouted",
+              reason: "highRiskCyberActivity",
+            },
+          },
+          {
+            method: "model/rerouted",
+            params: {
+              threadId: ROOT,
+              turnId: `${ROOT}-turn`,
+              fromModel: "gpt-5.6-sol",
+              toModel: "root-rerouted",
+              reason: "highRiskCyberActivity",
+            },
+          },
+        ],
+        childResumeSnapshots: {
+          [CHILD_A]: {
+            model: "stale-snapshot",
+            reasoningEffort: "low",
+            notifications: [statusChanged],
+          },
+        },
+      };
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+      NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          NodeFS.rmSync(scriptPath, { force: true });
+          NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+        }),
+      );
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-collab-model-spawn"),
+        binaryPath: peerPath,
+        cwd: "/tmp",
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const eventsFiber = yield* runtime.events.pipe(
+        Stream.takeUntil(
+          (event) =>
+            event.method === "collabAgent/statusChanged" &&
+            (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
+        ),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "start one spawned child" });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const started = events.find((event) => event.method === "collabAgent/started");
+      assert.deepInclude(started?.payload, {
+        agentThreadId: CHILD_A,
+        model: "child-before",
+        effort: "medium",
+      });
+      const childStatus = events.find((event) => event.method === "collabAgent/statusChanged");
+      assert.deepInclude(childStatus?.payload, {
+        agentThreadId: CHILD_A,
+        model: "child-rerouted",
+        effort: "high",
+      });
+      assert.isTrue(
+        events.some(
+          (event) =>
+            event.method === "model/rerouted" &&
+            (event.payload as { threadId?: string }).threadId === ROOT,
+        ),
+        "the root reroute must stay on the parent path",
+      );
+      assert.isFalse(
+        events.some(
+          (event) =>
+            (event.method === "thread/settings/updated" || event.method === "model/rerouted") &&
+            (event.payload as { threadId?: string }).threadId === CHILD_A,
+        ),
+        "child metadata notifications must not leak to the parent path",
+      );
+      assert.equal(readRecordedRequests().length, 1);
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not delay the parent turn when the child lookup fails", () =>
+    Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          NodeFS.rmSync(scriptPath, { force: true });
+          NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+        }),
+      );
+      for (const [name, childSnapshot] of [
+        ["hang", { hang: true }],
+        ["error", { error: "child unavailable" }],
+      ] as const) {
+        yield* Effect.gen(function* () {
+          const marker = `lookup-${name}`;
+          const script = {
+            rootThreadId: ROOT,
+            recordRequests: true,
+            resumeRequestMarker: marker,
+            notifications: [capturedStartedActivity()],
+            childResumeSnapshots: { [CHILD_A]: childSnapshot },
+          };
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+          NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+
+          const runtime = yield* makeCodexSessionRuntime({
+            threadId: ThreadId.make(`thread-collab-model-${name}`),
+            binaryPath: peerPath,
+            cwd: "/tmp",
+            runtimeMode: "full-access",
+            environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+          });
+          const eventsFiber = yield* runtime.events.pipe(
+            Stream.takeUntil(
+              (event) =>
+                event.method === "serverRequest/resolved" &&
+                (event.payload as { requestId?: string }).requestId === marker,
+            ),
+            Stream.runCollect,
+            Effect.forkScoped,
+          );
+
+          yield* runtime.start();
+          yield* runtime.sendTurn({ input: "finish without child metadata" });
+          const events = Array.from(yield* Fiber.join(eventsFiber));
+          assert.isTrue(events.some((event) => event.method === "turn/completed"));
+          assert.equal(readRecordedRequests().length, 1);
+
+          yield* runtime.close;
+          NodeFS.rmSync(scriptPath, { force: true });
+          NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+        }).pipe(Effect.scoped);
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("replays the captured fan-out into synthetic agent events without child leaks", () =>
     Effect.gen(function* () {
       // @effect-diagnostics-next-line preferSchemaOverJson:off
@@ -589,159 +880,6 @@ describe("CodexSessionRuntime collab integration", () => {
         "child thread/* lifecycle must not appear as parent events",
       );
 
-      yield* runtime.close;
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect("hands a legacy task start to later native registration without duplication", () =>
-    Effect.gen(function* () {
-      const registration = capturedNotification(
-        (entry) => isChildRegistration(entry, CHILD_A),
-        "child A registration",
-      );
-      const turnStarted = capturedNotification(
-        (entry) => isChildTurnStarted(entry, CHILD_A),
-        "child A turn/started",
-      );
-      const tokenUsage = capturedNotification(
-        (entry) => isChildTokenUsage(entry, CHILD_A),
-        "child A token usage",
-      );
-      const turnCompleted = capturedNotification(
-        (entry) => isChildTurnCompleted(entry, CHILD_A),
-        "child A turn/completed",
-      );
-      const script = {
-        rootThreadId: ROOT,
-        notifications: [
-          legacyCollabNotification(CHILD_A, "call_legacy_then_native_start", "running"),
-          registration,
-          turnStarted,
-          retryableChildError(CHILD_A),
-          tokenUsage,
-          childItemNotification(CHILD_A, "legacy-first-child-command"),
-          turnCompleted,
-          legacyCollabNotification(CHILD_A, "call_legacy_then_native_done", "completed"),
-        ],
-      };
-
-      // @effect-diagnostics-next-line preferSchemaOverJson:off
-      NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
-      const isWindows = (yield* HostProcessPlatform) === "win32";
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          NodeFS.rmSync(scriptPath, { force: true });
-          removePreparedPeerBinary(isWindows);
-        }),
-      );
-
-      const runtime = yield* makeCodexSessionRuntime({
-        threadId: ThreadId.make("thread-collab-legacy-first"),
-        binaryPath: preparePeerBinary(isWindows),
-        cwd: "/tmp",
-        runtimeMode: "full-access",
-        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
-      });
-      const eventsFiber = yield* runtime.events.pipe(
-        Stream.takeUntil((event) => event.method === "turn/completed"),
-        Stream.runCollect,
-        Effect.forkScoped,
-      );
-
-      yield* runtime.start();
-      yield* runtime.sendTurn({ input: "legacy then native" });
-
-      const events = Array.from(yield* Fiber.join(eventsFiber));
-      const childStarts = events.filter((event) => {
-        const payload = event.payload as
-          | {
-              taskId?: string;
-              agentThreadId?: string;
-              activityKind?: string;
-            }
-          | undefined;
-        return (
-          (event.method === "t3/task/started" && payload?.taskId === CHILD_A) ||
-          (payload?.agentThreadId === CHILD_A &&
-            (event.method === "collabAgent/started" ||
-              (event.method === "collabAgent/activity" && payload.activityKind === "started")))
-        );
-      });
-      assert.equal(childStarts.length, 1, "handoff must preserve exactly one start");
-      assert.equal(childStarts[0]?.method, "t3/task/started");
-      assert.equal(String(childStarts[0]?.turnId), ROOT_TURN);
-      assert.deepEqual(childStarts[0]?.payload, {
-        taskId: CHILD_A,
-        description: "Inspect the collaboration handoff",
-        prompt: "Inspect the collaboration handoff",
-      });
-
-      const legacyTerminals = events.filter(
-        (event) =>
-          event.method === "t3/task/completed" &&
-          (event.payload as { taskId?: string }).taskId === CHILD_A,
-      );
-      assert.deepEqual(legacyTerminals, [], "native ownership suppresses legacy settlement");
-
-      const nativeTerminals = events.filter(
-        (event) =>
-          event.method === "collabAgent/turnCompleted" &&
-          (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
-      );
-      assert.equal(nativeTerminals.length, 1, "the native child settles exactly once");
-      assert.equal(String(nativeTerminals[0]?.threadId), "thread-collab-legacy-first");
-      assert.deepEqual(nativeTerminals[0]?.payload, {
-        agentThreadId: CHILD_A,
-        nickname: "alpha",
-        agentPath: "/root/alpha",
-        turn: (turnCompleted.params as { turn: unknown }).turn,
-      });
-
-      const routedMethods = events
-        .filter(
-          (event) =>
-            (event.payload as { agentThreadId?: string } | undefined)?.agentThreadId === CHILD_A,
-        )
-        .map((event) => event.method);
-      assert.include(routedMethods, "collabAgent/turnStarted");
-      assert.include(routedMethods, "collabAgent/tokenUsage");
-      assert.include(routedMethods, "collabAgent/item");
-      assert.deepEqual(
-        Array.from(
-          new Set(
-            events
-              .filter(
-                (event) =>
-                  (event.payload as { agentThreadId?: string } | undefined)?.agentThreadId ===
-                  CHILD_A,
-              )
-              .map((event) => String(event.threadId)),
-          ),
-        ),
-        ["thread-collab-legacy-first"],
-        "native lifecycle stays owned by the canonical parent session",
-      );
-      assert.equal(
-        events.filter((event) => {
-          const payload = event.payload as {
-            agentThreadId?: string;
-            status?: { type?: string };
-          };
-          return (
-            event.method === "collabAgent/statusChanged" &&
-            payload.agentThreadId === CHILD_A &&
-            payload.status?.type === "systemError"
-          );
-        }).length,
-        0,
-        "retryable errors keep the native child live until turn completion",
-      );
-
-      assert.include(
-        events.map((event) => event.method),
-        "turn/completed",
-        "the root turn must remain visible after child handoff",
-      );
       yield* runtime.close;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

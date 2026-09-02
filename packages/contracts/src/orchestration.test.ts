@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
 import {
@@ -17,14 +18,14 @@ import {
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
-  PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-  UploadChatAttachment,
   OrchestrationSession,
   OrchestrationThread,
   OrchestrationThreadShell,
   ProjectCreateCommand,
   resolveThreadTaskLimits,
+  OrchestrationMessage,
+  ThreadMessageSentPayload,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
@@ -42,6 +43,8 @@ const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPay
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
 const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
+const decodeOrchestrationMessage = Schema.decodeUnknownEffect(OrchestrationMessage);
+const decodeThreadMessageSentPayload = Schema.decodeUnknownEffect(ThreadMessageSentPayload);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
@@ -64,10 +67,6 @@ const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeChatAttachments = Schema.decodeUnknownEffect(Schema.Array(ChatAttachment));
 const encodeChatAttachments = Schema.encodeUnknownEffect(Schema.Array(ChatAttachment));
-const decodeUploadChatAttachment = Schema.decodeUnknownEffect(UploadChatAttachment);
-
-const roundedDataUrlCharLimit = (maxBytes: number): number =>
-  Math.ceil((maxBytes * 4) / (3 * 1_000_000)) * 1_000_000;
 const decodeDispatchCommandError = Schema.decodeUnknownEffect(OrchestrationDispatchCommandError);
 
 it.effect("decodes a dispatch error after its bootstrap thread was deleted", () =>
@@ -254,7 +253,7 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
   }),
 );
 
-it.effect("accepts both inline and uploaded image attachments from clients", () =>
+it.effect("accepts inline images, uploaded images, and uploaded files from clients", () =>
   Effect.gen(function* () {
     const command = yield* decodeClientOrchestrationCommand({
       type: "thread.turn.start",
@@ -279,6 +278,13 @@ it.effect("accepts both inline and uploaded image attachments from clients", () 
             mimeType: "image/png",
             sizeBytes: 3,
           },
+          {
+            type: "file",
+            id: "pending-00000000-0000-4000-8000-000000000002-pdf",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 3,
+          },
         ],
       },
       runtimeMode: "full-access",
@@ -289,9 +295,117 @@ it.effect("accepts both inline and uploaded image attachments from clients", () 
     if (command.type !== "thread.turn.start") {
       assert.fail(`Expected thread.turn.start, received ${command.type}.`);
     }
-    assert.strictEqual(command.message.attachments.length, 2);
+    assert.strictEqual(command.message.attachments.length, 3);
     assert.strictEqual("dataUrl" in command.message.attachments[0]!, true);
     assert.strictEqual("id" in command.message.attachments[1]!, true);
+    assert.strictEqual(command.message.attachments[2]!.type, "file");
+  }),
+);
+
+it.effect("rejects inline file payloads from clients", () =>
+  Effect.gen(function* () {
+    for (const attachment of [
+      {
+        type: "file",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 3,
+        dataUrl: "data:text/plain;base64,YWJj",
+      },
+    ]) {
+      const result = yield* Effect.exit(
+        decodeClientOrchestrationCommand({
+          type: "thread.turn.start",
+          commandId: "cmd-turn-inline-file",
+          threadId: "thread-1",
+          message: {
+            messageId: "msg-inline-file",
+            role: "user",
+            text: "hello",
+            attachments: [attachment],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      assert.strictEqual(Exit.isFailure(result), true);
+    }
+  }),
+);
+
+// Attachments ride on persisted events and thread streams with no client
+// version negotiation. A type this build does not know must decode instead of
+// failing the whole message.
+it.effect("tolerates attachment types from newer builds when decoding messages", () =>
+  Effect.gen(function* () {
+    const futureAttachment = {
+      type: "somethingnew",
+      id: "thread-1-00000000-0000-4000-8000-000000000003-glb",
+      name: "scene.glb",
+      mimeType: "model/gltf-binary",
+      sizeBytes: 12,
+    };
+
+    const message = yield* decodeOrchestrationMessage({
+      id: "message-1",
+      role: "user",
+      text: "look at this",
+      attachments: [futureAttachment],
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(message.attachments?.length, 1);
+    assert.strictEqual(message.attachments?.[0]!.type, "somethingnew");
+
+    const payload = yield* decodeThreadMessageSentPayload({
+      threadId: "thread-1",
+      messageId: "message-1",
+      role: "user",
+      text: "look at this",
+      attachments: [futureAttachment],
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(payload.attachments?.[0]!.type, "somethingnew");
+  }),
+);
+
+// The tolerant member must not catch malformed known attachments: a file over
+// the size cap or an image with a bad mime has to fail its own schema, not
+// slide through the open one with those constraints unchecked.
+it.effect("rejects malformed known attachment types instead of tolerating them", () =>
+  Effect.gen(function* () {
+    const base = {
+      id: "thread-1-00000000-0000-4000-8000-000000000003-pdf",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+    };
+    const decode = (attachment: unknown) =>
+      decodeOrchestrationMessage({
+        id: "message-1",
+        role: "user",
+        text: "look at this",
+        attachments: [attachment],
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+    const oversizedFile = yield* Effect.exit(
+      decode({ ...base, type: "file", sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1 }),
+    );
+    assert.strictEqual(Exit.isFailure(oversizedFile), true);
+
+    const badMimeImage = yield* Effect.exit(
+      decode({ ...base, type: "image", mimeType: "application/pdf", sizeBytes: 12 }),
+    );
+    assert.strictEqual(Exit.isFailure(badMimeImage), true);
   }),
 );
 
@@ -320,11 +434,11 @@ it.effect("preserves explicit provider and runtime mode in thread.turn.start", (
   }),
 );
 
-it.effect("decodes valid persisted document and file attachment metadata", () =>
+it.effect("decodes valid persisted PDF and text file attachment metadata", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeChatAttachments([
       {
-        type: "document",
+        type: "file",
         id: "pdf-1",
         name: "design.pdf",
         mimeType: "application/pdf",
@@ -341,157 +455,33 @@ it.effect("decodes valid persisted document and file attachment metadata", () =>
 
     assert.deepStrictEqual(
       parsed.map((attachment) => attachment.type),
-      ["document", "file"],
+      ["file", "file"],
     );
     assert.strictEqual(parsed[0]?.mimeType, "application/pdf");
     assert.strictEqual(parsed[1]?.sizeBytes, PROVIDER_SEND_TURN_MAX_FILE_BYTES);
   }),
 );
 
-it.effect("decodes valid document and file uploads", () =>
+it.effect("migrates legacy persisted document attachments to canonical files", () =>
   Effect.gen(function* () {
-    const document = yield* decodeUploadChatAttachment({
-      type: "document",
-      name: "design.pdf",
-      mimeType: "application/pdf",
-      sizeBytes: 4,
-      dataUrl: "data:application/pdf;base64,JVBERg==",
-    });
-    const file = yield* decodeUploadChatAttachment({
-      type: "file",
-      name: "notes.md",
-      mimeType: "text/markdown",
-      sizeBytes: 4,
-      dataUrl: "data:text/markdown;base64,dGVzdA==",
-    });
-
-    assert.strictEqual(document.type, "document");
-    assert.strictEqual(file.type, "file");
-  }),
-);
-
-it.effect("rejects empty document and file attachments", () =>
-  Effect.gen(function* () {
-    for (const attachment of [
+    const decoded = (yield* decodeChatAttachments([
       {
         type: "document",
-        name: "empty.pdf",
+        id: "legacy-pdf-1",
+        name: "legacy.pdf",
         mimeType: "application/pdf",
-        sizeBytes: 0,
-        dataUrl: "data:application/pdf;base64,",
+        sizeBytes: 42,
       },
-      {
-        type: "file",
-        name: "empty.txt",
-        mimeType: "text/plain",
-        sizeBytes: 0,
-        dataUrl: "data:text/plain;base64,",
-      },
-    ]) {
-      const result = yield* Effect.exit(decodeUploadChatAttachment(attachment));
-      assert.strictEqual(result._tag, "Failure");
-    }
-  }),
-);
+    ]))[0]!;
 
-it.effect("enforces document and file decoded byte boundaries", () =>
-  Effect.gen(function* () {
-    const validDocument = yield* decodeUploadChatAttachment({
-      type: "document",
-      name: "boundary.pdf",
-      mimeType: "application/pdf",
-      sizeBytes: PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES,
-      dataUrl: "data:application/pdf;base64,JVBERg==",
-    });
-    const validFile = yield* decodeUploadChatAttachment({
+    assert.deepStrictEqual(decoded, {
       type: "file",
-      name: "boundary.txt",
-      mimeType: "text/plain",
-      sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-      dataUrl: "data:text/plain;base64,eA==",
+      id: "legacy-pdf-1",
+      name: "legacy.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 42,
     });
-    assert.strictEqual(validDocument.sizeBytes, PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES);
-    assert.strictEqual(validFile.sizeBytes, PROVIDER_SEND_TURN_MAX_FILE_BYTES);
-
-    const oversizedDocument = yield* Effect.exit(
-      decodeUploadChatAttachment({
-        type: "document",
-        name: "oversized.pdf",
-        mimeType: "application/pdf",
-        sizeBytes: PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES + 1,
-        dataUrl: "data:application/pdf;base64,JVBERg==",
-      }),
-    );
-    const oversizedFile = yield* Effect.exit(
-      decodeUploadChatAttachment({
-        type: "file",
-        name: "oversized.txt",
-        mimeType: "text/plain",
-        sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1,
-        dataUrl: "data:text/plain;base64,eA==",
-      }),
-    );
-    assert.strictEqual(oversizedDocument._tag, "Failure");
-    assert.strictEqual(oversizedFile._tag, "Failure");
-  }),
-);
-
-it.effect("rejects document and file uploads over their encoded data URL caps", () =>
-  Effect.gen(function* () {
-    const oversizedDocument = yield* Effect.exit(
-      decodeUploadChatAttachment({
-        type: "document",
-        name: "oversized.pdf",
-        mimeType: "application/pdf",
-        sizeBytes: 1,
-        dataUrl: "x".repeat(roundedDataUrlCharLimit(PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES) + 1),
-      }),
-    );
-    const oversizedFile = yield* Effect.exit(
-      decodeUploadChatAttachment({
-        type: "file",
-        name: "oversized.txt",
-        mimeType: "text/plain",
-        sizeBytes: 1,
-        dataUrl: "x".repeat(roundedDataUrlCharLimit(PROVIDER_SEND_TURN_MAX_FILE_BYTES) + 1),
-      }),
-    );
-    assert.strictEqual(oversizedDocument._tag, "Failure");
-    assert.strictEqual(oversizedFile._tag, "Failure");
-  }),
-);
-
-it.effect("rejects non-canonical PDF MIME and malformed attachment variants", () =>
-  Effect.gen(function* () {
-    const nonCanonicalPdf = yield* Effect.exit(
-      decodeUploadChatAttachment({
-        type: "document",
-        name: "design.pdf",
-        mimeType: "Application/PDF",
-        sizeBytes: 1,
-        dataUrl: "data:application/pdf;base64,eA==",
-      }),
-    );
-    const missingFileData = yield* Effect.exit(
-      decodeUploadChatAttachment({
-        type: "file",
-        name: "notes.txt",
-        mimeType: "text/plain",
-        sizeBytes: 1,
-      }),
-    );
-    const unknownVariant = yield* Effect.exit(
-      decodeUploadChatAttachment({
-        type: "archive",
-        name: "source.zip",
-        mimeType: "application/zip",
-        sizeBytes: 1,
-        dataUrl: "data:application/zip;base64,eA==",
-      }),
-    );
-    assert.strictEqual(nonCanonicalPdf._tag, "Failure");
-    assert.strictEqual(missingFileData._tag, "Failure");
-    assert.strictEqual(unknownVariant._tag, "Failure");
+    assert.deepStrictEqual(yield* encodeChatAttachments([decoded]), [decoded]);
   }),
 );
 
@@ -506,7 +496,7 @@ it.effect("round-trips mixed attachment order and discriminants", () =>
         sizeBytes: 10,
       },
       {
-        type: "document",
+        type: "file",
         id: "pdf-1",
         name: "second.pdf",
         mimeType: "application/pdf",
@@ -525,37 +515,21 @@ it.effect("round-trips mixed attachment order and discriminants", () =>
     const encoded = yield* encodeChatAttachments(decoded);
     assert.deepStrictEqual(
       decoded.map((attachment) => attachment.type),
-      ["image", "document", "file"],
+      ["image", "file", "file"],
     );
     assert.deepStrictEqual(encoded, input);
   }),
 );
 
-it.effect("rejects nine mixed upload attachments in a client turn command", () =>
+it.effect("rejects nine attachments in a client turn command", () =>
   Effect.gen(function* () {
-    const attachments = [
-      ...Array.from({ length: 6 }, (_, index) => ({
-        type: "image" as const,
-        name: `image-${index}.png`,
-        mimeType: "image/png",
-        sizeBytes: 1,
-        dataUrl: "data:image/png;base64,eA==",
-      })),
-      ...Array.from({ length: 2 }, (_, index) => ({
-        type: "document" as const,
-        name: `document-${index}.pdf`,
-        mimeType: "application/pdf" as const,
-        sizeBytes: 1,
-        dataUrl: "data:application/pdf;base64,eA==",
-      })),
-      {
-        type: "file" as const,
-        name: "notes.txt",
-        mimeType: "text/plain",
-        sizeBytes: 1,
-        dataUrl: "data:text/plain;base64,eA==",
-      },
-    ];
+    const attachments = Array.from({ length: 9 }, (_, index) => ({
+      type: "image" as const,
+      name: `image-${index}.png`,
+      mimeType: "image/png",
+      sizeBytes: 1,
+      dataUrl: "data:image/png;base64,eA==",
+    }));
 
     const result = yield* Effect.exit(
       decodeClientOrchestrationCommand({

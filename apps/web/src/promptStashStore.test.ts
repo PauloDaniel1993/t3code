@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import {
+  collectAssistantCitations,
+  serializeAssistantCitation,
+} from "@t3tools/shared/assistantCitations";
 
 import { removeLocalStorageItem } from "./hooks/useLocalStorage";
 
@@ -25,7 +30,6 @@ function makeEntry(input: {
       input.attachmentChars !== undefined
         ? [
             {
-              type: "image",
               id: `${input.id}-img`,
               name: "shot.png",
               mimeType: "image/png",
@@ -107,6 +111,34 @@ describe("promptStashStore", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["second", "first"]);
   });
 
+  it("restores citations and bound comments from a persisted stash", () => {
+    const citation = {
+      version: 1 as const,
+      environmentId: EnvironmentId.make("remote-source"),
+      threadId: ThreadId.make("source-thread"),
+      messageId: MessageId.make("source-message"),
+      text: "A quote to revisit later.",
+      comment: "Revisit this tomorrow.\nCheck whether the example still applies.",
+      start: 0,
+      end: 24,
+      prefix: "",
+      suffix: " Next.",
+    };
+    const prompt = `Revisit ${serializeAssistantCitation(citation)}`;
+    writePromptStashStorageForTest(
+      JSON.stringify({
+        version: 2,
+        state: { entries: [makeEntry({ id: "citation-stash", prompt })] },
+      }),
+    );
+    const restored = usePromptStashStore.getState().takeEntry("citation-stash").entry;
+    expect(restored?.prompt).toBe(prompt);
+    expect(
+      collectAssistantCitations(restored?.prompt ?? "").map((entry) => entry.citation),
+    ).toEqual([citation]);
+    expect(usePromptStashStore.getState().takeEntry("citation-stash").entry).toBeNull();
+  });
+
   it("evicts the oldest entry past the cap and returns it", () => {
     const store = usePromptStashStore.getState();
     for (let index = 0; index < MAX_STASH_ENTRIES; index += 1) {
@@ -149,7 +181,6 @@ describe("promptStashStore", () => {
     const { attached } = store.finalizeEntryImages("pending", {
       attachments: [
         {
-          type: "image",
           id: "img-1",
           name: "a.webp",
           mimeType: "image/webp",
@@ -166,6 +197,62 @@ describe("promptStashStore", () => {
     expect(entry?.attachments).toHaveLength(1);
     expect(entry?.droppedImageNames).toEqual(["big.png"]);
     expect(entry?.pendingImageCount).toBe(0);
+  });
+
+  it("takeEntry returns images and drop metadata finalized after a menu snapshot", () => {
+    const store = usePromptStashStore.getState();
+    store.stashEntry({ ...makeEntry({ id: "pending-restore" }), pendingImageCount: 1 });
+    const menuSnapshot = usePromptStashStore.getState().entries[0];
+    expect(menuSnapshot?.attachments).toEqual([]);
+
+    store.finalizeEntryImages("pending-restore", {
+      attachments: [
+        {
+          id: "img-finalized",
+          name: "finalized.webp",
+          mimeType: "image/webp",
+          sizeBytes: 12,
+          dataUrl: "data:image/webp;base64,BBBB",
+        },
+      ],
+      droppedImageNames: ["too-large.png"],
+      unreadableImageNames: ["unreadable.png"],
+    });
+
+    const { entry: taken } = store.takeEntry("pending-restore");
+    expect(taken).not.toBe(menuSnapshot);
+    expect(taken).toMatchObject({
+      attachments: [
+        {
+          id: "img-finalized",
+          name: "finalized.webp",
+        },
+      ],
+      droppedImageNames: ["too-large.png"],
+      unreadableImageNames: ["unreadable.png"],
+      pendingImageCount: 0,
+    });
+  });
+
+  it("preserves uploaded file references without storing file contents", () => {
+    const store = usePromptStashStore.getState();
+    const file = {
+      id: "file-1",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 42,
+      attachmentId: "pending-report-pdf",
+      environmentId: EnvironmentId.make("environment-1"),
+    };
+
+    store.stashEntry({ ...makeEntry({ id: "with-file" }), files: [file] });
+    store.finalizeEntryImages("with-file", {
+      attachments: [],
+      droppedImageNames: [],
+      unreadableImageNames: [],
+    });
+
+    expect(usePromptStashStore.getState().entries[0]?.files).toEqual([file]);
   });
 
   it("finalizeEntryImages reports false when the entry was already taken", () => {

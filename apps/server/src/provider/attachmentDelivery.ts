@@ -1,12 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeURL from "node:url";
 
-import { ChatAttachment, PROVIDER_INLINE_FILE_MAX_CHARS, type ThreadId } from "@t3tools/contracts";
+import { ChatAttachment } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
+
+export const PROVIDER_INLINE_FILE_MAX_CHARS = 256 * 1024;
 
 export interface ResolvedProviderAttachment {
   readonly attachment: ChatAttachment;
@@ -48,14 +50,12 @@ export function providerFileUri(
  */
 export const resolveProviderAttachment = Effect.fn("resolveProviderAttachment")(function* (input: {
   readonly attachmentsDir: string;
-  readonly threadId: ThreadId;
   readonly attachment: ChatAttachment;
   readonly fileSystem: FileSystem.FileSystem;
 }) {
   const absolutePath = resolveAttachmentPath({
     attachmentsDir: input.attachmentsDir,
     attachment: input.attachment,
-    threadId: input.threadId,
   });
   if (!absolutePath) {
     return yield* new ProviderAttachmentAccessError({

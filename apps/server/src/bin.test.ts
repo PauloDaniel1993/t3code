@@ -14,6 +14,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -27,7 +28,13 @@ import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/unstable/cli";
 
 import { cli, makeCli } from "./bin.ts";
+import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
+import {
+  SERVICE_LAUNCHER_CONTEXT_ENV,
+  SERVICE_LAUNCHER_PROTOCOL,
+} from "./cloud/serviceProtocol.ts";
 import * as ServerConfig from "./config.ts";
+import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
@@ -46,7 +53,24 @@ import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import { databasePhysicalMaintenancePaths } from "./persistence/DatabasePhysicalMaintenance.ts";
 import { DatabaseMaintenanceActiveWorkError } from "./cli/maintenance.ts";
 
+import packageJson from "../package.json" with { type: "json" };
+
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
+const DisconnectedLauncherChildLayer = Layer.mergeAll(
+  Layer.succeed(HostProcessEnvironment, {
+    ...process.env,
+    [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: packageJson.version,
+    }),
+  }),
+  Layer.succeed(ServiceLauncherClient.ServiceLauncherHostProcess, {
+    connected: false,
+    send: () => false,
+    on: () => undefined,
+    off: () => undefined,
+  }),
+);
 class ProjectCliHttpApi extends HttpApi.make("environment").add(EnvironmentOrchestrationHttpApi) {}
 
 const connectCli = makeCli({ cloudEnabled: true });
@@ -131,6 +155,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
       Layer.provideMerge(
         EnvironmentAuth.layer.pipe(
           Layer.provideMerge(SqlitePersistenceLayerLive),
+          Layer.provide(ServerEnvironment.identityLayer),
           Layer.provide(ServerSecretStore.layer),
         ),
       ),
@@ -139,6 +164,8 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
         Layer.succeed(ServerRuntimeStartup.ServerRuntimeStartup, {
           awaitCommandReady: Effect.void,
           markHttpListening: Effect.void,
+          markRunningProviderSessionsForContinuation: Effect.succeed([]),
+          clearProviderSessionContinuationMarkers: () => Effect.void,
           enqueueCommand: (effect) => effect,
         }),
       ),
@@ -173,11 +200,19 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
 
 it.layer(NodeServices.layer)("bin cli parsing", (it) => {
   it.effect("accepts the built-in lowercase log-level flag values", () =>
-    runCliWithRuntime(["--log-level", "debug", "--version"]),
+    Effect.gen(function* () {
+      const { output } = yield* captureStdout(runCli(["--log-level", "debug", "--version"]));
+
+      assert.include(output, "0.0.0");
+    }),
   );
 
   it.effect("accepts canonical --no-<flag> boolean negation", () =>
-    runCliWithRuntime(["--no-log-websocket-events", "--version"]),
+    Effect.gen(function* () {
+      const { output } = yield* captureStdout(runCli(["--no-log-websocket-events", "--version"]));
+
+      assert.include(output, "0.0.0");
+    }),
   );
 
   it.effect("rejects invalid log-level casing before launching the server", () =>
@@ -257,7 +292,7 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
       assert.equal(status.linked, false);
       assert.equal(status.cloudUserId, null);
       assert.equal(status.relayUrl, null);
-    }),
+    }).pipe(Effect.provide(DisconnectedLauncherChildLayer)),
   );
 
   it.effect("reports actionable human-readable headless connect state", () =>
@@ -428,7 +463,7 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
         "relay:write",
       ]);
       assert.equal("token" in (listed[0] ?? {}), false);
-    }),
+    }).pipe(Effect.provide(DisconnectedLauncherChildLayer)),
   );
 
   it.effect("rejects invalid ttl values before running auth commands", () =>

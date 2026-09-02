@@ -6,7 +6,6 @@
 
 import {
   ApprovalRequestId,
-  type ChatAttachment,
   type CursorSettings,
   type ProviderOptionSelection,
   EventId,
@@ -41,8 +40,8 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { mapAcpAttachments } from "../acpAttachments.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterProcessError,
@@ -309,30 +308,6 @@ function selectAutoApprovedPermissionOption(
   }
 
   return undefined;
-}
-
-export function prepareCursorAcpPromptParts(input: {
-  readonly text: string | undefined;
-  readonly attachmentsDir: string;
-  readonly threadId: ThreadId;
-  readonly attachments: ReadonlyArray<ChatAttachment> | undefined;
-  readonly fileSystem: FileSystem.FileSystem;
-}) {
-  return mapAcpAttachments(input).pipe(
-    Effect.map((attachmentParts) => [
-      ...(input.text?.trim() ? [{ type: "text" as const, text: input.text.trim() }] : []),
-      ...attachmentParts,
-    ]),
-    Effect.mapError(
-      (cause) =>
-        new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "session/prompt",
-          detail: cause.message,
-          cause,
-        }),
-    ),
-  );
 }
 
 export function makeCursorAdapter(
@@ -869,6 +844,7 @@ export function makeCursorAdapter(
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
                         toolCall: event.toolCall,
+                        rawPayload: event.rawPayload,
                       }),
                     );
                     return;
@@ -940,13 +916,6 @@ export function makeCursorAdapter(
     const sendTurn: CursorAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
-        const promptParts = yield* prepareCursorAcpPromptParts({
-          text: input.input,
-          attachmentsDir: serverConfig.attachmentsDir,
-          threadId: input.threadId,
-          attachments: input.attachments,
-          fileSystem,
-        });
         // A sendTurn while a prompt is in flight is a steer: the agent folds
         // the new prompt into the ongoing work, so the active turn id is
         // reused instead of opening a new turn.
@@ -995,6 +964,47 @@ export function makeCursorAdapter(
               turnId,
               payload: { model: resolvedModel },
             });
+          }
+
+          const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
+          if (input.input?.trim()) {
+            promptParts.push({ type: "text", text: input.input.trim() });
+          }
+          if (input.attachments && input.attachments.length > 0) {
+            for (const attachment of input.attachments) {
+              // Cursor ingests images only. Generic files reach the agent
+              // through the path line ProviderService puts in the prompt.
+              if (attachment.type !== "image") {
+                continue;
+              }
+              const attachmentPath = resolveAttachmentPath({
+                attachmentsDir: serverConfig.attachmentsDir,
+                attachment,
+              });
+              if (!attachmentPath) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/prompt",
+                  detail: `Invalid attachment id '${attachment.id}'.`,
+                });
+              }
+              const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "session/prompt",
+                      detail: cause.message,
+                      cause,
+                    }),
+                ),
+              );
+              promptParts.push({
+                type: "image",
+                data: Buffer.from(bytes).toString("base64"),
+                mimeType: attachment.mimeType,
+              });
+            }
           }
 
           if (promptParts.length === 0) {

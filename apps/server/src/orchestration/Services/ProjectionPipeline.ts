@@ -26,11 +26,21 @@ export interface OrchestrationProjectionPipelineShape {
   /**
    * Project a single orchestration event into projection repositories.
    *
-   * Projectors are executed sequentially to preserve deterministic ordering.
+   * Projectors run sequentially in one transaction. Attachment cleanup is
+   * durably queued in that transaction for a post-commit drain.
    */
   readonly projectEvent: (
     event: OrchestrationEvent,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Project an event inside a caller's transaction and enqueue any attachment
+   * cleanup atomically. The returned compatibility effect is a no-op; callers
+   * drain the durable queue only after the outer transaction commits.
+   */
+  readonly projectEventDeferred: (
+    event: OrchestrationEvent,
+  ) => Effect.Effect<Effect.Effect<void>, ProjectionRepositoryError>;
 }
 
 /**

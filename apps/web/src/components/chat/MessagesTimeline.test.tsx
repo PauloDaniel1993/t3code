@@ -4,14 +4,6 @@ import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
-import { parseThreadTaskActivity } from "../../threadTaskActivity";
-
-// Task lifecycle rows link to the task thread. Static rendering has no router,
-// and navigation is not what these tests are about.
-vi.mock("@tanstack/react-router", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
-  useNavigate: () => () => Promise.resolve(),
-}));
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -24,12 +16,7 @@ vi.mock("@legendapp/list/react", async () => {
     ListFooterComponent?: ReactNode;
     anchoredEndSpace?: {
       anchorIndex: number;
-      anchorMaxSize?: number;
-      anchorOffset?: number;
-      onReady?: (info: { anchorIndex: number }) => void;
     };
-    contentInsetEndAdjustment?: number;
-    className?: string;
     maintainScrollAtEnd?:
       | boolean
       | {
@@ -40,27 +27,12 @@ vi.mock("@legendapp/list/react", async () => {
             layout?: boolean;
           };
         };
-    maintainVisibleContentPosition?:
-      | boolean
-      | {
-          data?: boolean;
-          size?: boolean;
-          shouldRestorePosition?: (item: { id: string }) => boolean;
-        };
     ref?: Ref<LegendListRef>;
   }) => {
-    if (props.anchoredEndSpace) {
-      props.anchoredEndSpace.onReady?.({ anchorIndex: props.anchoredEndSpace.anchorIndex });
-    }
     return (
       <div
         data-testid={legendListTestId}
         data-anchor-index={props.anchoredEndSpace?.anchorIndex}
-        data-anchor-max-size={props.anchoredEndSpace?.anchorMaxSize}
-        data-anchor-offset={props.anchoredEndSpace?.anchorOffset}
-        data-anchor-on-ready={Boolean(props.anchoredEndSpace?.onReady)}
-        data-content-inset-end={props.contentInsetEndAdjustment}
-        data-class-name={props.className}
         data-maintain-scroll-at-end={props.maintainScrollAtEnd ? "enabled" : undefined}
         data-maintain-scroll-at-end-animated={
           typeof props.maintainScrollAtEnd === "object"
@@ -80,26 +52,6 @@ vi.mock("@legendapp/list/react", async () => {
         data-maintain-scroll-at-end-layout={
           typeof props.maintainScrollAtEnd === "object"
             ? props.maintainScrollAtEnd.on?.layout
-            : undefined
-        }
-        data-maintain-visible-content-position={
-          typeof props.maintainVisibleContentPosition === "object"
-            ? "object"
-            : props.maintainVisibleContentPosition
-        }
-        data-maintain-visible-content-position-data={
-          typeof props.maintainVisibleContentPosition === "object"
-            ? props.maintainVisibleContentPosition.data
-            : undefined
-        }
-        data-maintain-visible-content-position-size={
-          typeof props.maintainVisibleContentPosition === "object"
-            ? props.maintainVisibleContentPosition.size
-            : undefined
-        }
-        data-maintain-visible-content-position-restore={
-          typeof props.maintainVisibleContentPosition === "object"
-            ? Boolean(props.maintainVisibleContentPosition.shouldRestorePosition)
             : undefined
         }
       >
@@ -195,6 +147,7 @@ function buildProps() {
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: () => {},
     isRevertingCheckpoint: false,
+    openingVideoAttachmentId: null,
     onImageExpand: () => {},
     activeThreadEnvironmentId: ACTIVE_THREAD_ENVIRONMENT_ID,
     markdownCwd: undefined,
@@ -207,7 +160,6 @@ function buildProps() {
     liveFollowEnabled: true,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
-    threadTasksEnabled: true,
   };
 }
 
@@ -230,7 +182,7 @@ function buildUserTimelineEntry(text: string) {
       createdAt: MESSAGE_CREATED_AT,
       updatedAt: MESSAGE_CREATED_AT,
       streaming: false,
-    } as import("../../types").ChatMessage,
+    },
   };
 }
 
@@ -301,7 +253,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("codex-thread-1");
   });
 
-  it("renders the worked-for row at assistant response text size", () => {
+  it("renders elapsed time for a completed turn", () => {
     const turnId = TurnId.make("turn-with-fold");
     const assistantEntry = buildAssistantTimelineEntry("Done.");
     const markup = renderToStaticMarkup(
@@ -336,23 +288,6 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Worked for 8.0s");
-    expect(markup).toContain("px-1 text-sm leading-relaxed text-muted-foreground");
-  });
-
-  it("uses the larger leading inset only when the top fade is enabled", () => {
-    const timelineEntries = [buildUserTimelineEntry("Hello")];
-
-    const compactMarkup = renderToStaticMarkup(
-      <MessagesTimeline {...buildProps()} timelineEntries={timelineEntries} />,
-    );
-    const fadedMarkup = renderToStaticMarkup(
-      <MessagesTimeline {...buildProps()} timelineEntries={timelineEntries} topFadeEnabled />,
-    );
-
-    expect(compactMarkup).toContain('class="h-3 sm:h-4"');
-    expect(compactMarkup).not.toContain("topbar-scroll-fade");
-    expect(fadedMarkup).toContain('class="h-10 sm:h-12"');
-    expect(fadedMarkup).toContain("topbar-scroll-fade");
   });
 
   it("keeps assistant changed-files headers sticky below the thread header", () => {
@@ -410,131 +345,6 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Collapse all folders"');
     expect(markup).toContain('aria-label="Open diff"');
     expect(markup).toContain("1 changed file");
-  });
-
-  it("renders every activity-bearing turn's expanded card after its terminal response", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const makeAssistantEntry = (turnId: ReturnType<typeof TurnId.make>, index: number) => ({
-      id: `entry-assistant-${index}`,
-      kind: "message" as const,
-      createdAt: `2026-03-17T19:12:2${index}.000Z`,
-      message: {
-        id: MessageId.make(`message-assistant-${index}`),
-        role: "assistant" as const,
-        text: `Response ${index}`,
-        turnId,
-        createdAt: `2026-03-17T19:12:2${index}.000Z`,
-        updatedAt: `2026-03-17T19:12:2${index}.000Z`,
-        streaming: false,
-      } as import("../../types").ChatMessage,
-    });
-    const makeModel = (turnId: ReturnType<typeof TurnId.make>, index: number) => ({
-      turnId,
-      steps: [],
-      historicalSteps: [],
-      otherActivity: null,
-      workers: [
-        {
-          id: `worker-${index}`,
-          taskId: `worker-${index}`,
-          turnId,
-          startedAt: `2026-03-17T19:12:2${index}.000Z`,
-          updatedAt: `2026-03-17T19:12:2${index}.000Z`,
-          status: "completed" as const,
-          description: `Worker ${index}`,
-        },
-      ],
-      recentTools: [],
-    });
-    const turnOne = TurnId.make("turn-one");
-    const turnTwo = TurnId.make("turn-two");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[makeAssistantEntry(turnOne, 1), makeAssistantEntry(turnTwo, 2)]}
-        workflowActivityModelsByTurnId={
-          new Map([
-            [turnOne, makeModel(turnOne, 1)],
-            [turnTwo, makeModel(turnTwo, 2)],
-          ])
-        }
-      />,
-    );
-
-    expect(markup.match(/data-workflow-activity-turn-id=/g)).toHaveLength(2);
-    expect(markup).toContain('data-workflow-activity-turn-id="turn-one"');
-    expect(markup).toContain('data-workflow-activity-turn-id="turn-two"');
-    // Each card sits at the end of its turn's terminal response.
-    expect(markup.indexOf("Response 1")).toBeLessThan(
-      markup.indexOf('data-workflow-activity-turn-id="turn-one"'),
-    );
-    // Every worker row mounts expanded with its native-agent jump marker.
-    expect(markup).toContain("Worker 1");
-    expect(markup).toContain("Worker 2");
-    expect(markup).toContain('data-native-agent-task-id="worker-1"');
-    expect(markup).toContain('data-native-agent-task-id="worker-2"');
-  });
-
-  it("renders the card while its turn is still running", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const turnOne = TurnId.make("turn-one");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        runningTurnId={turnOne}
-        latestTurn={{
-          turnId: turnOne,
-          state: "running",
-          startedAt: "2026-03-17T19:12:20.000Z",
-          completedAt: null,
-        }}
-        timelineEntries={[
-          {
-            id: "entry-assistant-1",
-            kind: "message" as const,
-            createdAt: "2026-03-17T19:12:21.000Z",
-            message: {
-              id: MessageId.make("message-assistant-1"),
-              role: "assistant" as const,
-              text: "Working on it",
-              turnId: turnOne,
-              createdAt: "2026-03-17T19:12:21.000Z",
-              updatedAt: "2026-03-17T19:12:21.000Z",
-              streaming: true,
-            } as import("../../types").ChatMessage,
-          },
-        ]}
-        workflowActivityModelsByTurnId={
-          new Map([
-            [
-              turnOne,
-              {
-                turnId: turnOne,
-                steps: [],
-                historicalSteps: [],
-                otherActivity: null,
-                workers: [
-                  {
-                    id: "worker-1",
-                    taskId: "worker-1",
-                    turnId: turnOne,
-                    startedAt: "2026-03-17T19:12:21.000Z",
-                    updatedAt: "2026-03-17T19:12:21.000Z",
-                    status: "inProgress" as const,
-                    description: "Live worker",
-                  },
-                ],
-                recentTools: [],
-              },
-            ],
-          ])
-        }
-      />,
-    );
-
-    expect(markup).toContain('data-workflow-activity-turn-id="turn-one"');
-    expect(markup).toContain("Live worker");
-    expect(markup).toContain('data-native-agent-task-id="worker-1"');
   });
 
   it("treats only the strict list end as the live edge", async () => {
@@ -624,107 +434,151 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineMinimapInteractiveWidth(40, true)).toBe("22rem");
   });
 
-  it("uses turn-window pagination and keeps inline plans in the transcript", () => {
-    const turnId = TurnId.make("turn-with-plan");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        loadEarlier={{ loading: false, onLoadEarlier: () => {} }}
-        timelineEntries={[
-          {
-            id: "turn-plan:turn-with-plan",
-            kind: "turn-plan",
-            createdAt: MESSAGE_CREATED_AT,
-            turnPlan: {
-              id: "turn-plan:turn-with-plan",
-              createdAt: MESSAGE_CREATED_AT,
-              turnId,
-              plan: {
-                createdAt: MESSAGE_CREATED_AT,
-                turnId,
-                steps: [
-                  { step: "Inspect contracts", status: "completed" },
-                  { step: "Merge timeline behavior", status: "inProgress" },
-                ],
-              },
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain("Load earlier turns");
-    expect(markup).toContain("Merge timeline behavior");
-    expect(markup).toContain("1/2");
-    expect(markup).not.toContain("Load older activity");
-  });
-
-  it("anchors the first user message using its measured height", () => {
-    const onAnchorReady = vi.fn();
-    const firstEntry = {
-      ...buildUserTimelineEntry("First prompt."),
+  it("renders generic attachments as download links instead of image previews", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Read the report."),
       message: {
-        ...buildUserTimelineEntry("First prompt.").message,
+        ...buildUserTimelineEntry("Read the report.").message,
         attachments: [
           {
-            type: "image" as const,
-            id: "attachment-1",
-            name: "screenshot.png",
-            mimeType: "image/png",
-            sizeBytes: 1,
-            previewUrl: "data:image/png;base64,iVBORw0KGgo=",
+            type: "file" as const,
+            id: "attachment-report-pdf",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 42,
+            previewUrl: "https://environment.test/api/assets/report.pdf",
           },
         ],
       },
     };
+
     const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        anchorMessageId={firstEntry.message.id}
-        onAnchorReady={onAnchorReady}
-        contentInsetEndAdjustment={144}
-        timelineEntries={[firstEntry]}
-      />,
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
     );
 
-    expect(markup).toContain('data-anchor-index="0"');
-    expect(markup).toContain('data-anchor-offset="16"');
-    expect(markup).toContain('data-anchor-on-ready="true"');
-    expect(markup).not.toContain("data-anchor-max-size=");
-    expect(markup).toContain('data-content-inset-end="144"');
-    expect(markup).toContain("[overflow-anchor:none]");
-    expect(markup).not.toContain('data-maintain-scroll-at-end="enabled"');
-    expect(markup).toContain('data-maintain-visible-content-position="object"');
-    expect(markup).toContain('data-maintain-visible-content-position-data="true"');
-    expect(markup).toContain('data-maintain-visible-content-position-size="true"');
-    expect(markup).toContain('data-maintain-visible-content-position-restore="true"');
-    expect(onAnchorReady).toHaveBeenCalledOnce();
-    expect(onAnchorReady).toHaveBeenCalledWith(firstEntry.message.id, 0);
+    expect(markup).toContain(
+      '<a href="https://environment.test/api/assets/report.pdf" download="report.pdf" class="flex min-w-0 items-center gap-2 rounded-md py-1 text-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70">',
+    );
+    expect(markup).not.toContain('alt="report.pdf"');
   });
 
-  it("does not reserve end space for a follow-up user message", () => {
-    const onAnchorReady = vi.fn();
-    const firstEntry = buildUserTimelineEntry("First prompt.");
-    const secondEntry = {
-      ...buildUserTimelineEntry("Newest prompt."),
-      id: "entry-2",
+  it("renders video attachments as play buttons", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Watch the demo."),
       message: {
-        ...buildUserTimelineEntry("Newest prompt.").message,
-        id: MessageId.make("message-2"),
+        ...buildUserTimelineEntry("Watch the demo.").message,
+        attachments: [
+          {
+            type: "file" as const,
+            id: "attachment-demo-mp4",
+            name: "demo.mp4",
+            mimeType: "video/mp4",
+            sizeBytes: 42,
+          },
+        ],
       },
     };
+
     const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+    const busyMarkup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
-        anchorMessageId={secondEntry.message.id}
-        onAnchorReady={onAnchorReady}
-        timelineEntries={[firstEntry, secondEntry]}
+        timelineEntries={[entry]}
+        openingVideoAttachmentId="attachment-demo-mp4"
       />,
     );
 
-    expect(markup).not.toContain("data-anchor-index=");
-    expect(markup).toContain('data-maintain-scroll-at-end="enabled"');
-    expect(onAnchorReady).not.toHaveBeenCalled();
+    expect(markup).toContain('aria-label="Play demo.mp4"');
+    expect(markup).toContain("min-h-[72px]");
+    expect(markup).toContain(">demo.mp4</span>");
+    expect(markup).not.toContain('aria-label="Download demo.mp4"');
+    expect(busyMarkup).toContain('aria-busy="true"');
+    expect(busyMarkup).toContain('aria-disabled="true"');
+    expect(busyMarkup).not.toContain('disabled=""');
+    expect(busyMarkup).toContain(">Loading…</span>");
+  });
+  it("renders a file download button without creating its URL in advance", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Read the report."),
+      message: {
+        ...buildUserTimelineEntry("Read the report.").message,
+        attachments: [
+          {
+            type: "file" as const,
+            id: "attachment-report-pdf",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 42,
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain(
+      '<button type="button" aria-label="Download report.pdf" class="flex min-w-0 cursor-pointer items-center gap-2 rounded-md py-1 text-left text-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70">',
+    );
+    expect(markup).not.toContain("href=");
+  });
+
+  it("does not download an optimistic file before the server supplies its attachment ID", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Read the report."),
+      message: {
+        ...buildUserTimelineEntry("Read the report.").message,
+        attachments: [
+          {
+            type: "file" as const,
+            id: "composer-local-report",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 42,
+            downloadable: false,
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain("report.pdf");
+    expect(markup).not.toContain('aria-label="Download report.pdf"');
+  });
+
+  it("renders unknown attachment types as inert rows instead of crashing", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Play the recording."),
+      message: {
+        ...buildUserTimelineEntry("Play the recording.").message,
+        attachments: [
+          {
+            // A newer server can introduce attachment types this build does
+            // not know. They ride the open contract member.
+            type: "recording",
+            id: "attachment-voice-memo",
+            name: "voice-memo.ogg",
+            mimeType: "audio/ogg",
+            sizeBytes: 42,
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain("voice-memo.ogg");
+    expect(markup).not.toContain('aria-label="Download voice-memo.ogg"');
+    expect(markup).not.toContain('alt="voice-memo.ogg"');
+    expect(markup).not.toContain("href=");
   });
 
   it("keeps reserved end space when tool work starts while reading history", () => {
@@ -1074,7 +928,6 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Context compacted");
-    expect(markup).toContain("Work Log");
   });
 
   it("summarizes changed files in one line", () => {
@@ -1142,6 +995,49 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('aria-label="Tool call failed"');
   });
 
+  it("keeps the collapsed summary icon neutral when the group ends in a failure", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-completed",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-completed",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Run tests",
+              tone: "tool",
+              itemType: "command_execution",
+              toolLifecycleStatus: "completed",
+            },
+          },
+          {
+            id: "entry-failed",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-failed",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Run lint",
+              tone: "tool",
+              itemType: "command_execution",
+              toolLifecycleStatus: "failed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Ran 2 commands");
+    expect(markup).toContain("lucide-terminal");
+    expect(markup).not.toContain("lucide-x");
+    expect(markup).not.toContain("text-destructive");
+    // The failure stays discoverable for screen readers.
+    expect(markup).toContain("tool call failed");
+  });
+
   it("keeps mixed work logs neutral after a later tool call succeeds", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -1188,7 +1084,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("+2 previous log entries");
+    expect(markup).toContain("Ran 2 commands and received 1 update");
     expect(markup).not.toContain('aria-label="Hidden work includes a failure"');
   });
 
@@ -1287,7 +1183,30 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("tool call failed");
   });
 
-  it("keeps terminal command copy live while the parent turn is active", () => {
+  it("renders initial thinking as the shared live activity row", () => {
+    const turnId = TurnId.make("turn-live");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        latestTurn={{
+          turnId,
+          state: "running",
+          startedAt: MESSAGE_CREATED_AT,
+          completedAt: null,
+        }}
+        runningTurnId={turnId}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("Thinking");
+    expect(markup).toContain("lucide-brain");
+    expect(markup).toContain('data-timeline-row-id="live-activity-row"');
+  });
+
+  it("keeps the completed command in the shared activity row with a past-tense label", () => {
     const turnId = TurnId.make("turn-live");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -1303,42 +1222,31 @@ describe("MessagesTimeline", () => {
         runningTurnId={turnId}
         timelineEntries={[
           {
-            id: "entry-failed",
+            id: "entry-completed",
             kind: "work",
             createdAt: MESSAGE_CREATED_AT,
             entry: {
-              id: "work-failed",
+              id: "work-completed",
               createdAt: MESSAGE_CREATED_AT,
               turnId,
-              toolCallId: "call-failed",
+              toolCallId: "call-completed",
               label: "Run lint",
               tone: "tool",
               itemType: "command_execution",
               command: "pnpm lint",
-              toolLifecycleStatus: "failed",
+              toolLifecycleStatus: "completed",
             },
           },
         ]}
       />,
     );
 
-    expect(markup).toContain("Running pnpm");
-    expect(markup).toContain("tool call failed");
-  });
-
-  it("aligns the iconless Thinking row with the working timer", () => {
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        isWorking
-        activeTurnStartedAt={MESSAGE_CREATED_AT}
-        timelineEntries={[]}
-      />,
-    );
-
-    expect(markup).toContain("Working for");
-    expect(markup).toContain("Thinking");
-    expect(markup).toContain("gap-1.5 py-0.5 px-1");
+    expect(markup).toContain("Ran pnpm");
+    expect(markup).toContain("lucide-terminal");
+    expect(markup).toContain("live-activity-focus");
+    expect(markup).not.toContain("Running pnpm");
+    expect(markup).not.toContain("Thinking");
+    expect(markup).not.toContain('data-timeline-row-kind="thinking"');
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", () => {
@@ -1418,84 +1326,22 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-testid="file-diff"');
   });
 
-  it("renders mixed attachments as image thumbnails and accessible file cards", () => {
-    const baseEntry = buildUserTimelineEntry("Review these attachments.");
-    const entry: ReturnType<typeof buildUserTimelineEntry> = {
-      ...baseEntry,
-      message: {
-        ...baseEntry.message,
-        attachments: [
-          {
-            type: "image",
-            id: "image-1",
-            name: "screen.png",
-            mimeType: "image/png",
-            sizeBytes: 20,
-            previewUrl: "https://assets/image",
-          },
-          {
-            type: "document",
-            id: "pdf-1",
-            name: "manual.pdf",
-            mimeType: "application/pdf",
-            sizeBytes: 2048,
-            openUrl: "https://assets/pdf/open",
-            downloadUrl: "https://assets/pdf/download",
-          },
-          {
-            type: "file",
-            id: "file-1",
-            name: "Program.cs",
-            mimeType: "text/plain",
-            sizeBytes: 512,
-            downloadUrl: "https://assets/file/download",
-          },
-        ],
-      },
-    };
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
-    );
-    expect(markup).toContain('<img src="https://assets/image"');
-    expect(markup).toContain('aria-label="Open manual.pdf"');
-    expect(markup).toContain('aria-label="Download manual.pdf"');
-    expect(markup).toContain('aria-label="Download Program.cs"');
-    expect(markup).not.toContain('alt="manual.pdf"');
-    expect(markup).not.toContain('alt="Program.cs"');
-  });
-
-  it("keeps preview annotation rendering image-only in mixed messages", () => {
-    const baseEntry = buildUserTimelineEntry(
-      '<preview_annotation id="preview-1" target="button">Fix this</preview_annotation>',
-    );
-    const entry: ReturnType<typeof buildUserTimelineEntry> = {
-      ...baseEntry,
-      message: {
-        ...baseEntry.message,
-        attachments: [
-          {
-            type: "file",
-            id: "file-1",
-            name: "preview-annotation-not-image.md",
-            mimeType: "text/markdown",
-            sizeBytes: 10,
-            downloadUrl: "https://assets/file",
-          },
-        ],
-      },
-    };
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
-    );
-    expect(markup).toContain("preview-annotation-not-image.md");
-    expect(markup).not.toContain("Annotated preview crop");
-  });
-
-  it("renders a failure marker for failed tool lifecycle entries", () => {
+  it("keeps failed lifecycle entries discoverable in mixed activity summaries", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
+          {
+            id: "entry-info",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:27.000Z",
+            entry: {
+              id: "work-info",
+              createdAt: "2026-03-17T19:12:27.000Z",
+              label: "Status updated",
+              tone: "info",
+            },
+          },
           {
             id: "entry-1",
             kind: "work",
@@ -1513,694 +1359,44 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("lucide-x");
-    expect(markup).toContain('aria-label="Tool call failed"');
+    expect(markup).toContain('aria-label="Received 1 update and used 1 tool, tool call failed"');
+    // Ordinary tool failures render muted, not red.
+    expect(markup).not.toContain("text-destructive");
   });
 
-  it("renders in-progress task entries as task cards with status and available metrics", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
+  it("keeps the red treatment for severe orchestration failures", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
           {
-            id: "entry-task-1",
+            id: "entry-info",
             kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
+            createdAt: "2026-03-17T19:12:27.000Z",
             entry: {
-              id: "work-task-1",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Explore the codebase",
+              id: "work-info",
+              createdAt: "2026-03-17T19:12:27.000Z",
+              label: "Status updated",
               tone: "info",
-              taskId: "task-1",
-              description: "Explore the codebase",
-              toolLifecycleStatus: "inProgress",
-              progressSummary: "Scanning packages",
-              usage: { totalTokens: 1234, toolUses: 3, durationMs: 45_000 },
-              lastToolName: "Read",
             },
           },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-task-card="true"');
-    expect(markup).toContain('data-task-id="task-1"');
-    expect(markup).toContain('data-task-status="inProgress"');
-    expect(markup).toContain("Running");
-    expect(markup).toContain("Explore the codebase");
-    expect(markup).toContain("Scanning packages");
-    expect(markup).toContain("1,234 tokens");
-    expect(markup).toContain("3 tools");
-    expect(markup).toContain("45s");
-    expect(markup).toContain("last: Read");
-    expect(markup).toContain('aria-label="1 subagent task"');
-  });
-
-  it("keeps native provider agents on the Agents CTA path instead of rendering a task card", () => {
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
           {
-            id: "entry-native-agent",
-            kind: "work",
-            createdAt: MESSAGE_CREATED_AT,
-            entry: {
-              id: "work-native-agent",
-              createdAt: MESSAGE_CREATED_AT,
-              label: "Native agent",
-              tone: "info",
-              taskId: "native-agent-1",
-              agentSpawn: { workflowId: null, agentTaskIds: ["native-agent-1"] },
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain("Ran 1 subagent");
-    expect(markup).toContain("View");
-    expect(markup).not.toContain('data-task-card="true"');
-  });
-
-  it("renders completed task cards with result and output information only", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        workspaceRoot="C:/dev/t3code"
-        timelineEntries={[
-          {
-            id: "entry-task-2",
+            id: "entry-turn-failed",
             kind: "work",
             createdAt: "2026-03-17T19:12:28.000Z",
             entry: {
-              id: "work-task-2",
+              id: "work-turn-failed",
               createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Found three files",
-              tone: "info",
-              taskId: "task-2",
-              description: "Search the repo",
-              toolLifecycleStatus: "completed",
-              resultSummary: "Found three files",
-              outputFile: "C:/dev/t3code/reports/out.md",
-              usage: { toolUses: 1 },
+              label: "Provider turn start failed",
+              tone: "error",
+              sourceActivityKind: "provider.turn.start.failed",
             },
           },
         ]}
       />,
     );
 
-    expect(markup).toContain('data-task-status="completed"');
-    expect(markup).toContain("Done");
-    expect(markup).toContain("Search the repo");
-    expect(markup).toContain("Found three files");
-    expect(markup).toContain("1 tool");
-    expect(markup).toContain("Output: t3code/reports/out.md");
-    // Absent provider metrics render no placeholder text.
-    expect(markup).not.toContain("tokens");
-  });
-
-  it("renders terminal lifecycle badges for failed, declined, and stopped tasks", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    for (const [status, label] of [
-      ["failed", "Failed"],
-      ["declined", "Declined"],
-      ["stopped", "Stopped"],
-    ] as const) {
-      const markup = renderToStaticMarkup(
-        <MessagesTimeline
-          {...buildProps()}
-          timelineEntries={[
-            {
-              id: "entry-task-terminal",
-              kind: "work",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              entry: {
-                id: "work-task-terminal",
-                createdAt: "2026-03-17T19:12:28.000Z",
-                label: "Explore the codebase",
-                tone: status === "failed" ? "error" : "info",
-                taskId: "task-terminal",
-                description: "Explore the codebase",
-                toolLifecycleStatus: status,
-              },
-            },
-          ]}
-        />,
-      );
-
-      expect(markup).toContain(`data-task-status="${status}"`);
-      expect(markup).toContain(label);
-    }
-  });
-
-  it("keeps ordinary tool entries on the compact row path", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-tool-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-tool-1",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Ran command",
-              tone: "tool",
-              command: "pnpm test",
-              toolLifecycleStatus: "completed",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).not.toContain("data-task-card");
-    expect(markup).toContain('data-timeline-row-kind="work-toggle"');
-    expect(markup).toContain("Ran 1 command");
-    expect(markup).not.toContain("pnpm test");
-  });
-
-  it("omits skipTranscript task entries from the transcript", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-tool-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-tool-1",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Ran command",
-              tone: "tool",
-              toolLifecycleStatus: "completed",
-            },
-          },
-          {
-            id: "entry-task-hidden",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:29.000Z",
-            entry: {
-              id: "work-task-hidden",
-              createdAt: "2026-03-17T19:12:29.000Z",
-              label: "Housekeeping sweep",
-              tone: "info",
-              taskId: "task-hidden",
-              description: "Housekeeping sweep",
-              skipTranscript: true,
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).not.toContain("Housekeeping sweep");
-    expect(markup).not.toContain('data-task-id="task-hidden"');
-    expect(markup).toContain("Used 1 tool");
-    expect(markup).not.toContain("previous log entry");
-    expect(markup).not.toContain("Show fewer");
-  });
-
-  it("omits panel-only activity projections from the timeline", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-panel-progress",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-panel-progress",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Read tool running",
-              tone: "info",
-              sourceActivityKind: "tool.progress",
-            },
-          },
-          {
-            id: "entry-panel-reasoning",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:29.000Z",
-            entry: {
-              id: "work-panel-reasoning",
-              createdAt: "2026-03-17T19:12:29.000Z",
-              label: "Turn reasoning details",
-              tone: "thinking",
-              sourceActivityKind: "turn.reasoning.summary",
-            },
-          },
-          {
-            id: "entry-tool-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:30.000Z",
-            entry: {
-              id: "work-tool-1",
-              createdAt: "2026-03-17T19:12:30.000Z",
-              label: "Ran command",
-              tone: "tool",
-              toolLifecycleStatus: "completed",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).not.toContain("Read tool running");
-    expect(markup).not.toContain("Turn reasoning details");
-    expect(markup).toContain("Used 1 tool");
-  });
-
-  it("labels collapsed task-only groups as subagent tasks", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const taskEntry = (suffix: string, createdAt: string) => ({
-      id: `entry-task-${suffix}`,
-      kind: "work" as const,
-      createdAt,
-      entry: {
-        id: `work-task-${suffix}`,
-        createdAt,
-        label: `Explore area ${suffix}`,
-        tone: "info" as const,
-        taskId: `task-${suffix}`,
-        description: `Explore area ${suffix}`,
-        toolLifecycleStatus: "completed" as const,
-      },
-    });
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          taskEntry("1", "2026-03-17T19:12:28.000Z"),
-          taskEntry("2", "2026-03-17T19:12:29.000Z"),
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('aria-label="1 subagent task"');
-    expect(markup).toContain("+1 previous subagent task");
-    expect(markup).toContain('data-task-id="task-2"');
-    expect(markup).not.toContain('data-task-id="task-1"');
-  });
-
-  it("labels collapsed mixed task/tool groups as generic log entries", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-tool-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-tool-1",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Ran command",
-              tone: "tool",
-              toolLifecycleStatus: "completed",
-            },
-          },
-          {
-            id: "entry-task-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:29.000Z",
-            entry: {
-              id: "work-task-1",
-              createdAt: "2026-03-17T19:12:29.000Z",
-              label: "Explore the codebase",
-              tone: "info",
-              taskId: "task-1",
-              description: "Explore the codebase",
-              toolLifecycleStatus: "inProgress",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain("+1 previous log entry");
-    expect(markup).toContain('data-task-id="task-1"');
-    expect(markup).not.toContain("Ran command");
-    expect(markup).not.toContain("previous subagent task");
-    expect(markup).not.toContain("previous tool call");
-  });
-
-  it("renders compact tool rows and task cards side by side in one timeline", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-tool-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-tool-1",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Ran command",
-              tone: "tool",
-              toolLifecycleStatus: "completed",
-            },
-          },
-          {
-            id: "entry-commentary",
-            kind: "message",
-            createdAt: "2026-03-17T19:12:29.000Z",
-            message: {
-              id: MessageId.make("message-commentary"),
-              role: "assistant",
-              text: "Kicked off a subagent.",
-              turnId: null,
-              createdAt: "2026-03-17T19:12:29.000Z",
-              updatedAt: "2026-03-17T19:12:29.000Z",
-              streaming: false,
-            },
-          },
-          {
-            id: "entry-task-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:30.000Z",
-            entry: {
-              id: "work-task-1",
-              createdAt: "2026-03-17T19:12:30.000Z",
-              label: "Explore the codebase",
-              tone: "thinking",
-              taskId: "task-1",
-              description: "Explore the codebase",
-              toolLifecycleStatus: "inProgress",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain("Used 1 tool");
-    expect(markup).toContain('data-timeline-row-kind="work-toggle"');
-    expect(markup).toContain('data-task-id="task-1"');
-    expect(markup).toContain('aria-label="1 subagent task"');
-    expect(markup).toContain("Running");
-    expect(markup).not.toContain("Work Log");
-  });
-
-  it("renders a start-only in-progress task card immediately with status and available metadata", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-task-start-only",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-task-start-only",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Explore the codebase",
-              tone: "info",
-              taskId: "task-start-only",
-              description: "Explore the codebase",
-              taskType: "local_agent",
-              subagentType: "Explore",
-              prompt: "Map the repository structure",
-              toolLifecycleStatus: "inProgress",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-task-card="true"');
-    expect(markup).toContain('data-task-id="task-start-only"');
-    expect(markup).toContain('data-task-status="inProgress"');
-    expect(markup).toContain("Running");
-    expect(markup).toContain("Explore the codebase");
-    // No provider metrics yet — nothing is fabricated.
-    expect(markup).not.toContain("token");
-    expect(markup).not.toContain("last:");
-    // A native disclosure button supplies click and Enter/Space behavior. Its
-    // state always references the mounted (but initially hidden) detail region.
-    expect(markup).toContain('<button id="task-card-');
-    expect(markup).toContain('type="button"');
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain('aria-controls="task-card-');
-    expect(markup).toContain('aria-label="Explore the codebase, Running"');
-    expect(markup).toContain('role="region"');
-    expect(markup).toContain('aria-labelledby="task-card-');
-    expect(markup).toContain("hidden");
-    expect(markup).toContain("Prompt\nMap the repository structure");
-  });
-
-  it("uses start-only task type metadata when no description is available", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-task-start-metadata",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-task-start-metadata",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Task started",
-              tone: "info",
-              taskId: "task-start-metadata",
-              taskType: "local_agent",
-              subagentType: "Explore",
-              toolLifecycleStatus: "inProgress",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain(">Explore<");
-    expect(markup).toContain("Task started");
-    expect(markup).toContain("Running");
-  });
-
-  it("exposes no expansion semantics when a task card has no detail content", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-task-plain",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-task-plain",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Explore the codebase",
-              tone: "info",
-              taskId: "task-plain",
-              description: "Explore the codebase",
-              toolLifecycleStatus: "inProgress",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-task-card="true"');
-    expect(markup).toContain('data-task-id="task-plain"');
-    expect(markup).not.toContain('role="button"');
-    expect(markup).not.toContain("aria-expanded");
-    expect(markup).not.toContain("aria-controls");
-    expect(markup).not.toContain('tabindex="0"');
-  });
-
-  describe("thread task lifecycle rows", () => {
-    const renderTaskActivity = (payload: Record<string, unknown>, kind: string) =>
-      renderToStaticMarkup(
-        <MessagesTimeline
-          {...buildProps()}
-          timelineEntries={[
-            {
-              id: "entry-1",
-              kind: "work",
-              createdAt: MESSAGE_CREATED_AT,
-              entry: {
-                id: "work-1",
-                createdAt: MESSAGE_CREATED_AT,
-                label: kind,
-                tone: "info",
-                sourceActivityKind: kind,
-                threadTask: parseThreadTaskActivity({ kind, payload } as never)!,
-              },
-            },
-          ]}
-        />,
-      );
-
-    const created = (overrides: Record<string, unknown> = {}) =>
-      renderTaskActivity(
-        {
-          taskThreadId: "task-1",
-          title: "Inventory the handlers",
-          createdBy: "agent",
-          contextLabel: "full thread",
-          ...overrides,
-        },
-        "task.created",
-      );
-
-    const finished = (overrides: Record<string, unknown> = {}) =>
-      renderTaskActivity(
-        {
-          taskThreadId: "task-1",
-          title: "Inventory the handlers",
-          outcome: "succeeded",
-          summary: "Found 4 handlers without tests.",
-          deliveryState: "delivered",
-          ...overrides,
-        },
-        "task.finished",
-      );
-
-    it("attributes a created row to the agent or to the user", () => {
-      const byAgent = created();
-      expect(byAgent).toContain('data-testid="thread-task-row-task.created"');
-      expect(byAgent).toContain("Agent created task");
-      expect(byAgent).toContain("Inventory the handlers");
-      expect(byAgent).toContain("full thread");
-
-      expect(created({ createdBy: "user" })).toContain("You created task");
-    });
-
-    it("offers no disclosure on a created row, which has nothing to reveal", () => {
-      const markup = created();
-      expect(markup).not.toContain("aria-expanded");
-      expect(markup).not.toContain("<pre");
-    });
-
-    it("says the parent resumed only for a delivered result, and tints it accordingly", () => {
-      const delivered = finished();
-      expect(delivered).toContain("Task finished. Main thread resumed.");
-      expect(delivered).toContain("bg-blue-500/[0.06]");
-      expect(delivered).not.toContain("text-amber-600");
-
-      const skipped = finished({ deliveryState: "skipped", deliverySkipReason: "parent-archived" });
-      expect(skipped).toContain("results were not delivered");
-      expect(skipped).toContain("this thread was archived");
-      expect(skipped).not.toContain("Main thread resumed");
-      expect(skipped).toContain("text-amber-600");
-      expect(skipped).not.toContain("bg-blue-500/[0.06]");
-    });
-
-    it("carries the task's outcome into the wake-up sentence", () => {
-      expect(finished({ outcome: "failed" })).toContain("Task failed.");
-      expect(finished({ outcome: "cancelled" })).toContain("Task was cancelled.");
-    });
-
-    // The injected text is the parent's next prompt, so it must be reachable —
-    // but collapsed, or a long result would bury the transcript around it.
-    it("keeps the injected result behind a collapsed disclosure", () => {
-      const markup = finished();
-      expect(markup).toContain('aria-expanded="false"');
-      expect(markup).toContain('aria-label="Task finished. Main thread resumed."');
-      expect(markup).not.toContain("Found 4 handlers without tests.");
-    });
-
-    it("offers no disclosure when the task returned nothing to inject", () => {
-      const markup = finished({ summary: "" });
-      expect(markup).not.toContain("aria-expanded");
-      expect(markup).toContain("Task finished. Main thread resumed.");
-    });
-
-    it("marks a server-trimmed result so the disclosure is not read as the whole output", () => {
-      expect(finished({ summaryTruncated: true })).toContain("trimmed");
-      expect(finished()).not.toContain("trimmed");
-    });
-
-    // The beta owns the whole surface: with it off there is no task chrome to
-    // explain, so the lifecycle rows go with it. The wake-up message stays
-    // suppressed either way — see the suppression test below.
-    it("hides the lifecycle rows when the thread tasks beta is off", () => {
-      const markup = renderToStaticMarkup(
-        <MessagesTimeline
-          {...buildProps()}
-          threadTasksEnabled={false}
-          timelineEntries={[
-            {
-              id: "entry-1",
-              kind: "work",
-              createdAt: MESSAGE_CREATED_AT,
-              entry: {
-                id: "work-1",
-                createdAt: MESSAGE_CREATED_AT,
-                label: "task.finished",
-                tone: "info",
-                sourceActivityKind: "task.finished",
-                threadTask: parseThreadTaskActivity({
-                  kind: "task.finished",
-                  payload: {
-                    taskThreadId: "task-1",
-                    title: "Inventory the handlers",
-                    outcome: "succeeded",
-                    summary: "Found 4 handlers without tests.",
-                    deliveryState: "delivered",
-                  },
-                } as never)!,
-              },
-            },
-            { ...buildUserTimelineEntry("Carry on then."), id: "entry-2" },
-          ]}
-        />,
-      );
-
-      expect(markup).not.toContain("thread-task-row-task.finished");
-      expect(markup).not.toContain("Main thread resumed");
-      expect(markup).toContain("Carry on then.");
-    });
-
-    it("links to the task thread from both row variants", () => {
-      expect(created()).toContain('data-testid="thread-task-open-thread"');
-      expect(finished()).toContain('data-testid="thread-task-open-thread"');
-    });
-
-    // The wake-up is delivered as a `user` message so the provider acts on it.
-    // Nobody typed it, so it must not appear as a user bubble — the lifecycle
-    // row above is the only place it shows.
-    it("suppresses the injected task-result message from the transcript", () => {
-      const markup = renderToStaticMarkup(
-        <MessagesTimeline
-          {...buildProps()}
-          timelineEntries={[
-            {
-              id: "entry-0",
-              kind: "message",
-              createdAt: MESSAGE_CREATED_AT,
-              message: {
-                id: MessageId.make("message-0"),
-                role: "user",
-                text: "Task results: found 4 handlers without tests.",
-                source: "task-result",
-                turnId: null,
-                createdAt: MESSAGE_CREATED_AT,
-                updatedAt: MESSAGE_CREATED_AT,
-                streaming: false,
-              } as import("../../types").ChatMessage,
-            },
-            buildUserTimelineEntry("Carry on then."),
-          ]}
-        />,
-      );
-
-      expect(markup).not.toContain("found 4 handlers without tests");
-      expect(markup).toContain("Carry on then.");
-    });
+    expect(markup).toContain("lucide-circle-alert");
+    expect(markup).toContain("text-destructive");
   });
 });

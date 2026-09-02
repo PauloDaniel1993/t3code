@@ -124,7 +124,7 @@ describe("buildBranchNamePrompt", () => {
     expect(result.prompt).not.toContain("Attachment metadata:");
   });
 
-  it("includes ordered image, document, and file metadata", () => {
+  it("includes ordered image and file metadata", () => {
     const result = buildBranchNamePrompt({
       message: "Fix the layout from the supplied context",
       attachments: [
@@ -136,7 +136,7 @@ describe("buildBranchNamePrompt", () => {
           sizeBytes: 12345,
         },
         {
-          type: "document" as const,
+          type: "file" as const,
           id: "att-124",
           name: "requirements.pdf",
           mimeType: "application/pdf" as const,
@@ -154,11 +154,11 @@ describe("buildBranchNamePrompt", () => {
 
     expect(result.prompt).toContain("Attachment metadata:");
     const imageIndex = result.prompt.indexOf("screenshot.png");
-    const documentIndex = result.prompt.indexOf("requirements.pdf");
+    const pdfIndex = result.prompt.indexOf("requirements.pdf");
     const fileIndex = result.prompt.indexOf("notes.md");
     expect(imageIndex).toBeGreaterThan(-1);
-    expect(documentIndex).toBeGreaterThan(imageIndex);
-    expect(fileIndex).toBeGreaterThan(documentIndex);
+    expect(pdfIndex).toBeGreaterThan(imageIndex);
+    expect(fileIndex).toBeGreaterThan(pdfIndex);
     expect(result.prompt).toContain("application/pdf");
     expect(result.prompt).toContain("text/markdown");
     expect(result.prompt).toContain("34567 bytes");
@@ -184,7 +184,7 @@ describe("buildBranchNamePrompt", () => {
 });
 
 describe("buildThreadTitlePrompt", () => {
-  it("includes the user message in the prompt", () => {
+  it("includes the user message and the title guidance rules", () => {
     const result = buildThreadTitlePrompt({
       message: "Investigate reconnect regressions after session restore",
     });
@@ -225,6 +225,24 @@ describe("buildThreadTitlePrompt", () => {
     expect(result.prompt).toContain("image/png");
     expect(result.prompt).toContain("67890 bytes");
   });
+
+  it.each([
+    { mode: "initial", previousTitle: undefined },
+    { mode: "regeneration", previousTitle: "Open Projects in Desktop App" },
+  ])(
+    "tells the $mode prompt not to title linked PRs from local git history",
+    ({ previousTitle }) => {
+      const result = buildThreadTitlePrompt({
+        message: "$takeover https://github.com/pingdotgg/t3code/pull/8588",
+        ...(previousTitle === undefined ? {} : { previousTitle }),
+      });
+
+      expect(result.prompt).toContain(
+        "Local git history is not evidence of what a linked PR or issue is about.",
+      );
+      expect(result.prompt).toContain('such as "Take Over PR 8588"');
+    },
+  );
 
   it("regenerates from recent thread contents and identifies the previous title", () => {
     const result = buildThreadTitlePrompt({

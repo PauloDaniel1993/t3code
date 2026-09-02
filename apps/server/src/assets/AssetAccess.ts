@@ -1,4 +1,4 @@
-import { ThreadId, type AssetResource, type ChatAttachment } from "@t3tools/contracts";
+import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
   AssetPreviewTypeValidationError,
@@ -14,15 +14,12 @@ import {
   AssetWorkspaceRootNormalizationError,
 } from "@t3tools/contracts";
 import {
+  hostPreviewMimeTypeFromExtension,
   isWorkspaceImagePreviewPath,
   isWorkspacePreviewEntryPath,
   WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
   WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
 } from "@t3tools/shared/filePreview";
-import {
-  getAttachmentFileExtension,
-  lookupAttachmentFileType,
-} from "@t3tools/shared/attachmentFileTypes";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -41,10 +38,11 @@ import {
   timingSafeEqualBase64Url,
 } from "../auth/utils.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { resolveAttachmentPath, resolveAttachmentPathById } from "../attachmentStore.ts";
+import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { openMediaFile, type OpenMediaFile } from "./MediaFile.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 
@@ -78,6 +76,7 @@ const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;
 const PROJECT_FAVICON_VERSION_PREFIX = "v";
+const INLINE_VIDEO_MIME_TYPE_PATTERN = /^video\/[\w!#$&^.+-]+$/i;
 const PREVIEW_ASSET_EXTENSIONS = new Set([
   ...WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
   ...WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
@@ -107,19 +106,23 @@ const AssetClaimsSchema = Schema.Union([
   }),
   Schema.Struct({
     version: Schema.Literal(1),
-    kind: Schema.Literal("attachment"),
-    attachmentId: Schema.String,
+    kind: Schema.Literal("media-file-exact"),
+    filePath: Schema.String,
+    device: Schema.String,
+    inode: Schema.String,
     expiresAt: Schema.Number,
   }),
   Schema.Struct({
-    version: Schema.Literal(2),
+    version: Schema.Literal(1),
     kind: Schema.Literal("attachment"),
     attachmentId: Schema.String,
-    threadId: ThreadId,
-    attachmentKind: Schema.Literals(["image", "document", "file"]),
-    dispositionMode: Schema.Literals(["inline-pdf", "download"]),
-    displayName: Schema.String,
-    mimeType: Schema.String,
+    /** Decided at mint time. Absent tokens (from before this field) serve
+        inline, which is only ever the image case. */
+    download: Schema.optionalKey(Schema.Boolean),
+    /** Display name and mime the caller supplied at mint time; drive the
+        download filename and Content-Type. */
+    fileName: Schema.optionalKey(Schema.String),
+    mimeType: Schema.optionalKey(Schema.String),
     expiresAt: Schema.Number,
   }),
   Schema.Struct({
@@ -142,24 +145,14 @@ const AssetClaimsJson = Schema.fromJsonString(AssetClaimsSchema);
 const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
-export type AttachmentDispositionMode = "inline-pdf" | "download";
-
-export interface AttachmentAssetIssueContext {
-  readonly threadId: string;
-  readonly attachment: ChatAttachment;
-  readonly dispositionMode: AttachmentDispositionMode;
-}
-
-export type ResolvedAsset =
-  | { readonly kind: "file"; readonly path: string }
-  | {
-      readonly kind: "attachment";
-      readonly path: string;
-      readonly attachmentKind: "document" | "file";
-      readonly dispositionMode: AttachmentDispositionMode;
-      readonly displayName: string;
-      readonly contentType: string;
-    };
+export type ResolvedAsset = {
+  readonly kind: "file";
+  readonly path: string;
+  readonly download?: boolean;
+  readonly fileName?: string;
+  readonly mimeType?: string;
+  readonly file?: OpenMediaFile;
+};
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
   try {
@@ -187,73 +180,6 @@ const optionOnNotFound = <A, R>(
         error.reason._tag === "NotFound" ? Effect.succeed(Option.none<A>()) : Effect.fail(error),
     }),
   );
-
-function normalizeAttachmentMetadata(attachment: ChatAttachment): ChatAttachment | null {
-  switch (attachment.type) {
-    case "image": {
-      const mimeType = attachment.mimeType.toLowerCase();
-      return mimeType.startsWith("image/") ? { ...attachment, mimeType } : null;
-    }
-    case "document":
-      return getAttachmentFileExtension(attachment.name) === "pdf"
-        ? { ...attachment, mimeType: "application/pdf" }
-        : null;
-    case "file": {
-      const fileType = lookupAttachmentFileType(attachment.name);
-      return fileType ? { ...attachment, mimeType: fileType.mimeType } : null;
-    }
-  }
-}
-
-function attachmentFromClaims(
-  claims: Extract<AssetClaims, { readonly kind: "attachment"; readonly version: 2 }>,
-): ChatAttachment | null {
-  if (claims.attachmentKind !== "document" && claims.dispositionMode !== "download") return null;
-
-  switch (claims.attachmentKind) {
-    case "image":
-      return normalizeAttachmentMetadata({
-        type: "image",
-        id: claims.attachmentId,
-        name: claims.displayName,
-        mimeType: claims.mimeType,
-        sizeBytes: 0,
-      });
-    case "document":
-      if (
-        claims.mimeType !== "application/pdf" ||
-        getAttachmentFileExtension(claims.displayName) !== "pdf"
-      ) {
-        return null;
-      }
-      return normalizeAttachmentMetadata({
-        type: "document",
-        id: claims.attachmentId,
-        name: claims.displayName,
-        mimeType: "application/pdf",
-        sizeBytes: 1,
-      });
-    case "file": {
-      const fileType = lookupAttachmentFileType(claims.displayName);
-      if (!fileType || fileType.mimeType !== claims.mimeType) return null;
-      return {
-        type: "file",
-        id: claims.attachmentId,
-        name: claims.displayName,
-        mimeType: fileType.mimeType,
-        sizeBytes: 1,
-      };
-    }
-  }
-}
-
-const isRegularFile = Effect.fn("AssetAccess.isRegularFile")(function* (filePath: string) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const info = yield* optionOnNotFound(fileSystem.stat(filePath)).pipe(
-    Effect.orElseSucceed(() => Option.none()),
-  );
-  return Option.isSome(info) && info.value.type === "File";
-});
 
 const resolveCanonicalFile = Effect.fn("AssetAccess.resolveCanonicalFile")(function* (
   filePath: string,
@@ -311,7 +237,6 @@ const resolveCanonicalWorkspaceFileForRequest = (input: {
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
   readonly workspaceRoot?: string;
-  readonly attachmentContext?: AttachmentAssetIssueContext;
   readonly projectFaviconPath?: string;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -323,6 +248,55 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   let sourcePath: string | undefined;
 
   switch (input.resource._tag) {
+    case "media-file": {
+      let requestedPath = input.resource.path;
+      if (!path.isAbsolute(requestedPath)) {
+        if (!input.workspaceRoot) {
+          return yield* new AssetWorkspaceContextNotFoundError({ resource: input.resource });
+        }
+        const workspaceRoot = yield* workspacePaths
+          .normalizeWorkspaceRoot(input.workspaceRoot)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new AssetWorkspaceRootNormalizationError({ resource: input.resource, cause }),
+            ),
+          );
+        requestedPath = path.resolve(workspaceRoot, requestedPath);
+      }
+      const canonicalFile = yield* resolveCanonicalFile(requestedPath).pipe(
+        Effect.mapError(
+          (cause) => new AssetWorkspaceAssetInspectionError({ resource: input.resource, cause }),
+        ),
+      );
+      if (!canonicalFile) {
+        return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+      }
+      if (hostPreviewMimeTypeFromExtension(path.extname(canonicalFile)) === null) {
+        return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
+      }
+      const identity = yield* openMediaFile(canonicalFile).pipe(
+        Effect.map((file) =>
+          file ? { device: file.info.dev.toString(), inode: file.info.ino.toString() } : null,
+        ),
+        Effect.scoped,
+        Effect.mapError(
+          (cause) => new AssetWorkspaceAssetInspectionError({ resource: input.resource, cause }),
+        ),
+      );
+      if (!identity) {
+        return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+      }
+      claims = {
+        version: 1,
+        kind: "media-file-exact",
+        filePath: canonicalFile,
+        ...identity,
+        expiresAt,
+      };
+      fileName = path.basename(canonicalFile);
+      break;
+    }
     case "workspace-file": {
       if (!input.workspaceRoot) {
         return yield* new AssetWorkspaceContextNotFoundError({
@@ -403,56 +377,32 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
     }
     case "attachment": {
       const config = yield* ServerConfig.ServerConfig;
-      const attachmentContext = input.attachmentContext;
-      if (attachmentContext) {
-        const attachment = normalizeAttachmentMetadata(attachmentContext.attachment);
-        if (
-          !attachment ||
-          attachment.id !== input.resource.attachmentId ||
-          input.resource.threadId === undefined ||
-          input.resource.threadId !== attachmentContext.threadId
-        ) {
-          return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
-        }
-        const attachmentPath = resolveAttachmentPath({
-          attachmentsDir: config.attachmentsDir,
-          attachment,
-          threadId: attachmentContext.threadId,
-        });
-        if (!attachmentPath || !(yield* isRegularFile(attachmentPath))) {
-          return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
-        }
-        const dispositionMode =
-          attachment.type === "document" ? attachmentContext.dispositionMode : "download";
-        claims = {
-          version: 2,
-          kind: "attachment",
-          attachmentId: attachment.id,
-          threadId: input.resource.threadId,
-          attachmentKind: attachment.type,
-          dispositionMode,
-          displayName: attachment.name,
-          mimeType: attachment.mimeType,
-          expiresAt,
-        };
-        fileName = attachment.name;
-        break;
-      }
-
       const attachmentPath = resolveAttachmentPathById({
         attachmentsDir: config.attachmentsDir,
         attachmentId: input.resource.attachmentId,
+        ...(input.resource.threadId !== undefined ? { threadId: input.resource.threadId } : {}),
       });
       if (!attachmentPath) {
         return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
       }
+      // Generic files carry their extension inside the attachment id (that
+      // shape resolves the on-disk path); images do not. Videos and images
+      // render inline; other generic files download.
+      const isGenericFile = parseAttachmentFileExtension(input.resource.attachmentId) !== null;
+      const videoMimeType = input.resource.mimeType?.split(";", 1)[0]?.trim() ?? "";
+      const isVideo = INLINE_VIDEO_MIME_TYPE_PATTERN.test(videoMimeType);
       claims = {
         version: 1,
         kind: "attachment",
         attachmentId: input.resource.attachmentId,
+        ...(isGenericFile && !isVideo ? { download: true } : {}),
+        ...(input.resource.fileName !== undefined ? { fileName: input.resource.fileName } : {}),
+        ...(input.resource.mimeType !== undefined
+          ? { mimeType: isVideo ? videoMimeType : input.resource.mimeType }
+          : {}),
         expiresAt,
       };
-      fileName = path.basename(attachmentPath);
+      fileName = input.resource.fileName ?? path.basename(attachmentPath);
       break;
     }
     case "project-favicon": {
@@ -609,42 +559,31 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
 
   if (claims.kind === "attachment") {
     const config = yield* ServerConfig.ServerConfig;
-    if (claims.version === 1) {
-      const attachmentPath = resolveAttachmentPathById({
-        attachmentsDir: config.attachmentsDir,
-        attachmentId: claims.attachmentId,
-      });
-      return attachmentPath && (yield* isRegularFile(attachmentPath))
-        ? ({ kind: "file", path: attachmentPath } satisfies ResolvedAsset)
-        : null;
-    }
-
-    const decodedAttachmentName = decodeRelativePath(relativePath);
-    if (
-      decodedAttachmentName === null ||
-      decodedAttachmentName !== toWellFormedUnicode(claims.displayName)
-    ) {
-      return null;
-    }
-    const attachment = attachmentFromClaims(claims);
-    if (!attachment) return null;
-    const attachmentPath = resolveAttachmentPath({
+    const attachmentPath = resolveAttachmentPathById({
       attachmentsDir: config.attachmentsDir,
-      attachment,
-      threadId: claims.threadId,
+      attachmentId: claims.attachmentId,
     });
-    if (!attachmentPath || !(yield* isRegularFile(attachmentPath))) return null;
-    if (attachment.type === "image") {
-      return { kind: "file", path: attachmentPath } satisfies ResolvedAsset;
-    }
-    return {
-      kind: "attachment",
-      path: attachmentPath,
-      attachmentKind: attachment.type,
-      dispositionMode: claims.dispositionMode,
-      displayName: attachment.name,
-      contentType: attachment.mimeType,
-    } satisfies ResolvedAsset;
+    if (!attachmentPath) return null;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const info = yield* optionOnNotFound(fileSystem.stat(attachmentPath)).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to inspect attachment asset.", {
+          attachmentId: claims.attachmentId,
+          path: attachmentPath,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    return Option.isSome(info) && info.value.type === "File"
+      ? ({
+          kind: "file",
+          path: attachmentPath,
+          ...(claims.download ? { download: true } : {}),
+          ...(claims.fileName !== undefined ? { fileName: claims.fileName } : {}),
+          ...(claims.mimeType !== undefined ? { mimeType: claims.mimeType } : {}),
+        } satisfies ResolvedAsset)
+      : null;
   }
 
   if (claims.kind === "project-favicon") {
@@ -674,6 +613,30 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   const decodedPath = decodeRelativePath(relativePath);
   if (decodedPath === null) return null;
   const path = yield* Path.Path;
+  if (claims.kind === "media-file-exact") {
+    if (decodedPath !== path.basename(claims.filePath)) return null;
+    const canonicalFile = yield* resolveCanonicalFile(claims.filePath).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to resolve canonical media path.", {
+          filePath: claims.filePath,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+    if (canonicalFile !== claims.filePath) return null;
+    const mimeType = hostPreviewMimeTypeFromExtension(path.extname(canonicalFile));
+    if (!mimeType) return null;
+    const file = yield* openMediaFile(canonicalFile, claims).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to open canonical media file.", { filePath: canonicalFile, cause }),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+    return file
+      ? ({ kind: "file", path: canonicalFile, mimeType, file } satisfies ResolvedAsset)
+      : null;
+  }
   if (claims.kind === "workspace-file-exact") {
     if (decodedPath !== path.basename(claims.relativePath)) return null;
     const exactWorkspaceFile = yield* resolveCanonicalWorkspaceFileForRequest({

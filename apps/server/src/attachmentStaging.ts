@@ -5,6 +5,7 @@ import {
   CommandId,
   type ChatAttachment,
   OrchestrationDispatchCommandError,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -18,6 +19,7 @@ import * as Schema from "effect/Schema";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE,
+  attachmentFileExtension,
   attachmentRelativePath,
   createAttachmentId,
   isAttachmentOwnedByThread,
@@ -27,6 +29,7 @@ import {
 } from "./attachmentStore.ts";
 import type { ValidatedAttachment } from "./attachmentValidation.ts";
 import { ServerConfig } from "./config.ts";
+import type { ProjectionSnapshotQueryShape } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { AttachmentCleanupQueueRepositoryShape } from "./persistence/Services/AttachmentCleanupQueue.ts";
 
 export const ATTACHMENT_STAGING_DIRECTORY_NAME = ".staging";
@@ -71,13 +74,22 @@ export interface StagedAttachments {
 
 type StageState = "unclaimed" | "claimed" | "committing" | "committed" | "completed" | "aborted";
 
-interface StagedEntry {
+export type StageableAttachment =
+  | ValidatedAttachment
+  | {
+      readonly type: "image" | "file";
+      readonly name: string;
+      readonly mimeType: string;
+      readonly sizeBytes: number;
+      readonly sourcePath: string;
+    };
+
+type StagedEntry = {
   readonly name: string;
   readonly stagedPath: string;
   readonly finalPath: string;
   readonly finalRelativePath: string;
-  readonly bytes: Uint8Array;
-}
+} & ({ readonly bytes: Uint8Array } | { readonly sourcePath: string });
 
 function stageError(message: string, cause?: unknown) {
   return new OrchestrationDispatchCommandError({
@@ -86,7 +98,7 @@ function stageError(message: string, cause?: unknown) {
   });
 }
 
-function toPersistedAttachment(attachment: ValidatedAttachment, id: string): ChatAttachment {
+function toPersistedAttachment(attachment: StageableAttachment, id: string): ChatAttachment {
   switch (attachment.type) {
     case "image":
       return {
@@ -94,14 +106,6 @@ function toPersistedAttachment(attachment: ValidatedAttachment, id: string): Cha
         id,
         name: attachment.name,
         mimeType: attachment.mimeType,
-        sizeBytes: attachment.sizeBytes,
-      };
-    case "document":
-      return {
-        type: "document",
-        id,
-        name: attachment.name,
-        mimeType: "application/pdf",
         sizeBytes: attachment.sizeBytes,
       };
     case "file":
@@ -138,7 +142,7 @@ function validateStageManifest(candidate: AttachmentStageManifest): AttachmentSt
 export const stageValidatedAttachments = Effect.fn("stageValidatedAttachments")(function* (input: {
   readonly commandId: string;
   readonly threadId: string;
-  readonly attachments: ReadonlyArray<ValidatedAttachment>;
+  readonly attachments: ReadonlyArray<StageableAttachment>;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -146,7 +150,10 @@ export const stageValidatedAttachments = Effect.fn("stageValidatedAttachments")(
 
   const persistedAttachments: ChatAttachment[] = [];
   for (const attachment of input.attachments) {
-    const id = createAttachmentId(input.threadId);
+    const id = createAttachmentId(
+      input.threadId,
+      attachment.type === "file" ? attachmentFileExtension(attachment.name) : undefined,
+    );
     if (!id) {
       return yield* stageError(
         `${ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE} Cannot stage attachment '${attachment.name}'.`,
@@ -179,14 +186,12 @@ export const stageValidatedAttachments = Effect.fn("stageValidatedAttachments")(
       return yield* stageError(`Failed to prepare attachment '${attachment.name}' for staging.`);
     }
 
-    const finalRelativePath = yield* Effect.try({
-      try: () => attachmentRelativePath(persistedAttachment),
-      catch: (cause) =>
-        stageError(
-          `Failed to resolve a safe persisted path for attachment '${attachment.name}'.`,
-          cause,
-        ),
-    });
+    const finalRelativePath = attachmentRelativePath(persistedAttachment);
+    if (!finalRelativePath) {
+      return yield* stageError(
+        `Failed to resolve a safe persisted path for attachment '${attachment.name}'.`,
+      );
+    }
     const finalPath = resolveAttachmentRelativePath({
       attachmentsDir: serverConfig.attachmentsDir,
       relativePath: finalRelativePath,
@@ -205,7 +210,9 @@ export const stageValidatedAttachments = Effect.fn("stageValidatedAttachments")(
       stagedPath,
       finalPath,
       finalRelativePath,
-      bytes: attachment.bytes,
+      ...("sourcePath" in attachment
+        ? { sourcePath: attachment.sourcePath }
+        : { bytes: attachment.bytes }),
     });
   }
 
@@ -238,9 +245,10 @@ export const stageValidatedAttachments = Effect.fn("stageValidatedAttachments")(
         }).pipe(Effect.as(false)),
       ),
     );
-    if (removed) {
-      yield* removeStageRootIfEmpty();
-    }
+    // Another cleanup path may already have removed this command directory.
+    // Always prune the shared root when it is empty, including that idempotent
+    // case, so rollback never leaves a useless `.staging` directory behind.
+    yield* removeStageRootIfEmpty();
     return removed;
   });
 
@@ -368,13 +376,15 @@ export const stageValidatedAttachments = Effect.fn("stageValidatedAttachments")(
         ),
       );
     for (const entry of entries) {
-      yield* fileSystem
-        .writeFile(entry.stagedPath, entry.bytes, { flag: "wx", mode: 0o600 })
-        .pipe(
-          Effect.mapError((cause) =>
-            stageError(`Failed to stage attachment '${entry.name}'.`, cause),
-          ),
-        );
+      yield* (
+        "sourcePath" in entry
+          ? fileSystem.copyFile(entry.sourcePath, entry.stagedPath)
+          : fileSystem.writeFile(entry.stagedPath, entry.bytes, { flag: "wx", mode: 0o600 })
+      ).pipe(
+        Effect.mapError((cause) =>
+          stageError(`Failed to stage attachment '${entry.name}'.`, cause),
+        ),
+      );
     }
     yield* fileSystem
       .writeFileString(manifestPath, encodeAttachmentStageManifest(manifest), {
@@ -406,6 +416,7 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
   function* (input: {
     readonly attachmentsDir: string;
     readonly queue: AttachmentCleanupQueueRepositoryShape;
+    readonly snapshotQuery: Pick<ProjectionSnapshotQueryShape, "getThreadDetailById">;
   }) {
     const fileSystem = yield* FileSystem.FileSystem;
     const pendingIntents = yield* input.queue.listPending({
@@ -418,6 +429,16 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
     const removeThreadAttachments = Effect.fn("removeQueuedThreadAttachments")(function* (
       threadId: string,
     ) {
+      const currentThread = yield* input.snapshotQuery.getThreadDetailById(
+        ThreadId.make(threadId),
+        {
+          activityKinds: [],
+        },
+      );
+      if (Option.isSome(currentThread)) {
+        return;
+      }
+
       const threadSegment = toCanonicalThreadAttachmentSegment(threadId);
       if (!threadSegment) {
         return yield* Effect.fail(`Unsafe attachment cleanup thread id '${threadId}'.`);
@@ -455,6 +476,22 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
       const attachmentId = parseAttachmentIdFromRelativePath(relativePath);
       if (!attachmentId || !isAttachmentOwnedByThread({ attachmentId, threadId })) {
         return yield* Effect.fail(`Unsafe queued attachment path '${relativePath}'.`);
+      }
+      const currentThread = yield* input.snapshotQuery.getThreadDetailById(
+        ThreadId.make(threadId),
+        {
+          activityKinds: [],
+        },
+      );
+      if (
+        Option.isSome(currentThread) &&
+        currentThread.value.messages.some((message) =>
+          message.attachments?.some(
+            (attachment) => attachmentRelativePath(attachment) === relativePath,
+          ),
+        )
+      ) {
+        return;
       }
       const absolutePath = resolveAttachmentRelativePath({
         attachmentsDir: input.attachmentsDir,

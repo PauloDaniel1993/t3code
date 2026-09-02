@@ -1,9 +1,8 @@
 import { useCallback } from "react";
-import { Pressable, ScrollView, StyleSheet, View, type ColorValue } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 
 import { AppText as Text } from "../../../components/AppText";
 import { useAppearancePreferences } from "../../settings/appearance/AppearancePreferencesProvider";
-import { useThemeColor } from "../../../lib/useThemeColor";
 import type {
   TaskAgentRowTone,
   TaskAgentRowViewModel,
@@ -49,7 +48,6 @@ function failureReason(row: TaskAgentRowViewModel): string | null {
 
 /** One renderer for both task and provider-native agent rows. */
 function TaskAgentPeekRow(props: {
-  readonly borderColor: ColorValue;
   readonly row: TaskAgentRowViewModel;
   readonly theme: TaskAgentTheme;
 }) {
@@ -60,7 +58,8 @@ function TaskAgentPeekRow(props: {
   return (
     <View
       accessibilityLabel={`${row.title}, ${row.statusLine}`}
-      style={[styles.entityRow, { backgroundColor: theme.card, borderColor: props.borderColor }]}
+      className="border-border"
+      style={[styles.entityRow, { backgroundColor: theme.card }]}
     >
       <View style={styles.glyphCell}>
         <Text style={[styles.glyph, { color: statusColor }]}>{row.glyph}</Text>
@@ -90,14 +89,13 @@ function TaskAgentPeekRow(props: {
 }
 
 function TaskAgentPeekTurn(props: {
-  readonly borderColor: ColorValue;
   readonly theme: TaskAgentTheme;
   readonly turn: TaskAgentTurnRowViewModel;
 }) {
   const { turn, theme } = props;
 
   return (
-    <View style={[styles.turnSection, { borderColor: props.borderColor }]}>
+    <View className="border-border" style={styles.turnSection}>
       <View style={styles.turnHeader}>
         <View style={styles.turnHeaderText}>
           <Text style={[styles.turnTitle, { color: theme.text.muted }]}>{turn.label}</Text>
@@ -119,12 +117,7 @@ function TaskAgentPeekTurn(props: {
       </View>
       <View style={styles.agentRows}>
         {turn.agents.map((agent) => (
-          <TaskAgentPeekRow
-            key={agent.id}
-            borderColor={props.borderColor}
-            row={agent}
-            theme={theme}
-          />
+          <TaskAgentPeekRow key={agent.id} row={agent} theme={theme} />
         ))}
       </View>
     </View>
@@ -231,7 +224,6 @@ export function TaskAgentPeekUnavailableSheet(props: TaskAgentPeekUnavailableShe
 export function TaskAgentPeekSheet(props: TaskAgentPeekSheetProps) {
   const { themeAppearance, themeId } = useAppearancePreferences();
   const theme = getTaskAgentTheme(themeAppearance, themeId);
-  const borderColor = useThemeColor("--color-border");
   const { peek } = props;
 
   return (
@@ -246,7 +238,7 @@ export function TaskAgentPeekSheet(props: TaskAgentPeekSheetProps) {
         contentInsetAdjustmentBehavior="automatic"
         style={styles.scrollView}
       >
-        <TaskAgentPeekRow borderColor={borderColor} row={peek.row} theme={theme} />
+        <TaskAgentPeekRow row={peek.row} theme={theme} />
 
         <View style={styles.windowNote}>
           <Text style={[styles.windowLabel, { color: theme.text.muted }]}>
@@ -266,14 +258,7 @@ export function TaskAgentPeekSheet(props: TaskAgentPeekSheetProps) {
               {peek.turnAgents.emptyMessage}
             </Text>
           ) : (
-            peek.turns.map((turn) => (
-              <TaskAgentPeekTurn
-                key={turn.key}
-                borderColor={borderColor}
-                theme={theme}
-                turn={turn}
-              />
-            ))
+            peek.turns.map((turn) => <TaskAgentPeekTurn key={turn.key} theme={theme} turn={turn} />)
           )}
         </View>
 

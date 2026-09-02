@@ -4,7 +4,6 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { PROVIDER_INLINE_FILE_MAX_CHARS, ThreadId } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -12,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import { attachmentRelativePath } from "../attachmentStore.ts";
 import {
   decodeProviderText,
+  PROVIDER_INLINE_FILE_MAX_CHARS,
   ProviderInlineTextBudget,
   providerFileUri,
   resolveProviderAttachment,
@@ -32,7 +32,7 @@ describe("attachmentDelivery", () => {
     );
   });
 
-  it.effect("resolves and reads only attachments owned by the supplied thread", () =>
+  it.effect("resolves and reads known persisted attachments", () =>
     Effect.gen(function* () {
       const attachmentsDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "provider-files-"));
       yield* Effect.addFinalizer(() =>
@@ -46,40 +46,18 @@ describe("attachmentDelivery", () => {
         mimeType: "text/plain",
         sizeBytes: 5,
       };
-      const absolutePath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      const relativePath = attachmentRelativePath(attachment);
+      assert.isNotNull(relativePath);
+      const absolutePath = NodePath.join(attachmentsDir, relativePath);
       NodeFS.writeFileSync(absolutePath, "hello");
 
       const resolved = yield* resolveProviderAttachment({
         attachmentsDir,
-        threadId: ThreadId.make("thread-owned"),
         attachment,
         fileSystem,
       });
       assert.equal(resolved.absolutePath, absolutePath);
       assert.deepEqual(Array.from(resolved.bytes), Array.from(Buffer.from("hello")));
-
-      const rejected = yield* resolveProviderAttachment({
-        attachmentsDir,
-        threadId: ThreadId.make("other-thread"),
-        attachment,
-        fileSystem,
-      }).pipe(Effect.result);
-      assert.equal(rejected._tag, "Failure");
-      if (rejected._tag === "Failure") {
-        assert.equal(rejected.failure.reason, "invalid-or-unowned");
-        assert.match(rejected.failure.message, /notes\.txt/u);
-      }
-
-      const collisionRejected = yield* resolveProviderAttachment({
-        attachmentsDir,
-        threadId: ThreadId.make("thread.owned"),
-        attachment,
-        fileSystem,
-      }).pipe(Effect.result);
-      assert.equal(collisionRejected._tag, "Failure");
-      if (collisionRejected._tag === "Failure") {
-        assert.equal(collisionRejected.failure.reason, "invalid-or-unowned");
-      }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -93,7 +71,7 @@ describe("attachmentDelivery", () => {
       );
       const fileSystem = yield* FileSystem.FileSystem;
       const attachment = {
-        type: "document" as const,
+        type: "file" as const,
         id: "thread-missing-22345678-1234-1234-1234-123456789abc",
         name: "missing.pdf",
         mimeType: "application/pdf" as const,
@@ -102,7 +80,6 @@ describe("attachmentDelivery", () => {
 
       const rejected = yield* resolveProviderAttachment({
         attachmentsDir,
-        threadId: ThreadId.make("thread-missing"),
         attachment,
         fileSystem,
       }).pipe(Effect.result);

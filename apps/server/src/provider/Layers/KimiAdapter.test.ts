@@ -156,7 +156,9 @@ async function writeStoredAttachment(
   attachment: ChatAttachment,
   bytes: Uint8Array,
 ) {
-  const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+  const relativePath = attachmentRelativePath(attachment);
+  assert.isNotNull(relativePath);
+  const attachmentPath = NodePath.join(attachmentsDir, relativePath);
   await NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true });
   await NodeFSP.writeFile(attachmentPath, bytes);
   return attachmentPath;
@@ -166,7 +168,6 @@ it.effect("maps supported Kimi attachments and rejects unadvertised images befor
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "kimi-parts-" });
-    const threadId = ThreadId.make("kimi-attachment-thread");
     const file = {
       type: "file" as const,
       id: "kimi-attachment-thread-12345678-1234-1234-1234-123456789abc",
@@ -191,7 +192,6 @@ it.effect("maps supported Kimi attachments and rejects unadvertised images befor
     const parts = yield* prepareKimiAcpPromptParts({
       text: "Inspect",
       attachmentsDir,
-      threadId,
       attachments: [file, image],
       fileSystem,
       imageSupported: true,
@@ -218,7 +218,6 @@ it.effect("maps supported Kimi attachments and rejects unadvertised images befor
     const error = yield* prepareKimiAcpPromptParts({
       text: "Do not dispatch",
       attachmentsDir,
-      threadId,
       attachments: [image],
       fileSystem,
       imageSupported: false,

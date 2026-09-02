@@ -1,8 +1,5 @@
-import {
-  DEFAULT_MOBILE_THEME_ID,
-  getMobileThemeVariables,
-  type MobileThemeId,
-} from "../../../lib/mobileTheme";
+import { DEFAULT_MOBILE_THEME_ID, type MobileThemeId } from "../../../lib/mobileTheme";
+import { getMobileThemeRuntimeVariables } from "../../../lib/mobileThemeVariables";
 
 export type TaskAgentThemeMode = "light" | "dark";
 
@@ -94,7 +91,7 @@ export const TASK_AGENT_THEMES: Readonly<Record<TaskAgentThemeMode, TaskAgentThe
 };
 
 function deriveTaskAgentTheme(mode: TaskAgentThemeMode, themeId: MobileThemeId): TaskAgentTheme {
-  const variables = getMobileThemeVariables(themeId, mode);
+  const variables = getMobileThemeRuntimeVariables(themeId, mode);
   const taskTheme = TASK_AGENT_THEMES[mode];
 
   return {

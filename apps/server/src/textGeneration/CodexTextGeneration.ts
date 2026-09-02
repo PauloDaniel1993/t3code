@@ -92,7 +92,6 @@ export const prepareCodexTextGenerationAttachments = Effect.fn(
         imagePaths.push(resolvedPath);
         break;
       }
-      case "document":
       case "file":
         // Secondary git/title generation uses non-image metadata from the
         // shared prompt builder and materializes only actual image inputs.

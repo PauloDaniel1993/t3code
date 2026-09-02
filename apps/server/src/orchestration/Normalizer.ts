@@ -2,7 +2,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import {
-  type ChatImageAttachment,
+  type ChatAttachment,
   type ClientOrchestrationCommand,
   type IsoDateTime,
   type OrchestrationCommand,
@@ -10,14 +10,18 @@ import {
   OrchestrationDispatchCommandError,
 } from "@t3tools/contracts";
 
-import { stageValidatedAttachments, type AttachmentStage } from "../attachmentStaging.ts";
+import {
+  stageValidatedAttachments,
+  type AttachmentStage,
+  type StageableAttachment,
+} from "../attachmentStaging.ts";
 import {
   PENDING_ATTACHMENT_THREAD_SEGMENT,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPath,
   resolveAttachmentPathById,
 } from "../attachmentStore.ts";
-import { validateUploadAttachments, type ValidatedAttachment } from "../attachmentValidation.ts";
+import { validateUploadAttachments } from "../attachmentValidation.ts";
 import { ServerConfig } from "../config.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
@@ -61,60 +65,56 @@ function attachmentError(name: string, detail: string, cause?: unknown) {
   });
 }
 
-const validatePendingImageAttachment = Effect.fn("Normalizer.validatePendingImageAttachment")(
-  function* (attachment: ChatImageAttachment, attachmentsDir: string) {
-    if (parseThreadSegmentFromAttachmentId(attachment.id) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
-      return yield* attachmentError(attachment.name, "attachment must be a pending upload");
-    }
+const validatePendingAttachment = Effect.fn("Normalizer.validatePendingAttachment")(function* (
+  attachment: ChatAttachment,
+  attachmentsDir: string,
+) {
+  if (attachment.type !== "image" && attachment.type !== "file") {
+    return yield* attachmentError(attachment.name, "unsupported attachment type");
+  }
+  const attachmentType: "image" | "file" = attachment.type;
+  if (parseThreadSegmentFromAttachmentId(attachment.id) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
+    return yield* attachmentError(attachment.name, "attachment must be a pending upload");
+  }
 
-    const currentPath = resolveAttachmentPathById({
-      attachmentsDir,
-      attachmentId: attachment.id,
-    });
-    if (!currentPath) {
-      return yield* attachmentError(attachment.name, "attachment not found (removed or expired)");
-    }
+  const currentPath = resolveAttachmentPathById({
+    attachmentsDir,
+    attachmentId: attachment.id,
+  });
+  if (!currentPath) {
+    return yield* attachmentError(attachment.name, "attachment not found (removed or expired)");
+  }
 
-    const normalizedAttachment = {
-      ...attachment,
-      mimeType: attachment.mimeType.toLowerCase(),
-    };
-    const expectedPath = resolveAttachmentPath({
-      attachmentsDir,
-      attachment: normalizedAttachment,
-    });
-    if (expectedPath !== currentPath) {
-      return yield* attachmentError(attachment.name, "image type does not match the upload");
-    }
+  const normalizedAttachment = {
+    ...attachment,
+    mimeType: attachment.mimeType.toLowerCase(),
+  };
+  const expectedPath = resolveAttachmentPath({
+    attachmentsDir,
+    attachment: normalizedAttachment,
+  });
+  if (expectedPath !== currentPath) {
+    return yield* attachmentError(attachment.name, "attachment type does not match the upload");
+  }
 
-    const fileSystem = yield* FileSystem.FileSystem;
-    const info = yield* fileSystem
-      .stat(currentPath)
-      .pipe(
-        Effect.mapError((cause) => attachmentError(attachment.name, "attachment not found", cause)),
-      );
-    if (info.type !== "File" || Number(info.size) !== attachment.sizeBytes) {
-      return yield* attachmentError(attachment.name, "stored size does not match");
-    }
+  const fileSystem = yield* FileSystem.FileSystem;
+  const info = yield* fileSystem
+    .stat(currentPath)
+    .pipe(
+      Effect.mapError((cause) => attachmentError(attachment.name, "attachment not found", cause)),
+    );
+  if (info.type !== "File" || Number(info.size) !== attachment.sizeBytes) {
+    return yield* attachmentError(attachment.name, "stored size does not match");
+  }
 
-    const bytes = yield* fileSystem
-      .readFile(currentPath)
-      .pipe(
-        Effect.mapError((cause) => attachmentError(attachment.name, "attachment not found", cause)),
-      );
-    if (bytes.byteLength !== attachment.sizeBytes) {
-      return yield* attachmentError(attachment.name, "stored size does not match");
-    }
-
-    return {
-      type: "image",
-      name: attachment.name,
-      mimeType: normalizedAttachment.mimeType,
-      sizeBytes: bytes.byteLength,
-      bytes,
-    } satisfies ValidatedAttachment;
-  },
-);
+  return {
+    type: attachmentType,
+    name: attachment.name,
+    mimeType: normalizedAttachment.mimeType,
+    sizeBytes: Number(info.size),
+    sourcePath: currentPath,
+  };
+});
 
 export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchCommand")(function* (
   command: ClientOrchestrationCommand,
@@ -186,7 +186,7 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
 
   const serverConfig = yield* ServerConfig;
   const inlineAttachments: UploadChatAttachment[] = [];
-  const validatedByIndex: Array<ValidatedAttachment | null> = [];
+  const validatedByIndex: Array<StageableAttachment | null> = [];
 
   // Pending uploads require filesystem reads, but no attachment id is
   // allocated and no file is written until every attachment has validated.
@@ -196,14 +196,14 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
       validatedByIndex.push(null);
     } else {
       validatedByIndex.push(
-        yield* validatePendingImageAttachment(attachment, serverConfig.attachmentsDir),
+        yield* validatePendingAttachment(attachment, serverConfig.attachmentsDir),
       );
     }
   }
 
   const validatedInlineAttachments = yield* validateUploadAttachments(inlineAttachments);
   let inlineIndex = 0;
-  const validatedAttachments: ValidatedAttachment[] = [];
+  const validatedAttachments: StageableAttachment[] = [];
   for (const attachment of validatedByIndex) {
     if (attachment !== null) {
       validatedAttachments.push(attachment);

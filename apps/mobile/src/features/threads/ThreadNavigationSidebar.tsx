@@ -10,7 +10,6 @@ import { LegendList } from "@legendapp/list/react-native";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,9 +27,8 @@ import { SymbolView } from "../../components/AppSymbol";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
-import { useThemeColor } from "../../lib/useThemeColor";
 import { useProjects, useThreadShells } from "../../state/entities";
-import { mobilePreferencesAtom, resolveThreadTasksEnabled } from "../../state/preferences";
+import { useThreadTasksEnabled } from "../../state/preferences";
 import { useThreadSearch } from "../../state/queries";
 import { useTaskAgentReadState } from "../../state/use-task-agent-read-state";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
@@ -95,17 +93,13 @@ import {
   buildThreadListV2ListItems,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
-  type ThreadListV2ChangeRequestState,
-  type ThreadListV2PendingListItem,
-  type ThreadListV2SettledShelfListItem,
-  type ThreadListV2SnoozedShelfListItem,
-  type ThreadListV2ThreadListItem,
+  type ThreadListV2ListItem,
 } from "./threadListV2";
 
 /** The sidebar list serves both lists: v1 grouped items or, when the Thread
     List v2 beta is on, flat v2 rows with queued tasks spliced in, and a settled
     "Show more" pager. */
-type SidebarV2ThreadListItem = ThreadListV2ThreadListItem & {
+type SidebarV2ThreadListItem = Extract<ThreadListV2ListItem, { readonly type: "v2-thread" }> & {
   /** Captured in list data so LegendList can compare old and new expansion. */
   readonly taskAgentPresentationState: TaskAgentListPresentationState | undefined;
 };
@@ -113,9 +107,7 @@ type SidebarV2ThreadListItem = ThreadListV2ThreadListItem & {
 type SidebarListItem =
   | HomeListItem
   | SidebarV2ThreadListItem
-  | ThreadListV2PendingListItem
-  | ThreadListV2SnoozedShelfListItem
-  | ThreadListV2SettledShelfListItem
+  | Exclude<ThreadListV2ListItem, { readonly type: "v2-thread" }>
   | { readonly type: "v2-show-more"; readonly key: string; readonly hiddenCount: number };
 
 function taskAgentPresentationStatesEqual(
@@ -239,19 +231,11 @@ export function ThreadNavigationSidebar(props: ThreadNavigationSidebarProps) {
 function NativeSidebarContainer(
   props: ThreadNavigationSidebarProps & { readonly onOpenTaskAgentPeek: OpenTaskAgentPeek },
 ) {
-  const backgroundColor = useThemeColor("--color-drawer");
-  const borderColor = useThemeColor("--color-border");
-
   return (
     <View
       testID="thread-navigation-sidebar"
-      className="flex-1"
-      style={{
-        width: props.width,
-        backgroundColor,
-        borderRightColor: borderColor,
-        borderRightWidth: StyleSheet.hairlineWidth,
-      }}
+      className="flex-1 border-border bg-drawer"
+      style={{ borderRightWidth: StyleSheet.hairlineWidth, width: props.width }}
     >
       <SidebarNavigationShell>
         <ThreadNavigationSidebarPane {...props} nativeChrome />
@@ -288,12 +272,7 @@ function ThreadNavigationSidebarPane(
     regenerateThreadTitle,
   } = useThreadListActions();
   const threadListV2Enabled = useThreadListV2Enabled();
-  const preferencesResult = useAtomValue(mobilePreferencesAtom);
-  const preferences = AsyncResult.isSuccess(preferencesResult)
-    ? preferencesResult.value
-    : undefined;
-  const threadTasksEnabled = resolveThreadTasksEnabled(preferences?.threadTasksEnabled);
-  const autoSettleOnMerge = preferences?.autoSettleOnMerge !== false;
+  const threadTasksEnabled = useThreadTasksEnabled();
   const { readState: taskAgentReadState, markThreadsVisited } = useTaskAgentReadState();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
@@ -492,33 +471,6 @@ function ThreadNavigationSidebarPane(
 
   // Thread List v2 (beta) support — same model as the compact Home list
   // (HomeScreen.tsx): flat creation-order card block + settled recency tail.
-  // PR states stream in per-row. The next partition applies the configured
-  // merge rule and the always-on close rule.
-  const [changeRequestByKey, setChangeRequestByKey] = useState<
-    ReadonlyMap<string, ThreadListV2ChangeRequestState>
-  >(() => new Map());
-  const handleChangeRequestState = useCallback(
-    (threadKey: string, changeRequest: ThreadListV2ChangeRequestState | null) => {
-      setChangeRequestByKey((current) => {
-        const existing = current.get(threadKey) ?? null;
-        if (
-          (existing?.state ?? null) === (changeRequest?.state ?? null) &&
-          (existing?.updatedAt ?? null) === (changeRequest?.updatedAt ?? null) &&
-          (existing?.linkedPullRequestKey ?? null) === (changeRequest?.linkedPullRequestKey ?? null)
-        ) {
-          return current;
-        }
-        const next = new Map(current);
-        if (changeRequest === null) {
-          next.delete(threadKey);
-        } else {
-          next.set(threadKey, changeRequest);
-        }
-        return next;
-      });
-    },
-    [],
-  );
   // The settled tail renders in pages; expansion resets when the filter
   // context changes so environment/search flips never inherit a deep page.
   const [settledVisibleCount, setSettledVisibleCount] = useState(
@@ -541,9 +493,7 @@ function ThreadNavigationSidebarPane(
     toggleSettledShelf,
     toggleSnoozedShelf,
   } = useThreadListV2ShelfPreferences();
-  // now ticks per minute so the inactivity auto-settle boundary is actually
-  // crossed while the pane stays open; without a clock dependency the
-  // partition memoizes a frozen "now".
+  // The queued-start and snooze helpers need a clock while the pane stays open.
   const [nowMinute, setNowMinute] = useState(() => new Date().toISOString().slice(0, 16));
   // Snooze wake times are second-precise; a counter bumped exactly at the
   // next wake boundary re-runs the partition with a fresh clock so a woken
@@ -551,9 +501,7 @@ function ThreadNavigationSidebarPane(
   const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
   useEffect(() => {
     if (!threadListV2Enabled) return;
-    // Refresh immediately on enable: the mount-time value can be hours old
-    // by the time the beta is switched on, which would misclassify the
-    // inactivity auto-settle boundary until the first tick.
+    // Refresh immediately because the mount-time value can be hours old.
     setNowMinute(new Date().toISOString().slice(0, 16));
     const id = setInterval(() => setNowMinute(new Date().toISOString().slice(0, 16)), 60_000);
     return () => clearInterval(id);
@@ -678,20 +626,15 @@ function ThreadNavigationSidebarPane(
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
       matchedThreadKeys,
-      changeRequestByKey,
-      autoSettleOnMerge,
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
       settledLimit: settledVisibleCount,
-      now: `${nowMinute}:00.000Z`,
-      snoozeNow: new Date().toISOString(),
+      now: new Date().toISOString(),
       snoozedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey: props.selectedThreadKey ?? null,
     });
   }, [
-    changeRequestByKey,
-    autoSettleOnMerge,
     nowMinute,
     snoozeWakeTick,
     snoozedShelfExpanded,
@@ -973,10 +916,6 @@ function ThreadNavigationSidebarPane(
     ],
   );
 
-  const backgroundColor = useThemeColor("--color-drawer");
-  const borderColor = useThemeColor("--color-border");
-  const mutedColor = useThemeColor("--color-foreground-muted");
-  const placeholderColor = useThemeColor("--color-placeholder");
   const [measuredHeaderHeight, setMeasuredHeaderHeight] = useState<number | null>(null);
   // The sticky header (title row, search field, optional connection status)
   // is measured so the list inset always matches its real height — no
@@ -1193,7 +1132,6 @@ function ThreadNavigationSidebarPane(
               onPinThread={pinThread}
               onUnpinThread={unpinThread}
               onMovePinnedThread={movePinnedThread}
-              onChangeRequestState={handleChangeRequestState}
               projectCwd={projectCwdByKey.get(scopeKey) ?? null}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
@@ -1329,7 +1267,6 @@ function ThreadNavigationSidebarPane(
       arrangedPinnedKeys,
       confirmDeletePendingTask,
       confirmDeleteThread,
-      handleChangeRequestState,
       handleSelectThread,
       handleTaskAgentExpandedChange,
       handleTaskAgentRowPress,
@@ -1431,12 +1368,14 @@ function ThreadNavigationSidebarPane(
     return (
       <>
         <NativeStackScreenOptions
-          optionsVersion={nativeHeaderItems}
+          optionsVersion={[nativeHeaderItems, props.width]}
           options={{
             // Re-applies the shell's static brand slot with the
             // connection-status swap so reconnects surface in the header
             // instead of shifting the list.
             ...getConnectionAwareBrandHeaderOptions({
+              headerWidth: props.width,
+              trailingItemCount: nativeHeaderItems.length,
               onOpenEnvironments: props.onOpenEnvironmentSettings,
               fallbackTitleStyle: { fontSize: 18, fontWeight: "800" },
             }),
@@ -1502,13 +1441,8 @@ function ThreadNavigationSidebarPane(
   return (
     <View
       testID="thread-navigation-sidebar"
-      className="flex-1"
-      style={{
-        width: props.width,
-        backgroundColor,
-        borderRightColor: borderColor,
-        borderRightWidth: StyleSheet.hairlineWidth,
-      }}
+      className="flex-1 border-r border-border bg-drawer"
+      style={{ width: props.width }}
     >
       <View className="flex-1" style={{ paddingBottom: insets.bottom }}>
         <SwipeableScrollGateProvider enabled={swipeEnabled}>
@@ -1546,14 +1480,11 @@ function ThreadNavigationSidebarPane(
       </View>
 
       <View
-        className="absolute inset-x-0 top-0 z-[4]"
+        className="absolute inset-x-0 top-0 z-[4] bg-drawer"
         collapsable={false}
         onLayout={handleStickyHeaderLayout}
         pointerEvents="auto"
-        style={{
-          paddingTop: insets.top,
-          backgroundColor,
-        }}
+        style={{ paddingTop: insets.top }}
       >
         <View className="h-[50px] flex-row items-end gap-0.5 pr-2 pl-5">
           {/* Title slot doubles as the connection status surface: while an
@@ -1578,7 +1509,12 @@ function ThreadNavigationSidebarPane(
         </View>
 
         <View className="mx-4 mt-[9px] h-[38px] flex-row items-center gap-1.5 rounded-xl bg-sidebar-search pr-2.5 pl-[11px]">
-          <SymbolView name="magnifyingglass" size={15} tintColor={mutedColor} type="monochrome" />
+          <SymbolView
+            name="magnifyingglass"
+            size={15}
+            tintColorClassName={"accent-foreground-muted"}
+            type="monochrome"
+          />
           <TextInput
             ref={searchInputRef}
             accessibilityLabel="Search threads"
@@ -1587,7 +1523,7 @@ function ThreadNavigationSidebarPane(
             clearButtonMode="while-editing"
             onChangeText={props.onSearchQueryChange}
             placeholder="Search"
-            placeholderTextColor={placeholderColor}
+            placeholderTextColorClassName={"accent-placeholder"}
             returnKeyType="search"
             className="h-[34px] flex-1 px-0 py-0 font-sans text-base text-foreground"
             value={props.searchQuery}

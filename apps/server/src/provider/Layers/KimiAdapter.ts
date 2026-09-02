@@ -520,7 +520,6 @@ function selectKimiUserInputPermissionOption(
 export function prepareKimiAcpPromptParts(input: {
   readonly text: string | undefined;
   readonly attachmentsDir: string;
-  readonly threadId: ThreadId;
   readonly attachments: ReadonlyArray<ChatAttachment> | undefined;
   readonly fileSystem: FileSystem.FileSystem;
   readonly imageSupported?: boolean;
@@ -1237,6 +1236,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
                         toolCall: event.toolCall,
+                        rawPayload: event.rawPayload,
                       }),
                     );
                     return;
@@ -1320,7 +1320,6 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
               const promptParts = yield* prepareKimiAcpPromptParts({
                 text: input.input,
                 attachmentsDir: serverConfig.attachmentsDir,
-                threadId: input.threadId,
                 attachments: input.attachments,
                 fileSystem,
                 imageSupported: ctx.imagePromptSupported,

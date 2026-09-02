@@ -158,8 +158,7 @@ export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-export const PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
-export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 50 * 1024 * 1024;
 export const PROVIDER_INLINE_FILE_MAX_CHARS = 256 * 1024;
 export const PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES = [
   "image/gif",
@@ -175,16 +174,7 @@ const PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPE_SET = new Set<string>(
 export function isProviderSendTurnSupportedImageMimeType(mimeType: string): boolean {
   return PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPE_SET.has(mimeType.toLowerCase());
 }
-const DATA_URL_CHARS_ROUNDING = 1_000_000;
-const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS =
-  Math.ceil((PROVIDER_SEND_TURN_MAX_IMAGE_BYTES * 4) / (3 * DATA_URL_CHARS_ROUNDING)) *
-  DATA_URL_CHARS_ROUNDING;
-const PROVIDER_SEND_TURN_MAX_DOCUMENT_DATA_URL_CHARS =
-  Math.ceil((PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES * 4) / (3 * DATA_URL_CHARS_ROUNDING)) *
-  DATA_URL_CHARS_ROUNDING;
-const PROVIDER_SEND_TURN_MAX_FILE_DATA_URL_CHARS =
-  Math.ceil((PROVIDER_SEND_TURN_MAX_FILE_BYTES * 4) / (3 * DATA_URL_CHARS_ROUNDING)) *
-  DATA_URL_CHARS_ROUNDING;
+const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 // Correlation id is command id by design in this model.
 export const CorrelationId = CommandId;
@@ -205,7 +195,66 @@ export const ChatImageAttachment = Schema.Struct({
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
 
-export const UploadChatImageAttachment = Schema.Struct({
+export const ChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: NonNegativeInt.check(
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES),
+  ),
+});
+export type ChatFileAttachment = typeof ChatFileAttachment.Type;
+
+/**
+ * Catch-all for attachment types this build does not know. Attachments ride on
+ * persisted events and thread streams, so a newer server or client must be able
+ * to introduce a type without making older readers fail to decode the whole
+ * message. Decoders keep the shared base fields; consumers skip these or render
+ * them as unsupported. Mirrors how `OrchestrationThreadActivity` keeps `kind`
+ * open. The known discriminators are excluded so a malformed image or file
+ * attachment fails its own schema instead of sliding through here with its
+ * size and mime constraints unchecked.
+ */
+export const ChatUnknownAttachment = Schema.Struct({
+  type: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(50),
+    Schema.isPattern(/^(?!(?:image|file)$)/),
+  ),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: NonNegativeInt,
+});
+export type ChatUnknownAttachment = typeof ChatUnknownAttachment.Type;
+
+// Persisted events from the fork's earlier attachment model used a dedicated
+// document discriminator for PDFs. Keep that shape at the decode boundary
+// only; current writers and every runtime consumer use the generic file shape.
+const LegacyChatDocumentAttachment = Schema.Struct({
+  type: Schema.Literal("document"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: Schema.Literal("application/pdf"),
+  sizeBytes: NonNegativeInt.check(
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES),
+  ),
+});
+
+const ChatAttachmentSourceUnknown = Schema.Struct({
+  type: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(50),
+    Schema.isPattern(/^(?!(?:image|document|file)$)/),
+  ),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: NonNegativeInt,
+});
+
+const UploadChatImageAttachment = Schema.Struct({
   type: Schema.Literal("image"),
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
@@ -216,57 +265,36 @@ export const UploadChatImageAttachment = Schema.Struct({
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
-export const ChatDocumentAttachment = Schema.Struct({
-  type: Schema.Literal("document"),
-  id: ChatAttachmentId,
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
-  mimeType: Schema.Literal("application/pdf"),
-  sizeBytes: PositiveInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES)),
-});
-export type ChatDocumentAttachment = typeof ChatDocumentAttachment.Type;
-
-export const UploadChatDocumentAttachment = Schema.Struct({
-  type: Schema.Literal("document"),
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
-  mimeType: Schema.Literal("application/pdf"),
-  sizeBytes: PositiveInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES)),
-  dataUrl: TrimmedNonEmptyString.check(
-    Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_DOCUMENT_DATA_URL_CHARS),
-  ),
-});
-export type UploadChatDocumentAttachment = typeof UploadChatDocumentAttachment.Type;
-
-export const ChatFileAttachment = Schema.Struct({
-  type: Schema.Literal("file"),
-  id: ChatAttachmentId,
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
-  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
-  sizeBytes: PositiveInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
-});
-export type ChatFileAttachment = typeof ChatFileAttachment.Type;
-
-export const UploadChatFileAttachment = Schema.Struct({
-  type: Schema.Literal("file"),
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
-  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
-  sizeBytes: PositiveInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
-  dataUrl: TrimmedNonEmptyString.check(
-    Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_FILE_DATA_URL_CHARS),
-  ),
-});
-export type UploadChatFileAttachment = typeof UploadChatFileAttachment.Type;
-
-export const ChatAttachment = Schema.Union([
+const CurrentChatAttachment = Schema.Union([
   ChatImageAttachment,
-  ChatDocumentAttachment,
   ChatFileAttachment,
+  ChatUnknownAttachment,
 ]);
+const ChatAttachmentSource = Schema.Union([
+  ChatImageAttachment,
+  ChatFileAttachment,
+  LegacyChatDocumentAttachment,
+  ChatAttachmentSourceUnknown,
+]);
+export const ChatAttachment = ChatAttachmentSource.pipe(
+  Schema.decodeTo(
+    CurrentChatAttachment,
+    SchemaTransformation.transformOrFail({
+      decode: (attachment) =>
+        Effect.succeed(
+          attachment.type === "document"
+            ? {
+                ...attachment,
+                type: "file" as const,
+              }
+            : attachment,
+        ),
+      encode: (attachment) => Effect.succeed(attachment),
+    }),
+  ),
+);
 export type ChatAttachment = typeof ChatAttachment.Type;
-export const UploadChatAttachment = Schema.Union([
-  UploadChatImageAttachment,
-  UploadChatDocumentAttachment,
-  UploadChatFileAttachment,
-]);
+const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -1019,6 +1047,8 @@ export const ProjectCreateCommand = Schema.Struct({
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   createWorkspaceRootIfMissing: Schema.optional(Schema.Boolean),
+  // Retained for older clients that sent an automatic create-time seed. The
+  // server ignores it; explicit project defaults use project.meta.update.
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   createdAt: IsoDateTime,
 });
@@ -1081,6 +1111,13 @@ const ThreadSettleCommand = Schema.Struct({
   type: Schema.Literal("thread.settle"),
   commandId: CommandId,
   threadId: ThreadId,
+});
+
+const ThreadAutoSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.auto-settle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  snapshotSequence: NonNegativeInt,
 });
 
 const ThreadUnsettleCommand = Schema.Struct({
@@ -1234,7 +1271,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
-    attachments: Schema.Array(Schema.Union([UploadChatAttachment, ChatImageAttachment])).check(
+    attachments: Schema.Array(Schema.Union([UploadChatAttachment, ChatAttachment])).check(
       Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
     ),
   }),
@@ -1530,6 +1567,7 @@ const ThreadTaskDeliverySetCommand = Schema.Struct({
 export type ThreadTaskDeliverySetCommand = typeof ThreadTaskDeliverySetCommand.Type;
 
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadAutoSettleCommand,
   ThreadSessionSetCommand,
   ThreadTaskStatusSetCommand,
   ThreadTaskFinishCommand,

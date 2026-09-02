@@ -111,8 +111,8 @@ const MIXED_ATTACHMENTS: NonNullable<OrchestrationThread["messages"][number]["at
     sizeBytes: 5,
   },
   {
-    type: "document",
-    id: "thread-1-document",
+    type: "file",
+    id: "thread-1-pdf",
     name: "reference.pdf",
     mimeType: "application/pdf",
     sizeBytes: 7,
@@ -153,6 +153,7 @@ function testSession(
       ...(options?.completionMarker === true ? { threadResumeCompletionMarker: true } : {}),
       ...(options?.activityUpserts === true ? { threadActivityUpserts: true } : {}),
     } as never),
+    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
@@ -621,17 +622,14 @@ describe("EnvironmentThreads", () => {
         _tag: "attachment" as const,
         attachmentId: attachment.id,
         threadId: THREAD_ID,
-        ...(attachment.type === "document"
-          ? { disposition: "inline-pdf" as const }
-          : attachment.type === "file"
-            ? { disposition: "download" as const }
-            : {}),
+        fileName: attachment.name,
+        mimeType: attachment.mimeType,
       }));
       expect(resources.every(Schema.is(AssetResource))).toBe(true);
     }),
   );
 
-  it("rejects an unknown future attachment kind at the snapshot protocol boundary", () => {
+  it("preserves an unknown future attachment kind at the snapshot protocol boundary", () => {
     const decodeSnapshot = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot);
     const futureSnapshot = {
       snapshotSequence: 1,
@@ -654,8 +652,9 @@ describe("EnvironmentThreads", () => {
       },
     };
 
-    expect(() => decodeSnapshot(futureSnapshot)).toThrow();
-    expect(futureSnapshot.thread.messages[0]?.attachments[0]?.type).toBe("archive");
+    const decoded = decodeSnapshot(futureSnapshot);
+    expect(decoded.thread.messages[0]?.attachments?.[0]?.type).toBe("archive");
+    expect(decoded.thread.messages[0]?.attachments?.[0]?.name).toBe("bundle.zip");
   });
 
   it.effect("recovers from a transient domain failure without replacing the session", () =>

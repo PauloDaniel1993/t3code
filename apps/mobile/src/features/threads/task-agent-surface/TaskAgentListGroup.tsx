@@ -4,7 +4,6 @@ import { Pressable, StyleSheet, View, type GestureResponderEvent } from "react-n
 import { AppText as Text } from "../../../components/AppText";
 import { SymbolView } from "../../../components/AppSymbol";
 import { useAppearancePreferences } from "../../settings/appearance/AppearancePreferencesProvider";
-import { useThemeColor } from "../../../lib/useThemeColor";
 import {
   buildTaskAgentListEntries,
   buildTaskAgentDisclosureContent,
@@ -171,7 +170,6 @@ function TaskAgentTurnRow(props: {
 function TaskAgentDisclosureChipComponent(props: TaskAgentDisclosureChipProps) {
   const { themeAppearance, themeId } = useAppearancePreferences();
   const theme = getTaskAgentTheme(themeAppearance, themeId);
-  const borderColor = useThemeColor("--color-border");
   const surfaceColor = props.pane === "sidebar" ? theme.card : theme.background;
   const interactiveSurfaceColor = props.pane === "sidebar" ? theme.background : theme.card;
   const content = buildTaskAgentDisclosureContent(props.row, props.expanded);
@@ -200,13 +198,13 @@ function TaskAgentDisclosureChipComponent(props: TaskAgentDisclosureChipProps) {
         accessibilityLabel={content.chipLabel}
         accessibilityRole="button"
         accessibilityState={{ expanded: props.expanded }}
+        className="border-border"
         hitSlop={8}
         onPress={handlePress}
         style={({ pressed }) => [
           styles.disclosureChip,
           {
             backgroundColor: pressed ? surfaceColor : interactiveSurfaceColor,
-            borderColor,
           },
         ]}
       >
@@ -236,7 +234,6 @@ function TaskAgentDisclosureChipComponent(props: TaskAgentDisclosureChipProps) {
 function TaskAgentListGroupComponent(props: TaskAgentListGroupProps) {
   const { themeAppearance, themeId } = useAppearancePreferences();
   const theme = getTaskAgentTheme(themeAppearance, themeId);
-  const borderColor = useThemeColor("--color-border");
   const [turnExpansionOverrides, setTurnExpansionOverrides] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map());
@@ -261,13 +258,12 @@ function TaskAgentListGroupComponent(props: TaskAgentListGroupProps) {
   return (
     <View collapsable={false} style={{ backgroundColor: surfaceColor }}>
       <View
+        className="border-border"
         style={[
           styles.nestedRows,
           props.pane === "sidebar" ? styles.sidebarNestedRows : styles.screenNestedRows,
           {
             backgroundColor: surfaceColor,
-            borderBottomColor: borderColor,
-            borderLeftColor: borderColor,
           },
         ]}
       >

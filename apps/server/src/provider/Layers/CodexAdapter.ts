@@ -8,6 +8,7 @@
  * @module CodexAdapterLive
  */
 import {
+  type ChatAttachment,
   type CanonicalItemType,
   type CanonicalRequestType,
   type CodexSettings,
@@ -24,7 +25,6 @@ import {
   type RuntimeTaskUsage,
   ProviderApprovalDecision,
   ThreadId,
-  ProviderSendTurnInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
@@ -73,15 +73,6 @@ const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
-
-function unsupportedCodexAttachment(attachment: never): ProviderAdapterRequestError {
-  const type = (attachment as unknown as { readonly type?: unknown }).type;
-  return new ProviderAdapterRequestError({
-    provider: PROVIDER,
-    method: "turn/start",
-    detail: `Unsupported Codex attachment kind '${String(type)}'.`,
-  });
-}
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -544,14 +535,18 @@ function mapCollabAgentEvent(
   // finding: progress rows renamed math_one to its UUID).
   const knownName = nickname ?? pathLeaf;
   const title = knownName ?? agentThreadId;
+  const model = typeof payload.model === "string" ? payload.model.trim() : "";
+  const effort = typeof payload.effort === "string" ? payload.effort.trim() : "";
   // Identity repeated on every status patch so rows are self-describing when
   // the start row ages out of activity retention (review finding: a
   // reconstructed agent had a UUID name and no role/path).
-  const statusLinkage = {
+  const linkage = {
     taskType: "subagent",
     nativeAgent: true,
     role,
     ...(knownName ? { title: knownName } : {}),
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
     ...(agentPath ? { agentPath } : {}),
     timelineBypass: true,
   } as const;
@@ -564,17 +559,21 @@ function mapCollabAgentEvent(
           type: "task.started",
           payload: {
             taskId,
-            taskType: "subagent",
-            nativeAgent: true,
             description: title,
             title,
-            role,
-            ...(agentPath ? { agentPath } : {}),
+            ...linkage,
             ...(typeof payload.parentThreadId === "string"
               ? { parentAgentId: payload.parentThreadId }
               : {}),
-            timelineBypass: true,
           },
+        },
+      ];
+    case "collabAgent/metadataUpdated":
+      return [
+        {
+          ...base,
+          type: "task.updated",
+          payload: { taskId, ...linkage },
         },
       ];
     case "collabAgent/activity": {
@@ -584,7 +583,7 @@ function mapCollabAgentEvent(
           {
             ...base,
             type: "task.updated",
-            payload: { taskId, status: "interrupted", ...statusLinkage },
+            payload: { taskId, status: "interrupted", ...linkage },
           },
         ];
       }
@@ -599,13 +598,9 @@ function mapCollabAgentEvent(
             type: "task.started",
             payload: {
               taskId,
-              taskType: "subagent",
-              nativeAgent: true,
               description: title,
               title,
-              role,
-              ...(agentPath ? { agentPath } : {}),
-              timelineBypass: true,
+              ...linkage,
             },
           },
         ];
@@ -619,7 +614,7 @@ function mapCollabAgentEvent(
         {
           ...base,
           type: "task.updated",
-          payload: { taskId, status: "running", ...statusLinkage },
+          payload: { taskId, status: "running", ...linkage },
         },
       ];
     case "collabAgent/turnCompleted": {
@@ -639,7 +634,7 @@ function mapCollabAgentEvent(
         {
           ...base,
           type: "task.updated",
-          payload: { taskId, status, ...statusLinkage },
+          payload: { taskId, status, ...linkage },
         },
       ];
     }
@@ -655,7 +650,7 @@ function mapCollabAgentEvent(
           {
             ...base,
             type: "task.updated",
-            payload: { taskId, status: "failed", ...statusLinkage },
+            payload: { taskId, status: "failed", ...linkage },
           },
         ];
       }
@@ -668,7 +663,7 @@ function mapCollabAgentEvent(
           {
             ...base,
             type: "task.updated",
-            payload: { taskId, status: waiting ? "waiting" : "running", ...statusLinkage },
+            payload: { taskId, status: waiting ? "waiting" : "running", ...linkage },
           },
         ];
       }
@@ -677,7 +672,7 @@ function mapCollabAgentEvent(
           {
             ...base,
             type: "task.updated",
-            payload: { taskId, status: "idle", ...statusLinkage },
+            payload: { taskId, status: "idle", ...linkage },
           },
         ];
       }
@@ -723,12 +718,9 @@ function mapCollabAgentEvent(
           type: "task.progress",
           payload: {
             taskId,
-            taskType: "subagent",
-            nativeAgent: true,
             description: title,
-            ...(knownName ? { title: knownName } : {}),
+            ...linkage,
             typedUsage,
-            timelineBypass: true,
           },
         },
       ];
@@ -757,12 +749,9 @@ function mapCollabAgentEvent(
           type: "task.progress",
           payload: {
             taskId,
-            taskType: "subagent",
-            nativeAgent: true,
             description: title,
-            ...(knownName ? { title: knownName } : {}),
+            ...linkage,
             summary,
-            timelineBypass: true,
           },
         },
       ];
@@ -772,7 +761,7 @@ function mapCollabAgentEvent(
         {
           ...base,
           type: "task.updated",
-          payload: { taskId, status: "interrupted", ...statusLinkage },
+          payload: { taskId, status: "interrupted", ...linkage },
         },
       ];
     default:
@@ -799,80 +788,6 @@ function mapToRuntimeEvents(
           message: event.message,
           class: "provider_error",
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
-        },
-      },
-    ];
-  }
-
-  // Codex collab-agent lifecycle. `CodexSessionRuntime` normalizes
-  // `collabAgentToolCall.agentsStates` into these three synthetic notifications;
-  // the adapter's job is only to restate them as canonical runtime events.
-  //
-  // `nativeAgent: true` is the provider-independent marker that says "this
-  // `task.*` run is an in-session agent". Codex reaches this branch only for a
-  // collab receiver thread, so the evidence is unambiguous — ordinary Codex tool
-  // calls arrive as `item/*` and never here.
-  if (
-    event.method === "t3/task/started" ||
-    event.method === "t3/task/progress" ||
-    event.method === "t3/task/completed"
-  ) {
-    const payload = event.payload as Record<string, unknown> | undefined;
-    const taskId = trimText(typeof payload?.taskId === "string" ? payload.taskId : undefined);
-    if (!taskId) return [];
-    const description = trimText(
-      typeof payload?.description === "string" ? payload.description : undefined,
-    );
-    const summary = trimText(typeof payload?.summary === "string" ? payload.summary : undefined);
-    const prompt = typeof payload?.prompt === "string" ? payload.prompt : undefined;
-
-    if (event.method === "t3/task/started") {
-      return [
-        {
-          ...runtimeEventBase(event, canonicalThreadId),
-          type: "task.started",
-          payload: {
-            taskId: RuntimeTaskId.make(taskId),
-            taskType: "subagent",
-            nativeAgent: true,
-            ...(description ? { description } : {}),
-            ...(prompt !== undefined ? { prompt } : {}),
-          },
-        },
-      ];
-    }
-
-    if (event.method === "t3/task/progress") {
-      // `description` is the required progress line on the canonical event, and
-      // Codex only ever reports one via the agent's `message`. No message means
-      // nothing to say, so stay silent rather than emit a placeholder row.
-      if (!summary) return [];
-      return [
-        {
-          ...runtimeEventBase(event, canonicalThreadId),
-          type: "task.progress",
-          payload: {
-            taskId: RuntimeTaskId.make(taskId),
-            description: summary,
-            summary,
-            nativeAgent: true,
-          },
-        },
-      ];
-    }
-
-    const status = payload?.status;
-    return [
-      {
-        ...runtimeEventBase(event, canonicalThreadId),
-        type: "task.completed",
-        payload: {
-          taskId: RuntimeTaskId.make(taskId),
-          status: status === "failed" ? "failed" : status === "stopped" ? "stopped" : "completed",
-          nativeAgent: true,
-          ...(description ? { description } : {}),
-          ...(summary ? { summary } : {}),
-          ...(status === "failed" && summary ? { error: summary } : {}),
         },
       },
     ];
@@ -1877,12 +1792,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
-    input: ProviderSendTurnInput,
-    attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
+    attachment: Extract<ChatAttachment, { readonly type: "image" | "file" }>,
   ) {
     const resolved = yield* resolveProviderAttachment({
       attachmentsDir: serverConfig.attachmentsDir,
-      threadId: input.threadId,
       attachment,
       fileSystem,
     }).pipe(
@@ -1903,22 +1816,24 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           type: "image" as const,
           url: `data:${attachment.mimeType};base64,${Buffer.from(resolved.bytes).toString("base64")}`,
         };
-      case "document":
       case "file":
         return {
           type: "mention" as const,
           name: attachment.name,
           path: resolved.absolutePath,
         };
-      default:
-        return yield* unsupportedCodexAttachment(attachment);
     }
   });
 
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+    // Unknown future attachment kinds use ProviderService's path fallback.
+    // Codex accepts current generic files as native mention inputs.
     const codexAttachments = yield* Effect.forEach(
-      input.attachments ?? [],
-      (attachment) => resolveAttachment(input, attachment),
+      (input.attachments ?? []).filter(
+        (attachment): attachment is Extract<ChatAttachment, { readonly type: "image" | "file" }> =>
+          attachment.type === "image" || attachment.type === "file",
+      ),
+      resolveAttachment,
       { concurrency: 1 },
     );
 
@@ -1944,16 +1859,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           : {}),
         ...(serviceTier ? { serviceTier } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-        ...(codexAttachments.length > 0
-          ? {
-              // The generated Codex turn schema supports ordered `mention` inputs,
-              // while this runtime facade still exposes its legacy image-only type.
-              attachments: codexAttachments as ReadonlyArray<{
-                readonly type: "image";
-                readonly url: string;
-              }>,
-            }
-          : {}),
+        ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
   });
@@ -2110,6 +2016,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      promptlessTurnContinuation: true,
     },
     startSession,
     sendTurn,

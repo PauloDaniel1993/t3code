@@ -138,6 +138,49 @@ describe("normalizeDispatchCommand attachments", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("claims uploaded generic files without changing their original extension", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const pendingId = `pending-${attachmentUuid}-pdf`;
+      const pendingPath = NodePath.join(config.attachmentsDir, `${pendingId}.pdf`);
+      NodeFS.writeFileSync(pendingPath, Buffer.from("report"));
+
+      const imageCommand = turnStartCommand({ attachments: [] });
+      if (imageCommand.type !== "thread.turn.start") {
+        throw new Error("Expected a thread.turn.start command.");
+      }
+      const normalized = yield* normalizeDispatchCommand({
+        ...imageCommand,
+        message: {
+          ...imageCommand.message,
+          attachments: [
+            {
+              type: "file",
+              id: pendingId,
+              name: "report.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 6,
+            },
+          ],
+        },
+      });
+      if (normalized.command.type !== "thread.turn.start" || !normalized.attachmentStage) {
+        throw new Error("Expected a staged thread.turn.start command.");
+      }
+
+      const attachment = normalized.command.message.attachments[0]!;
+      expect(attachment.type).toBe("file");
+      expect(attachment.id).toMatch(/^thread-1-.*-pdf$/);
+      const claimedPath = NodePath.join(config.attachmentsDir, `${attachment.id}.pdf`);
+      expect(NodeFS.existsSync(claimedPath)).toBe(false);
+      yield* normalized.attachmentStage.claim;
+      yield* normalized.attachmentStage.commit;
+      expect(NodeFS.readFileSync(claimedPath)).toEqual(Buffer.from("report"));
+      expect(NodeFS.statSync(claimedPath).ino).not.toBe(NodeFS.statSync(pendingPath).ino);
+      yield* normalized.attachmentStage.complete;
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("retries a failed bootstrap with a fresh thread id", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
@@ -340,7 +383,7 @@ describe("normalizeDispatchCommand attachments", () => {
           attachments: [{ id: `pending-${attachmentUuid}`, sizeBytes: 6, mimeType: "image/jpeg" }],
         }),
       ).pipe(Effect.flip);
-      expect(mismatchedType.message).toContain("image type");
+      expect(mismatchedType.message).toContain("attachment type");
     }).pipe(Effect.provide(testLayer)),
   );
 });

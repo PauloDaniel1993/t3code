@@ -22,7 +22,6 @@ import {
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
-  readCodexNotificationRouteFields,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
@@ -41,51 +40,6 @@ describe("CodexSessionRuntimeIdentifierGenerationError", () => {
       error.message,
       "Failed to generate Codex App Server identifier for provider-event.",
     );
-  });
-});
-
-describe("readCodexNotificationRouteFields", () => {
-  it("preserves turn and item identity for MCP tool progress", () => {
-    const route = readCodexNotificationRouteFields({
-      method: "item/mcpToolCall/progress",
-      params: {
-        threadId: "provider-thread-1",
-        turnId: "provider-turn-1",
-        itemId: "mcp-tool-1",
-        message: "Waiting for tool output",
-      },
-    });
-
-    NodeAssert.equal(route.turnId, "provider-turn-1");
-    NodeAssert.equal(route.itemId, "mcp-tool-1");
-  });
-
-  it("preserves turn identity for generated thread-level notifications", () => {
-    const route = readCodexNotificationRouteFields({
-      method: "thread/compacted",
-      params: {
-        threadId: "provider-thread-1",
-        turnId: "provider-turn-1",
-      },
-    });
-
-    NodeAssert.equal(route.turnId, "provider-turn-1");
-    NodeAssert.equal(route.itemId, undefined);
-  });
-
-  it("uses the reviewed item as auto-approval activity identity", () => {
-    const notification = {
-      method: "item/autoApprovalReview/started",
-      params: {
-        threadId: "provider-thread-1",
-        turnId: "provider-turn-1",
-        targetItemId: "command-1",
-      },
-    } as unknown as Parameters<typeof readCodexNotificationRouteFields>[0];
-    const route = readCodexNotificationRouteFields(notification);
-
-    NodeAssert.equal(route.turnId, "provider-turn-1");
-    NodeAssert.equal(route.itemId, "command-1");
   });
 });
 

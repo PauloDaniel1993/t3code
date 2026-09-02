@@ -13,7 +13,6 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { ChangeRequestSettleSource } from "@t3tools/client-runtime/state/thread-settled";
 import { ChevronDownIcon } from "lucide-react";
 import {
   memo,
@@ -57,8 +56,6 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   /** Drafts have no server thread yet, so the title carries no action menu. */
   isServerThread: boolean;
-  /** PR feeding the settled classification, resolved by ChatView. */
-  changeRequest: ChangeRequestSettleSource | null;
   activeProjectName: string | undefined;
   activeProjectCwd: string | null;
   activeProjectFaviconPath: string | null;
@@ -127,7 +124,6 @@ export const ChatHeader = memo(function ChatHeader({
   draftId,
   activeThreadTitle,
   isServerThread,
-  changeRequest,
   activeProjectName,
   activeProjectCwd,
   activeProjectFaviconPath,
@@ -230,7 +226,6 @@ export const ChatHeader = memo(function ChatHeader({
   const { openMenu, closeMenu } = useThreadActionMenu({
     threadRef: isServerThread ? activeThreadRef : null,
     projectCwd: activeProjectCwd,
-    changeRequest,
     onStartRename: startRename,
     onNewTask: setNewTaskParentRef,
   });
@@ -314,132 +309,133 @@ export const ChatHeader = memo(function ChatHeader({
     [commitRename],
   );
   return (
-    <>
-      <div
-        className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
-        onContextMenu={handleHeaderContextMenu}
+    <div
+      className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
+      onContextMenu={handleHeaderContextMenu}
+    >
+      <WorkspaceBreadcrumb
+        ariaLabel="Thread breadcrumb"
+        className="flex-1 overflow-clip [overflow-clip-margin:2px]"
       >
-        <WorkspaceBreadcrumb ariaLabel="Thread breadcrumb" className="flex-1">
-          {/* The project always leads the header: knowing which project a
+        {/* The project always leads the header: knowing which project a
             thread lives in is priority zero, and the thread title alone
             doesn't answer it. */}
-          {activeProjectName ? (
-            <>
-              <WorkspaceBreadcrumbItem>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        aria-label={`New thread in ${activeProjectName}`}
-                        onClick={onNewThreadInProject}
-                        className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                      />
-                    }
-                  >
-                    <ProjectFavicon
-                      environmentId={activeThreadEnvironmentId}
-                      cwd={activeProjectCwd ?? ""}
-                      faviconPath={activeProjectFaviconPath}
-                      className="size-3.5"
-                    />
-                    <span className="max-w-40 truncate">{activeProjectName}</span>
-                  </TooltipTrigger>
-                  <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
-                </Tooltip>
-              </WorkspaceBreadcrumbItem>
-              <WorkspaceBreadcrumbSeparator />
-            </>
-          ) : null}
-          <WorkspaceBreadcrumbItem current className="flex-1">
-            {renamingTitle !== null ? (
-              <input
-                autoFocus
-                aria-label="Thread title"
-                className="min-w-0 flex-1 rounded-sm bg-transparent text-sm font-medium text-foreground outline-none ring-1 ring-ring/50 focus:ring-ring"
-                defaultValue={renamingTitle}
-                onBlur={(event) => {
-                  if (renameCommittedRef.current) return;
-                  commitRename(event.currentTarget.value);
-                }}
-                onFocus={(event) => event.currentTarget.select()}
-                onKeyDown={handleRenameKeyDown}
-              />
-            ) : isServerThread ? (
+        {activeProjectName ? (
+          <>
+            <WorkspaceBreadcrumbItem className="shrink">
               <Tooltip>
                 <TooltipTrigger
                   render={
                     <button
-                      ref={titleButtonRef}
                       type="button"
-                      aria-label={`Thread actions for ${activeThreadTitle}`}
-                      aria-haspopup="menu"
-                      onClick={openMenuFromTitle}
-                      onDoubleClick={handleTitleDoubleClick}
-                      onBlur={cancelPendingTitleMenu}
-                      className="group/thread-title inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 rounded-sm text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={`New thread in ${activeProjectName}`}
+                      onClick={onNewThreadInProject}
+                      className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     />
                   }
                 >
-                  <h2 className="min-w-0 truncate">{activeThreadTitle}</h2>
-                  <ChevronDownIcon
-                    aria-hidden
-                    data-thread-title-chevron
-                    className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/thread-title:opacity-100 group-focus-visible/thread-title:opacity-100"
+                  <ProjectFavicon
+                    environmentId={activeThreadEnvironmentId}
+                    cwd={activeProjectCwd ?? ""}
+                    faviconPath={activeProjectFaviconPath}
+                    className="size-3.5"
                   />
+                  <span className="max-w-40 truncate">{activeProjectName}</span>
                 </TooltipTrigger>
-                <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
+                <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
               </Tooltip>
-            ) : (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <h2 aria-label={activeThreadTitle} className="min-w-0 flex-1 truncate">
-                      {activeThreadTitle}
-                    </h2>
-                  }
+            </WorkspaceBreadcrumbItem>
+            <WorkspaceBreadcrumbSeparator />
+          </>
+        ) : null}
+        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
+          {renamingTitle !== null ? (
+            <input
+              autoFocus
+              aria-label="Thread title"
+              className="min-w-0 flex-1 rounded-sm bg-transparent text-sm font-medium text-foreground outline-none ring-1 ring-ring/50 focus:ring-ring"
+              defaultValue={renamingTitle}
+              onBlur={(event) => {
+                if (renameCommittedRef.current) return;
+                commitRename(event.currentTarget.value);
+              }}
+              onFocus={(event) => event.currentTarget.select()}
+              onKeyDown={handleRenameKeyDown}
+            />
+          ) : isServerThread ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    ref={titleButtonRef}
+                    type="button"
+                    aria-label={`Thread actions for ${activeThreadTitle}`}
+                    aria-haspopup="menu"
+                    onClick={openMenuFromTitle}
+                    onDoubleClick={handleTitleDoubleClick}
+                    onBlur={cancelPendingTitleMenu}
+                    className="group/thread-title inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 rounded-sm text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                }
+              >
+                <h2 className="min-w-0 truncate">{activeThreadTitle}</h2>
+                <ChevronDownIcon
+                  aria-hidden
+                  data-thread-title-chevron
+                  className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/thread-title:opacity-100 group-focus-visible/thread-title:opacity-100"
                 />
-                <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
-              </Tooltip>
-            )}
-          </WorkspaceBreadcrumbItem>
-        </WorkspaceBreadcrumb>
-        <div
-          data-chat-header-actions
-          className={cn(
-            "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
-            rightPanelOpen ? "pr-0" : "pr-16",
+              </TooltipTrigger>
+              <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
+            </Tooltip>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <h2 aria-label={activeThreadTitle} className="min-w-0 flex-1 truncate">
+                    {activeThreadTitle}
+                  </h2>
+                }
+              />
+              <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
+            </Tooltip>
           )}
-        >
-          {activeProjectScripts && (
-            <ProjectScriptsControl
-              scripts={activeProjectScripts}
-              fileScripts={fileScripts}
-              keybindings={keybindings}
-              preferredScriptId={preferredScriptId}
-              onRunScript={onRunProjectScript}
-              onAddScript={onAddProjectScript}
-              onUpdateScript={onUpdateProjectScript}
-              onDeleteScript={onDeleteProjectScript}
-            />
-          )}
-          {showOpenInPicker && (
-            <OpenInPicker
-              environmentId={activeThreadEnvironmentId}
-              keybindings={keybindings}
-              availableEditors={availableEditors}
-              openInCwd={openInCwd}
-            />
-          )}
-          {activeProjectName && (
-            <GitActionsControl
-              gitCwd={gitCwd}
-              activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
-              onOpenPullRequest={onOpenPullRequest}
-              {...(draftId ? { draftId } : {})}
-            />
-          )}
-        </div>
+        </WorkspaceBreadcrumbItem>
+      </WorkspaceBreadcrumb>
+      <div
+        data-chat-header-actions
+        className={cn(
+          "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+          rightPanelOpen ? "pr-0" : "pr-16",
+        )}
+      >
+        {activeProjectScripts && (
+          <ProjectScriptsControl
+            scripts={activeProjectScripts}
+            fileScripts={fileScripts}
+            keybindings={keybindings}
+            preferredScriptId={preferredScriptId}
+            onRunScript={onRunProjectScript}
+            onAddScript={onAddProjectScript}
+            onUpdateScript={onUpdateProjectScript}
+            onDeleteScript={onDeleteProjectScript}
+          />
+        )}
+        {showOpenInPicker && (
+          <OpenInPicker
+            environmentId={activeThreadEnvironmentId}
+            keybindings={keybindings}
+            availableEditors={availableEditors}
+            openInCwd={openInCwd}
+          />
+        )}
+        {activeProjectName && (
+          <GitActionsControl
+            gitCwd={gitCwd}
+            activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
+            onOpenPullRequest={onOpenPullRequest}
+            {...(draftId ? { draftId } : {})}
+          />
+        )}
       </div>
       {newTaskParentRef === null ? null : (
         <NewThreadTaskDialog
@@ -448,6 +444,6 @@ export const ChatHeader = memo(function ChatHeader({
           onCreate={submitNewTask}
         />
       )}
-    </>
+    </div>
   );
 });

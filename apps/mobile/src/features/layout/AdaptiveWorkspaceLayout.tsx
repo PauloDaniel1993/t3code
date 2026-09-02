@@ -491,7 +491,7 @@ function AdaptiveWorkspaceLayoutContent(
     : null;
 
   const handleSelectThread = useCallback(
-    (thread: EnvironmentThreadShell) => {
+    (thread: Pick<EnvironmentThreadShell, "environmentId" | "id">) => {
       const params = {
         environmentId: String(thread.environmentId),
         threadId: String(thread.id),
@@ -524,9 +524,12 @@ function AdaptiveWorkspaceLayoutContent(
         navigation.navigate("TaskPeek", destination.params);
         return;
       }
-      navigation.navigate("Thread", destination.params);
+      handleSelectThread({
+        environmentId: destination.params.environmentId,
+        id: destination.params.threadId,
+      });
     },
-    [navigation],
+    [handleSelectThread, navigation],
   );
 
   return (

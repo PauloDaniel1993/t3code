@@ -137,6 +137,7 @@ function makeTestEnvironment(options?: {
     ({
       bootstrap: Effect.void,
       projectEvent: () => Effect.void,
+      projectEventDeferred: () => Effect.succeed(Effect.void),
     } satisfies OrchestrationProjectionPipelineShape);
   let failNextTransaction = false;
   const sqlLayer = options?.injectTransactionFailure
@@ -269,64 +270,53 @@ it.layer(DefaultAttachmentDispatchEnvironment.layer)("authoritative attachment d
   it.effect("rejects validation failures before staging or provider-visible publication", () => {
     return Effect.gen(function* () {
       const system = yield* makeSystem();
-      const validText = upload({
-        type: "file",
-        name: "valid.txt",
-        mimeType: "text/plain",
+      const validImage = upload({
+        type: "image",
+        name: "valid.png",
+        mimeType: "image/png",
         bytes: Buffer.from("valid"),
       });
       const invalidCases = [
         upload({
-          type: "file",
-          name: "malformed.txt",
-          mimeType: "text/plain",
+          type: "image",
+          name: "malformed.png",
+          mimeType: "image/png",
           bytes: Buffer.from("x"),
-          dataUrl: "data:text/plain;base64,eA=*",
+          dataUrl: "data:image/png;base64,eA=*",
         }),
         upload({
-          type: "file",
-          name: "empty.txt",
-          mimeType: "text/plain",
+          type: "image",
+          name: "empty.png",
+          mimeType: "image/png",
           bytes: Buffer.from("x"),
-          dataUrl: "data:text/plain;base64,",
+          dataUrl: "data:image/png;base64,",
         }),
         upload({
-          type: "file",
-          name: "mismatch.txt",
-          mimeType: "text/plain",
+          type: "image",
+          name: "mismatch.png",
+          mimeType: "image/png",
           bytes: Buffer.from("hello"),
           sizeBytes: 4,
         }),
         upload({
-          type: "document",
-          name: "spoofed.pdf",
+          type: "image",
+          name: "spoofed.png",
           mimeType: "application/pdf",
           bytes: Buffer.from("not a pdf"),
         }),
         upload({
-          type: "file",
-          name: "binary.txt",
-          mimeType: "text/plain",
-          bytes: Uint8Array.from([0x61, 0x00, 0x62]),
-        }),
-        upload({
-          type: "file",
-          name: "utf32.txt",
-          mimeType: "text/plain",
-          bytes: Uint8Array.from([0xff, 0xfe, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00]),
-        }),
-        upload({
-          type: "file",
-          name: "fake.xlsx",
-          mimeType: "application/zip",
-          bytes: Uint8Array.from([0x50, 0x4b, 0x05, 0x06]),
+          type: "image",
+          name: "noncanonical.png",
+          mimeType: "image/png",
+          bytes: Buffer.from("x"),
+          dataUrl: "data:image/png;base64,eA======",
         }),
       ];
 
       for (const [index, invalid] of invalidCases.entries()) {
         const command = turnCommand({
           commandId: `command-invalid-${index}`,
-          attachments: index === invalidCases.length - 1 ? [validText, invalid] : [invalid],
+          attachments: index === invalidCases.length - 1 ? [validImage, invalid] : [invalid],
         });
         const error = yield* normalizeDispatchCommand(command).pipe(Effect.flip);
         expect(error.message).toContain(invalid.name);
@@ -344,9 +334,9 @@ it.layer(DefaultAttachmentDispatchEnvironment.layer)("authoritative attachment d
         threadId: "notes.1",
         attachments: [
           upload({
-            type: "file",
-            name: "notes.txt",
-            mimeType: "text/plain",
+            type: "image",
+            name: "notes.png",
+            mimeType: "image/png",
             bytes: Buffer.from("notes"),
           }),
         ],
@@ -374,21 +364,21 @@ it.layer(DefaultAttachmentDispatchEnvironment.layer)("authoritative attachment d
             bytes: Buffer.from("image"),
           }),
           upload({
-            type: "document",
-            name: "guide.pdf",
-            mimeType: "application/pdf",
+            type: "image",
+            name: "guide.png",
+            mimeType: "image/png",
             bytes: Buffer.from("%PDF-1.7\n", "ascii"),
           }),
           upload({
-            type: "file",
-            name: "source.ts",
-            mimeType: "video/mp2t",
+            type: "image",
+            name: "source.png",
+            mimeType: "image/png",
             bytes: Buffer.from("export {};\n"),
           }),
           upload({
-            type: "file",
-            name: "sheet.xlsx",
-            mimeType: "application/zip",
+            type: "image",
+            name: "sheet.png",
+            mimeType: "image/png",
             bytes: Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0x01]),
           }),
         ],
@@ -407,7 +397,7 @@ it.layer(DefaultAttachmentDispatchEnvironment.layer)("authoritative attachment d
         messageEvent?.type === "thread.message-sent"
           ? messageEvent.payload.attachments?.map((attachment) => attachment.type)
           : null,
-      ).toEqual(["image", "document", "file", "file"]);
+      ).toEqual(["image", "image", "image", "image"]);
       yield* removeFinalAttachments(system.config);
     });
   });
@@ -441,15 +431,15 @@ it.layer(DefaultAttachmentDispatchEnvironment.layer)("authoritative attachment d
         commandId: "command-write-failure",
         attachments: [
           upload({
-            type: "file",
-            name: "first.txt",
-            mimeType: "text/plain",
+            type: "image",
+            name: "first.png",
+            mimeType: "image/png",
             bytes: Buffer.from("first"),
           }),
           upload({
-            type: "file",
-            name: "second.txt",
-            mimeType: "text/plain",
+            type: "image",
+            name: "second.png",
+            mimeType: "image/png",
             bytes: Buffer.from("second"),
           }),
         ],
@@ -459,7 +449,7 @@ it.layer(DefaultAttachmentDispatchEnvironment.layer)("authoritative attachment d
         Effect.provideService(FileSystem.FileSystem, failingFileSystem),
         Effect.flip,
       );
-      expect(error.message).toContain("second.txt");
+      expect(error.message).toContain("second.png");
       expectNoAttachmentOrphans(system.config);
       expect(providerTurnPublications(system.published, command.commandId)).toEqual([]);
     });
@@ -493,22 +483,22 @@ it.layer(DefaultAttachmentDispatchEnvironment.layer)("authoritative attachment d
         commandId: "command-rename-failure",
         attachments: [
           upload({
-            type: "file",
-            name: "first.txt",
-            mimeType: "text/plain",
+            type: "image",
+            name: "first.png",
+            mimeType: "image/png",
             bytes: Buffer.from("first"),
           }),
           upload({
-            type: "file",
-            name: "second.txt",
-            mimeType: "text/plain",
+            type: "image",
+            name: "second.png",
+            mimeType: "image/png",
             bytes: Buffer.from("second"),
           }),
         ],
       });
 
       const error = yield* dispatchNormalized(system, command, failingFileSystem).pipe(Effect.flip);
-      expect(error.message).toContain("second.txt");
+      expect(error.message).toContain("second.png");
       yield* Effect.yieldNow;
       expectNoAttachmentOrphans(system.config);
       expect(providerTurnPublications(system.published, command.commandId)).toEqual([]);
@@ -520,7 +510,8 @@ const ProjectionFailureCommandId = "command-projection-failure";
 const ProjectionFailureEnvironment = makeTestEnvironment({
   projectionPipeline: {
     bootstrap: Effect.void,
-    projectEvent: (event) =>
+    projectEvent: () => Effect.void,
+    projectEventDeferred: (event) =>
       event.commandId === ProjectionFailureCommandId && event.type === "thread.turn-start-requested"
         ? Effect.fail(
             new PersistenceSqlError({
@@ -528,7 +519,7 @@ const ProjectionFailureEnvironment = makeTestEnvironment({
               detail: "injected projection failure",
             }),
           )
-        : Effect.void,
+        : Effect.succeed(Effect.void),
   },
 });
 it.layer(ProjectionFailureEnvironment.layer)("attachment projection failure", (it) => {
@@ -540,9 +531,9 @@ it.layer(ProjectionFailureEnvironment.layer)("attachment projection failure", (i
         commandId: ProjectionFailureCommandId,
         attachments: [
           upload({
-            type: "document",
-            name: "projection.pdf",
-            mimeType: "application/pdf",
+            type: "image",
+            name: "projection.png",
+            mimeType: "image/png",
             bytes: Buffer.from("%PDF-1.7\n"),
           }),
         ],
@@ -567,9 +558,9 @@ it.layer(SqlFailureEnvironment.layer)("attachment SQL transaction failure", (it)
         commandId: "command-sql-commit-failure",
         attachments: [
           upload({
-            type: "file",
-            name: "transaction.txt",
-            mimeType: "text/plain",
+            type: "image",
+            name: "transaction.png",
+            mimeType: "image/png",
             bytes: Buffer.from("transaction"),
           }),
         ],
@@ -600,9 +591,9 @@ it.layer(RemainingAttachmentDispatchEnvironment.layer)(
           messageId: "message-duplicate-retry",
           attachments: [
             upload({
-              type: "file",
-              name: "retry.txt",
-              mimeType: "text/plain",
+              type: "image",
+              name: "retry.png",
+              mimeType: "image/png",
               bytes: Buffer.from("retry"),
             }),
           ],
@@ -632,9 +623,9 @@ it.layer(RemainingAttachmentDispatchEnvironment.layer)(
             commandId: "command-sweep-orphan",
             attachments: [
               upload({
-                type: "file",
-                name: "orphan.txt",
-                mimeType: "text/plain",
+                type: "image",
+                name: "orphan.png",
+                mimeType: "image/png",
                 bytes: Buffer.from("orphan"),
               }),
             ],
@@ -656,9 +647,9 @@ it.layer(RemainingAttachmentDispatchEnvironment.layer)(
             commandId: "command-sweep-accepted",
             attachments: [
               upload({
-                type: "file",
-                name: "accepted.txt",
-                mimeType: "text/plain",
+                type: "image",
+                name: "accepted.png",
+                mimeType: "image/png",
                 bytes: Buffer.from("accepted"),
               }),
             ],

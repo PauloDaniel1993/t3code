@@ -11,10 +11,7 @@ import {
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
 } from "./provider.ts";
-import {
-  PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-} from "./orchestration.ts";
+import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "./orchestration.ts";
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
@@ -174,11 +171,11 @@ describe("ProviderSendTurnInput", () => {
           sizeBytes: 1,
         },
         {
-          type: "document",
-          id: "document-1",
+          type: "file",
+          id: "pdf-1",
           name: "second.pdf",
           mimeType: "application/pdf",
-          sizeBytes: PROVIDER_SEND_TURN_MAX_DOCUMENT_BYTES,
+          sizeBytes: 10 * 1024 * 1024,
         },
         {
           type: "file",
@@ -192,7 +189,7 @@ describe("ProviderSendTurnInput", () => {
 
     expect(parsed.attachments?.map((attachment) => attachment.type)).toEqual([
       "image",
-      "document",
+      "file",
       "file",
     ]);
   });
@@ -207,9 +204,9 @@ describe("ProviderSendTurnInput", () => {
         sizeBytes: 1,
       })),
       ...Array.from({ length: 2 }, (_, index) => ({
-        type: "document" as const,
-        id: `document-${index}`,
-        name: `document-${index}.pdf`,
+        type: "file" as const,
+        id: `pdf-${index}`,
+        name: `pdf-${index}.pdf`,
         mimeType: "application/pdf" as const,
         sizeBytes: 1,
       })),

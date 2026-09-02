@@ -8,11 +8,16 @@ import {
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
   type ThreadId,
-  type ToolLifecycleItemType,
   type TurnId,
 } from "@t3tools/contracts";
 
-import type { AcpPermissionRequest, AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
+import {
+  type AcpPermissionRequest,
+  type AcpPlanUpdate,
+  type AcpToolCallState,
+  canonicalItemTypeFromAcpToolKind,
+} from "./AcpRuntimeModel.ts";
+import * as Predicate from "effect/Predicate";
 import { PROVIDER_EVENT_FLOW_CONTROL } from "../../orchestration/ProviderEventFlowControl.ts";
 import { normalizeAcpToolActivity } from "./AcpToolActivityNormalizer.ts";
 
@@ -46,29 +51,9 @@ function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonical
   }
 }
 
-function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
-  switch (kind) {
-    case "execute":
-      return "command_execution";
-    case "edit":
-    case "delete":
-    case "move":
-      return "file_change";
-    case "search":
-    case "fetch":
-      return "web_search";
-    default:
-      return "dynamic_tool_call";
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseAcpToolRawInput(toolCall: AcpToolCallState): Record<string, unknown> | undefined {
   const rawInput = toolCall.data.rawInput;
-  if (isRecord(rawInput)) {
+  if (Predicate.isObject(rawInput)) {
     return rawInput;
   }
   if (typeof rawInput !== "string" || !rawInput.trim().startsWith("{")) {
@@ -76,7 +61,7 @@ function parseAcpToolRawInput(toolCall: AcpToolCallState): Record<string, unknow
   }
   try {
     const parsed = JSON.parse(rawInput) as unknown;
-    return isRecord(parsed) ? parsed : undefined;
+    return Predicate.isObject(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
@@ -100,7 +85,7 @@ function acpSubagentPresentation(toolCall: AcpToolCallState):
     typeof input.resume === "string";
   const hasAgentSwarmIdentity =
     (typeof input.prompt_template === "string" && Array.isArray(input.items)) ||
-    isRecord(input.resume_agent_ids);
+    Predicate.isObject(input.resume_agent_ids);
   const hasAgentTask =
     (typeof input.prompt === "string" || hasAgentSwarmIdentity) &&
     (typeof input.description === "string" || hasAgentIdentity || hasAgentSwarmIdentity);
@@ -230,6 +215,7 @@ export function makeAcpToolCallEvent(input: {
   readonly threadId: ThreadId;
   readonly turnId: TurnId | undefined;
   readonly toolCall: AcpToolCallState;
+  readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
   const runtimeStatus = runtimeItemStatusFromAcpToolStatus(input.toolCall.status);
   const subagentPresentation = acpSubagentPresentation(input.toolCall);
@@ -265,6 +251,11 @@ export function makeAcpToolCallEvent(input: {
           ? { detail: normalized.detail }
           : {}),
       ...(normalized.data ? { data: normalized.data } : {}),
+    },
+    raw: {
+      source: "acp.jsonrpc",
+      method: "session/update",
+      payload: input.rawPayload,
     },
   };
 }

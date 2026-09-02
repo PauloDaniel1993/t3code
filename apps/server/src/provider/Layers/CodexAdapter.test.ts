@@ -66,7 +66,9 @@ function writeStoredAttachment(
   attachment: ChatAttachment,
   bytes: Uint8Array | string,
 ): string {
-  const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+  const relativePath = attachmentRelativePath(attachment);
+  NodeAssert.ok(relativePath);
+  const attachmentPath = NodePath.join(attachmentsDir, relativePath);
   NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
   NodeFS.writeFileSync(attachmentPath, bytes);
   return attachmentPath;
@@ -574,7 +576,7 @@ it.effect("delivers mixed Codex attachments as ordered images and local-path men
       sizeBytes: 2,
     };
     const pdf = {
-      type: "document" as const,
+      type: "file" as const,
       id: "thread-codex-attachments-22345678-1234-1234-1234-123456789abc",
       name: "design notes.pdf",
       mimeType: "application/pdf" as const,
@@ -647,7 +649,7 @@ it.effect("rejects a missing Codex attachment before any runtime sendTurn call",
       sizeBytes: 1,
     };
     const missing = {
-      type: "document" as const,
+      type: "file" as const,
       id: "thread-codex-missing-62345678-1234-1234-1234-123456789abc",
       name: "missing.pdf",
       mimeType: "application/pdf" as const,
@@ -708,152 +710,91 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
-  it.effect("maps synthetic Codex child-agent lifecycle notifications to tasks", () =>
+  it.effect("carries child model metadata through every task event", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
-      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 10)).pipe(
+        Effect.forkChild,
+      );
 
+      const cases = [
+        ["collabAgent/started", {}],
+        ["collabAgent/activity", { activityKind: "started" }],
+        ["collabAgent/turnStarted", {}],
+        ["collabAgent/turnCompleted", { turn: { status: "completed" } }],
+        ["collabAgent/statusChanged", { status: { type: "active", activeFlags: [] } }],
+        ["collabAgent/tokenUsage", { tokenUsage: { total: { totalTokens: 42 } } }],
+        ["collabAgent/item", { item: { type: "commandExecution", command: "pwd" } }],
+        ["collabAgent/closed", {}],
+        ["collabAgent/metadataUpdated", {}],
+      ] as const;
+
+      for (const [index, [method, extra]] of cases.entries()) {
+        yield* runtime.emit({
+          id: asEventId(`evt-child-model-${index}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-1"),
+          payload: {
+            agentThreadId: "child-model",
+            agentPath: "/root/model-check",
+            model: " gpt-5.6-sol ",
+            effort: " high ",
+            ...extra,
+          },
+        });
+      }
       yield* runtime.emit({
-        id: asEventId("evt-child-task-start"),
+        id: asEventId("evt-child-model-blank"),
         kind: "notification",
         provider: ProviderDriverKind.make("codex"),
         createdAt: "2026-01-01T00:00:00.000Z",
-        method: "t3/task/started",
+        method: "collabAgent/metadataUpdated",
         threadId: asThreadId("thread-1"),
         turnId: asTurnId("turn-1"),
         payload: {
-          taskId: "child-thread-1",
-          description: "Inspect the workflow card",
-          prompt: "Inspect the workflow card",
+          agentThreadId: "child-model",
+          model: "  ",
+          effort: "",
         },
       });
 
-      const firstEvent = yield* Fiber.join(firstEventFiber);
-      NodeAssert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag === "Some" && firstEvent.value.type === "task.started") {
-        NodeAssert.equal(firstEvent.value.payload.taskId, "child-thread-1");
-        NodeAssert.equal(firstEvent.value.payload.taskType, "subagent");
-        NodeAssert.equal(firstEvent.value.payload.description, "Inspect the workflow card");
-        // The canonical marker. Codex labels no subagent type, so without this
-        // the projection has no evidence the run is an agent and drops the row.
-        NodeAssert.equal(firstEvent.value.payload.nativeAgent, true);
-      } else {
-        NodeAssert.fail("expected task.started");
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.deepStrictEqual(
+        events.map((event) => event.type),
+        [
+          "task.started",
+          "task.started",
+          "task.updated",
+          "task.updated",
+          "task.updated",
+          "task.progress",
+          "task.progress",
+          "task.updated",
+          "task.updated",
+          "task.updated",
+        ],
+      );
+      for (const event of events.slice(0, -1)) {
+        const payload = event.payload as Record<string, unknown>;
+        NodeAssert.equal(payload.model, "gpt-5.6-sol");
+        NodeAssert.equal(payload.effort, "high");
       }
-    }),
-  );
-
-  it.effect("maps Codex child-agent progress onto the canonical task.progress", () =>
-    Effect.gen(function* () {
-      const { adapter, runtime } = yield* startLifecycleRuntime();
-      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
-
-      yield* runtime.emit({
-        id: asEventId("evt-child-task-progress"),
-        kind: "notification",
-        provider: ProviderDriverKind.make("codex"),
-        createdAt: "2026-01-01T00:00:01.000Z",
-        method: "t3/task/progress",
-        threadId: asThreadId("thread-1"),
-        turnId: asTurnId("turn-1"),
-        payload: { taskId: "child-thread-1", summary: "reading SidebarV2.tsx" },
-      });
-
-      const firstEvent = yield* Fiber.join(firstEventFiber);
-      NodeAssert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag === "Some" && firstEvent.value.type === "task.progress") {
-        NodeAssert.equal(firstEvent.value.payload.taskId, "child-thread-1");
-        NodeAssert.equal(firstEvent.value.payload.description, "reading SidebarV2.tsx");
-        NodeAssert.equal(firstEvent.value.payload.summary, "reading SidebarV2.tsx");
-        NodeAssert.equal(firstEvent.value.payload.nativeAgent, true);
-      } else {
-        NodeAssert.fail("expected task.progress");
+      for (const event of events) {
+        const payload = event.payload as Record<string, unknown>;
+        NodeAssert.equal(payload.taskType, "subagent");
+        NodeAssert.equal(payload.nativeAgent, true);
       }
-    }),
-  );
 
-  it.effect("maps a failed Codex child agent onto a failed task.completed", () =>
-    Effect.gen(function* () {
-      const { adapter, runtime } = yield* startLifecycleRuntime();
-      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
-
-      yield* runtime.emit({
-        id: asEventId("evt-child-task-failed"),
-        kind: "notification",
-        provider: ProviderDriverKind.make("codex"),
-        createdAt: "2026-01-01T00:00:02.000Z",
-        method: "t3/task/completed",
-        threadId: asThreadId("thread-1"),
-        turnId: asTurnId("turn-1"),
-        payload: { taskId: "child-thread-1", status: "failed", summary: "worker died" },
-      });
-
-      const firstEvent = yield* Fiber.join(firstEventFiber);
-      NodeAssert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag === "Some" && firstEvent.value.type === "task.completed") {
-        NodeAssert.equal(firstEvent.value.payload.status, "failed");
-        NodeAssert.equal(firstEvent.value.payload.error, "worker died");
-        NodeAssert.equal(firstEvent.value.payload.nativeAgent, true);
-      } else {
-        NodeAssert.fail("expected task.completed");
-      }
-    }),
-  );
-
-  it.effect("maps a stopped Codex child agent onto a stopped task.completed", () =>
-    Effect.gen(function* () {
-      const { adapter, runtime } = yield* startLifecycleRuntime();
-      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
-
-      yield* runtime.emit({
-        id: asEventId("evt-child-task-stopped"),
-        kind: "notification",
-        provider: ProviderDriverKind.make("codex"),
-        createdAt: "2026-01-01T00:00:03.000Z",
-        method: "t3/task/completed",
-        threadId: asThreadId("thread-1"),
-        turnId: asTurnId("turn-1"),
-        payload: { taskId: "child-thread-1", status: "stopped" },
-      });
-
-      const firstEvent = yield* Fiber.join(firstEventFiber);
-      NodeAssert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag === "Some" && firstEvent.value.type === "task.completed") {
-        NodeAssert.equal(firstEvent.value.payload.status, "stopped");
-        // Nothing was reported, so nothing is invented.
-        NodeAssert.equal(firstEvent.value.payload.error, undefined);
-        NodeAssert.equal(firstEvent.value.payload.summary, undefined);
-      } else {
-        NodeAssert.fail("expected task.completed");
-      }
-    }),
-  );
-
-  it.effect("treats a legacy Codex completion with no status as completed", () =>
-    Effect.gen(function* () {
-      // Older runtimes emitted `t3/task/completed` with `status: "completed"`
-      // only; a payload without one must still settle rather than hang.
-      const { adapter, runtime } = yield* startLifecycleRuntime();
-      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
-
-      yield* runtime.emit({
-        id: asEventId("evt-child-task-legacy"),
-        kind: "notification",
-        provider: ProviderDriverKind.make("codex"),
-        createdAt: "2026-01-01T00:00:04.000Z",
-        method: "t3/task/completed",
-        threadId: asThreadId("thread-1"),
-        turnId: asTurnId("turn-1"),
-        payload: { taskId: "child-thread-1" },
-      });
-
-      const firstEvent = yield* Fiber.join(firstEventFiber);
-      if (firstEvent._tag === "Some" && firstEvent.value.type === "task.completed") {
-        NodeAssert.equal(firstEvent.value.payload.status, "completed");
-        NodeAssert.equal(firstEvent.value.payload.nativeAgent, true);
-      } else {
-        NodeAssert.fail("expected task.completed");
-      }
+      const metadataPayload = events[8]?.payload as Record<string, unknown>;
+      NodeAssert.equal("status" in metadataPayload, false);
+      const blankMetadataPayload = events[9]?.payload as Record<string, unknown>;
+      NodeAssert.equal("status" in blankMetadataPayload, false);
+      NodeAssert.equal("model" in blankMetadataPayload, false);
+      NodeAssert.equal("effort" in blankMetadataPayload, false);
     }),
   );
 

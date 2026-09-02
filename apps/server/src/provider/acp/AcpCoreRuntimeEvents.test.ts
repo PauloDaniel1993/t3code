@@ -138,6 +138,7 @@ describe("AcpCoreRuntimeEvents", () => {
         provider: ProviderDriverKind.make("cursor"),
         threadId: "thread-1" as never,
         turnId,
+        rawPayload: { sessionId: "session-1" },
         toolCall: {
           toolCallId: "tool-1",
           kind: "execute",
@@ -198,6 +199,7 @@ describe("AcpCoreRuntimeEvents", () => {
       provider: ProviderDriverKind.make("kimi"),
       threadId: "thread-agent" as never,
       turnId: TurnId.make("turn-agent"),
+      rawPayload: { sessionId: "session-agent" },
       toolCall: {
         toolCallId: "tool-agent",
         status: "completed",
@@ -230,6 +232,7 @@ describe("AcpCoreRuntimeEvents", () => {
         provider: ProviderDriverKind.make("kimi"),
         threadId: "thread-agent" as never,
         turnId: TurnId.make("turn-agent"),
+        rawPayload: { sessionId: "session-agent" },
         toolCall: {
           toolCallId: "tool-agent-foreground",
           status: "inProgress",

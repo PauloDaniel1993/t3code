@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { getDefaultConfig } = require("expo/metro-config");
 const { withUniwindConfig } = require("uniwind/metro");
+const extraThemes = require("./generated-uniwind-theme-names.json");
 
 /** @type {import("expo/metro-config").MetroConfig} */
 const config = getDefaultConfig(__dirname);
@@ -54,9 +55,7 @@ config.resolver = {
     // watchFolders spans the whole monorepo so workspace packages resolve, but
     // crawling these trees is pure cost and exhausts file descriptors on
     // Windows ("EMFILE: too many open files"). None of them are importable.
-    new RegExp(
-      `${escapedWorkspaceRoot}[/\\\\](?:${IGNORED_WORKSPACE_DIRS.join("|")})[/\\\\].*`,
-    ),
+    new RegExp(`${escapedWorkspaceRoot}[/\\\\](?:${IGNORED_WORKSPACE_DIRS.join("|")})[/\\\\].*`),
     /[/\\]android[/\\](?:build|\.gradle|\.kotlin)[/\\].*/,
   ],
   extraNodeModules: {
@@ -75,5 +74,6 @@ config.resolver = {
 
 module.exports = withUniwindConfig(config, {
   cssEntryFile: "./global.css",
+  extraThemes,
   polyfills: { rem: 14 },
 });

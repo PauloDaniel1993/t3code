@@ -1,25 +1,182 @@
-import { EventId, MessageId, TurnId, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { deriveTimelineEntries, deriveWorkLogEntries } from "../../session-logic";
+import { MessageId, TurnId } from "@t3tools/contracts";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
-  deriveTaskCardMetricParts,
-  formatTaskTokenCount,
-  formatTaskToolUseCount,
-  messageEntryIsTranscriptVisible,
+  liveWorkEntryLabel,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
-  resolveTaskCardExpansionA11y,
-  resolveTimelineIsAtEnd,
+  resolveWorkGroupScrollIndex,
+  shouldFollowWorkGroupAppend,
   shouldPreserveAssistantLineBreaks,
-  TIMELINE_FOLLOW_REARM_THRESHOLD_PX,
-  workEntryIsTranscriptVisible,
-  workLogEntryIsTaskLike,
-  type MessagesTimelineRow,
-  type StableMessagesTimelineRowsState,
+  workEntryDisplayLabel,
 } from "./MessagesTimeline.logic";
+
+describe("expanded tool group scrolling", () => {
+  const entries = [{ id: "first" }, { id: "second" }];
+
+  it("follows appended calls only at the hard end", () => {
+    const appended = [...entries, { id: "third" }];
+    expect(shouldFollowWorkGroupAppend(entries, appended, 0)).toBe(true);
+    expect(shouldFollowWorkGroupAppend(entries, appended, 0.5)).toBe(true);
+    expect(shouldFollowWorkGroupAppend(entries, appended, 1)).toBe(true);
+    expect(shouldFollowWorkGroupAppend(entries, appended, 1.01)).toBe(false);
+    expect(shouldFollowWorkGroupAppend(entries, appended, 10)).toBe(false);
+    expect(shouldFollowWorkGroupAppend(entries, appended, Infinity)).toBe(false);
+  });
+
+  it("does not follow output updates, prepends, or replacements", () => {
+    expect(
+      shouldFollowWorkGroupAppend(
+        entries,
+        entries.map((entry) => ({ ...entry })),
+        0,
+      ),
+    ).toBe(false);
+    expect(shouldFollowWorkGroupAppend(entries, [{ id: "older" }, ...entries], 0)).toBe(false);
+    expect(
+      shouldFollowWorkGroupAppend(
+        entries,
+        [{ id: "replacement" }, entries[1]!, { id: "third" }],
+        0,
+      ),
+    ).toBe(false);
+    expect(shouldFollowWorkGroupAppend([], entries, 0)).toBe(false);
+  });
+
+  it("restores the visible tool and its offset inside expanded output", () => {
+    const anchor = { entryId: "second", offset: 120 };
+    expect(resolveWorkGroupScrollIndex(entries, anchor)).toEqual({ index: 1, viewOffset: -120 });
+    expect(resolveWorkGroupScrollIndex([{ id: "older" }, ...entries], anchor)).toEqual({
+      index: 2,
+      viewOffset: -120,
+    });
+  });
+
+  it("starts normally when the saved tool no longer exists", () => {
+    expect(resolveWorkGroupScrollIndex(entries, undefined)).toBeUndefined();
+    expect(
+      resolveWorkGroupScrollIndex(entries, { entryId: "removed", offset: 120 }),
+    ).toBeUndefined();
+  });
+});
+
+describe("work entry labels", () => {
+  const entry = {
+    id: "tool-1",
+    createdAt: "2026-09-01T12:00:00Z",
+    label: "Tool call",
+    tone: "tool" as const,
+  };
+
+  it.each([
+    ["inProgress", "Clicking in the preview browser"],
+    ["completed", "Clicked in the preview browser"],
+    ["failed", "Failed to click in the preview browser"],
+    ["declined", "Declined to click in the preview browser"],
+    ["stopped", "Stopped clicking in the preview browser"],
+  ] as const)("uses the same friendly %s label in both views", (toolLifecycleStatus, label) => {
+    const browserEntry = {
+      ...entry,
+      toolTitle: "T3-code.preview_click",
+      detail: '{"ok":true}',
+      toolLifecycleStatus,
+    };
+    expect(liveWorkEntryLabel(browserEntry, undefined, toolLifecycleStatus === "inProgress")).toBe(
+      label,
+    );
+    expect(workEntryDisplayLabel(browserEntry, undefined)).toBe(label);
+  });
+
+  it("uses the active summary state for legacy tools without a lifecycle status", () => {
+    const browserEntry = { ...entry, toolTitle: "T3-code.preview_click" };
+    expect(liveWorkEntryLabel(browserEntry, undefined, true)).toBe(
+      "Clicking in the preview browser",
+    );
+    expect(liveWorkEntryLabel(browserEntry, undefined, false)).toBe(
+      "Clicked in the preview browser",
+    );
+  });
+
+  it("does not describe a finished call as still running while the turn continues", () => {
+    const browserEntry = {
+      ...entry,
+      toolTitle: "T3-code.preview_click",
+      toolLifecycleStatus: "completed" as const,
+    };
+    expect(liveWorkEntryLabel(browserEntry, undefined, true)).toBe(
+      "Clicked in the preview browser",
+    );
+  });
+
+  it("keeps custom titles and output for unrecognized tools", () => {
+    const unknownEntry = { ...entry, toolTitle: "mcp__github__search_issues" };
+    expect(liveWorkEntryLabel(unknownEntry, undefined, true)).toBe("Mcp__github__search_issues");
+    expect(workEntryDisplayLabel({ ...unknownEntry, detail: "Found 3 issues" }, undefined)).toBe(
+      "Found 3 issues",
+    );
+  });
+
+  it("keeps command summaries compact without replacing the full command in expanded rows", () => {
+    const commandEntry = { ...entry, command: "vp test run", detail: "All tests passed" };
+    expect(liveWorkEntryLabel(commandEntry, undefined, true)).toBe("Running vp");
+    expect(liveWorkEntryLabel(commandEntry, undefined, false)).toBe("Ran vp");
+    expect(workEntryDisplayLabel(commandEntry, undefined)).toBe("vp test run");
+  });
+
+  it("summarizes the program inside a shell wrapper while preserving the expanded command", () => {
+    const command = "/bin/zsh -lc 'vp test run apps/web/src/session-logic.test.ts'";
+    const commandEntry = { ...entry, command };
+    expect(liveWorkEntryLabel(commandEntry, undefined, true)).toBe("Running vp");
+    expect(liveWorkEntryLabel(commandEntry, undefined, false)).toBe("Ran vp");
+    expect(workEntryDisplayLabel(commandEntry, undefined)).toBe(command);
+  });
+
+  it.each([
+    ["inProgress", "Running vp"],
+    ["completed", "Ran vp"],
+    ["failed", "Failed vp"],
+    ["declined", "Declined vp"],
+    ["stopped", "Stopped vp"],
+  ] as const)(
+    "uses the command's %s outcome even while the turn continues",
+    (toolLifecycleStatus, label) => {
+      const commandEntry = {
+        ...entry,
+        command: "/bin/bash -lc 'vp test run'",
+        toolLifecycleStatus,
+      };
+      expect(liveWorkEntryLabel(commandEntry, undefined, true)).toBe(label);
+      expect(liveWorkEntryLabel(commandEntry, undefined, false)).toBe(label);
+    },
+  );
+
+  it("gives a completed browser group its own count and summary icon category", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "browser-entry",
+          kind: "work",
+          createdAt: entry.createdAt,
+          entry: {
+            ...entry,
+            itemType: "mcp_tool_call",
+            toolLifecycleStatus: "completed",
+            toolData: { server: "t3-code", tool: "preview_click" },
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    expect(rows).toMatchObject([
+      { kind: "work-toggle", summary: "Used browser 1 time", summaryKind: "browser" },
+    ]);
+  });
+});
 
 describe("shouldPreserveAssistantLineBreaks", () => {
   it("preserves Claude insight formatting without changing regular markdown", () => {
@@ -29,50 +186,6 @@ describe("shouldPreserveAssistantLineBreaks", () => {
       ),
     ).toBe(true);
     expect(shouldPreserveAssistantLineBreaks("A normal\\nmarkdown paragraph")).toBe(false);
-  });
-});
-
-describe("timeline live edge", () => {
-  it("re-arms inside the strict pixel band but not in LegendList's near-end region", () => {
-    const contentLength = 2_000;
-    const scrollLength = 800;
-
-    expect(
-      resolveTimelineIsAtEnd({
-        isAtEnd: false,
-        contentLength,
-        scroll: contentLength - scrollLength - TIMELINE_FOLLOW_REARM_THRESHOLD_PX,
-        scrollLength,
-      }),
-    ).toBe(true);
-    expect(
-      resolveTimelineIsAtEnd({
-        isAtEnd: false,
-        contentLength,
-        scroll: contentLength - scrollLength - TIMELINE_FOLLOW_REARM_THRESHOLD_PX - 1,
-        scrollLength,
-      }),
-    ).toBe(false);
-    expect(
-      resolveTimelineIsAtEnd({
-        isAtEnd: false,
-        contentLength,
-        scroll: 900,
-        scrollLength,
-      }),
-    ).toBe(false);
-  });
-
-  it("subtracts the composer inset and falls back to the strict list flag", () => {
-    expect(
-      resolveTimelineIsAtEnd(
-        { isAtEnd: false, contentLength: 2_100, scroll: 1_170, scrollLength: 800 },
-        100,
-      ),
-    ).toBe(true);
-    expect(resolveTimelineIsAtEnd({ isAtEnd: true })).toBe(true);
-    expect(resolveTimelineIsAtEnd({ isAtEnd: false })).toBe(false);
-    expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
   });
 });
 
@@ -327,6 +440,23 @@ describe("resolveAssistantMessageCopyState", () => {
       visible: false,
     });
   });
+
+  it("copies the rendered representation of Codex directives", () => {
+    expect(
+      resolveAssistantMessageCopyState({
+        showCopyButton: true,
+        text: [
+          'Created :codex-file-citation{path="outputs/report.xlsx" purpose="output"}.',
+          "",
+          '::artifact-template{skill_name="artifact-template-hello-world" skill_directory="/Users/test/.codex/skills/artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}',
+        ].join("\n"),
+        streaming: false,
+      }),
+    ).toEqual({
+      text: "Created [report.xlsx](<outputs/report.xlsx>).\n\nHello World (Document template)",
+      visible: true,
+    });
+  });
 });
 
 describe("deriveMessagesTimelineRows", () => {
@@ -509,7 +639,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
 
-  it("keeps the first and terminal assistant messages visible around settled work", () => {
+  it("folds the first assistant message and settled work before the terminal response", () => {
     const timelineEntries = [
       {
         id: "user-entry",
@@ -585,7 +715,6 @@ describe("deriveMessagesTimelineRows", () => {
     expect(foldRow?.label).toBe("Worked for 22s");
     expect(collapsedRows.map((row) => row.id)).toEqual([
       "user-entry",
-      "assistant-first-entry",
       "turn-fold:turn-1",
       "assistant-final-entry",
     ]);
@@ -601,8 +730,8 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(expandedRows.map((row) => row.id)).toEqual([
       "user-entry",
-      "assistant-first-entry",
       "turn-fold:turn-1",
+      "assistant-first-entry",
       "work-toggle:work-entry-1",
       "assistant-final-entry",
     ]);
@@ -611,7 +740,7 @@ describe("deriveMessagesTimelineRows", () => {
     ).toBeDefined();
   });
 
-  it("folds assistant messages between the first and terminal messages", () => {
+  it("folds all assistant messages before the terminal message", () => {
     const timelineEntries = [
       {
         id: "assistant-first-entry",
@@ -665,11 +794,7 @@ describe("deriveMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    expect(rows.map((row) => row.id)).toEqual([
-      "assistant-first-entry",
-      "turn-fold:turn-1",
-      "assistant-final-entry",
-    ]);
+    expect(rows.map((row) => row.id)).toEqual(["turn-fold:turn-1", "assistant-final-entry"]);
   });
 
   it("derives a sane duration for a steer-superseded turn with one instant commentary message", () => {
@@ -870,9 +995,11 @@ describe("deriveMessagesTimelineRows", () => {
       "assistant-final-entry",
       "user-followup-entry",
       "working-indicator-row",
+      "live-activity-row",
     ]);
     const finalRow = rows.find((row) => row.id === "assistant-final-entry");
     expect(finalRow?.kind === "message" && finalRow.showAssistantMeta).toBe(true);
+    expect(rows.at(-1)).toMatchObject({ kind: "thinking" });
   });
 
   it("does not fold the active in-progress turn", () => {
@@ -921,26 +1048,26 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "working-indicator-row",
       "assistant-thought-entry",
-      "work-live:work-entry-1",
+      "live-activity-row",
     ]);
   });
 
-  it("keeps adjacent active tool calls in one replacing row", () => {
+  it("keeps an actually running tool in the shared activity row", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
         {
-          id: "completed-command-entry",
+          id: "running-command-entry",
           kind: "work",
           createdAt: "2026-01-01T00:00:05Z",
           entry: {
-            id: "completed-command",
+            id: "running-command",
             createdAt: "2026-01-01T00:00:05Z",
             turnId: "turn-1" as never,
-            label: "Ran rg",
+            label: "Running rg",
             command: "rg toolCall",
             requestKind: "command",
             tone: "tool" as const,
-            toolLifecycleStatus: "completed" as const,
+            toolLifecycleStatus: "inProgress" as const,
           },
         },
         {
@@ -959,18 +1086,18 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
         {
-          id: "running-command-entry",
+          id: "completed-command-entry",
           kind: "work",
           createdAt: "2026-01-01T00:00:07Z",
           entry: {
-            id: "running-command",
+            id: "completed-command",
             createdAt: "2026-01-01T00:00:07Z",
             turnId: "turn-1" as never,
-            label: "Running tests",
+            label: "Ran tests",
             command: "vp test run",
             requestKind: "command",
             tone: "tool" as const,
-            toolLifecycleStatus: "inProgress" as const,
+            toolLifecycleStatus: "completed" as const,
           },
         },
       ],
@@ -987,12 +1114,14 @@ describe("deriveMessagesTimelineRows", () => {
     });
 
     expect(rows.map((row) => row.kind)).toEqual(["working", "work-live"]);
+    expect(rows.some((row) => row.kind === "thinking")).toBe(false);
     expect(rows.find((row) => row.kind === "work-live")).toMatchObject({
       entry: { id: "running-command" },
+      active: true,
       groupedEntries: [
-        { id: "completed-command" },
-        { id: "completed-edit" },
         { id: "running-command" },
+        { id: "completed-edit" },
+        { id: "completed-command" },
       ],
     });
   });
@@ -1237,42 +1366,115 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
-  it("keeps the latest completed tool call live while the turn is running", () => {
-    const rows = deriveMessagesTimelineRows({
-      timelineEntries: [
-        {
-          id: "latest-command-entry",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:05Z",
-          entry: {
-            id: "latest-command",
+  it.each([
+    [undefined, true],
+    ["inProgress", true],
+    ["completed", false],
+    ["failed", null],
+    ["declined", false],
+    ["stopped", false],
+  ] as const)(
+    "respects the %s lifecycle of trailing task progress",
+    (toolLifecycleStatus, active) => {
+      const turnId = TurnId.make("turn-task-progress");
+      const rows = deriveMessagesTimelineRows({
+        timelineEntries: [
+          {
+            id: "task-progress-entry",
+            kind: "work",
             createdAt: "2026-01-01T00:00:05Z",
-            turnId: "turn-1" as never,
-            label: "Ran rg",
-            command: "rg toolCall",
-            requestKind: "command",
-            tone: "tool" as const,
-            toolLifecycleStatus: "completed" as const,
+            entry: {
+              id: "task-progress",
+              createdAt: "2026-01-01T00:00:05Z",
+              turnId,
+              label: "Task progress",
+              tone: "thinking",
+              sourceActivityKind: "task.progress",
+              ...(toolLifecycleStatus ? { toolLifecycleStatus } : {}),
+            },
           },
+        ],
+        latestTurn: {
+          turnId,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00Z",
+          completedAt: null,
         },
-      ],
-      latestTurn: {
-        turnId: "turn-1" as never,
-        state: "running",
-        startedAt: "2026-01-01T00:00:00Z",
-        completedAt: null,
-      },
-      isWorking: true,
-      activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
-    });
+        isWorking: true,
+        activeTurnStartedAt: "2026-01-01T00:00:00Z",
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
 
-    expect(rows.map((row) => row.kind)).toEqual(["working", "work-live"]);
-    expect(rows.find((row) => row.kind === "work-live")).toMatchObject({
-      entry: { id: "latest-command" },
-      groupedEntries: [{ id: "latest-command" }],
-    });
+      const workLiveRow = rows.find((row) => row.kind === "work-live");
+      if (active === null) {
+        expect(workLiveRow).toBeUndefined();
+        expect(rows.at(-1)).toMatchObject({ kind: "thinking", id: "live-activity-row" });
+      } else {
+        expect(workLiveRow).toMatchObject({ active });
+      }
+    },
+  );
+
+  it("reuses one activity row for initial thinking and the latest tool", () => {
+    const deriveRows = (
+      toolLifecycleStatus: "inProgress" | "completed" | "failed" | "declined" | null,
+    ) =>
+      deriveMessagesTimelineRows({
+        timelineEntries:
+          toolLifecycleStatus === null
+            ? []
+            : [
+                {
+                  id: "latest-command-entry",
+                  kind: "work",
+                  createdAt: "2026-01-01T00:00:05Z",
+                  entry: {
+                    id: "latest-command",
+                    createdAt: "2026-01-01T00:00:05Z",
+                    turnId: "turn-1" as never,
+                    label: toolLifecycleStatus === "inProgress" ? "Running rg" : "Ran rg",
+                    command: "rg toolCall",
+                    requestKind: "command",
+                    tone: "tool" as const,
+                    toolLifecycleStatus,
+                    ...(toolLifecycleStatus === "inProgress" ? { detail: "exit code 1" } : {}),
+                  },
+                },
+              ],
+        latestTurn: {
+          turnId: "turn-1" as never,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00Z",
+          completedAt: null,
+        },
+        isWorking: true,
+        activeTurnStartedAt: "2026-01-01T00:00:00Z",
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+
+    const initialRows = deriveRows(null);
+    const runningRows = deriveRows("inProgress");
+    const completedRows = deriveRows("completed");
+    const failedRows = deriveRows("failed");
+    const declinedRows = deriveRows("declined");
+    const initialActivityRow = initialRows.find((row) => row.id === "live-activity-row");
+    const runningActivityRow = runningRows.find((row) => row.id === "live-activity-row");
+    const completedActivityRow = completedRows.find((row) => row.id === "live-activity-row");
+
+    expect(initialActivityRow).toMatchObject({ kind: "thinking" });
+    expect(runningActivityRow).toMatchObject({ kind: "work-live", active: true });
+    expect(completedActivityRow).toMatchObject({ kind: "work-live", active: true });
+    expect(failedRows.some((row) => row.kind === "work-live")).toBe(false);
+    expect(failedRows.at(-1)).toMatchObject({ kind: "thinking", id: "live-activity-row" });
+    expect(declinedRows.find((row) => row.kind === "work-live")).toMatchObject({ active: false });
+    expect(declinedRows.at(-1)).toMatchObject({ kind: "thinking", id: "live-activity-row" });
+    expect(initialRows.filter((row) => row.id === "live-activity-row")).toHaveLength(1);
+    expect(runningRows.filter((row) => row.id === "live-activity-row")).toHaveLength(1);
+    expect(completedRows.filter((row) => row.id === "live-activity-row")).toHaveLength(1);
+    expect(failedRows.filter((row) => row.id === "live-activity-row")).toHaveLength(1);
+    expect(declinedRows.filter((row) => row.id === "live-activity-row")).toHaveLength(1);
   });
 
   it("does not fold the session's running turn when latestTurn regresses", () => {
@@ -1333,7 +1535,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.filter((row) => row.kind === "turn-fold").map((row) => row.turnId)).toEqual([
       "turn-1",
     ]);
-    expect(rows.map((row) => row.id)).toContain("work-live:running-work-entry");
+    expect(rows.map((row) => row.id)).toContain("live-activity-row");
   });
 
   it("only shows assistant metadata on the terminal assistant message", () => {
@@ -1420,9 +1622,13 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(assistantRow?.showAssistantMeta).toBe(false);
     expect(assistantRow?.showAssistantCopyButton).toBe(false);
+    expect(rows.at(-1)).toMatchObject({ kind: "thinking" });
   });
 
-  it("models work log overflow expansion as inserted list rows", () => {
+  it.each([
+    ["tools", "tool", "Used 3 tools"],
+    ["tools and status updates", "info", "Used 2 tools and received 1 update"],
+  ] as const)("expands %s through the same activity group", (_, middleTone, summary) => {
     const timelineEntries = [
       {
         id: "work-entry-1",
@@ -1443,9 +1649,9 @@ describe("deriveMessagesTimelineRows", () => {
         entry: {
           id: "work-2",
           createdAt: "2026-01-01T00:00:02Z",
-          label: "edit",
+          label: "Status updated",
           detail: "Editing MessagesTimeline.tsx",
-          tone: "tool" as const,
+          tone: middleTone,
         },
       },
       {
@@ -1480,19 +1686,64 @@ describe("deriveMessagesTimelineRows", () => {
       groupId: "work-group:work-entry-1",
       hiddenCount: 3,
       expanded: false,
-      onlyToolEntries: true,
-      summary: "Used 3 tools",
+      summary,
     });
     expect(expandedRows.map((row) => row.id)).toEqual([
       "work-toggle:work-entry-1",
-      "work-1",
-      "work-2",
-      "work-3",
+      "work-group:work-entry-1:details",
     ]);
+    expect(expandedRows.find((row) => row.kind === "work")).toMatchObject({
+      isExpandedToolGroup: true,
+      groupedEntries: timelineEntries.map(({ entry }) => entry),
+    });
     expect(expandedRows.find((row) => row.kind === "work-toggle")).toMatchObject({
       expanded: true,
     });
   });
+
+  it.each([true, false])(
+    "keeps a large expanded tool run inside one timeline item, live=%s",
+    (isWorking) => {
+      const turnId = TurnId.make("turn-many-tools");
+      const createdAt = "2026-09-01T12:00:00Z";
+      const timelineEntries = Array.from({ length: 1_000 }, (_, index) => ({
+        id: `tool-entry-${index}`,
+        kind: "work" as const,
+        createdAt,
+        entry: {
+          id: `tool-${index}`,
+          toolCallId: `call-${index}`,
+          createdAt,
+          turnId,
+          label: "t3-code.preview_snapshot",
+          tone: "tool" as const,
+          toolLifecycleStatus:
+            isWorking && index === 999 ? ("inProgress" as const) : ("completed" as const),
+        },
+      }));
+      const groupId = `work-group:tool:${turnId}:call-0`;
+      const input = {
+        timelineEntries,
+        isWorking,
+        expandedTurnIds: new Set([turnId]),
+        runningTurnId: isWorking ? turnId : null,
+        activeTurnStartedAt: isWorking ? createdAt : null,
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      };
+      const expandedRows = deriveMessagesTimelineRows({
+        ...input,
+        expandedWorkGroupIds: new Set([groupId]),
+      });
+      const groupRows = expandedRows.filter((row) => row.kind === "work");
+      expect(groupRows).toHaveLength(1);
+      expect(groupRows[0]?.groupedEntries.map(({ id }) => id)).toEqual(
+        timelineEntries.map(({ entry }) => entry.id),
+      );
+      expect(groupRows[0]?.id).toBe(`${groupId}:details`);
+      expect(deriveMessagesTimelineRows(input).some((row) => row.kind === "work")).toBe(false);
+    },
+  );
 
   it.each([
     ["recovered", ["failed", "completed"], false],
@@ -1533,7 +1784,7 @@ describe("deriveMessagesTimelineRows", () => {
     ["an error-toned entry recovers", ["error", "info", "completed"], false],
     ["the final failure is hidden", ["completed", "failed", "info"], true],
     ["the final failure is visible", ["failed", "info", "failed"], true],
-    ["the only failure is visible", ["completed", "info", "failed"], false],
+    ["the only failure is visible", ["completed", "info", "failed"], true],
   ] as const)(
     "uses the final tool call for mixed work groups when %s",
     (_, statuses, hasFailure) => {
@@ -1569,480 +1820,71 @@ describe("deriveMessagesTimelineRows", () => {
       });
 
       expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
-        hiddenCount: 2,
-        summary: null,
+        hiddenCount: statuses.some((status) => status === "error") ? 2 : 3,
+        summary: statuses.some((status) => status === "error")
+          ? "Received 1 update and used 1 tool"
+          : "Used 2 tools and received 1 update",
         hasFailure,
       });
+      if (statuses.some((status) => status === "error")) {
+        expect(rows[0]).toMatchObject({
+          kind: "work",
+          groupedEntries: [{ tone: "error", label: "Command failed" }],
+        });
+      }
     },
   );
 });
 
-describe("workLogEntryIsTaskLike", () => {
-  it("is true only for entries carrying a non-empty taskId", () => {
-    expect(workLogEntryIsTaskLike({ taskId: "task-1" })).toBe(true);
-    expect(workLogEntryIsTaskLike({ taskId: "" })).toBe(false);
-    expect(workLogEntryIsTaskLike({})).toBe(false);
-  });
-});
-
-describe("workEntryIsTranscriptVisible", () => {
-  const baseEntry = {
-    id: "work-1",
-    createdAt: "2026-01-01T00:00:01Z",
-    label: "Read files",
-    tone: "info" as const,
-  };
-
-  it("hides skipTranscript task entries from the transcript", () => {
-    expect(
-      workEntryIsTranscriptVisible({ ...baseEntry, taskId: "task-1", skipTranscript: true }),
-    ).toBe(false);
-    expect(
-      workEntryIsTranscriptVisible({ ...baseEntry, taskId: "task-1", skipTranscript: false }),
-    ).toBe(true);
-  });
-
-  it("hides panel-only activity projections regardless of tone", () => {
-    expect(
-      workEntryIsTranscriptVisible({ ...baseEntry, sourceActivityKind: "tool.progress" }),
-    ).toBe(false);
-    expect(
-      workEntryIsTranscriptVisible({
-        ...baseEntry,
-        sourceActivityKind: "turn.reasoning.summary",
-      }),
-    ).toBe(false);
-  });
-
-  it("keeps ordinary entries and task lifecycle entries visible", () => {
-    expect(workEntryIsTranscriptVisible(baseEntry)).toBe(true);
-    expect(
-      workEntryIsTranscriptVisible({
-        ...baseEntry,
-        taskId: "task-1",
-        sourceActivityKind: "task.progress",
-      }),
-    ).toBe(true);
-  });
-});
-
-describe("task card metric formatting", () => {
-  it("formats token and tool counts with singular and plural nouns", () => {
-    expect(formatTaskTokenCount(1)).toBe("1 token");
-    expect(formatTaskTokenCount(1234)).toBe("1,234 tokens");
-    expect(formatTaskToolUseCount(1)).toBe("1 tool");
-    expect(formatTaskToolUseCount(12)).toBe("12 tools");
-  });
-
-  it("includes only provider-supplied metrics in a stable order", () => {
-    expect(deriveTaskCardMetricParts({})).toEqual([]);
-    expect(deriveTaskCardMetricParts({ usage: { toolUses: 1 } })).toEqual(["1 tool"]);
-    expect(deriveTaskCardMetricParts({ lastToolName: "   " })).toEqual([]);
-    expect(
-      deriveTaskCardMetricParts({
-        usage: { totalTokens: 1234, toolUses: 3, durationMs: 45_000 },
-        lastToolName: "Read",
-      }),
-    ).toEqual(["1,234 tokens", "3 tools", "45s", "last: Read"]);
-  });
-});
-
-describe("resolveTaskCardExpansionA11y", () => {
-  it("links the collapsed disclosure to its mounted detail region", () => {
-    expect(
-      resolveTaskCardExpansionA11y({
-        expandable: true,
-        expanded: false,
-        detailRegionId: "task-card-detail-1",
-      }),
-    ).toEqual({
-      "aria-expanded": false,
-      "aria-controls": "task-card-detail-1",
-    });
-  });
-
-  it("keeps the same region link when the disclosure is expanded", () => {
-    expect(
-      resolveTaskCardExpansionA11y({
-        expandable: true,
-        expanded: true,
-        detailRegionId: "task-card-detail-1",
-      }),
-    ).toEqual({
-      "aria-expanded": true,
-      "aria-controls": "task-card-detail-1",
-    });
-  });
-
-  it("exposes no expansion semantics when the card has no expandable detail", () => {
-    for (const expanded of [false, true]) {
-      expect(
-        resolveTaskCardExpansionA11y({
-          expandable: false,
-          expanded,
-          detailRegionId: "task-card-detail-1",
-        }),
-      ).toEqual({});
-    }
-  });
-});
-
-describe("deriveMessagesTimelineRows task entries", () => {
-  const baseRowsInput = {
-    isWorking: false,
-    activeTurnStartedAt: null,
-    turnDiffSummaryByAssistantMessageId: new Map(),
-    revertTurnCountByUserMessageId: new Map(),
-  };
-
-  it("keeps info and thinking in-progress task entries while dropping neutral ordinary tools", () => {
-    for (const tone of ["info", "thinking"] as const) {
-      const rows = deriveMessagesTimelineRows({
-        ...baseRowsInput,
+describe("computeStableMessagesTimelineRows", () => {
+  it.each(["", " \n"])("keeps Thinking after assistant content grows from %j", (text) => {
+    const startedAt = "2026-01-01T00:00:00Z";
+    const turnId = TurnId.make("turn-1");
+    const input = {
+      runningTurnId: turnId,
+      isWorking: true,
+      activeTurnStartedAt: startedAt,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    };
+    const assistantEntry = {
+      id: "assistant-entry",
+      kind: "message" as const,
+      createdAt: startedAt,
+      message: {
+        id: MessageId.make("assistant-1"),
+        role: "assistant" as const,
+        text,
+        turnId,
+        createdAt: startedAt,
+        updatedAt: startedAt,
+        streaming: true,
+      },
+    };
+    const initial = computeStableMessagesTimelineRows(
+      deriveMessagesTimelineRows({ ...input, timelineEntries: [assistantEntry] }),
+      { byId: new Map(), result: [] },
+    );
+    const updated = computeStableMessagesTimelineRows(
+      deriveMessagesTimelineRows({
+        ...input,
         timelineEntries: [
           {
-            id: "task-entry",
-            kind: "work",
-            createdAt: "2026-01-01T00:00:01Z",
-            entry: {
-              id: "work-task-1",
-              createdAt: "2026-01-01T00:00:01Z",
-              label: "Explore the codebase",
-              tone,
-              taskId: "task-1",
-              toolLifecycleStatus: "inProgress",
-            },
-          },
-          {
-            id: "neutral-tool-entry",
-            kind: "work",
-            createdAt: "2026-01-01T00:00:02Z",
-            entry: {
-              id: "work-neutral-tool",
-              createdAt: "2026-01-01T00:00:02Z",
-              label: "Glob",
-              tone: "tool",
-              toolLifecycleStatus: "inProgress",
-            },
+            ...assistantEntry,
+            message: { ...assistantEntry.message, text: "I will inspect the repository." },
           },
         ],
-      });
+      }),
+      initial,
+    );
 
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ kind: "work", id: "task-entry" });
-      const workRow = rows[0] as Extract<(typeof rows)[number], { kind: "work" }>;
-      expect(workRow.groupedEntries.map((entry) => entry.id)).toEqual(["work-task-1"]);
-    }
+    const initialThinking = initial.byId.get("live-activity-row");
+    const updatedThinking = updated.byId.get("live-activity-row");
+    expect(initialThinking).toMatchObject({ kind: "thinking" });
+    expect(updatedThinking).toBe(initialThinking);
+    expect(updated.result.at(-1)).toBe(updatedThinking);
   });
 
-  it("removes skipTranscript tasks before grouping, hidden counts, and toggle construction", () => {
-    const rows = deriveMessagesTimelineRows({
-      ...baseRowsInput,
-      timelineEntries: [
-        {
-          id: "work-entry-1",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:01Z",
-          entry: {
-            id: "work-1",
-            createdAt: "2026-01-01T00:00:01Z",
-            label: "Ran command",
-            tone: "tool",
-            toolLifecycleStatus: "completed",
-          },
-        },
-        {
-          id: "work-entry-hidden",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:02Z",
-          entry: {
-            id: "work-hidden",
-            createdAt: "2026-01-01T00:00:02Z",
-            label: "Housekeeping sweep",
-            tone: "info",
-            taskId: "task-hidden",
-            skipTranscript: true,
-          },
-        },
-        {
-          id: "work-entry-2",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:03Z",
-          entry: {
-            id: "work-2",
-            createdAt: "2026-01-01T00:00:03Z",
-            label: "Read files",
-            tone: "tool",
-            toolLifecycleStatus: "completed",
-          },
-        },
-      ],
-    });
-
-    expect(rows.map((row) => row.id)).toEqual(["work-toggle:work-entry-1"]);
-    expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
-      hiddenCount: 2,
-      onlyToolEntries: true,
-      onlyTaskEntries: false,
-    });
-    expect(
-      rows.every(
-        (row) =>
-          row.kind !== "work" || row.groupedEntries.every((entry) => entry.id !== "work-hidden"),
-      ),
-    ).toBe(true);
-  });
-
-  it("never creates rows from tool.progress or turn.reasoning.summary projections", () => {
-    const rows = deriveMessagesTimelineRows({
-      ...baseRowsInput,
-      timelineEntries: [
-        {
-          id: "panel-progress-entry",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:01Z",
-          entry: {
-            id: "work-panel-progress",
-            createdAt: "2026-01-01T00:00:01Z",
-            label: "Read in progress",
-            tone: "info",
-            sourceActivityKind: "tool.progress",
-          },
-        },
-        {
-          id: "panel-reasoning-entry",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:02Z",
-          entry: {
-            id: "work-panel-reasoning",
-            createdAt: "2026-01-01T00:00:02Z",
-            label: "Reasoning summary",
-            tone: "thinking",
-            sourceActivityKind: "turn.reasoning.summary",
-          },
-        },
-        {
-          id: "visible-tool-entry",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:03Z",
-          entry: {
-            id: "work-visible",
-            createdAt: "2026-01-01T00:00:03Z",
-            label: "Ran command",
-            tone: "tool",
-            toolLifecycleStatus: "completed",
-          },
-        },
-      ],
-    });
-
-    expect(rows.map((row) => row.id)).toEqual(["work-toggle:visible-tool-entry"]);
-  });
-
-  it("marks task-only overflow groups as onlyTaskEntries", () => {
-    const taskTimelineEntry = (suffix: string, createdAt: string) => ({
-      id: `task-entry-${suffix}`,
-      kind: "work" as const,
-      createdAt,
-      entry: {
-        id: `work-task-${suffix}`,
-        createdAt,
-        label: `Task ${suffix}`,
-        tone: "info" as const,
-        taskId: `task-${suffix}`,
-        toolLifecycleStatus: "completed" as const,
-      },
-    });
-
-    const rows = deriveMessagesTimelineRows({
-      ...baseRowsInput,
-      timelineEntries: [
-        taskTimelineEntry("1", "2026-01-01T00:00:01Z"),
-        taskTimelineEntry("2", "2026-01-01T00:00:02Z"),
-        taskTimelineEntry("3", "2026-01-01T00:00:03Z"),
-      ],
-    });
-
-    expect(rows.map((row) => row.id)).toEqual(["work-task-3", "work-toggle:task-entry-1"]);
-    expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
-      hiddenCount: 2,
-      onlyToolEntries: false,
-      onlyTaskEntries: true,
-    });
-  });
-
-  it("retains hidden failures for task-only overflow groups", () => {
-    const taskTimelineEntry = (
-      suffix: string,
-      createdAt: string,
-      toolLifecycleStatus: "completed" | "failed",
-    ) => ({
-      id: `task-entry-${suffix}`,
-      kind: "work" as const,
-      createdAt,
-      entry: {
-        id: `work-task-${suffix}`,
-        createdAt,
-        label: `Task ${suffix}`,
-        tone: toolLifecycleStatus === "failed" ? ("error" as const) : ("info" as const),
-        taskId: `task-${suffix}`,
-        toolLifecycleStatus,
-      },
-    });
-
-    const rows = deriveMessagesTimelineRows({
-      ...baseRowsInput,
-      timelineEntries: [
-        taskTimelineEntry("1", "2026-01-01T00:00:01Z", "failed"),
-        taskTimelineEntry("2", "2026-01-01T00:00:02Z", "completed"),
-        taskTimelineEntry("3", "2026-01-01T00:00:03Z", "completed"),
-      ],
-    });
-
-    expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
-      hiddenCount: 2,
-      onlyTaskEntries: true,
-      hasFailure: true,
-    });
-  });
-
-  it("marks mixed task and tool groups as neither only-tool nor only-task", () => {
-    const rows = deriveMessagesTimelineRows({
-      ...baseRowsInput,
-      timelineEntries: [
-        {
-          id: "tool-entry",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:01Z",
-          entry: {
-            id: "work-tool-1",
-            createdAt: "2026-01-01T00:00:01Z",
-            label: "Ran command",
-            tone: "tool",
-            toolLifecycleStatus: "completed",
-          },
-        },
-        {
-          id: "task-entry",
-          kind: "work",
-          createdAt: "2026-01-01T00:00:02Z",
-          entry: {
-            id: "work-task-1",
-            createdAt: "2026-01-01T00:00:02Z",
-            label: "Explore the codebase",
-            tone: "info",
-            taskId: "task-1",
-            toolLifecycleStatus: "completed",
-          },
-        },
-      ],
-    });
-
-    expect(rows.map((row) => row.id)).toEqual(["work-task-1", "work-toggle:tool-entry"]);
-    expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
-      hiddenCount: 1,
-      onlyToolEntries: false,
-      onlyTaskEntries: false,
-    });
-  });
-
-  it("removes skipTranscript tasks before turn-fold anchoring and expansion", () => {
-    const timelineEntries = [
-      {
-        id: "user-entry",
-        kind: "message" as const,
-        createdAt: "2026-01-01T00:00:00Z",
-        message: {
-          id: "user-1" as never,
-          role: "user" as const,
-          text: "Run the sweep",
-          turnId: null,
-          createdAt: "2026-01-01T00:00:00Z",
-          updatedAt: "2026-01-01T00:00:00Z",
-          streaming: false,
-        },
-      },
-      {
-        id: "work-entry-hidden",
-        kind: "work" as const,
-        createdAt: "2026-01-01T00:00:05Z",
-        entry: {
-          id: "work-hidden",
-          createdAt: "2026-01-01T00:00:05Z",
-          turnId: "turn-1" as never,
-          label: "Housekeeping sweep",
-          tone: "info" as const,
-          taskId: "task-hidden",
-          skipTranscript: true,
-        },
-      },
-      {
-        id: "work-entry-tool",
-        kind: "work" as const,
-        createdAt: "2026-01-01T00:00:08Z",
-        entry: {
-          id: "work-tool",
-          createdAt: "2026-01-01T00:00:08Z",
-          turnId: "turn-1" as never,
-          label: "Ran command",
-          tone: "tool" as const,
-          toolLifecycleStatus: "completed" as const,
-        },
-      },
-      {
-        id: "assistant-final-entry",
-        kind: "message" as const,
-        createdAt: "2026-01-01T00:00:20Z",
-        message: {
-          id: "assistant-final" as never,
-          role: "assistant" as const,
-          text: "Done",
-          turnId: "turn-1" as never,
-          createdAt: "2026-01-01T00:00:20Z",
-          updatedAt: "2026-01-01T00:00:22Z",
-          streaming: false,
-        },
-      },
-    ];
-    const latestTurn = {
-      turnId: "turn-1" as never,
-      state: "completed" as const,
-      startedAt: "2026-01-01T00:00:00Z",
-      completedAt: "2026-01-01T00:00:22Z",
-    };
-
-    const collapsedRows = deriveMessagesTimelineRows({
-      ...baseRowsInput,
-      timelineEntries,
-      latestTurn,
-    });
-
-    // The fold anchors at the first visible turn entry — the removed
-    // skipTranscript task can neither anchor nor appear behind the fold.
-    expect(collapsedRows.map((row) => row.id)).toEqual([
-      "user-entry",
-      "turn-fold:turn-1",
-      "assistant-final-entry",
-    ]);
-
-    const expandedRows = deriveMessagesTimelineRows({
-      ...baseRowsInput,
-      timelineEntries,
-      latestTurn,
-      expandedTurnIds: new Set(["turn-1" as never]),
-    });
-
-    expect(expandedRows.map((row) => row.id)).toEqual([
-      "user-entry",
-      "turn-fold:turn-1",
-      "work-toggle:work-entry-tool",
-      "assistant-final-entry",
-    ]);
-    expect(expandedRows.some((row) => row.id === "work-entry-hidden")).toBe(false);
-  });
-});
-
-describe("computeStableMessagesTimelineRows", () => {
   it("returns the previous result when row order and content are unchanged", () => {
     const firstUserMessage = {
       id: "user-1" as never,
@@ -2198,339 +2040,5 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
-  });
-
-  describe("production task lifecycle pipeline", () => {
-    const lifecycleTurnId = TurnId.make("turn-lifecycle");
-
-    function makeTaskActivity(overrides: {
-      id: string;
-      createdAt: string;
-      sequence: number;
-      kind: "task.started" | "task.progress" | "task.completed";
-      summary: string;
-      payload: Record<string, unknown>;
-    }): OrchestrationThreadActivity {
-      return {
-        id: EventId.make(overrides.id),
-        createdAt: overrides.createdAt,
-        kind: overrides.kind,
-        summary: overrides.summary,
-        tone: "tool",
-        payload: overrides.payload,
-        turnId: lifecycleTurnId,
-        sequence: overrides.sequence,
-      };
-    }
-
-    const makeLifecycleStarted = () =>
-      makeTaskActivity({
-        id: "task-activity-started",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        sequence: 1,
-        kind: "task.started",
-        summary: "Task started",
-        payload: {
-          taskId: "task-1",
-          toolUseId: "tool-use-1",
-          description: "Explore the codebase",
-          taskType: "agent",
-          subagentType: "explorer",
-          workflowName: "review-workflow",
-          prompt: "Map the timeline rendering path",
-        },
-      });
-
-    const makeLifecycleCompleted = (payload: Record<string, unknown>) =>
-      makeTaskActivity({
-        id: "task-activity-completed",
-        createdAt: "2026-02-23T00:00:03.000Z",
-        sequence: 3,
-        kind: "task.completed",
-        summary: "Task completed",
-        payload: { taskId: "task-1", ...payload },
-      });
-
-    // The full production path a provider task snapshot travels before React:
-    // activities -> deriveWorkLogEntries -> deriveTimelineEntries ->
-    // deriveMessagesTimelineRows -> computeStableMessagesTimelineRows.
-    function deriveTaskRows(
-      activities: ReadonlyArray<OrchestrationThreadActivity>,
-    ): MessagesTimelineRow[] {
-      const workEntries = deriveWorkLogEntries(activities);
-      const timelineEntries = deriveTimelineEntries([], [], workEntries);
-      return deriveMessagesTimelineRows({
-        timelineEntries,
-        // The parent turn is still running while a subagent task streams
-        // start/progress/completion, so no settled-turn fold hides the card.
-        latestTurn: {
-          turnId: lifecycleTurnId,
-          state: "running",
-          startedAt: "2026-02-23T00:00:00.000Z",
-          completedAt: null,
-        },
-        isWorking: false,
-        activeTurnStartedAt: null,
-        turnDiffSummaryByAssistantMessageId: new Map(),
-        revertTurnCountByUserMessageId: new Map(),
-      });
-    }
-
-    function deriveSingleTaskRow(activities: ReadonlyArray<OrchestrationThreadActivity>) {
-      const rows = deriveTaskRows(activities);
-      expect(rows).toHaveLength(1);
-      const row = rows[0]!;
-      expect(row.kind).toBe("work");
-      return row as Extract<MessagesTimelineRow, { kind: "work" }>;
-    }
-
-    const emptyStableState = (): StableMessagesTimelineRowsState => ({
-      byId: new Map(),
-      result: [],
-    });
-
-    it("keeps one stable task row across derived start/progress/completion snapshots", () => {
-      const started = makeLifecycleStarted();
-      const progress = makeTaskActivity({
-        id: "task-activity-progress",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        sequence: 2,
-        kind: "task.progress",
-        summary: "Reasoning update",
-        payload: {
-          taskId: "task-1",
-          summary: "Scanning files",
-          usage: { total_tokens: 1200, tool_uses: 4, duration_ms: 30_000 },
-          lastToolName: "Read",
-        },
-      });
-      const completed = makeLifecycleCompleted({
-        status: "completed",
-        summary: "Found three files",
-        outputFile: "/tmp/reports/out.md",
-        usage: { total_tokens: 2400, tool_uses: 9, duration_ms: 61_000 },
-      });
-
-      const startRow = deriveSingleTaskRow([started]);
-      const progressRow = deriveSingleTaskRow([started, progress]);
-      const completedRow = deriveSingleTaskRow([started, progress, completed]);
-
-      // Every snapshot produces exactly one task row at one production-derived
-      // identity: the row id IS the work-entry id that MessagesTimeline passes
-      // to TaskWorkEntryRow as key={workEntry.id}. Because that key is stable,
-      // the card keeps its local disclosure (expansion) state while the
-      // lifecycle content swaps underneath it.
-      for (const row of [startRow, progressRow, completedRow]) {
-        expect(row.id).toBe("task-activity-started");
-        expect(row.groupedEntries.map((entry) => entry.id)).toEqual(["task-activity-started"]);
-      }
-
-      // Lifecycle-visible content reflects the latest valid reduced state.
-      const startEntry = startRow.groupedEntries[0]!;
-      expect(startEntry).toMatchObject({
-        taskId: "task-1",
-        toolLifecycleStatus: "inProgress",
-        tone: "info",
-        label: "Explore the codebase",
-        description: "Explore the codebase",
-        taskType: "agent",
-        subagentType: "explorer",
-        workflowName: "review-workflow",
-        prompt: "Map the timeline rendering path",
-        sourceActivityKind: "task.started",
-      });
-      expect(startEntry.usage).toBeUndefined();
-      expect(startEntry.progressSummary).toBeUndefined();
-      expect(startEntry.resultSummary).toBeUndefined();
-
-      const progressEntry = progressRow.groupedEntries[0]!;
-      expect(progressEntry).toMatchObject({
-        taskId: "task-1",
-        toolLifecycleStatus: "inProgress",
-        tone: "thinking",
-        label: "Scanning files",
-        progressSummary: "Scanning files",
-        usage: { totalTokens: 1200, toolUses: 4, durationMs: 30_000 },
-        lastToolName: "Read",
-        sourceActivityKind: "task.progress",
-      });
-      expect(progressEntry.resultSummary).toBeUndefined();
-
-      const completedEntry = completedRow.groupedEntries[0]!;
-      expect(completedEntry).toMatchObject({
-        taskId: "task-1",
-        toolLifecycleStatus: "completed",
-        tone: "info",
-        label: "Found three files",
-        progressSummary: "Scanning files",
-        resultSummary: "Found three files",
-        usage: { totalTokens: 2400, toolUses: 9, durationMs: 61_000 },
-        lastToolName: "Read",
-        outputFile: "/tmp/reports/out.md",
-        sourceActivityKind: "task.completed",
-      });
-
-      // Thread successive derived row arrays through the stable-row reducer,
-      // passing the previous state into the next call exactly as ChatView does.
-      const startState = computeStableMessagesTimelineRows(
-        deriveTaskRows([started]),
-        emptyStableState(),
-      );
-      const progressState = computeStableMessagesTimelineRows(
-        deriveTaskRows([started, progress]),
-        startState,
-      );
-      const completedState = computeStableMessagesTimelineRows(
-        deriveTaskRows([started, progress, completed]),
-        progressState,
-      );
-
-      // A changed lifecycle snapshot replaces the row object at the same id...
-      expect(progressState).not.toBe(startState);
-      expect(progressState.result[0]).not.toBe(startState.result[0]);
-      expect(completedState).not.toBe(progressState);
-      expect(completedState.result[0]).not.toBe(progressState.result[0]);
-      expect(progressState.result[0]?.id).toBe(startState.result[0]?.id);
-      expect(completedState.result[0]?.id).toBe(startState.result[0]?.id);
-
-      // ...and the replacement carries the latest lifecycle-visible content.
-      const stableProgressRow = progressState.result[0] as Extract<
-        MessagesTimelineRow,
-        { kind: "work" }
-      >;
-      expect(stableProgressRow.groupedEntries[0]).toMatchObject({
-        toolLifecycleStatus: "inProgress",
-        progressSummary: "Scanning files",
-        usage: { totalTokens: 1200, toolUses: 4, durationMs: 30_000 },
-        lastToolName: "Read",
-      });
-      const stableCompletedRow = completedState.result[0] as Extract<
-        MessagesTimelineRow,
-        { kind: "work" }
-      >;
-      expect(stableCompletedRow.groupedEntries[0]).toMatchObject({
-        toolLifecycleStatus: "completed",
-        resultSummary: "Found three files",
-        usage: { totalTokens: 2400, toolUses: 9, durationMs: 61_000 },
-        outputFile: "/tmp/reports/out.md",
-      });
-
-      // An equivalent repeated completed snapshot reuses the prior stable
-      // state instead of producing another replacement.
-      const repeatedCompletedState = computeStableMessagesTimelineRows(
-        deriveTaskRows([started, progress, completed]),
-        completedState,
-      );
-      expect(repeatedCompletedState).toBe(completedState);
-    });
-
-    it("replaces the stable task row when a repeated completion snapshot gains output", () => {
-      const started = makeLifecycleStarted();
-      const completedWithoutOutput = makeLifecycleCompleted({
-        status: "completed",
-        summary: "Found three files",
-      });
-      const completedWithOutput = makeLifecycleCompleted({
-        status: "completed",
-        summary: "Found three files",
-        outputFile: "/tmp/reports/out.md",
-      });
-
-      const initial = computeStableMessagesTimelineRows(
-        deriveTaskRows([started, completedWithoutOutput]),
-        emptyStableState(),
-      );
-
-      const updated = computeStableMessagesTimelineRows(
-        deriveTaskRows([started, completedWithOutput]),
-        initial,
-      );
-
-      expect(updated).not.toBe(initial);
-      expect(updated.result[0]).not.toBe(initial.result[0]);
-      expect(updated.result[0]?.id).toBe(initial.result[0]?.id);
-      const updatedRow = updated.result[0] as Extract<MessagesTimelineRow, { kind: "work" }>;
-      expect(updatedRow.groupedEntries[0]?.outputFile).toBe("/tmp/reports/out.md");
-
-      // Once published, an equivalent fresh derivation reuses the updated row.
-      const repeated = computeStableMessagesTimelineRows(
-        deriveTaskRows([started, completedWithOutput]),
-        updated,
-      );
-      expect(repeated).toBe(updated);
-    });
-
-    it("returns a new state when a task leaves the transcript", () => {
-      const started = makeLifecycleStarted();
-      const hiddenCompleted = makeLifecycleCompleted({
-        status: "completed",
-        summary: "Sweep finished",
-        skipTranscript: true,
-      });
-
-      const visibleRows = deriveTaskRows([started]);
-      expect(visibleRows).toHaveLength(1);
-      const initial = computeStableMessagesTimelineRows(visibleRows, emptyStableState());
-
-      // The same task with skipTranscript set by its terminal snapshot derives
-      // zero rows — the timeline must publish a new (empty) result instead of
-      // holding the stale row.
-      const hiddenRows = deriveTaskRows([started, hiddenCompleted]);
-      expect(hiddenRows).toHaveLength(0);
-
-      const updated = computeStableMessagesTimelineRows(hiddenRows, initial);
-      expect(updated).not.toBe(initial);
-      expect(updated.result).toHaveLength(0);
-
-      const restored = computeStableMessagesTimelineRows(deriveTaskRows([started]), updated);
-      expect(restored).not.toBe(updated);
-      expect(restored.result).toHaveLength(1);
-      expect(restored.result[0]?.id).toBe("task-activity-started");
-    });
-  });
-});
-
-describe("messageEntryIsTranscriptVisible", () => {
-  it("hides the wake-up message a finished task injects into its parent", () => {
-    expect(messageEntryIsTranscriptVisible({ role: "user", source: "task-result" })).toBe(false);
-  });
-
-  it("keeps every message a person or a provider actually produced", () => {
-    expect(messageEntryIsTranscriptVisible({ role: "user", source: "user" })).toBe(true);
-    expect(messageEntryIsTranscriptVisible({ role: "assistant", source: "provider" })).toBe(true);
-    expect(messageEntryIsTranscriptVisible({ role: "system", source: "system" })).toBe(true);
-    // Rows written before authorship was tracked carry no source at all.
-    expect(messageEntryIsTranscriptVisible({ role: "user" })).toBe(true);
-  });
-
-  it("removes task-result messages before rows are derived", () => {
-    const createdAt = "2026-01-01T00:00:00Z";
-    const message = (id: string, source: "user" | "task-result") => ({
-      id: `entry:${id}`,
-      kind: "message" as const,
-      createdAt,
-      message: {
-        id: MessageId.make(id),
-        role: "user" as const,
-        source,
-        text: id,
-        turnId: null,
-        createdAt,
-        updatedAt: createdAt,
-        streaming: false,
-      },
-    });
-
-    const rows = deriveMessagesTimelineRows({
-      timelineEntries: [message("typed", "user"), message("woken", "task-result")],
-      isWorking: false,
-      activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
-    });
-
-    expect(rows.flatMap((row) => (row.kind === "message" ? [row.message.text] : []))).toEqual([
-      "typed",
-    ]);
   });
 });

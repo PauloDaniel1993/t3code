@@ -4,7 +4,6 @@ import { Pressable, StyleSheet, View, type ColorValue } from "react-native";
 import { AppText as Text } from "../../../components/AppText";
 import { SymbolView } from "../../../components/AppSymbol";
 import { useAppearancePreferences } from "../../settings/appearance/AppearancePreferencesProvider";
-import { useThemeColor } from "../../../lib/useThemeColor";
 import type { TaskAgentRowTone, TaskAgentRowViewModel } from "./taskAgentSurface.logic";
 import type {
   TaskAgentTaskSurfacePresentation,
@@ -35,7 +34,6 @@ function toneColor(theme: TaskAgentTheme, tone: TaskAgentRowTone): string {
 
 function TaskAgentEntityRow(props: {
   readonly backgroundColor: ColorValue;
-  readonly borderColor: ColorValue;
   readonly row: TaskAgentRowViewModel;
   readonly theme: TaskAgentTheme;
 }) {
@@ -48,10 +46,8 @@ function TaskAgentEntityRow(props: {
       accessibilityLabel={`${row.title}, ${row.statusLine}${
         steeringReason === null ? "" : `. Steering unavailable. ${steeringReason}`
       }`}
-      style={[
-        styles.entityRow,
-        { backgroundColor: props.backgroundColor, borderColor: props.borderColor },
-      ]}
+      className="border-border"
+      style={[styles.entityRow, { backgroundColor: props.backgroundColor }]}
     >
       <View style={styles.glyphCell}>
         <Text style={[styles.glyph, { color: statusColor }]}>{row.glyph}</Text>
@@ -89,7 +85,6 @@ function TaskAgentEntityRow(props: {
 }
 
 function TaskAgentTurn(props: {
-  readonly borderColor: ColorValue;
   readonly expanded: boolean;
   readonly theme: TaskAgentTheme;
   readonly turn: TaskAgentTaskTurnViewModel;
@@ -104,9 +99,7 @@ function TaskAgentTurn(props: {
   }, [disclosureAction, expanded, props]);
 
   return (
-    <View
-      style={[styles.turnCard, { backgroundColor: theme.card, borderColor: props.borderColor }]}
-    >
+    <View className="border-border" style={[styles.turnCard, { backgroundColor: theme.card }]}>
       <Pressable
         accessibilityHint={
           expanded
@@ -155,12 +148,11 @@ function TaskAgentTurn(props: {
       </Pressable>
 
       {expanded ? (
-        <View style={[styles.agentRows, { borderTopColor: props.borderColor }]}>
+        <View className="border-border" style={styles.agentRows}>
           {turn.row.agents.map((agent) => (
             <TaskAgentEntityRow
               key={agent.id}
               backgroundColor={theme.background}
-              borderColor={props.borderColor}
               row={agent}
               theme={theme}
             />
@@ -174,7 +166,6 @@ function TaskAgentTurn(props: {
 function TaskAgentTaskSurfaceComponent(props: TaskAgentTaskSurfaceProps) {
   const { themeAppearance, themeId } = useAppearancePreferences();
   const theme = getTaskAgentTheme(themeAppearance, themeId);
-  const borderColor = useThemeColor("--color-border");
   const [turnExpansionOverrides, setTurnExpansionOverrides] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map());
@@ -198,7 +189,8 @@ function TaskAgentTaskSurfaceComponent(props: TaskAgentTaskSurfaceProps) {
         <Text style={[styles.eyebrow, { color: theme.text.muted }]}>Task thread</Text>
         <View
           accessibilityLabel={`${presentation.title}. Task status unavailable. ${presentation.reason}`}
-          style={[styles.unavailableCard, { backgroundColor: theme.card, borderColor }]}
+          className="border-border"
+          style={[styles.unavailableCard, { backgroundColor: theme.card }]}
         >
           <Text style={[styles.unavailableTitle, { color: theme.text.foreground }]}>
             {presentation.title}
@@ -217,12 +209,7 @@ function TaskAgentTaskSurfaceComponent(props: TaskAgentTaskSurfaceProps) {
   return (
     <View style={[styles.surface, { backgroundColor: theme.background }]}>
       <Text style={[styles.eyebrow, { color: theme.text.muted }]}>Task thread</Text>
-      <TaskAgentEntityRow
-        backgroundColor={theme.card}
-        borderColor={borderColor}
-        row={presentation.row}
-        theme={theme}
-      />
+      <TaskAgentEntityRow backgroundColor={theme.card} row={presentation.row} theme={theme} />
 
       <View style={styles.windowNote}>
         <Text style={[styles.windowLabel, { color: theme.text.muted }]}>
@@ -243,7 +230,6 @@ function TaskAgentTaskSurfaceComponent(props: TaskAgentTaskSurfaceProps) {
           presentation.turns.map((turn) => (
             <TaskAgentTurn
               key={turn.row.key}
-              borderColor={borderColor}
               expanded={turnExpansionOverrides.get(turn.row.key) ?? turn.row.expandedByDefault}
               onToggle={handleToggleTurn}
               theme={theme}

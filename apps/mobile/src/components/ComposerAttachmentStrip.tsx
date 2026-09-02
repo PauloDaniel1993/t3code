@@ -1,21 +1,33 @@
-import type { UploadChatDocumentAttachment, UploadChatFileAttachment } from "@t3tools/contracts";
 import { SymbolView } from "../components/AppSymbol";
-import { Image, Pressable, ScrollView, Text, View } from "react-native";
-import { useThemeColor } from "../lib/useThemeColor";
+import { videoMimeType } from "@t3tools/shared/video";
+import { useEffect, useRef, useState } from "react";
+import { Alert, Image, Pressable, ScrollView, View } from "react-native";
 
-import type { DraftComposerImageAttachment } from "../lib/composerImages";
-
-export type ComposerAttachmentStripAttachment =
-  | DraftComposerImageAttachment
-  | ((UploadChatDocumentAttachment | UploadChatFileAttachment) & { readonly id: string });
+import { AppText as Text } from "./AppText";
+import type { DraftComposerAttachment, DraftComposerFileAttachment } from "../lib/composerImages";
+import { VideoAttachmentTile } from "./VideoAttachmentTile";
+import { loadLocalAttachmentPreview } from "../lib/localAttachmentPreview";
+import { PresentationSource } from "./NativePresentation";
+import type { FilePreviewSource } from "./FilePreviewModal";
+import { isPdfFile } from "../lib/filePreview";
+import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  retryComposerAttachmentUpload,
+  useComposerAttachmentUploadState,
+} from "../state/composer-attachment-uploads";
 
 export interface ComposerAttachmentStripProps {
-  /** Draft attachments to display. */
-  readonly attachments: ReadonlyArray<ComposerAttachmentStripAttachment>;
-  /** Called when the user taps an attachment's remove button. */
-  readonly onRemove: (attachmentId: string) => void;
-  /** Called when the user taps on an image thumbnail to preview it. */
-  readonly onPressImage?: (previewUri: string) => void;
+  readonly environmentId?: EnvironmentId;
+  /** Attachments to display. */
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  /** Called when the user removes an attachment. */
+  readonly onRemove: (imageId: string) => void;
+  /** Called when the user taps an image or PDF to preview it. */
+  readonly onPressPreview?: (source: FilePreviewSource) => void;
+  readonly onPressVideo?: (
+    attachment: DraftComposerFileAttachment,
+    sourceIdentifier: string,
+  ) => void;
   /** Image thumbnail size in points.  Defaults to 72. */
   readonly imageSize?: number;
   /** Border radius of each image thumbnail.  Defaults to 16. */
@@ -24,29 +36,203 @@ export interface ComposerAttachmentStripProps {
   readonly removeButtonPlacement?: "overlay" | "gutter";
 }
 
-function formatAttachmentSize(sizeBytes: number): string {
-  if (sizeBytes < 1024) return `${sizeBytes} B`;
-  if (sizeBytes < 1024 * 1024) return `${Math.round(sizeBytes / 1024)} KiB`;
-  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MiB`;
+type ComposerAttachmentThumbnailProps = {
+  readonly environmentId?: EnvironmentId;
+  readonly attachment: DraftComposerAttachment;
+  readonly size: number;
+  readonly borderRadius: number;
+  readonly compact?: boolean;
+  readonly onPressPreview?: (source: FilePreviewSource) => void;
+  readonly onPressVideo?: (
+    attachment: DraftComposerFileAttachment,
+    sourceIdentifier: string,
+  ) => void;
+};
+
+export function ComposerAttachmentThumbnail(props: ComposerAttachmentThumbnailProps) {
+  const upload = useComposerAttachmentUploadState(props.environmentId, props.attachment.id);
+  return (
+    <View style={{ width: props.size, height: props.size }}>
+      <ComposerAttachmentContent {...props} />
+      {upload && upload.status !== "ready" ? (
+        <Pressable
+          accessibilityRole={upload.status === "failed" ? "button" : "text"}
+          accessibilityLabel={
+            upload.status === "failed"
+              ? `Retry uploading ${props.attachment.name}`
+              : `Uploading ${props.attachment.name}, ${Math.floor(upload.progress * 100)}%`
+          }
+          accessibilityHint={upload.status === "failed" ? upload.reason : undefined}
+          disabled={upload.status !== "failed"}
+          onPress={() =>
+            props.environmentId &&
+            retryComposerAttachmentUpload(props.environmentId, props.attachment.id)
+          }
+          className="absolute bottom-0.5 left-0.5 flex-row items-center gap-0.5 rounded-full bg-black/70 px-1 py-0.5"
+        >
+          <SymbolView
+            name={upload.status === "failed" ? "arrow.clockwise" : "arrow.up"}
+            size={props.compact ? 8 : 10}
+            tintColor="#ffffff"
+            type="monochrome"
+          />
+          {!props.compact ? (
+            <Text className="text-2xs text-white">
+              {upload.status === "failed" ? "Retry" : `${Math.floor(upload.progress * 100)}%`}
+            </Text>
+          ) : null}
+        </Pressable>
+      ) : null}
+    </View>
+  );
 }
 
-function attachmentTypeLabel(attachment: ComposerAttachmentStripAttachment): string {
-  if (attachment.type === "document") return "PDF";
-  const finalDot = attachment.name.lastIndexOf(".");
-  if (finalDot <= 0 || finalDot === attachment.name.length - 1) return "FILE";
-  return attachment.name.slice(finalDot + 1).toUpperCase();
+function ComposerAttachmentContent(props: ComposerAttachmentThumbnailProps) {
+  const { attachment } = props;
+  const style = { width: props.size, height: props.size, borderRadius: props.borderRadius };
+  if (attachment.type === "image") {
+    const sourceIdentifier = `draft-image:${attachment.id}`;
+    return (
+      <PresentationSource identifier={sourceIdentifier}>
+        <Pressable
+          accessibilityRole="imagebutton"
+          accessibilityLabel={`Open ${attachment.name}`}
+          disabled={!props.onPressPreview}
+          onPress={() =>
+            props.onPressPreview?.({
+              kind: "image",
+              uri: attachment.dataUrl,
+              name: attachment.name,
+              sourceIdentifier,
+            })
+          }
+        >
+          <Image
+            source={{ uri: attachment.previewUri }}
+            style={style}
+            className="bg-subtle"
+            resizeMode="cover"
+          />
+        </Pressable>
+      </PresentationSource>
+    );
+  }
+  const onPressVideo = props.onPressVideo;
+  if (onPressVideo && videoMimeType(attachment) !== null) {
+    return (
+      <ComposerVideoAttachment {...props} attachment={attachment} onPressVideo={onPressVideo} />
+    );
+  }
+  const canPreview = isPdfFile(attachment) && props.onPressPreview !== undefined;
+  const sourceIdentifier = `draft-file:${attachment.id}`;
+  return (
+    <PresentationSource identifier={sourceIdentifier}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${attachment.name}`}
+        disabled={!canPreview}
+        onPress={() =>
+          props.onPressPreview?.({
+            kind: "pdf",
+            name: attachment.name,
+            attachment,
+            sourceIdentifier,
+          })
+        }
+        className={
+          props.compact
+            ? "items-center justify-center bg-subtle"
+            : "items-center justify-center gap-1 bg-subtle px-2"
+        }
+        style={style}
+      >
+        <SymbolView
+          name="doc.text"
+          size={props.compact ? 15 : 22}
+          tintColor="#a3a3a3"
+          type="monochrome"
+        />
+        {!props.compact ? (
+          <Text className="w-full text-center text-2xs text-foreground" numberOfLines={1}>
+            {attachment.name}
+          </Text>
+        ) : null}
+      </Pressable>
+    </PresentationSource>
+  );
+}
+
+function ComposerVideoAttachment(props: {
+  readonly attachment: DraftComposerFileAttachment;
+  readonly size: number;
+  readonly borderRadius: number;
+  readonly compact?: boolean;
+  readonly onPressVideo: (
+    attachment: DraftComposerFileAttachment,
+    sourceIdentifier: string,
+  ) => void;
+}) {
+  const { attachment } = props;
+  const sourceIdentifier = `draft:${attachment.id}`;
+  const style = { width: props.size, height: props.size, borderRadius: props.borderRadius };
+  const shareRef = useRef<AbortController | null>(null);
+  const [sharing, setSharing] = useState(false);
+  useEffect(
+    () => () => {
+      shareRef.current?.abort();
+      shareRef.current = null;
+    },
+    [],
+  );
+
+  const onShare = () => {
+    if (shareRef.current) return;
+    const controller = new AbortController();
+    shareRef.current = controller;
+    setSharing(true);
+    void (async () => {
+      const preview = await loadLocalAttachmentPreview(attachment, controller.signal);
+      if (!preview) return;
+      try {
+        await preview.share(controller.signal, sourceIdentifier);
+      } finally {
+        preview.dispose();
+      }
+    })()
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          Alert.alert(
+            "Could not share video",
+            error instanceof Error ? error.message : "Try again.",
+          );
+        }
+      })
+      .finally(() => {
+        if (shareRef.current === controller) {
+          shareRef.current = null;
+          setSharing(false);
+        }
+      });
+  };
+
+  return (
+    <VideoAttachmentTile
+      name={attachment.name}
+      sourceIdentifier={sourceIdentifier}
+      thumbnailSource={attachment}
+      compact={props.compact}
+      onPress={() => props.onPressVideo(attachment, sourceIdentifier)}
+      onShare={onShare}
+      disabled={sharing}
+      style={style}
+    />
+  );
 }
 
 /**
- * A horizontally-scrollable strip of attachment previews with remove buttons.
- * Used by both the thread composer and the new-task draft screen.
+ * Attachment thumbnails used by the thread composer and the new-task draft screen.
  */
 export function ComposerAttachmentStrip(props: ComposerAttachmentStripProps) {
-  const subtleBg = useThemeColor("--color-subtle");
-  const borderColor = useThemeColor("--color-border");
-  const foregroundColor = useThemeColor("--color-foreground");
-  const mutedColor = useThemeColor("--color-foreground-muted");
-  const iconColor = useThemeColor("--color-icon-muted");
   const size = props.imageSize ?? 72;
   const radius = props.imageBorderRadius ?? 16;
   const removeButtonPlacement = props.removeButtonPlacement ?? "overlay";
@@ -73,53 +259,14 @@ export function ComposerAttachmentStrip(props: ComposerAttachmentStripProps) {
               paddingRight: removeButtonGutter,
             }}
           >
-            {attachment.type === "image" ? (
-              <Pressable
-                onPress={
-                  props.onPressImage ? () => props.onPressImage!(attachment.previewUri) : undefined
-                }
-              >
-                <Image
-                  source={{ uri: attachment.previewUri }}
-                  style={{
-                    width: size,
-                    height: size,
-                    borderRadius: radius,
-                    backgroundColor: subtleBg,
-                  }}
-                  resizeMode="cover"
-                />
-              </Pressable>
-            ) : (
-              <View
-                accessible
-                accessibilityLabel={`${attachment.name}, ${attachmentTypeLabel(attachment)}, ${formatAttachmentSize(attachment.sizeBytes)}`}
-                className="flex-row items-center gap-2 border px-2.5"
-                style={{
-                  width: Math.max(160, size * 2.25),
-                  height: size,
-                  borderRadius: radius,
-                  backgroundColor: subtleBg,
-                  borderColor,
-                }}
-              >
-                <View className="size-8 items-center justify-center rounded-lg">
-                  <SymbolView name="doc.text" size={17} tintColor={iconColor} type="monochrome" />
-                </View>
-                <View className="min-w-0 flex-1">
-                  <Text
-                    className="font-t3-medium text-xs"
-                    numberOfLines={1}
-                    style={{ color: foregroundColor }}
-                  >
-                    {attachment.name}
-                  </Text>
-                  <Text className="mt-0.5 text-[10px]" style={{ color: mutedColor }}>
-                    {attachmentTypeLabel(attachment)} · {formatAttachmentSize(attachment.sizeBytes)}
-                  </Text>
-                </View>
-              </View>
-            )}
+            <ComposerAttachmentThumbnail
+              environmentId={props.environmentId}
+              attachment={attachment}
+              size={size}
+              borderRadius={radius}
+              onPressPreview={props.onPressPreview}
+              onPressVideo={props.onPressVideo}
+            />
             <Pressable
               className="absolute h-[22px] w-[22px] items-center justify-center rounded-[11px] bg-black/55"
               style={{
@@ -127,8 +274,6 @@ export function ComposerAttachmentStrip(props: ComposerAttachmentStripProps) {
                 right: removeButtonPlacement === "gutter" ? 0 : 4,
               }}
               hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel={`Remove ${attachment.name}`}
               onPress={() => props.onRemove(attachment.id)}
             >
               <SymbolView
