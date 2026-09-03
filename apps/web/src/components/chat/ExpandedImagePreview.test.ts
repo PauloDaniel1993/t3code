@@ -1,11 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { ComposerFileAttachment } from "../../composerDraftStore";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   attachVideoThumbnail,
+  buildAttachmentVideoAsset,
   buildExpandedImagePreview,
   resolveMarkdownMediaPreview,
 } from "./ExpandedImagePreview";
+
+describe("buildAttachmentVideoAsset", () => {
+  it("scopes persisted video attachments to their owning thread", () => {
+    expect(
+      buildAttachmentVideoAsset(EnvironmentId.make("environment-1"), ThreadId.make("thread-1"), {
+        type: "file",
+        id: "attachment-1",
+        name: "demo.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 3,
+      }),
+    ).toEqual({
+      environmentId: "environment-1",
+      resource: {
+        _tag: "attachment",
+        attachmentId: "attachment-1",
+        threadId: "thread-1",
+        fileName: "demo.mp4",
+        mimeType: "video/mp4",
+      },
+    });
+  });
+});
 
 describe("resolveMarkdownMediaPreview", () => {
   afterEach(() => {

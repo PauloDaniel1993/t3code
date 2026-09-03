@@ -1061,7 +1061,11 @@ export function runtimeEventToActivities(
               ? { toolUseId: event.itemId, toolCallId: event.itemId }
               : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
+            ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.payload.toolSurface ? { toolSurface: event.payload.toolSurface } : {}),
+            ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
+            ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
@@ -1088,7 +1092,11 @@ export function runtimeEventToActivities(
           ? { toolUseId: event.itemId, toolCallId: event.itemId }
           : {}),
         ...(event.payload.status ? { status: event.payload.status } : {}),
+        ...(event.payload.title ? { title: event.payload.title } : {}),
         ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+        ...(event.payload.toolSurface ? { toolSurface: event.payload.toolSurface } : {}),
+        ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
+        ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
         ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
         ...(event.payload.parentToolUseId
           ? { parentToolUseId: event.payload.parentToolUseId }
@@ -1132,7 +1140,11 @@ export function runtimeEventToActivities(
               ? { toolUseId: event.itemId, toolCallId: event.itemId }
               : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
+            ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.payload.toolSurface ? { toolSurface: event.payload.toolSurface } : {}),
+            ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
+            ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
@@ -1426,13 +1438,10 @@ const make = Effect.gen(function* () {
       providerTurnKey(input.threadId, input.turnId),
     ).pipe(
       Effect.flatMap((existingBuffer) => {
-        const existing = Option.getOrElse(
-          existingBuffer,
-          (): ReasoningSummaryBuffer => ({
-            textByStreamKey: new Map(),
-            totalChars: 0,
-          }),
-        );
+        const existing = Option.getOrElse(existingBuffer, (): ReasoningSummaryBuffer => ({
+          textByStreamKey: new Map(),
+          totalChars: 0,
+        }));
         const remainingChars = MAX_BUFFERED_REASONING_SUMMARY_CHARS - existing.totalChars;
         if (remainingChars <= 0) {
           return Effect.void;

@@ -19,6 +19,7 @@ import {
 import { HostProcessExecutablePath, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -371,6 +372,40 @@ it.effect("maps Kimi session lifecycle without stderr backpressure and supports 
           yield* adapter.stopSession(threadId);
         }),
       ),
+  ),
+);
+
+it.effect("retires a Kimi session when its ACP process terminates", () =>
+  withMockKimi({ T3_ACP_EXIT_ON_PROMPT: "1" }, (wrapperPath) =>
+    withKimiAdapter(wrapperPath, (adapter) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("kimi-terminated-thread");
+        const exitedEventFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "session.exited"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("kimi"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const turnExit = yield* adapter
+          .sendTurn({ threadId, input: "terminate", attachments: [] })
+          .pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(turnExit));
+
+        const exitedEvent = Option.getOrThrow(yield* Fiber.join(exitedEventFiber));
+        assert.equal(exitedEvent.type, "session.exited");
+        if (exitedEvent.type === "session.exited") {
+          assert.equal(exitedEvent.payload.exitKind, "error");
+          assert.equal(exitedEvent.payload.reason, "Kimi ACP process stopped.");
+        }
+        assert.isFalse(yield* adapter.hasSession(threadId));
+      }),
+    ),
   ),
 );
 

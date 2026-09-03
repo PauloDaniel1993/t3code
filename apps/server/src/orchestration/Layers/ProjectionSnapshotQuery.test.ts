@@ -310,6 +310,34 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
 
       const snapshot = yield* snapshotQuery.getSnapshot();
 
+      assert.deepEqual(
+        yield* snapshotQuery.getThreadAttachmentById({
+          threadId: ThreadId.make("thread-1"),
+          attachmentId: "thread-1-pdf-file",
+        }),
+        Option.some({
+          type: "file",
+          id: "thread-1-pdf-file",
+          name: "reference.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 7,
+        }),
+      );
+      assert.deepEqual(
+        yield* snapshotQuery.getThreadAttachmentById({
+          threadId: ThreadId.make("thread-1"),
+          attachmentId: "thread-1-missing",
+        }),
+        Option.none(),
+      );
+      assert.deepEqual(
+        yield* snapshotQuery.getThreadAttachmentById({
+          threadId: ThreadId.make("thread-other"),
+          attachmentId: "thread-1-pdf-file",
+        }),
+        Option.none(),
+      );
+
       assert.equal(snapshot.snapshotSequence, 5);
       assert.equal(snapshot.updatedAt, "2026-02-24T00:00:09.000Z");
       assert.deepEqual(snapshot.projects, [
@@ -322,7 +350,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
           },
+          autoPull: false,
           faviconPath: null,
+          projectIcon: null,
           scripts: [
             {
               id: "script-1",
@@ -480,7 +510,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
           },
+          autoPull: false,
           faviconPath: null,
+          projectIcon: null,
           scripts: [
             {
               id: "script-1",

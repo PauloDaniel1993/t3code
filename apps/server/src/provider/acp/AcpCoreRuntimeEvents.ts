@@ -4,6 +4,7 @@ import {
   type CanonicalRequestType,
   type EventId,
   type ProviderApprovalDecision,
+  type ProviderApprovalOption,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
@@ -135,6 +136,7 @@ export function makeAcpRequestOpenedEvent(input: {
   readonly turnId: TurnId | undefined;
   readonly requestId: RuntimeRequestId;
   readonly permissionRequest: AcpPermissionRequest;
+  readonly approvalOptions?: ReadonlyArray<ProviderApprovalOption>;
   readonly detail: string;
   readonly args: unknown;
   readonly source: AcpAdapterRawSource;
@@ -152,6 +154,7 @@ export function makeAcpRequestOpenedEvent(input: {
       requestType: canonicalRequestTypeFromAcpKind(input.permissionRequest.kind),
       detail: input.detail,
       args: input.args,
+      ...(input.approvalOptions !== undefined ? { options: input.approvalOptions } : {}),
     },
     raw: {
       source: input.source,
@@ -227,6 +230,13 @@ export function makeAcpToolCallEvent(input: {
     detailMaximumBytes: PROVIDER_EVENT_FLOW_CONTROL.intermediateToolDetailMaxBytes,
     terminalDataMaximumBytes: PROVIDER_EVENT_FLOW_CONTROL.terminalToolDataMaxBytes,
   });
+  // Antigravity has already converted and bounded its native command payload in
+  // normalizeAntigravityToolCall. Keep those canonical command/cwd/item fields;
+  // the generic ACP normalizer intentionally retains only protocol outputs.
+  const data =
+    input.provider === "antigravity" && Object.keys(input.toolCall.data).length > 0
+      ? input.toolCall.data
+      : normalized.data;
   return {
     type:
       input.toolCall.status === "completed" || input.toolCall.status === "failed"
@@ -250,7 +260,7 @@ export function makeAcpToolCallEvent(input: {
         : normalized.detail
           ? { detail: normalized.detail }
           : {}),
-      ...(normalized.data ? { data: normalized.data } : {}),
+      ...(data ? { data } : {}),
     },
     raw: {
       source: "acp.jsonrpc",
@@ -320,6 +330,7 @@ export function makeAcpContentDeltaEvent(input: {
   readonly threadId: ThreadId;
   readonly turnId: TurnId | undefined;
   readonly itemId?: string;
+  readonly streamKind?: "assistant_text" | "reasoning_text";
   readonly text: string;
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
@@ -331,7 +342,7 @@ export function makeAcpContentDeltaEvent(input: {
     turnId: input.turnId,
     ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
     payload: {
-      streamKind: "assistant_text",
+      streamKind: input.streamKind ?? "assistant_text",
       delta: input.text,
     },
     raw: {

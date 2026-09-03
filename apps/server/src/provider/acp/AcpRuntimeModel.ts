@@ -86,6 +86,11 @@ export type AcpParsedSessionEvent =
       readonly modeId: string;
     }
   | {
+      readonly _tag: "AvailableCommandsUpdated";
+      readonly availableCommands: ReadonlyArray<EffectAcpSchema.AvailableCommand>;
+      readonly rawPayload: unknown;
+    }
+  | {
       readonly _tag: "AssistantItemStarted";
       readonly itemId: string;
     }
@@ -110,7 +115,7 @@ export type AcpParsedSessionEvent =
       readonly rawPayload: unknown;
     }
   | {
-      readonly _tag: "ReasoningDelta";
+      readonly _tag: "ThoughtDelta";
       readonly text: string;
       readonly rawPayload: unknown;
     }
@@ -865,6 +870,14 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
   let modeId: string | undefined;
 
   switch (upd.sessionUpdate) {
+    case "available_commands_update": {
+      events.push({
+        _tag: "AvailableCommandsUpdated",
+        availableCommands: upd.availableCommands,
+        rawPayload: params,
+      });
+      break;
+    }
     case "current_mode_update": {
       modeId = upd.currentModeId.trim();
       if (modeId) {
@@ -928,7 +941,7 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
     case "agent_thought_chunk": {
       if (upd.content.type === "text" && upd.content.text.length > 0) {
         events.push({
-          _tag: "ReasoningDelta",
+          _tag: "ThoughtDelta",
           text: upd.content.text,
           rawPayload: params,
         });

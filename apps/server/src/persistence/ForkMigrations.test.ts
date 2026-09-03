@@ -8,7 +8,7 @@ import ForkMigration0002 from "./ForkMigrations/002_ProjectionThreadSessionRecov
 import ForkMigration0003 from "./ForkMigrations/003_DatabaseCompactionJournal.ts";
 import { reconcileBaseMigrationLedger, runForkMigrations } from "./ForkMigrations.ts";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
-import * as NodeSqliteClient from "./NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const runStartupMigrations = Effect.gen(function* () {
   yield* reconcileBaseMigrationLedger();

@@ -74,6 +74,51 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.planMarkdown).toBe("# Ship it");
   });
 
+  it("decodes tool surfaces and icons together with agent attribution", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "item.completed",
+      eventId: "event-tool-surface-1",
+      provider: "antigravity",
+      providerInstanceId: "antigravity-personal",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "tool-1",
+      payload: {
+        itemType: "dynamic_tool_call",
+        status: "completed",
+        title: "Opened native browser",
+        toolSurface: "computer",
+        toolIcon: {
+          _tag: "native-app",
+          app: { _tag: "app-id", appId: "com.google.Chrome" },
+        },
+        toolSource: {
+          key: "native-browser",
+          name: "Chrome",
+          kind: "computer",
+          icon: {
+            _tag: "website",
+            pageUrl: "https://example.com",
+            faviconUrl: "https://example.com/favicon.ico",
+          },
+        },
+        agentId: "agent-reviewer",
+        parentToolUseId: "tool-parent",
+      },
+    });
+
+    expect(parsed.type).toBe("item.completed");
+    if (parsed.type !== "item.completed") {
+      throw new Error("expected item.completed");
+    }
+    expect(parsed.payload.toolSurface).toBe("computer");
+    expect(parsed.payload.toolIcon?._tag).toBe("native-app");
+    expect(parsed.payload.toolSource?.icon?._tag).toBe("website");
+    expect(parsed.payload.agentId).toBe("agent-reviewer");
+    expect(parsed.payload.parentToolUseId).toBe("tool-parent");
+  });
+
   it("decodes user-input.requested with structured questions", () => {
     const parsed = decodeRuntimeEvent({
       type: "user-input.requested",

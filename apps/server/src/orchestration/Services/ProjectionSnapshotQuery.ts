@@ -7,6 +7,7 @@
  * @module ProjectionSnapshotQuery
  */
 import type {
+  ChatAttachment,
   CheckpointRef,
   OrchestrationGetActivityHistoryInput,
   OrchestrationGetActivityHistoryResult,
@@ -199,6 +200,12 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadShellById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
+
+  /** Read one attachment from its owning thread without hydrating the thread detail. */
+  readonly getThreadAttachmentById: (input: {
+    readonly threadId: ThreadId;
+    readonly attachmentId: string;
+  }) => Effect.Effect<Option.Option<ChatAttachment>, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread detail snapshot by id.

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  ANTIGRAVITY_DEFAULT_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
   KIMI_DEFAULT_MODEL,
@@ -72,6 +73,15 @@ describe("ClientSettings word wrap", () => {
     expect(decoded.wordWrap).toBe(true);
     expect(decoded).not.toHaveProperty("chatWordWrap");
     expect(decoded).not.toHaveProperty("diffWordWrap");
+  });
+});
+
+describe("ClientSettings proactive panels", () => {
+  it("is opt-in and accepts client-local updates", () => {
+    expect(decodeClientSettings({}).proactivePanelsEnabled).toBe(false);
+    expect(decodeClientSettingsPatch({ proactivePanelsEnabled: true }).proactivePanelsEnabled).toBe(
+      true,
+    );
   });
 });
 
@@ -149,6 +159,22 @@ describe("ClientSettings appearance contrast", () => {
   it.each([50, 100, 150, 200])("accepts an appearance contrast in range: %s", (value) => {
     expect(decodeClientSettings({ appearanceContrast: value }).appearanceContrast).toBe(value);
     expect(decodeClientSettingsPatch({ appearanceContrast: value }).appearanceContrast).toBe(value);
+  });
+});
+
+describe("ClientSettings panel animations", () => {
+  it("defaults to instant changes", () => {
+    expect(decodeClientSettings({}).panelAnimationDurationMs).toBe(0);
+  });
+
+  it.each([0, 400])("accepts a panel animation duration: %s", (value) => {
+    expect(decodeClientSettingsPatch({ panelAnimationDurationMs: value })).toEqual({
+      panelAnimationDurationMs: value,
+    });
+  });
+
+  it.each([-1, 401, 150.5])("rejects an invalid panel animation duration: %s", (value) => {
+    expect(() => decodeClientSettingsPatch({ panelAnimationDurationMs: value })).toThrow();
   });
 });
 
@@ -300,6 +326,15 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
       homePath: "",
       customModels: [],
     });
+    expect(decoded.providers.antigravity).toEqual({
+      enabled: false,
+      authMethod: "oauth-personal",
+      apiKey: "",
+      gcpProject: "",
+      gcpLocation: "",
+      binaryPath: "",
+      customModels: [],
+    });
   });
 
   it("decodes a multi-instance map mixing first-party and fork drivers", () => {
@@ -419,6 +454,37 @@ describe("ServerSettings Kimi provider", () => {
   });
 });
 
+describe("ServerSettings Antigravity provider", () => {
+  const antigravityDriver = ProviderDriverKind.make("antigravity");
+
+  it("exposes the synthetic default model identity and display metadata", () => {
+    expect(DEFAULT_MODEL_BY_PROVIDER[antigravityDriver]).toBe(ANTIGRAVITY_DEFAULT_MODEL);
+    expect(DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[antigravityDriver]).toBe(
+      ANTIGRAVITY_DEFAULT_MODEL,
+    );
+    expect(PROVIDER_DISPLAY_NAMES[antigravityDriver]).toBe("Antigravity");
+  });
+
+  it("normalizes a partial settings patch without materializing absent optional fields", () => {
+    const decoded = decodeServerSettingsPatch({
+      providers: {
+        antigravity: {
+          authMethod: "oauth-business",
+          gcpProject: "  t3-enterprise  ",
+          gcpLocation: "  us-central1  ",
+        },
+      },
+    });
+
+    expect(decoded.providers?.antigravity).toEqual({
+      authMethod: "oauth-business",
+      gcpProject: "t3-enterprise",
+      gcpLocation: "us-central1",
+    });
+    expect(decodeServerSettingsPatch(encodeServerSettingsPatch(decoded))).toEqual(decoded);
+  });
+});
+
 describe("provider enabled defaults", () => {
   it("enables only the stable bindings by default", () => {
     const decoded = decodeServerSettings({});
@@ -428,6 +494,7 @@ describe("provider enabled defaults", () => {
     expect(decoded.providers.grok.enabled).toBe(false);
     expect(decoded.providers.kimi.enabled).toBe(false);
     expect(decoded.providers.opencode.enabled).toBe(false);
+    expect(decoded.providers.antigravity.enabled).toBe(false);
   });
 
   it("derives per-driver defaults from the settings schemas", () => {
@@ -435,6 +502,7 @@ describe("provider enabled defaults", () => {
     expect(defaultEnabledForDriver(ProviderDriverKind.make("cursor"))).toBe(false);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("grok"))).toBe(false);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("kimi"))).toBe(false);
+    expect(defaultEnabledForDriver(ProviderDriverKind.make("antigravity"))).toBe(false);
     // Unknown fork drivers stay enabled; their own build decides otherwise.
     expect(defaultEnabledForDriver(ProviderDriverKind.make("ollama"))).toBe(true);
   });
@@ -604,5 +672,24 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(encoded.providers?.codex?.launchArgs).toBe("--strict-config");
+  });
+});
+
+describe("ServerSettings environment icon", () => {
+  it("defaults to null", () => {
+    expect(decodeServerSettings({}).environmentIcon).toBeNull();
+  });
+
+  it("keeps a kind this build knows", () => {
+    expect(decodeServerSettings({ environmentIcon: "mac-mini" }).environmentIcon).toBe("mac-mini");
+  });
+
+  it("decodes a kind from a newer server as null instead of failing the snapshot", () => {
+    expect(decodeServerSettings({ environmentIcon: "toaster" }).environmentIcon).toBeNull();
+  });
+
+  it("round-trips through encode", () => {
+    const settings = decodeServerSettings({ environmentIcon: "laptop" });
+    expect(encodeServerSettings(settings).environmentIcon).toBe("laptop");
   });
 });

@@ -1,11 +1,41 @@
+import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { buildAttachmentBrowserPreviewResource } from "./FilePreviewPanel";
 import {
   formatFileCommentRange,
   normalizeFileCommentRange,
   remapFileCommentAnnotations,
 } from "./fileCommentAnnotations";
-import { isMarkdownPreviewFile, setMarkdownTaskChecked } from "./filePreviewMode";
+import {
+  isMarkdownPreviewFile,
+  setMarkdownTaskChecked,
+  shouldShowFileExplorer,
+} from "./filePreviewMode";
+
+describe("buildAttachmentBrowserPreviewResource", () => {
+  it("scopes document preview URLs to the thread that owns the attachment", () => {
+    const threadId = ThreadId.make("thread-with-report");
+
+    expect(
+      buildAttachmentBrowserPreviewResource(
+        {
+          id: "attachment-report-pdf",
+          name: "report.pdf",
+          mimeType: "application/pdf",
+        },
+        threadId,
+      ),
+    ).toEqual({
+      _tag: "attachment",
+      attachmentId: "attachment-report-pdf",
+      threadId,
+      fileName: "report.pdf",
+      mimeType: "application/pdf",
+      disposition: "inline",
+    });
+  });
+});
 
 describe("file comment annotations", () => {
   it("normalizes and formats selected line ranges", () => {
@@ -63,6 +93,42 @@ describe("isMarkdownPreviewFile", () => {
   it("does not treat other text files as markdown", () => {
     expect(isMarkdownPreviewFile("docs/guide.txt")).toBe(false);
     expect(isMarkdownPreviewFile("docs/markdown.ts")).toBe(false);
+  });
+});
+
+describe("shouldShowFileExplorer", () => {
+  it("hides the workspace tree for host files and attachments", () => {
+    expect(
+      shouldShowFileExplorer({
+        relativePath: "/tmp/report.pdf",
+        explorerOpen: true,
+        attachmentOpen: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowFileExplorer({
+        relativePath: "report.pdf",
+        explorerOpen: true,
+        attachmentOpen: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps the saved explorer preference for workspace files", () => {
+    expect(
+      shouldShowFileExplorer({
+        relativePath: "docs/report.pdf",
+        explorerOpen: true,
+        attachmentOpen: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowFileExplorer({
+        relativePath: "docs/report.pdf",
+        explorerOpen: false,
+        attachmentOpen: false,
+      }),
+    ).toBe(false);
   });
 });
 

@@ -573,6 +573,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const serverConfig = yield* Effect.service(ServerConfig);
     const crypto = yield* Crypto.Crypto;
+    const ownerScope = yield* Effect.scope;
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -736,15 +737,20 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
         );
       });
 
-    const stopSessionInternal = (ctx: KimiSessionContext) =>
+    const stopSessionInternal = (
+      ctx: KimiSessionContext,
+      exitKind: "graceful" | "error" = "graceful",
+    ) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
-        yield* logNative(
-          ctx.threadId,
-          "t3/session_stop_requested",
-          { exitKind: "graceful" },
-          "t3.observability",
-        ).pipe(Effect.ignore);
+        if (exitKind === "graceful") {
+          yield* logNative(
+            ctx.threadId,
+            "t3/session_stop_requested",
+            { exitKind },
+            "t3.observability",
+          ).pipe(Effect.ignore);
+        }
         ctx.stopped = true;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
@@ -752,19 +758,19 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
-        yield* logNative(
-          ctx.threadId,
-          "t3/session_stopped",
-          { exitKind: "graceful" },
-          "t3.observability",
-        ).pipe(Effect.ignore);
+        yield* logNative(ctx.threadId, "t3/session_stopped", { exitKind }, "t3.observability").pipe(
+          Effect.ignore,
+        );
         sessions.delete(ctx.threadId);
         yield* offerRuntimeEvent({
           type: "session.exited",
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
           threadId: ctx.threadId,
-          payload: { exitKind: "graceful" },
+          payload: {
+            exitKind,
+            ...(exitKind === "error" ? { reason: "Kimi ACP process stopped." } : {}),
+          },
         });
       });
 
@@ -1128,6 +1134,13 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
           const nf = yield* Stream.runDrain(
             Stream.mapEffect(acp.getEvents(), (event) =>
               Effect.gen(function* () {
+                if (ctx.stopped) {
+                  return;
+                }
+                if (event._tag === "ConnectionTerminated") {
+                  yield* stopSessionInternal(ctx, "error").pipe(Effect.forkIn(ownerScope));
+                  return;
+                }
                 if (
                   ctx.activeTurnId === undefined &&
                   event._tag !== "EventStreamBarrier" &&
@@ -1165,7 +1178,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                       yield* options.modelState.publishConfigOptions(event.configOptions);
                     }
                     return;
-                  case "ReasoningDelta":
+                  case "ThoughtDelta":
                     yield* logNative(
                       ctx.threadId,
                       "session/update",
@@ -1619,10 +1632,10 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
       });
 
     const stopAll: KimiAdapterShape["stopAll"] = () =>
-      Effect.forEach(sessions.values(), stopSessionInternal, { discard: true });
+      Effect.forEach(sessions.values(), (ctx) => stopSessionInternal(ctx), { discard: true });
 
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(sessions.values(), stopSessionInternal, { discard: true }).pipe(
+      Effect.forEach(sessions.values(), (ctx) => stopSessionInternal(ctx), { discard: true }).pipe(
         Effect.catch((cause) =>
           Effect.logError("Failed to emit Kimi session shutdown event.", { cause }),
         ),

@@ -14,6 +14,7 @@ import * as Logger from "effect/Logger";
 import {
   hydrateCachedProvider,
   isCachedProviderCorrelated,
+  orderProviderSnapshots,
   readProviderStatusCache,
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
@@ -43,6 +44,26 @@ const makeProvider = (
 });
 
 it.layer(NodeServices.layer)("providerStatusCache", (it) => {
+  it("orders every built-in provider ahead of custom drivers", () => {
+    const drivers = [
+      "custom",
+      "antigravity",
+      "opencode",
+      "kimi",
+      "grok",
+      "cursor",
+      "claudeAgent",
+      "codex",
+    ].map((driver) => ProviderDriverKind.make(driver));
+
+    assert.deepStrictEqual(
+      orderProviderSnapshots(drivers.map((driver) => makeProvider(driver))).map(
+        (provider) => provider.driver,
+      ),
+      ["codex", "claudeAgent", "cursor", "grok", "kimi", "opencode", "antigravity", "custom"],
+    );
+  });
+
   it.effect("logs structural diagnostics without retaining invalid cache contents", () => {
     const messages: Array<unknown> = [];
     const logger = Logger.make<unknown, void>((options) => {
