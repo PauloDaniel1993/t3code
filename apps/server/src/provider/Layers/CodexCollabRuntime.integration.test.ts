@@ -9,6 +9,7 @@
  */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -263,33 +264,11 @@ function readRecordedRequests() {
 }
 
 const scriptPath = NodePath.join(import.meta.dirname, "../testFixtures/.collab-script.json");
-const peerPath = NodePath.join(import.meta.dirname, "../testFixtures/codexCollabMockPeer.sh");
-const peerModulePath = NodePath.join(
+// Windows cannot run the shebang wrapper; the .cmd sibling does the same job.
+const peerPath = NodePath.join(
   import.meta.dirname,
-  "../testFixtures/codexCollabMockPeer.mjs",
+  `../testFixtures/codexCollabMockPeer.${HostProcessPlatform.defaultValue() === "win32" ? "cmd" : "sh"}`,
 );
-const windowsPeerPath = NodePath.join(
-  import.meta.dirname,
-  "../testFixtures/.codex-collab-peer.cmd",
-);
-
-function preparePeerBinary(isWindows: boolean): string {
-  if (!isWindows) {
-    return peerPath;
-  }
-  NodeFS.writeFileSync(
-    windowsPeerPath,
-    `@echo off\r\n"${process.execPath}" "${peerModulePath}"\r\n`,
-    "utf8",
-  );
-  return windowsPeerPath;
-}
-
-function removePreparedPeerBinary(isWindows: boolean): void {
-  if (isWindows) {
-    NodeFS.rmSync(windowsPeerPath, { force: true });
-  }
-}
 
 const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory, {
   upsert: () => Effect.void,
@@ -323,6 +302,7 @@ function makeMappingRuntime(
         threadId: options.threadId,
         turnId: TurnId.make(ROOT_TURN),
       }),
+    compactThread: Effect.void,
     interruptTurn: () => Effect.void,
     readThread: Effect.succeed({ threadId: ROOT, turns: [] }),
     rollbackThread: () => Effect.succeed({ threadId: ROOT, turns: [] }),
@@ -435,6 +415,8 @@ describe("CodexAdapter native collab mapping", () => {
         nativeAgent: true,
         description: "alpha",
         title: "alpha",
+        role: "explorer",
+        agentPath: "/root/alpha",
         typedUsage: {
           totalTokens: 144,
           inputTokens: 100,
@@ -450,6 +432,8 @@ describe("CodexAdapter native collab mapping", () => {
         nativeAgent: true,
         description: "alpha",
         title: "alpha",
+        role: "explorer",
+        agentPath: "/root/alpha",
         summary: "rg handoff",
         timelineBypass: true,
       });
@@ -518,7 +502,7 @@ describe("CodexSessionRuntime collab integration", () => {
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-collab-model-activity"),
         binaryPath: peerPath,
-        cwd: "/tmp",
+        cwd: NodeOS.tmpdir(),
         runtimeMode: "full-access",
         environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
       });
@@ -610,7 +594,7 @@ describe("CodexSessionRuntime collab integration", () => {
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-collab-model-spawn"),
         binaryPath: peerPath,
-        cwd: "/tmp",
+        cwd: NodeOS.tmpdir(),
         runtimeMode: "full-access",
         environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
       });
@@ -689,7 +673,7 @@ describe("CodexSessionRuntime collab integration", () => {
           const runtime = yield* makeCodexSessionRuntime({
             threadId: ThreadId.make(`thread-collab-model-${name}`),
             binaryPath: peerPath,
-            cwd: "/tmp",
+            cwd: NodeOS.tmpdir(),
             runtimeMode: "full-access",
             environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
           });
@@ -721,18 +705,16 @@ describe("CodexSessionRuntime collab integration", () => {
     Effect.gen(function* () {
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       NodeFS.writeFileSync(scriptPath, JSON.stringify(buildScript()), "utf8");
-      const isWindows = (yield* HostProcessPlatform) === "win32";
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           NodeFS.rmSync(scriptPath, { force: true });
-          removePreparedPeerBinary(isWindows);
         }),
       );
 
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-collab-integration"),
-        binaryPath: preparePeerBinary(isWindows),
-        cwd: "/tmp",
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
         runtimeMode: "full-access",
         environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
       });
@@ -952,21 +934,19 @@ describe("CodexSessionRuntime collab integration", () => {
       };
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
-      const isWindows = (yield* HostProcessPlatform) === "win32";
       const interruptsPath = `${scriptPath}.interrupts`;
       NodeFS.rmSync(interruptsPath, { force: true });
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           NodeFS.rmSync(scriptPath, { force: true });
           NodeFS.rmSync(interruptsPath, { force: true });
-          removePreparedPeerBinary(isWindows);
         }),
       );
 
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-collab-stop"),
-        binaryPath: preparePeerBinary(isWindows),
-        cwd: "/tmp",
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
         runtimeMode: "full-access",
         environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
       });
@@ -1034,19 +1014,17 @@ describe("CodexSessionRuntime collab integration", () => {
       NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
       const interruptsPath = `${scriptPath}.interrupts`;
       NodeFS.rmSync(interruptsPath, { force: true });
-      const isWindows = (yield* HostProcessPlatform) === "win32";
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           NodeFS.rmSync(scriptPath, { force: true });
           NodeFS.rmSync(interruptsPath, { force: true });
-          removePreparedPeerBinary(isWindows);
         }),
       );
 
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-codex-queued-stop"),
-        binaryPath: preparePeerBinary(isWindows),
-        cwd: "/tmp",
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
         runtimeMode: "full-access",
         environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
       });
@@ -1133,19 +1111,17 @@ describe("CodexSessionRuntime collab integration", () => {
         // @effect-diagnostics-next-line preferSchemaOverJson:off
         NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
         NodeFS.rmSync(responsesPath, { force: true });
-        const isWindows = (yield* HostProcessPlatform) === "win32";
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
             NodeFS.rmSync(scriptPath, { force: true });
             NodeFS.rmSync(responsesPath, { force: true });
-            removePreparedPeerBinary(isWindows);
           }),
         );
 
         const runtime = yield* makeCodexSessionRuntime({
           threadId: ThreadId.make("thread-codex-mcp-elicitation"),
-          binaryPath: preparePeerBinary(isWindows),
-          cwd: "/tmp",
+          binaryPath: peerPath,
+          cwd: NodeOS.tmpdir(),
           runtimeMode: "auto",
           environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
         });

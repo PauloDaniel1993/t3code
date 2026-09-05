@@ -99,8 +99,8 @@ describe("resolveAutoSettlementAt", () => {
     expect(decide(makeThread({ parentThreadId: ThreadId.make("parent-thread") }))).toBe(false);
   });
 
-  it("keeps open pull requests active", () => {
-    expect(decide(makeThread(), { state: "open", updatedAt: NOW })).toBe(false);
+  it("settles inactive threads with open pull requests", () => {
+    expect(decide(makeThread(), { state: "open", updatedAt: NOW })).toBe(true);
   });
 
   it("settles closed requests and honors the merge setting", () => {

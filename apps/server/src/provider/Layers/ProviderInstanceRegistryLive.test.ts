@@ -25,7 +25,7 @@
  */
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as NodePath from "node:path";
+import * as Path from "effect/Path";
 import {
   AntigravitySettings,
   type ClaudeSettings,
@@ -59,6 +59,7 @@ import { KimiDriver } from "../Drivers/KimiDriver.ts";
 import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
+import * as CodexResetCredit from "./codexResetCredit.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
 
@@ -171,6 +172,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     Layer.provideMerge(TestHttpClientLive),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(ModelManifest.layerTest),
+    Layer.provideMerge(CodexResetCredit.layerTest),
   );
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
@@ -231,8 +233,10 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       expect(personalSnapshot.instanceId).toBe(personalId);
       expect(personalSnapshot.driver).toBe(codexDriverKind);
       expect(personalSnapshot.enabled).toBe(false);
+      // The layout resolves the configured home through the host Path.
+      const path = yield* Path.Path;
       expect(personalSnapshot.continuation?.groupKey).toBe(
-        `codex:home:${NodePath.resolve("/home/julius/.codex_personal")}`,
+        `codex:home:${path.resolve("/home/julius/.codex_personal")}`,
       );
 
       const workSnapshot = yield* work!.snapshot.getSnapshot;
@@ -240,7 +244,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       expect(workSnapshot.driver).toBe(codexDriverKind);
       expect(workSnapshot.enabled).toBe(false);
       expect(workSnapshot.continuation?.groupKey).toBe(
-        `codex:home:${NodePath.resolve("/home/julius/.codex")}`,
+        `codex:home:${path.resolve("/home/julius/.codex")}`,
       );
 
       // Nothing goes to the unavailable bucket — both drivers are registered.
@@ -342,6 +346,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
     Layer.provideMerge(TestHttpClientLive),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(ModelManifest.layerTest),
+    Layer.provideMerge(CodexResetCredit.layerTest),
   );
 
   it.live("boots one instance of every shipped driver from a single config map", () =>
@@ -506,7 +511,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(codexSnapshot.driver).toBe(codexDriverKind);
       expect(codexSnapshot.enabled).toBe(false);
       expect(codexSnapshot.continuation?.groupKey).toBe(
-        `codex:home:${NodePath.resolve("/home/julius/.codex")}`,
+        `codex:home:${(yield* Path.Path).resolve("/home/julius/.codex")}`,
       );
 
       const claudeSnapshot = yield* claude!.snapshot.getSnapshot;
@@ -514,7 +519,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(claudeSnapshot.driver).toBe(claudeDriverKind);
       expect(claudeSnapshot.enabled).toBe(false);
       expect(claudeSnapshot.continuation?.groupKey).toBe(
-        `claude:home:${NodePath.resolve("/home/julius/.claude-work")}`,
+        `claude:home:${(yield* Path.Path).resolve("/home/julius/.claude-work")}`,
       );
 
       const cursorSnapshot = yield* cursor!.snapshot.getSnapshot;

@@ -70,8 +70,8 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
+// Opened read-write: Windows refuses to flush a handle without write access.
 async function syncFile(filePath: string): Promise<void> {
-  // Windows maps fsync to FlushFileBuffers, which rejects a read-only handle.
   const handle = await NodeFSP.open(filePath, "r+");
   try {
     await handle.sync();
@@ -80,13 +80,19 @@ async function syncFile(filePath: string): Promise<void> {
   }
 }
 
+// Flushes a directory entry so a rename into it survives power loss. Windows
+// has no directory fsync: the handle opens but sync fails with EPERM, and
+// NTFS journals the rename on its own.
 async function syncDirectory(directory: string): Promise<void> {
   // Windows has no directory-fsync equivalent; NTFS commits rename metadata
   // without a directory handle, and opening one fails outright.
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- The standalone launcher only imports Node built-ins.
   if (process.platform === "win32") return;
   const handle = await NodeFSP.open(directory, "r");
   try {
     await handle.sync();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
   } finally {
     await handle.close();
   }
@@ -192,16 +198,7 @@ export async function writeServiceState(filePath: string, state: ServiceState): 
     await handle.close();
     handle = undefined;
     await NodeFSP.rename(tempPath, filePath);
-    // Windows has no directory-fsync: opening a directory handle fails
-    // outright, and NTFS commits the rename's metadata without one.
-    if (process.platform !== "win32") {
-      const directoryHandle = await NodeFSP.open(directory, "r");
-      try {
-        await directoryHandle.sync();
-      } finally {
-        await directoryHandle.close();
-      }
-    }
+    await syncDirectory(directory);
   } finally {
     await handle?.close().catch(() => undefined);
     await NodeFSP.rm(tempPath, { force: true }).catch(() => undefined);

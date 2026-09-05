@@ -6,10 +6,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { GrokSettings } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
   buildGrokModelCapabilities,
@@ -18,6 +16,7 @@ import {
   checkGrokProviderStatus,
   parseGrokModelsCliOutput,
 } from "./GrokProvider.ts";
+import { execScriptSource, writeFakeCli } from "../../testUtils/fakeCli.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -80,25 +79,6 @@ describe("buildGrokModelsFromSessionModelState", () => {
     ]);
     expect(models[0]?.capabilities?.optionDescriptors).toHaveLength(1);
   });
-});
-
-const writeMockGrokExecutable = Effect.fn("writeMockGrokExecutable")(function* (input: {
-  readonly directory: string;
-  readonly windowsBody: ReadonlyArray<string>;
-  readonly posixBody: ReadonlyArray<string>;
-}) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const windows = (yield* HostProcessPlatform) === "win32";
-  const grokPath = path.join(input.directory, windows ? "grok.cmd" : "grok");
-  yield* fs.writeFileString(
-    grokPath,
-    (windows ? input.windowsBody : input.posixBody).join(windows ? "\r\n" : "\n"),
-  );
-  if (!windows) {
-    yield* fs.chmod(grokPath, 0o755);
-  }
-  return grokPath;
 });
 
 describe("buildGrokModelCapabilities", () => {
@@ -329,10 +309,15 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-version-" });
-          const grokPath = yield* writeMockGrokExecutable({
+          const grokPath = writeFakeCli({
             directory: dir,
-            windowsBody: ["@echo off", `>&2 echo ${secretStderr}`, "exit /b 2", ""],
-            posixBody: ["#!/bin/sh", `printf "%s\\n" "${secretStderr}" >&2`, "exit 2", ""],
+            name: "grok",
+            source: [
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              `process.stderr.write(${JSON.stringify(`${secretStderr}\n`)});`,
+              "process.exit(2);",
+              "",
+            ].join("\n"),
           });
 
           return yield* checkGrokProviderStatus(
@@ -349,43 +334,30 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
     }),
   );
 
-  // Single-quotes a path for /bin/sh. Temp dirs and execPath never contain quotes.
-  const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
-
-  // A shell stand-in for the Grok CLI: `--version` and `models` print canned text,
+  // A stand-in for the Grok CLI: `--version` and `models` print canned text,
   // and `agent stdio` execs the mock ACP agent so `initialize` returns model metadata.
   const writeFakeGrokCli = (input: { readonly modelsOutput: string; readonly acp: boolean }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-probe-" });
-      const modelsPath = path.join(dir, "models.txt");
-      yield* fs.writeFileString(modelsPath, input.modelsOutput);
-      const mockAgentPath = path.resolve(__dirname, "../../../scripts/acp-mock-agent.ts");
-      return yield* writeMockGrokExecutable({
+      const mockAgentPath = NodePath.resolve(__dirname, "../../../scripts/acp-mock-agent.ts");
+      return writeFakeCli({
         directory: dir,
-        windowsBody: [
-          "@echo off",
-          'if "%~1"=="--version" (echo grok 1.0.13& exit /b 0)',
-          `if "%~1"=="models" (type "${modelsPath}"& exit /b 0)`,
-          input.acp
-            ? `if "%~1"=="agent" ("${process.execPath}" "${mockAgentPath}" %*& exit /b %errorlevel%)`
-            : 'if "%~1"=="agent" exit /b 3',
-          "exit /b 1",
+        name: "grok",
+        source: [
+          'if (process.argv[2] === "--version") {',
+          '  process.stdout.write("grok 1.0.13\\n");',
+          "  process.exit(0);",
+          "}",
+          'if (process.argv[2] === "models") {',
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          `  process.stdout.write(${JSON.stringify(input.modelsOutput)});`,
+          "  process.exit(0);",
+          "}",
+          'if (process.argv[2] !== "agent") process.exit(1);',
+          ...(input.acp ? [execScriptSource({ scriptPath: mockAgentPath })] : ["process.exit(3);"]),
           "",
-        ],
-        posixBody: [
-          "#!/bin/sh",
-          'case "$1" in',
-          '  --version) printf "grok 1.0.13\\n"; exit 0;;',
-          `  models) cat ${shellQuote(modelsPath)}; exit 0;;`,
-          input.acp
-            ? `  agent) exec ${shellQuote(process.execPath)} ${shellQuote(mockAgentPath)};;`
-            : "  agent) exit 3;;",
-          "esac",
-          "exit 1",
-          "",
-        ],
+        ].join("\n"),
       });
     });
 

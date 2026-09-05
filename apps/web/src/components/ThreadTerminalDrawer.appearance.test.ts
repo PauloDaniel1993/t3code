@@ -22,6 +22,7 @@ const testState = vi.hoisted(() => ({
   settings: {
     fontFamilyCode: "",
     fontFamilyTerminal: "",
+    fontSizeCode: 12,
     fontSizeTerminal: 12,
   },
 }));
@@ -188,6 +189,7 @@ vi.mock("react", async (importOriginal) => {
     ...actual,
     useCallback: hooks.useCallback,
     useEffect: hooks.useEffect,
+    useLayoutEffect: hooks.useEffect,
     useEffectEvent: hooks.useEffectEvent,
     useMemo: hooks.useMemo,
     useRef: hooks.useRef,
@@ -245,6 +247,7 @@ vi.mock("~/terminal/ghostty/surface", () => {
       return Promise.resolve();
     }
     setTheme(): void {}
+    setVisible(): void {}
     write(): void {}
   }
   return { GhosttyTerminalSurface };
@@ -281,14 +284,10 @@ vi.mock("../state/terminal", () => ({
   terminalEnvironment: { resize: Symbol("resize"), write: Symbol("write") },
 }));
 
-vi.mock("../state/terminalSessions", () => ({
-  useAttachedTerminalSession: () => ({
-    buffer: "",
-    error: null,
-    status: "closed",
-    version: 0,
-  }),
-}));
+vi.mock("../state/terminalSessions", async () => {
+  const { EMPTY_TERMINAL_SESSION_STATE } = await import("@t3tools/client-runtime/state/terminal");
+  return { useAttachedTerminalSession: () => EMPTY_TERMINAL_SESSION_STATE };
+});
 
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: () => testState.resize,
@@ -303,6 +302,7 @@ import { TerminalViewport } from "./ThreadTerminalDrawer";
 const viewportProps = {
   advancedTypography: false,
   autoFocus: false,
+  visible: true,
   cwd: "/workspace",
   drawerHeight: 300,
   focusRequestId: 0,
@@ -341,6 +341,7 @@ async function mountViewport(): Promise<(typeof testState.instances)[number]> {
   renderViewport();
   await settleSetup();
   flushAnimationFrames();
+  expect(testState.mount).not.toHaveProperty("textContent");
   const terminal = testState.instances[0];
   if (!terminal) {
     throw new Error("Expected terminal to be created");
@@ -357,11 +358,15 @@ beforeEach(() => {
   testState.settings = {
     fontFamilyCode: '"Iosevka", monospace',
     fontFamilyTerminal: '"Berkeley Mono", monospace',
+    fontSizeCode: 15,
     fontSizeTerminal: 15,
   };
 
   const drawerSurface = {};
   testState.mount = {
+    get ownerDocument() {
+      return document;
+    },
     addEventListener: () => {},
     closest: () => drawerSurface,
     removeEventListener: () => {},
@@ -369,6 +374,11 @@ beforeEach(() => {
   hooks.reset(testState.mount);
 
   vi.stubGlobal("document", {
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    get defaultView() {
+      return window;
+    },
     body: {},
     // The theme reader probes colors through a canvas; without a 2d context it
     // falls back to the literal values, which is all these typography tests need.
@@ -433,6 +443,7 @@ describe("TerminalViewport appearance typography", () => {
     testState.settings = {
       fontFamilyCode: "",
       fontFamilyTerminal: "",
+      fontSizeCode: DEFAULT_TERMINAL_FONT_SIZE,
       fontSizeTerminal: DEFAULT_TERMINAL_FONT_SIZE,
     };
     const terminal = await mountViewport();
@@ -441,6 +452,7 @@ describe("TerminalViewport appearance typography", () => {
     testState.settings = {
       fontFamilyCode: '"Fira Code", monospace',
       fontFamilyTerminal: '"Berkeley Mono", monospace',
+      fontSizeCode: 17,
       fontSizeTerminal: 17,
     };
 
@@ -465,6 +477,7 @@ describe("TerminalViewport appearance typography", () => {
     testState.settings = {
       fontFamilyCode: "",
       fontFamilyTerminal: "",
+      fontSizeCode: DEFAULT_TERMINAL_FONT_SIZE,
       fontSizeTerminal: DEFAULT_TERMINAL_FONT_SIZE,
     };
 

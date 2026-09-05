@@ -30,6 +30,20 @@ const CodexTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process
   prefix: "t3code-codex-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
+interface FakeCodexInput {
+  output: string;
+  exitCode?: number;
+  stderr?: string;
+  requireImage?: boolean;
+  requireServiceTier?: string;
+  requireReasoningEffort?: string;
+  forbidReasoningEffort?: boolean;
+  requireArg?: string;
+  forbidArg?: string;
+  stdinMustContain?: string;
+  stdinMustNotContain?: string;
+}
+
 function makeFakeCodexBinary(
   dir: string,
   input: {
@@ -294,18 +308,7 @@ function makeFakeCodexBinary(
 }
 
 function withFakeCodexEnv<A, E, R>(
-  input: {
-    output: string;
-    exitCode?: number;
-    stderr?: string;
-    requireImage?: boolean;
-    requireServiceTier?: string;
-    requireReasoningEffort?: string;
-    forbidReasoningEffort?: boolean;
-    requireArg?: string;
-    forbidArg?: string;
-    stdinMustContain?: string;
-    stdinMustNotContain?: string;
+  input: FakeCodexInput & {
     launchArgs?: string;
     environment?: NodeJS.ProcessEnv;
   },

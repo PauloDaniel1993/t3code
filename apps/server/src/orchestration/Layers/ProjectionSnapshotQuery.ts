@@ -1,5 +1,6 @@
 import {
   ActivityHistoryCursor,
+  ApprovalRequestId,
   ChatAttachment,
   CheckpointRef,
   EventId,
@@ -127,6 +128,10 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const InitialProjectionThreadActivityDbRowSchema = Schema.Struct({
   ...ProjectionThreadActivityDbRowSchema.fields,
   hasMoreBefore: Schema.Number,
+  // A pending message-mode question can sit outside the recent activity
+  // window. Keep it in the snapshot, but do not use that extra row as the
+  // history cursor boundary.
+  isPinned: Schema.Number,
 });
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
   Struct.assign({
@@ -135,6 +140,11 @@ const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
 );
 const ProjectionThreadActivityIdRowSchema = Schema.Struct({
   activityId: ProjectionThreadActivity.fields.activityId,
+});
+const ProjectionThreadRuntimeContextDbRowSchema = Schema.Struct({
+  id: ThreadId,
+  title: Schema.String,
+  session: Schema.NullOr(ProjectionThreadSessionDbRowSchema),
 });
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
@@ -777,27 +787,70 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: InitialProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
-        WITH ranked_activities AS (
+        WITH user_input_lifecycle AS (
           SELECT
             activity_id,
             thread_id,
-            turn_id,
-            tone,
             kind,
-            summary,
-            payload_json,
-            sequence,
-            created_at,
+            json_extract(payload_json, '$.responseMode') AS response_mode,
             ROW_NUMBER() OVER (
-              PARTITION BY thread_id
+              PARTITION BY thread_id, json_extract(payload_json, '$.requestId')
               ORDER BY
                 CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
                 sequence DESC,
                 created_at DESC,
                 activity_id DESC
-            ) AS activity_rank,
-            COUNT(*) OVER (PARTITION BY thread_id) AS activity_count
+            ) AS request_rank
           FROM projection_thread_activities
+          WHERE (
+              kind IN ('user-input.requested', 'user-input.resolved')
+              OR (
+                kind = 'provider.user-input.respond.failed'
+                AND (
+                  lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                    LIKE '%stale pending user-input request%'
+                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending user-input request%'
+                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending user input request%'
+                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending codex user input request%'
+                )
+              )
+            )
+            AND json_extract(payload_json, '$.requestId') IS NOT NULL
+        ),
+        pending_message_questions AS (
+          SELECT activity_id
+          FROM user_input_lifecycle
+          WHERE request_rank = 1
+            AND kind = 'user-input.requested'
+            AND response_mode = 'message'
+        ),
+        ranked_activities AS (
+          SELECT
+            activity.activity_id,
+            activity.thread_id,
+            activity.turn_id,
+            activity.tone,
+            activity.kind,
+            activity.summary,
+            activity.payload_json,
+            activity.sequence,
+            activity.created_at,
+            CASE WHEN pending.activity_id IS NULL THEN 0 ELSE 1 END AS is_pending_message_question,
+            ROW_NUMBER() OVER (
+              PARTITION BY activity.thread_id
+              ORDER BY
+                CASE WHEN activity.sequence IS NULL THEN 0 ELSE 1 END DESC,
+                activity.sequence DESC,
+                activity.created_at DESC,
+                activity.activity_id DESC
+            ) AS activity_rank,
+            COUNT(*) OVER (PARTITION BY activity.thread_id) AS activity_count
+          FROM projection_thread_activities AS activity
+          LEFT JOIN pending_message_questions AS pending
+            ON pending.activity_id = activity.activity_id
         )
         SELECT
           activity_id AS "activityId",
@@ -813,9 +866,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             WHEN activity_count > ${PROVIDER_EVENT_FLOW_CONTROL.initialActivityPageSize}
             THEN 1
             ELSE 0
-          END AS "hasMoreBefore"
+          END AS "hasMoreBefore",
+          CASE
+            WHEN is_pending_message_question = 1
+              AND activity_rank > ${PROVIDER_EVENT_FLOW_CONTROL.initialActivityPageSize}
+            THEN 1
+            ELSE 0
+          END AS "isPinned"
         FROM ranked_activities
         WHERE activity_rank <= ${PROVIDER_EVENT_FLOW_CONTROL.initialActivityPageSize}
+          OR is_pending_message_question = 1
         ORDER BY
           thread_id ASC,
           CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
@@ -1249,6 +1309,41 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const getThreadRuntimeContextRow = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadRuntimeContextDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          threads.thread_id AS id,
+          threads.title,
+          sessions.thread_id AS "threadId",
+          sessions.status,
+          sessions.provider_name AS "providerName",
+          sessions.provider_instance_id AS "providerInstanceId",
+          sessions.runtime_mode AS "runtimeMode",
+          sessions.active_turn_id AS "activeTurnId",
+          sessions.last_error AS "lastError",
+          sessions.recovery_json AS recovery,
+          sessions.updated_at AS "updatedAt"
+        FROM projection_threads AS threads
+        LEFT JOIN projection_thread_sessions AS sessions
+          ON sessions.thread_id = threads.thread_id
+        WHERE threads.thread_id = ${threadId}
+          AND threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+        LIMIT 1
+      `.pipe(
+        Effect.map((rows) =>
+          rows.map((row) => ({
+            id: row.id,
+            title: row.title,
+            session: row.threadId === null ? null : row,
+          })),
+        ),
+      ),
+  });
+
   const listThreadMessageRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadMessageDbRowSchema,
@@ -1406,6 +1501,40 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             LIMIT ${limit}
           `,
   });
+
+  const getUserInputActivityRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, requestId: ApprovalRequestId }),
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, requestId }) => sql`
+      SELECT
+        activity_id AS "activityId",
+        thread_id AS "threadId",
+        turn_id AS "turnId",
+        tone,
+        kind,
+        summary,
+        payload_json AS "payload",
+        sequence,
+        created_at AS "createdAt"
+      FROM projection_thread_activities
+      WHERE thread_id = ${threadId}
+        AND kind IN ('user-input.requested', 'user-input.resolved')
+        AND json_extract(payload_json, '$.requestId') = ${requestId}
+      ORDER BY sequence DESC, created_at DESC, activity_id DESC
+      LIMIT 1
+    `,
+  });
+
+  const getUserInputActivity: ProjectionSnapshotQueryShape["getUserInputActivity"] = (input) =>
+    getUserInputActivityRow(input).pipe(
+      Effect.map(Option.map(mapThreadActivityRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getUserInputActivity:query",
+          "ProjectionSnapshotQuery.getUserInputActivity:decodeRow",
+        ),
+      ),
+    );
 
   const listThreadActivityIdsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
@@ -2113,7 +2242,7 @@ pending_approval_requests AS (
                 const threadActivities = activitiesByThread.get(row.threadId) ?? [];
                 threadActivities.push(mapActivityRow(row));
                 activitiesByThread.set(row.threadId, threadActivities);
-                if (!activityHistoryByThread.has(row.threadId)) {
+                if (!activityHistoryByThread.has(row.threadId) && row.isPinned !== 1) {
                   activityHistoryByThread.set(row.threadId, {
                     hasMoreBefore: row.hasMoreBefore === 1,
                     beforeCursor:
@@ -3085,6 +3214,23 @@ pending_approval_requests AS (
       return Option.map(row, (value) => value.attachment);
     });
 
+  const getThreadRuntimeContext: ProjectionSnapshotQueryShape["getThreadRuntimeContext"] =
+    Effect.fn("ProjectionSnapshotQuery.getThreadRuntimeContext")(function* (threadId) {
+      const context = yield* getThreadRuntimeContextRow({ threadId }).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getThreadRuntimeContext:query",
+            "ProjectionSnapshotQuery.getThreadRuntimeContext:decodeRow",
+          ),
+        ),
+      );
+      return Option.map(context, (row) => ({
+        id: row.id,
+        title: row.title,
+        session: row.session === null ? null : mapSessionRow(row.session),
+      }));
+    });
+
   // Contiguous turn range bounding a windowed detail read; undefined loads the
   // full thread. Resolved from a window request inside the snapshot
   // transaction (see getThreadDetailSnapshot).
@@ -3622,6 +3768,7 @@ pending_approval_requests AS (
 
   return {
     getCommandReadModel,
+    getUserInputActivity,
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,
@@ -3636,6 +3783,7 @@ pending_approval_requests AS (
     getFullThreadDiffContext,
     getThreadShellById,
     getThreadAttachmentById,
+    getThreadRuntimeContext,
     getThreadDetailById,
     getThreadDetailSnapshot,
     getActivityHistory,

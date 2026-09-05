@@ -28,9 +28,11 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { execScriptSource, writeFakeCli } from "../../testUtils/fakeCli.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
@@ -42,46 +44,28 @@ const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 const mockAgentCommand = process.execPath;
 const mockAgentArgs = [mockAgentPath] as const;
-
+// Stopping a session kills the agent with SIGTERM; Windows terminates the
+// process instead, so the mock never sees a signal to log.
+const windowsHost = HostProcessPlatform.defaultValue() === "win32";
 const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
   extraEnv?: Record<string, string>,
   options?: { initialDelaySeconds?: number },
 ) {
-  const windows = (yield* HostProcessPlatform) === "win32";
+  const platform = yield* HostProcessPlatform;
   return yield* Effect.promise(async () => {
     const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
-    const wrapperPath = NodePath.join(dir, windows ? "fake-agent.cmd" : "fake-agent.sh");
-    const envExports = Object.entries(extraEnv ?? {})
-      .map(([key, value]) =>
-        windows
-          ? `set "${key}=${value.replaceAll("%", "%%")}"`
-          : `export ${key}=${JSON.stringify(value)}`,
-      )
-      .join(windows ? "\r\n" : "\n");
-    const script = windows
-      ? [
-          "@echo off",
-          "setlocal",
-          envExports,
-          ...(options?.initialDelaySeconds
-            ? [
-                `"${mockAgentCommand}" -e "setTimeout(() => {}, ${Math.round(options.initialDelaySeconds * 1_000)})"`,
-              ]
-            : []),
-          `"${mockAgentCommand}" "${mockAgentPath}" %*`,
-          "exit /b %errorlevel%",
-          "",
-        ].join("\r\n")
-      : `#!/bin/sh
-${envExports}
-${options?.initialDelaySeconds ? `sleep ${JSON.stringify(String(options.initialDelaySeconds))}` : ""}
-exec ${JSON.stringify(mockAgentCommand)} ${mockAgentArgs.map((arg) => JSON.stringify(arg)).join(" ")} "$@"
-`;
-    await NodeFSP.writeFile(wrapperPath, script, "utf8");
-    if (!windows) {
-      await NodeFSP.chmod(wrapperPath, 0o755);
-    }
-    return wrapperPath;
+    return writeFakeCli({
+      directory: dir,
+      name: "fake-agent",
+      env: extraEnv ?? {},
+      platform,
+      source: execScriptSource({
+        scriptPath: mockAgentPath,
+        ...(options?.initialDelaySeconds === undefined
+          ? {}
+          : { delayMs: Math.round(options.initialDelaySeconds * 1000) }),
+      }),
+    });
   });
 });
 
@@ -331,6 +315,18 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         input: "please $review this",
         attachments: [],
       });
+      const snapshot = yield* adapter.readThread(threadId);
+      assert.deepStrictEqual(
+        snapshot.turns.map((turn) => turn.items),
+        [
+          [
+            {
+              prompt: [{ type: "text", text: "please /review this" }],
+              result: { stopReason: "end_turn" },
+            },
+          ],
+        ],
+      );
       yield* adapter.stopSession(threadId);
 
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
@@ -339,7 +335,12 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         promptRequests.map(
           (request) => (request.params as Record<string, unknown> | undefined)?.prompt,
         ),
-        [[{ type: "text", text: "please /review this" }]],
+        [
+          [
+            { type: "text", text: "please /review this" },
+            { type: "text", text: buildRuntimeInstructions({ harness: "Cursor" }) },
+          ],
+        ],
       );
     }),
   );
@@ -418,7 +419,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect("closes the ACP child process when a session stops", () =>
+  it.effect.skipIf(windowsHost)("closes the ACP child process when a session stops", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
       const settings = yield* ServerSettingsService;
@@ -455,7 +456,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect(
+  it.effect.skipIf(windowsHost)(
     "serializes concurrent startSession calls for the same thread and closes the replaced ACP session",
     () =>
       Effect.gen(function* () {

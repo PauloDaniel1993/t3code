@@ -96,7 +96,10 @@ describe("AcpRuntimeModel", () => {
         sessionId: "session-1",
         update: { sessionUpdate: "config_option_update", configOptions },
       } satisfies EffectAcpSchema.SessionNotification).events,
-    ).toEqual([expect.objectContaining({ _tag: "ConfigOptionsChanged", configOptions })]);
+    ).toEqual([
+      expect.objectContaining({ _tag: "ConfigOptionsUpdated", configOptions }),
+      expect.objectContaining({ _tag: "ConfigOptionsChanged", configOptions }),
+    ]);
   });
 
   it("extracts the model config id from typed ACP config options", () => {

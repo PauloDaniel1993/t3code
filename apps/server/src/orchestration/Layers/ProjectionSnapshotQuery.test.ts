@@ -25,6 +25,7 @@ import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { encodeThreadDetailPageCursor } from "../threadDetailCursor.ts";
 import { projectThreadDetailSnapshot } from "../ActivityPayloadProjection.ts";
+import { makeSqlStatementCounter } from "../../../integration/SqlStatementCounter.integration.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
@@ -670,6 +671,38 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
         ]);
       }
+
+      const counter = makeSqlStatementCounter();
+      const context = yield* snapshotQuery
+        .getThreadRuntimeContext(ThreadId.make("thread-1"))
+        .pipe(Effect.withTracer(counter.tracer));
+      assert.equal(counter.count(), 1);
+      assert.equal(context._tag, "Some");
+      if (context._tag === "Some") {
+        assert.deepEqual(context.value, {
+          id: ThreadId.make("thread-1"),
+          title: "Thread 1",
+          session: snapshot.threads[0]?.session,
+        });
+      }
+
+      yield* sql`
+        UPDATE projection_thread_sessions
+        SET status = 'starting', active_turn_id = NULL, provider_name = 'claudeAgent',
+            provider_instance_id = 'claude-secondary', last_error = 'Starting another session'
+        WHERE thread_id = 'thread-1'
+      `;
+      const changedContext = yield* snapshotQuery.getThreadRuntimeContext(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(changedContext._tag, "Some");
+      if (changedContext._tag === "Some") {
+        assert.equal(changedContext.value.session?.status, "starting");
+        assert.equal(changedContext.value.session?.activeTurnId, null);
+        assert.equal(changedContext.value.session?.providerName, "claudeAgent");
+        assert.equal(changedContext.value.session?.providerInstanceId, "claude-secondary");
+        assert.equal(changedContext.value.session?.lastError, "Starting another session");
+      }
     }),
   );
 
@@ -884,6 +917,22 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         [ThreadId.make("thread-archived")],
       );
       assert.equal(archivedShellSnapshot.threads[0]?.archivedAt, "2026-04-06T00:00:06.000Z");
+      const activeContext = yield* snapshotQuery.getThreadRuntimeContext(
+        ThreadId.make("thread-active"),
+      );
+      assert.equal(activeContext._tag, "Some");
+      if (activeContext._tag === "Some") assert.equal(activeContext.value.session, null);
+      for (const threadId of ["thread-archived", "thread-missing"]) {
+        assert.equal(
+          (yield* snapshotQuery.getThreadRuntimeContext(ThreadId.make(threadId)))._tag,
+          "None",
+        );
+      }
+      yield* sql`UPDATE projection_threads SET deleted_at = '2026-04-06T00:00:08.000Z' WHERE thread_id = 'thread-active'`;
+      assert.equal(
+        (yield* snapshotQuery.getThreadRuntimeContext(ThreadId.make("thread-active")))._tag,
+        "None",
+      );
     }),
   );
 
@@ -3343,6 +3392,18 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
             'user-input-tied-a-resolution', 'thread-w', NULL, 'info', 'user-input.resolved',
             'Tied open question', '{"requestId":"input-tied-open"}', NULL,
             '2026-03-01T00:00:05.000Z'
+          ),
+          (
+            'user-input-message-failed', 'thread-w', NULL, 'approval', 'user-input.requested',
+            'Failed old question', '{"requestId":"input-message-failed","responseMode":"message"}', NULL,
+            '2026-03-01T00:00:06.000Z'
+          ),
+          (
+            'user-input-message-failed-resolution', 'thread-w', NULL, 'error',
+            'provider.user-input.respond.failed',
+            'Failed old question',
+            '{"requestId":"input-message-failed","detail":"Unknown pending user-input request"}', NULL,
+            '2026-03-01T00:00:07.000Z'
           )
       `;
       yield* sql`
@@ -3372,6 +3433,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
         assert.equal(ids.has(asEventId("user-input-closed")), false);
         assert.equal(ids.has(asEventId("user-input-tied-z-request")), true);
       }
+
+      const snapshotWithFailedMessageQuestion = yield* snapshotQuery.getSnapshot();
+      const snapshotActivities = snapshotWithFailedMessageQuestion.threads.find(
+        (thread) => thread.id === threadW,
+      )?.activities;
+      assert.equal(
+        snapshotActivities?.some((activity) => activity.id === "user-input-message-failed"),
+        false,
+      );
 
       const windowWithPinnedRequests = yield* snapshotQuery.getThreadDetailSnapshot(threadW, {
         turnLimit: 2,
@@ -3445,6 +3515,35 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
           },
         });
       }
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        )
+        VALUES (
+          'user-input-message-open', 'thread-w', NULL, 'approval', 'user-input.requested',
+          'Open old question',
+          '{"requestId":"input-message-open","responseMode":"message"}', NULL,
+          '2026-03-01T00:00:00.000Z'
+        )
+      `;
+
+      const snapshotWithPinnedMessageQuestion = yield* snapshotQuery.getSnapshot();
+      const snapshotThreadWithPinnedQuestion = snapshotWithPinnedMessageQuestion.threads.find(
+        (thread) => thread.id === threadW,
+      );
+      assert.equal(
+        snapshotThreadWithPinnedQuestion?.activities.some(
+          (activity) => activity.id === "user-input-message-open",
+        ),
+        true,
+      );
+      const beforeCursor = snapshotThreadWithPinnedQuestion?.activityHistory?.beforeCursor;
+      assert.ok(beforeCursor);
+      const decodedCursor = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Schema.Struct({ activityId: Schema.String })),
+      )(Buffer.from(beforeCursor, "base64url").toString("utf8"));
+      assert.equal(decodedCursor.activityId, "activity-0302");
     }),
   );
 

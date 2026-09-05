@@ -8,6 +8,7 @@
  */
 import type {
   ChatAttachment,
+  ApprovalRequestId,
   CheckpointRef,
   OrchestrationGetActivityHistoryInput,
   OrchestrationGetActivityHistoryResult,
@@ -19,6 +20,7 @@ import type {
   OrchestrationSearchThreadsResult,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadDetailWindow,
   OrchestrationThreadShell,
@@ -88,6 +90,12 @@ export interface ProjectionThreadDetailQuery {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  /** Read the latest request or resolution without loading the thread history. */
+  readonly getUserInputActivity: (input: {
+    readonly threadId: ThreadId;
+    readonly requestId: ApprovalRequestId;
+  }) => Effect.Effect<Option.Option<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
   /**
    * Read the lightweight command snapshot used to bootstrap the in-memory
    * orchestration engine without hydrating message/activity/checkpoint bodies.
@@ -206,6 +214,14 @@ export interface ProjectionSnapshotQueryShape {
     readonly threadId: ThreadId;
     readonly attachmentId: string;
   }) => Effect.Effect<Option.Option<ChatAttachment>, ProjectionRepositoryError>;
+
+  /** Read the active thread and session facts used to ingest provider events. */
+  readonly getThreadRuntimeContext: (
+    threadId: ThreadId,
+  ) => Effect.Effect<
+    Option.Option<Pick<OrchestrationThreadShell, "id" | "title" | "session">>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read a single active thread detail snapshot by id.

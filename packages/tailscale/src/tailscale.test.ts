@@ -26,8 +26,9 @@ import {
 } from "./tailscale.ts";
 
 const encoder = new TextEncoder();
-const tailscaleExecutableForPlatform = (platform: NodeJS.Platform): "tailscale" | "tailscale.exe" =>
-  platform === "win32" ? "tailscale.exe" : "tailscale";
+const tailscaleExecutableForPlatform = (
+  platform: NodeJS.Platform,
+): "tailscale" | "tailscale.exe" => (platform === "win32" ? "tailscale.exe" : "tailscale");
 
 /**
  * Asserts nothing reachable from `error` contains `secret`. Recurses through
@@ -101,14 +102,22 @@ function neverFinishingMockHandle() {
   });
 }
 
+// The executable name depends on the host platform (`tailscale.exe` on
+// Windows), so pin it: these tests assert the posix spelling.
+function spawnerLayer(spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) {
+  return Layer.merge(
+    Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    Layer.succeed(HostProcessPlatform, "linux"),
+  );
+}
+
 function mockSpawnerLayer(
   handler: (
     command: string,
     args: ReadonlyArray<string>,
   ) => { stdout?: string; stderr?: string; code?: number },
 ) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
+  return spawnerLayer(
     ChildProcessSpawner.make((command) => {
       const childProcess = command as unknown as {
         readonly command: string;
@@ -198,10 +207,7 @@ describe("tailscale", () => {
       method: "spawn",
       cause: systemCause,
     });
-    const layer = Layer.succeed(
-      ChildProcessSpawner.ChildProcessSpawner,
-      ChildProcessSpawner.make(() => Effect.fail(cause)),
-    );
+    const layer = spawnerLayer(ChildProcessSpawner.make(() => Effect.fail(cause)));
 
     return Effect.gen(function* () {
       const hostPlatform = yield* HostProcessPlatform;
@@ -224,8 +230,7 @@ describe("tailscale", () => {
     // inside an `Effect.callback` registration, so that throw arrives as a
     // defect rather than a typed error - the shape reproduced here.
     const defect = Object.assign(new Error("spawn tailscale ENOTDIR"), { code: "ENOTDIR" });
-    const layer = Layer.succeed(
-      ChildProcessSpawner.ChildProcessSpawner,
+    const layer = spawnerLayer(
       ChildProcessSpawner.make(() =>
         Effect.callback<never, never>(() => {
           throw defect;
@@ -305,10 +310,7 @@ describe("tailscale", () => {
   it.effect("times out tailscale status through TestClock", () => {
     const layer = Layer.merge(
       TestClock.layer(),
-      Layer.succeed(
-        ChildProcessSpawner.ChildProcessSpawner,
-        ChildProcessSpawner.make(() => Effect.succeed(neverFinishingMockHandle())),
-      ),
+      spawnerLayer(ChildProcessSpawner.make(() => Effect.succeed(neverFinishingMockHandle()))),
     );
 
     return Effect.gen(function* () {

@@ -1,268 +1,103 @@
 # Glossary
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+Terms whose meaning matters across T3 Code. Architecture and lifecycle constraints belong in the
+[overview](./overview.md), not in these definitions.
 
-This is a living glossary for T3 Code. It explains what common terms mean in this codebase.
+## Workspace and conversation
 
-## Table of contents
+| Term           | Meaning                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| Environment    | One running server and the machine, credentials, workspace access, and state it owns.             |
+| Client         | A web, desktop, or mobile UI connected to an environment. The desktop app can also host a server. |
+| Project        | An environment-local workspace record rooted at a directory.                                      |
+| Workspace root | The project's base filesystem directory on the environment.                                       |
+| Worktree       | A separate Git checkout a thread can use instead of the project's main checkout.                  |
+| Thread         | The durable conversation and work history for a project. It survives provider process exits.      |
+| Turn           | One user-to-agent work cycle. Provider work can finish before checkpoint and diff work settles.   |
+| Activity       | A non-message timeline item, such as a tool action, approval, or failure.                         |
+| T3 home        | The base data directory. Runtime state normally lives under its `userdata` directory.             |
 
-- [Project and workspace](#project-and-workspace)
-- [Thread timeline](#thread-timeline)
-- [Orchestration](#orchestration)
-- [Provider runtime](#provider-runtime)
-- [Wayfinder maps](#wayfinder-maps)
-- [Checkpointing](#checkpointing)
-- [Appearance](#appearance)
+## Orchestration
 
-## Concepts
+| Term                    | Meaning                                                                                      |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| Command                 | A request to change domain state. Accepting it does not mean its side effects have finished. |
+| Event                   | A persisted fact produced by a command.                                                      |
+| Decider                 | The pure logic that turns a command and current state into events.                           |
+| Projection / read model | A view of current state derived from persisted events.                                       |
+| Projector               | The logic that applies events to a read model.                                               |
+| Reactor                 | A worker that performs follow-up work in response to recorded intent or runtime signals.     |
+| Command receipt         | A durable record of a command's result, used to make retries idempotent.                     |
+| Runtime receipt         | A test-only signal that an asynchronous milestone completed.                                 |
+| Quiesced                | The relevant follow-up workers have finished, beyond the provider turn merely ending.        |
 
-### Project and workspace
+## Providers and checkpoints
 
-#### Project
+| Term                | Meaning                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Provider            | The agent runtime T3 Code controls, such as Codex or Claude Code.                                            |
+| Driver              | The integration for a provider kind.                                                                         |
+| Provider instance   | One configured provider, with its own settings and lifecycle. Multiple instances can use the same driver.    |
+| Adapter             | The boundary translating a provider's native protocol into T3 Code operations and events.                    |
+| Session             | The provider runtime attached to a thread. A session can be stopped and resumed without deleting the thread. |
+| Runtime mode        | The thread's permission policy. See [permission modes](../user/permission-modes.md).                         |
+| Interaction mode    | How the agent approaches the task, such as planning. Separate from permission policy.                        |
+| Checkpoint          | A saved workspace state used for diffs and restore, stored as a hidden Git ref.                              |
+| Checkpoint baseline | The workspace state captured before the work being compared.                                                 |
+| Turn diff           | The workspace changes attributed to one turn.                                                                |
 
-The top-level workspace record in the app. In [the orchestration contracts][1], a project has a `workspaceRoot` and a title. It does not contain threads: `OrchestrationProject` and `OrchestrationThread` are separate arrays on the read model, and a project can have zero threads. See [workspace-layout.md][2].
+## Attachments and thread work
 
-#### Workspace root
+### Attachment
 
-The root filesystem path for a project. In [the orchestration model][1], it is the base directory for branches and optional worktrees. See [workspace-layout.md][2].
+A typed file associated with a message. [The orchestration contracts](../../packages/contracts/src/orchestration.ts) define `ChatAttachment` as the durable `image`, `document`, or generic `file` metadata stored in thread history, while `UploadChatAttachment` is the client-to-server form used before normalization. See [Normalizer.ts](../../apps/server/src/orchestration/Normalizer.ts).
 
-#### Worktree
+### Linked pull request
 
-A Git worktree used as an isolated workspace for a thread. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree. Git operations live behind the VCS driver contract in `apps/server/src/vcs/VcsDriver.ts`, implemented by [GitVcsDriverCore.ts][3].
+Pull request metadata explicitly associated with a thread: project, repository, number, and URL. Clients use the link for thread status, and an environment can automatically settle the thread when that pull request merges. See [the contracts](../../packages/contracts/src/orchestration.ts) and [thread-sidebar.md](../user/thread-sidebar.md).
 
-### Thread timeline
+### Native agent
 
-#### Thread
+A provider's own in-session subagent. Unlike a task, it is not a thread and does not have an independently steerable transcript, model, or provider session. T3 Code observes its lifecycle through activities and projects a bounded current view onto the parent thread. See [the contracts](../../packages/contracts/src/orchestration.ts) and [nativeAgents.ts](../../packages/client-runtime/src/state/native-agents/nativeAgents.ts).
 
-The main durable unit of conversation and workspace history. In [the orchestration contracts][1], a thread holds messages, activities, checkpoints, and session-related state. See [projector.ts][4].
+### Pending upload
 
-#### Turn
+A temporary attachment stored before its turn is accepted. It has a pending attachment ID and an expiring upload URL; normalization validates the complete attachment set, then claims accepted files into thread-owned IDs as part of staging the turn. See [the asset contracts](../../packages/contracts/src/assets.ts) and [Normalizer.ts](../../apps/server/src/orchestration/Normalizer.ts).
 
-A single user-to-assistant work cycle inside a thread. It starts with user input and ends when the session leaves `running` status, which [projector.ts][4] treats as the authoritative completion signal (`settledTurnStateForSessionStatus`). Checkpoint and diff work may settle afterward without changing when the turn ended. See [the contracts][1] and [ProviderRuntimeIngestion.ts][5].
+### Task
 
-#### Activity
+A child thread owned by a parent thread and running its own provider session. A task can be created by the user or the parent agent, receives explicitly selected context, and delivers its result back to the parent. Tasks cannot create nested tasks. See [the orchestration contracts](../../packages/contracts/src/orchestration.ts) and [the task contracts](../../packages/contracts/src/threadTasks.ts).
 
-A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
+### Unsettled
 
-#### Attachment
+The active state entered when a settled thread is restored or wakes because new activity arrives. The `thread.unsettled` event clears `settledAt`; `unsettledAt` records the latest re-entry so web and mobile place the thread at the top of the active list without changing its creation time. See [projector.ts](../../apps/server/src/orchestration/projector.ts) and [threadSort.ts](../../packages/client-runtime/src/state/threadSort.ts).
 
-A typed file associated with a message. [The orchestration contracts][1] define `ChatAttachment` as the durable `image`, `document`, or generic `file` metadata stored in thread history, while `UploadChatAttachment` is the client-to-server form used before normalization. See [Normalizer.ts][26].
+### Compaction
 
-#### Linked pull request
+Replacing older provider-session context with a summary to reduce active token usage without changing the thread's durable timeline. Claude can compact automatically at a configured threshold, through `/compact`, or before resuming an older session. See [providers-claude.md](../user/providers-claude.md).
 
-Pull request metadata explicitly associated with a thread: project, repository, number, and URL. Clients use the link for thread status, and an environment can automatically settle the thread when that pull request merges. See [the contracts][1] and [thread-sidebar.md][27].
+### Feedback
 
-#### Native agent
+A Codex provider operation that uploads a thread and its Codex logs to OpenAI and returns a shareable feedback ID. Users invoke it with `/feedback`, optionally followed by a reason. See [ProviderService.ts](../../apps/server/src/provider/Layers/ProviderService.ts) and [providers-codex.md](../user/providers-codex.md).
 
-A provider's own in-session subagent. Unlike a task, it is not a thread and does not have an independently steerable transcript, model, or provider session. T3 Code observes its lifecycle through activities and projects a bounded current view onto the parent thread. See [the contracts][1] and [nativeAgents.ts][28].
+## Wayfinder maps
 
-#### Pending upload
+### Wayfinder map
 
-A temporary attachment stored before its turn is accepted. It has a pending attachment ID and an expiring upload URL; normalization validates the complete attachment set, then claims accepted files into thread-owned IDs as part of staging the turn. See [the asset contracts][29] and [Normalizer.ts][26].
+A directory of Markdown under a project's `.plan/`: one `map.md` describing an effort plus a `tickets/` directory of decision tickets. T3 Code normalises that on-disk graph for the read-only Map surface. See [wayfinder-maps.md](./wayfinder-maps.md).
 
-#### Task
+### Ticket
 
-A child thread owned by a parent thread and running its own provider session. A task can be created by the user or the parent agent, receives explicitly selected context, and delivers its result back to the parent. Tasks cannot create nested tasks. See [the orchestration contracts][1] and [the task contracts][30].
+One decision in a wayfinder map. Its effective status is derived rather than stored as ticket state, with precedence ruled out (`out_of_scope`) over `resolved`, then `claimed`, then `open`. T3 Code treats prose under `Ruled out` as out of scope and prose under `Answer` or `Resolution` as resolved; a bare heading leaves an otherwise open ticket open. A claimant makes it claimed, and the legacy `Status: closed` field also resolves a field-line ticket. See [wayfinder-maps.md](./wayfinder-maps.md).
 
-#### Unsettled
+### Frontier
 
-The active state entered when a settled thread is restored or wakes because new activity arrives. The `thread.unsettled` event clears `settledAt`; `unsettledAt` records the latest re-entry so web and mobile place the thread at the top of the active list without changing its creation time. See [projector.ts][4] and [threadSort.ts][31].
+A ticket that is neither resolved nor out of scope and whose every blocker is resolved or out of scope. The frontier is the map's answer to "what can I pick up now?" See [wayfinder-maps.md](./wayfinder-maps.md).
 
-### Orchestration
+### Fog
 
-Orchestration is the server-side domain layer that turns runtime activity into stable app state. The main entry point is [OrchestrationEngine.ts][7], with core logic in [decider.ts][8] and [projector.ts][4].
+A named area of a wayfinder effort that is not yet specified. A fog entry may name the ticket that will clear it. See [wayfinder-maps.md](./wayfinder-maps.md).
 
-#### Aggregate
+### Undermined
 
-The domain object a command or event belongs to. In [the contracts][1], that is usually `project` or `thread`. See [decider.ts][8].
-
-#### Command
-
-A typed request to change domain state. In [the contracts][1], commands are validated in [commandInvariants.ts][9] and turned into events by [decider.ts][8].
-Examples include `thread.create`, `thread.turn.start`, and `thread.checkpoint.revert`.
-
-#### Domain Event
-
-A persisted fact that something already happened. In [the contracts][1], events are the source of truth, and [projector.ts][4] shows how they are applied.
-Examples include `thread.created`, `thread.message-sent`, and `thread.turn-diff-completed`.
-
-#### Decider
-
-The pure orchestration logic that turns commands plus current state into events. The core implementation is in [decider.ts][8], with preconditions in [commandInvariants.ts][9].
-
-#### Projection
-
-A read-optimized view derived from events. See [projector.ts][4], [ProjectionPipeline.ts][11], and [ProjectionSnapshotQuery.ts][10].
-
-#### Projector
-
-The logic that applies domain events to the read model or projection tables. See [projector.ts][4] and [ProjectionPipeline.ts][11].
-
-#### Read model
-
-The current materialized view of orchestration state. In [the contracts][1], it holds projects, threads, messages, activities, checkpoints, and session state. See [ProjectionSnapshotQuery.ts][10] and [OrchestrationEngine.ts][7].
-
-#### Reactor
-
-A side-effecting service that handles follow-up work after events or runtime signals. Examples include [CheckpointReactor.ts][6], [ProviderCommandReactor.ts][12], and [ProviderRuntimeIngestion.ts][5].
-
-#### Receipt
-
-A typed signal emitted when an async milestone completes, such as `checkpoint.baseline.captured`, `checkpoint.diff.finalized`, or `turn.processing.quiesced`. Receipts are a test-only mechanism: the production `RuntimeReceiptBusLive` publish is a no-op and only the test layer is PubSub-backed. Do not build production behavior on them. See [RuntimeReceiptBus.ts][13] and [CheckpointReactor.ts][6].
-
-#### Quiesced
-
-"Quiesced" means a turn has gone quiet and stable: follow-up work such as [CheckpointReactor.ts][6] has settled. It appears in [the receipt schema][13], so in practice it is something tests wait on rather than a production signal.
-
-### Provider runtime
-
-The live backend agent implementation and its event stream. The main service is [ProviderService.ts][14], the adapter contract is [ProviderAdapter.ts][15], and the overview is in [providers.md][16].
-
-#### Provider
-
-The backend agent runtime that actually performs work. Seven drivers ship built in: Codex, Claude, Cursor, Grok, Kimi, OpenCode, and Antigravity. See [ProviderService.ts][14], [ProviderAdapter.ts][15], and [CodexAdapter.ts][17] as a representative adapter.
-
-#### Session
-
-The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].
-
-#### Runtime mode
-
-The safety/access mode for a thread or session. [The contracts][1] define four values: `approval-required`, `auto-accept-edits`, `auto`, and `full-access`. See [permission modes][18].
-
-#### Interaction mode
-
-The agent interaction style for a thread. In [the contracts][1], the values are `default` and `plan`.
-
-#### Assistant delivery mode
-
-Controls how assistant text reaches the thread timeline. In [the contracts][1], `streaming` updates incrementally and `buffered` accumulates text. Buffered delivery is not held until the turn completes: it spills once accumulated text would exceed 24,000 characters, and flushes at approval and user-input boundaries. See [ProviderRuntimeIngestion.ts][5].
-
-#### Snapshot
-
-A point-in-time view of state. The word is used in multiple layers, including orchestration, provider, and checkpointing. See [ProjectionSnapshotQuery.ts][10], [ProviderAdapter.ts][15], and [CheckpointStore.ts][19].
-
-#### Compaction
-
-Replacing older provider-session context with a summary to reduce active token usage without changing the thread's durable timeline. Claude can compact automatically at a configured threshold, through `/compact`, or before resuming an older session. See [providers-claude.md][32].
-
-#### Feedback
-
-A Codex provider operation that uploads a thread and its Codex logs to OpenAI and returns a shareable feedback ID. Users invoke it with `/feedback`, optionally followed by a reason. See [ProviderService.ts][14] and [providers-codex.md][33].
-
-#### Model manifest
-
-The per-driver list of current model slugs that decides which models land in the model picker's legacy section. Bundled at `apps/server/src/provider/model-manifest.json` and refreshed at runtime from the same file on `main`, so classification updates ship as commits instead of releases. See the [provider architecture][16] model manifest section.
-
-### Wayfinder maps
-
-#### Wayfinder map
-
-A directory of Markdown under a project's `.plan/`: one `map.md` describing an effort plus a `tickets/` directory of decision tickets. T3 Code normalises that on-disk graph for the read-only Map surface. See [wayfinder-maps.md][25].
-
-#### Ticket
-
-One decision in a wayfinder map. Its effective status is derived rather than stored as ticket state, with precedence ruled out (`out_of_scope`) over `resolved`, then `claimed`, then `open`. T3 Code treats prose under `Ruled out` as out of scope and prose under `Answer` or `Resolution` as resolved; a bare heading leaves an otherwise open ticket open. A claimant makes it claimed, and the legacy `Status: closed` field also resolves a field-line ticket. See [wayfinder-maps.md][25].
-
-#### Frontier
-
-A ticket that is neither resolved nor out of scope and whose every blocker is resolved or out of scope. The frontier is the map's answer to "what can I pick up now?" See [wayfinder-maps.md][25].
-
-#### Fog
-
-A named area of a wayfinder effort that is not yet specified. A fog entry may name the ticket that will clear it. See [wayfinder-maps.md][25].
-
-#### Undermined
-
-A ticket that is the target of an `undermines` edge from a ticket that is not resolved. See [wayfinder-maps.md][25].
-
-### Checkpointing
-
-Checkpointing captures workspace state over time so the app can diff turns and restore earlier points. The main pieces are [CheckpointStore.ts][19], [CheckpointDiffQuery.ts][20], and [CheckpointReactor.ts][6].
-
-#### Checkpoint
-
-A saved snapshot of a thread workspace at a particular turn. In practice it is a hidden Git ref in [CheckpointStore.ts][19] plus a projected summary from [ProjectionCheckpoints.ts][21]. Capture and lifecycle work happen in [CheckpointReactor.ts][6].
-
-#### Checkpoint ref
-
-The durable identifier for a filesystem checkpoint, stored as a Git ref. It is typed in [the contracts][1], constructed in [Utils.ts][22], and used by [CheckpointStore.ts][19].
-
-#### Checkpoint baseline
-
-The starting checkpoint for diffing a thread timeline. This flow is surfaced through [RuntimeReceiptBus.ts][13], coordinated in [CheckpointReactor.ts][6], and supported by [Utils.ts][22].
-
-#### Checkpoint diff
-
-The patch difference between two checkpoints. Query logic lives in [CheckpointDiffQuery.ts][20], diff parsing lives in [Diffs.ts][23], and finalization is coordinated by [CheckpointReactor.ts][6].
-
-#### Turn diff
-
-The file patch and changed-file summary for one turn. It is usually computed in [CheckpointDiffQuery.ts][20], represented in [the contracts][1], and recorded into thread state by [projector.ts][4].
-
-### Appearance
-
-#### Environment theme
-
-A theme an environment's machine publishes for clients to follow, one file per theme under `themes/` in that environment's state directory; the filename is the theme id. [environmentTheme.ts][34] watches the directory and streams the set over `subscribeServerConfig`; clients render each as a library card, generating a full palette when the file carries seed colors and using the palette directly when it is a standard exported theme file. A desktop that retints its apps when the system theme changes rewrites its file, so T3 Code follows along without a restart. See [environment-theme.md][35].
-
-#### Default theme
-
-The environment's theme, held in its `settings.json` as `defaultTheme` (with `defaultThemeSetAt`
-as the set-generation) and set with `t3 theme set <id>`. Web and desktop clients apply each set
-once — live when connected, on the next connect otherwise — so setting it switches them, while a
-theme a user picks in Settings afterwards sticks until the next set; mobile keeps its own
-appearance settings. Naming a published [environment theme](#environment-theme) is how a desktop
-ships T3 Code already matching it.
-
-## Practical Shortcuts
-
-- If you see `requested`, think "intent recorded".
-- If you see `completed`, think "result applied".
-- If you see `receipt`, think "async milestone signal, for tests".
-- If you see `checkpoint`, think "workspace snapshot for diff/restore".
-- If you see `quiesced`, think "all relevant follow-up work has gone idle".
-
-## Related Docs
-
-- [Architecture overview][24]
-- [Provider architecture][16]
-- [Permission modes][18]
-- [Workspace layout][2]
-- [Wayfinder maps][25]
-
-[1]: ../../packages/contracts/src/orchestration.ts
-[2]: ./workspace-layout.md
-[3]: ../../apps/server/src/vcs/GitVcsDriverCore.ts
-[4]: ../../apps/server/src/orchestration/projector.ts
-[5]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
-[6]: ../../apps/server/src/orchestration/Layers/CheckpointReactor.ts
-[7]: ../../apps/server/src/orchestration/Layers/OrchestrationEngine.ts
-[8]: ../../apps/server/src/orchestration/decider.ts
-[9]: ../../apps/server/src/orchestration/commandInvariants.ts
-[10]: ../../apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
-[11]: ../../apps/server/src/orchestration/Layers/ProjectionPipeline.ts
-[12]: ../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
-[13]: ../../apps/server/src/orchestration/Services/RuntimeReceiptBus.ts
-[14]: ../../apps/server/src/provider/Layers/ProviderService.ts
-[15]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
-[16]: ./providers.md
-[17]: ../../apps/server/src/provider/Layers/CodexAdapter.ts
-[18]: ../user/permission-modes.md
-[19]: ../../apps/server/src/checkpointing/CheckpointStore.ts
-[20]: ../../apps/server/src/checkpointing/CheckpointDiffQuery.ts
-[21]: ../../apps/server/src/persistence/Services/ProjectionCheckpoints.ts
-[22]: ../../apps/server/src/checkpointing/Utils.ts
-[23]: ../../apps/server/src/checkpointing/Diffs.ts
-[24]: ./overview.md
-[25]: ./wayfinder-maps.md
-[26]: ../../apps/server/src/orchestration/Normalizer.ts
-[27]: ../user/thread-sidebar.md
-[28]: ../../packages/client-runtime/src/state/native-agents/nativeAgents.ts
-[29]: ../../packages/contracts/src/assets.ts
-[30]: ../../packages/contracts/src/threadTasks.ts
-[31]: ../../packages/client-runtime/src/state/threadSort.ts
-[32]: ../user/providers-claude.md
-[33]: ../user/providers-codex.md
-[34]: ../../apps/server/src/environmentTheme.ts
-[35]: ../user/environment-theme.md
+A ticket that is the target of an `undermines` edge from a ticket that is not resolved. See [wayfinder-maps.md](./wayfinder-maps.md).
