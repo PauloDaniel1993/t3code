@@ -22,7 +22,7 @@ import { DatabaseLogicalCompaction } from "../persistence/Services/DatabaseLogic
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { authLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
-export class DatabaseMaintenanceActiveWorkError extends Schema.TaggedErrorClass<DatabaseMaintenanceActiveWorkError>()(
+export class DatabaseMaintenanceActiveWorkError extends Schema.TaggedError<DatabaseMaintenanceActiveWorkError>()(
   "DatabaseMaintenanceActiveWorkError",
   {
     blockers: Schema.Array(Schema.String),
@@ -33,7 +33,7 @@ export class DatabaseMaintenanceActiveWorkError extends Schema.TaggedErrorClass<
   }
 }
 
-export class DatabaseMaintenanceScheduleError extends Schema.TaggedErrorClass<DatabaseMaintenanceScheduleError>()(
+export class DatabaseMaintenanceScheduleError extends Schema.TaggedError<DatabaseMaintenanceScheduleError>()(
   "DatabaseMaintenanceScheduleError",
   {
     cause: Schema.Defect(),

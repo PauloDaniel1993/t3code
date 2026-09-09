@@ -1,14 +1,18 @@
 import {
   ApprovalRequestId,
+  isImportedAgentSessionMessageId,
+  UserInputAttachmentAnswerPayload,
   type ChatAttachment,
   type IsoDateTime,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
 } from "@t3tools/contracts";
+import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -112,6 +116,19 @@ interface AttachmentSideEffects {
   readonly prunedThreadRelativePaths: Map<ThreadId, Set<string>>;
 }
 
+function addPrunableAttachmentPaths(
+  sideEffects: AttachmentSideEffects,
+  threadId: ThreadId,
+  relativePaths: ReadonlySet<string>,
+): void {
+  const existing = sideEffects.prunedThreadRelativePaths.get(threadId);
+  if (existing) {
+    for (const relativePath of relativePaths) existing.add(relativePath);
+    return;
+  }
+  sideEffects.prunedThreadRelativePaths.set(threadId, new Set(relativePaths));
+}
+
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
   (input: { readonly attachments: ReadonlyArray<ChatAttachment> }) =>
     Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
@@ -201,33 +218,6 @@ function derivePendingUserInputCountFromActivities(
   return openRequestIds.size;
 }
 
-function deriveHasActionableProposedPlan(input: {
-  readonly latestTurnId: string | null;
-  readonly proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>;
-}): boolean {
-  const sorted = [...input.proposedPlans].toSorted(
-    (left, right) =>
-      left.updatedAt.localeCompare(right.updatedAt) || left.planId.localeCompare(right.planId),
-  );
-
-  let latestForTurn: ProjectionThreadProposedPlan | null = null;
-  if (input.latestTurnId !== null) {
-    for (let index = sorted.length - 1; index >= 0; index -= 1) {
-      const plan = sorted[index];
-      if (plan?.turnId === input.latestTurnId) {
-        latestForTurn = plan;
-        break;
-      }
-    }
-  }
-  if (latestForTurn !== null) {
-    return latestForTurn.implementedAt === null;
-  }
-
-  const latestPlan = sorted.at(-1) ?? null;
-  return latestPlan !== null && latestPlan.implementedAt === null;
-}
-
 function retainProjectionMessagesAfterRevert(
   messages: ReadonlyArray<ProjectionThreadMessage>,
   turns: ReadonlyArray<ProjectionTurn>,
@@ -254,7 +244,7 @@ function retainProjectionMessagesAfterRevert(
   }
 
   for (const message of messages) {
-    if (message.role === "system") {
+    if (message.role === "system" || isImportedAgentSessionMessageId(message.messageId)) {
       retainedMessageIds.add(message.messageId);
       continue;
     }
@@ -264,7 +254,10 @@ function retainProjectionMessagesAfterRevert(
   }
 
   const retainedUserCount = messages.filter(
-    (message) => message.role === "user" && retainedMessageIds.has(message.messageId),
+    (message) =>
+      message.role === "user" &&
+      !isImportedAgentSessionMessageId(message.messageId) &&
+      retainedMessageIds.has(message.messageId),
   ).length;
   const missingUserCount = Math.max(0, turnCount - retainedUserCount);
   if (missingUserCount > 0) {
@@ -277,7 +270,7 @@ function retainProjectionMessagesAfterRevert(
       )
       .toSorted(
         (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) ||
+          compareDateTimeStrings(left.createdAt, right.createdAt) ||
           left.messageId.localeCompare(right.messageId),
       )
       .slice(0, missingUserCount);
@@ -287,7 +280,10 @@ function retainProjectionMessagesAfterRevert(
   }
 
   const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.messageId),
+    (message) =>
+      message.role === "assistant" &&
+      !isImportedAgentSessionMessageId(message.messageId) &&
+      retainedMessageIds.has(message.messageId),
   ).length;
   const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
   if (missingAssistantCount > 0) {
@@ -300,7 +296,7 @@ function retainProjectionMessagesAfterRevert(
       )
       .toSorted(
         (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) ||
+          compareDateTimeStrings(left.createdAt, right.createdAt) ||
           left.messageId.localeCompare(right.messageId),
       )
       .slice(0, missingAssistantCount);
@@ -352,6 +348,8 @@ function retainProjectionProposedPlansAfterRevert(
   );
 }
 
+const decodeQuestionAttachmentAnswer = Schema.decodeUnknownOption(UserInputAttachmentAnswerPayload);
+
 function collectThreadAttachmentRelativePaths(
   threadId: ThreadId,
   messages: ReadonlyArray<ProjectionThreadMessage>,
@@ -371,6 +369,28 @@ function collectThreadAttachmentRelativePaths(
       if (relativePath) {
         relativePaths.add(relativePath);
       }
+    }
+  }
+  return relativePaths;
+}
+
+function collectThreadActivityAttachmentRelativePaths(
+  threadId: ThreadId,
+  activities: ReadonlyArray<ProjectionThreadActivity>,
+): Set<string> {
+  const threadSegment = toCanonicalThreadAttachmentSegment(threadId);
+  if (!threadSegment) {
+    return new Set();
+  }
+  const relativePaths = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "user-input.answer-submitted") continue;
+    const payload = decodeQuestionAttachmentAnswer(activity.payload);
+    if (Option.isNone(payload)) continue;
+    for (const attachment of Object.values(payload.value.attachmentsByQuestionId).flat()) {
+      if (parseThreadSegmentFromAttachmentId(attachment.id) !== threadSegment) continue;
+      const relativePath = attachmentRelativePath(attachment);
+      if (relativePath) relativePaths.add(relativePath);
     }
   }
   return relativePaths;
@@ -522,19 +542,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         return;
       }
 
-      const [latestUserMessageAt, proposedPlans, activities, pendingApprovalCount] =
+      const [latestUserMessageAt, hasActionableProposedPlan, activities, pendingApprovalCount] =
         yield* Effect.all([
           projectionThreadMessageRepository.getLatestUserMessageAt({ threadId }),
-          projectionThreadProposedPlanRepository.listByThreadId({ threadId }),
+          projectionThreadProposedPlanRepository.hasActionableByThreadId({
+            threadId,
+            latestTurnId: existingRow.value.latestTurnId,
+          }),
           projectionThreadActivityRepository.listUserInputLifecycleByThreadId({ threadId }),
           projectionPendingApprovalRepository.countPendingByThreadId({ threadId }),
         ]);
 
       const pendingUserInputCount = derivePendingUserInputCountFromActivities(activities);
-      const hasActionableProposedPlan = deriveHasActionableProposedPlan({
-        latestTurnId: existingRow.value.latestTurnId,
-        proposedPlans,
-      });
 
       yield* projectionThreadRepository.upsert({
         ...existingRow.value,
@@ -617,6 +636,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             linkedPullRequest: null,
+            branchPullRequest: null,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -628,6 +648,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             snoozedAt: null,
             pinnedAt: null,
             pinOrderKey: null,
+            activeOrderKey: null,
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
@@ -764,6 +785,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             settledOverride: "settled",
             settledAt: event.payload.settledAt,
             unsettledAt: null,
+            activeOrderKey: null,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -883,6 +905,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.activeOrderKey !== undefined
+              ? { activeOrderKey: event.payload.activeOrderKey }
+              : {}),
             ...(event.payload.titleRegeneration !== undefined
               ? {
                   titleRegenerationRequestId: event.payload.titleRegeneration?.requestId ?? null,
@@ -898,6 +923,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             ...(event.payload.linkedPullRequest !== undefined
               ? { linkedPullRequest: event.payload.linkedPullRequest }
+              : {}),
+            ...(event.payload.branchPullRequest !== undefined
+              ? { branchPullRequest: event.payload.branchPullRequest }
               : {}),
             updatedAt: event.payload.updatedAt,
           });
@@ -977,6 +1005,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.occurredAt,
             latestUserMessageAt:
               event.payload.role === "user" &&
+              !isImportedAgentSessionMessageId(event.payload.messageId) &&
               (previousLatest === null || event.payload.createdAt > previousLatest)
                 ? event.payload.createdAt
                 : previousLatest,
@@ -1181,8 +1210,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               )) {
                 prunableRelativePaths.delete(referencedRelativePath);
               }
+              const currentActivities = yield* projectionThreadActivityRepository.listByThreadId({
+                threadId: event.payload.threadId,
+              });
+              for (const referencedRelativePath of collectThreadActivityAttachmentRelativePaths(
+                event.payload.threadId,
+                currentActivities,
+              )) {
+                prunableRelativePaths.delete(referencedRelativePath);
+              }
               if (prunableRelativePaths.size > 0) {
-                attachmentSideEffects.prunedThreadRelativePaths.set(
+                addPrunableAttachmentPaths(
+                  attachmentSideEffects,
                   event.payload.threadId,
                   prunableRelativePaths,
                 );
@@ -1223,6 +1262,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           )) {
             prunableRelativePaths.delete(referencedRelativePath);
           }
+          const currentActivities = yield* projectionThreadActivityRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          for (const referencedRelativePath of collectThreadActivityAttachmentRelativePaths(
+            event.payload.threadId,
+            currentActivities,
+          )) {
+            prunableRelativePaths.delete(referencedRelativePath);
+          }
 
           yield* projectionThreadMessageRepository.deleteByThreadId({
             threadId: event.payload.threadId,
@@ -1231,7 +1279,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             concurrency: 1,
           }).pipe(Effect.asVoid);
           if (prunableRelativePaths.size > 0) {
-            attachmentSideEffects.prunedThreadRelativePaths.set(
+            addPrunableAttachmentPaths(
+              attachmentSideEffects,
               event.payload.threadId,
               prunableRelativePaths,
             );
@@ -1303,7 +1352,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const applyThreadActivitiesProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadActivitiesProjection",
-    )(function* (event, _attachmentSideEffects) {
+    )(function* (event, attachmentSideEffects) {
       switch (event.type) {
         case "thread.created":
           yield* projectionThreadActivityRepository.deleteByThreadId({
@@ -1359,12 +1408,39 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (keptRows.length === existingRows.length) {
             return;
           }
+          const keptActivityIds = new Set(keptRows.map((activity) => activity.activityId));
+          const prunableRelativePaths = collectThreadActivityAttachmentRelativePaths(
+            event.payload.threadId,
+            existingRows.filter((activity) => !keptActivityIds.has(activity.activityId)),
+          );
+          const currentMessages = yield* projectionThreadMessageRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          for (const referencedRelativePath of collectThreadAttachmentRelativePaths(
+            event.payload.threadId,
+            currentMessages,
+          )) {
+            prunableRelativePaths.delete(referencedRelativePath);
+          }
+          for (const referencedRelativePath of collectThreadActivityAttachmentRelativePaths(
+            event.payload.threadId,
+            keptRows,
+          )) {
+            prunableRelativePaths.delete(referencedRelativePath);
+          }
           yield* projectionThreadActivityRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
           yield* Effect.forEach(keptRows, projectionThreadActivityRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          if (prunableRelativePaths.size > 0) {
+            addPrunableAttachmentPaths(
+              attachmentSideEffects,
+              event.payload.threadId,
+              prunableRelativePaths,
+            );
+          }
           return;
         }
 
@@ -1730,7 +1806,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               assistantMessageId: event.payload.assistantMessageId,
-              state: turnStillRunning ? existingTurn.value.state : nextState,
+              state:
+                turnStillRunning || existingTurn.value.state === "interrupted"
+                  ? existingTurn.value.state
+                  : nextState,
               checkpointTurnCount: event.payload.checkpointTurnCount,
               checkpointRef: event.payload.checkpointRef,
               checkpointStatus: event.payload.status,

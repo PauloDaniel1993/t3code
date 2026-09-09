@@ -88,7 +88,11 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
             SELECT stream_id FROM orchestration_events`;
           const [auth] = yield* sql<{ count: number }>`
             SELECT COUNT(*) AS count FROM auth_sessions`;
-          return { threads, events, authCount: auth?.count ?? 0 };
+          const forkMigrations = yield* sql<{ migration_id: number; name: string }>`
+            SELECT migration_id, name
+            FROM fork_sql_migrations
+            ORDER BY migration_id`;
+          return { threads, events, authCount: auth?.count ?? 0, forkMigrations };
         }),
       );
       assert.deepStrictEqual(
@@ -100,6 +104,10 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
         ["stopped-thread"],
       );
       assert.equal(kept.authCount, 0);
+      assert.deepStrictEqual(
+        kept.forkMigrations.map(({ migration_id }) => Number(migration_id)),
+        [1, 2, 3, 4, 5, 6, 7, 8],
+      );
     }),
   );
 

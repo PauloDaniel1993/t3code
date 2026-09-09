@@ -79,8 +79,7 @@ const LONG_REASONING_SUMMARY =
     4,
   );
 const LONG_OUTPUT_FILE = `fixture-output/${"deeply-nested-segment/".repeat(12)}result-with-an-intentionally-long-file-name.md`;
-const EMPTY_TURN_DIFFS = new Map<MessageId, TurnDiffSummary>();
-const EMPTY_REVERT_COUNTS = new Map<MessageId, number>();
+const EMPTY_TURN_DIFF_SUMMARIES: ReadonlyArray<TurnDiffSummary> = [];
 const EMPTY_DOM_SNAPSHOT: FixtureDomSnapshot = {
   renderedTaskCards: 0,
   expandedTaskIds: [],
@@ -725,8 +724,8 @@ export function WorkflowActivityBrowserFixture() {
         runningTurnId: activeThread.turnId,
         isWorking: false,
         activeTurnStartedAt: latestTurn.startedAt,
-        turnDiffSummaryByAssistantMessageId: EMPTY_TURN_DIFFS,
-        revertTurnCountByUserMessageId: EMPTY_REVERT_COUNTS,
+        turnDiffSummaries: EMPTY_TURN_DIFF_SUMMARIES,
+        supportsConversationRollback: false,
       }),
     [activeThread.turnId, latestTurn, timelineEntries],
   );
@@ -1316,11 +1315,7 @@ export function WorkflowActivityBrowserFixture() {
                 <Metric label="Composer inset" value={`${FIXTURE_COMPOSER_INSET_PX}px`} />
                 <Metric label="Scroll affordance" value={isAtEnd ? "hidden" : "visible"} />
               </dl>
-              <p
-                className="mt-1.5 truncate text-[11px] text-muted-foreground"
-                aria-live="polite"
-                title={controlNote}
-              >
+              <p className="mt-1.5 truncate text-[11px] text-muted-foreground" aria-live="polite">
                 {controlNote}
               </p>
             </div>
@@ -1338,11 +1333,11 @@ export function WorkflowActivityBrowserFixture() {
                   timelineEntries={timelineEntries}
                   latestTurn={latestTurn}
                   runningTurnId={activeThread.turnId}
-                  turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFFS}
+                  turnDiffSummaries={EMPTY_TURN_DIFF_SUMMARIES}
                   routeThreadKey={`${FIXTURE_ENVIRONMENT_ID}:${activeThread.id}`}
                   onOpenTurnDiff={() => undefined}
-                  revertTurnCountByUserMessageId={EMPTY_REVERT_COUNTS}
-                  onRevertUserMessage={() => undefined}
+                  supportsConversationRollback={false}
+                  onRevertToTurnCount={() => undefined}
                   isRevertingCheckpoint={false}
                   onImageExpand={() => undefined}
                   activeThreadEnvironmentId={FIXTURE_ENVIRONMENT_ID}
@@ -1372,7 +1367,6 @@ export function WorkflowActivityBrowserFixture() {
                     <button
                       type="button"
                       aria-label="Scroll to end"
-                      title="Scroll to end"
                       data-fixture-scroll-to-end
                       onClick={() => driveScrollMode("following-end")}
                       className="pointer-events-auto cursor-pointer rounded-full border border-border/60 bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm transition-colors hover:border-border hover:text-foreground"

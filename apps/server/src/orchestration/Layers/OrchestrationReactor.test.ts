@@ -12,6 +12,7 @@ import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeInge
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { ThreadTaskReactor } from "../Services/ThreadTaskReactor.ts";
 import * as ThreadSettlementReactor from "../ThreadSettlementReactor.ts";
+import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
@@ -26,8 +27,9 @@ describe("OrchestrationReactor", () => {
     runtime = null;
   });
 
-  it("starts every orchestration reactor", async () => {
+  it("starts every orchestration reactor and drains pull-request work", async () => {
     const started: string[] = [];
+    let pullRequestWorkPending = true;
 
     runtime = ManagedRuntime.make(
       Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
@@ -69,6 +71,17 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
+          Layer.succeed(ThreadPullRequestReactor.ThreadPullRequestReactor, {
+            start: () => {
+              started.push("thread-pull-request-reactor");
+              return Effect.void;
+            },
+            drain: Effect.sync(() => {
+              pullRequestWorkPending = false;
+            }),
+          }),
+        ),
+        Layer.provideMerge(
           Layer.succeed(ThreadSettlementReactor.ThreadSettlementReactor, {
             start: () => {
               started.push("thread-settlement-reactor");
@@ -102,6 +115,7 @@ describe("OrchestrationReactor", () => {
     const scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
     await Effect.runPromise(reactor.drain);
+    expect(pullRequestWorkPending).toBe(false);
 
     expect(started).toEqual([
       "provider-runtime-ingestion",
@@ -109,6 +123,7 @@ describe("OrchestrationReactor", () => {
       "checkpoint-reactor",
       "thread-deletion-reactor",
       "thread-task-reactor",
+      "thread-pull-request-reactor",
       "thread-settlement-reactor",
       "agent-awareness-relay",
     ]);

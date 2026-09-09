@@ -28,7 +28,7 @@ export const WayfinderMapsFailure = Schema.Literals([
 ]);
 export type WayfinderMapsFailure = typeof WayfinderMapsFailure.Type;
 
-export class WayfinderMapsError extends Schema.TaggedErrorClass<WayfinderMapsError>()(
+export class WayfinderMapsError extends Schema.TaggedError<WayfinderMapsError>()(
   "WayfinderMapsError",
   {
     cwd: Schema.optional(TrimmedNonEmptyString),

@@ -46,6 +46,14 @@ export class BrowserFileExternalOpenError extends Data.TaggedError("BrowserFileE
   readonly message: string;
 }> {}
 
+export class BrowserSettingsReadError extends Data.TaggedError("BrowserSettingsReadError")<{
+  readonly cause: unknown;
+}> {
+  override get message(): string {
+    return "Saved browser settings could not be loaded.";
+  }
+}
+
 export type OpenPreviewMutation<E = unknown> = (input: {
   readonly environmentId: EnvironmentId;
   readonly input: PreviewOpenInput;
@@ -92,8 +100,13 @@ export async function openUrlInPreview<E>(input: {
   readonly threadRef: ScopedThreadRef;
   readonly url: string;
   readonly openPreview: OpenPreviewMutation<E>;
-}): Promise<AtomCommandResult<void, E>> {
-  const defaults = await resolveBrowserDefaults();
+}): Promise<AtomCommandResult<void, E | BrowserSettingsReadError>> {
+  const defaults = await resolveBrowserDefaults().catch(
+    (cause: unknown) => new BrowserSettingsReadError({ cause }),
+  );
+  if (defaults instanceof BrowserSettingsReadError) {
+    return AsyncResult.failure(Cause.fail(defaults));
+  }
   const result = await input.openPreview({
     environmentId: input.threadRef.environmentId,
     input: {
@@ -127,7 +140,11 @@ export async function openFileInPreview<AssetError, PreviewError>(input: {
 }): Promise<
   AtomCommandResult<
     void,
-    AssetError | PreviewError | BrowserFileAssetUrlError | BrowserPreviewUnavailableError
+    | AssetError
+    | PreviewError
+    | BrowserFileAssetUrlError
+    | BrowserPreviewUnavailableError
+    | BrowserSettingsReadError
   >
 > {
   if (!isPreviewSupportedInRuntime()) {

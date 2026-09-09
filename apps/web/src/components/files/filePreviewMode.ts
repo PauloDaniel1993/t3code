@@ -1,4 +1,19 @@
+import type { AssetResource, ChatFileAttachment, ThreadId } from "@t3tools/contracts";
 import { isAbsolutePath } from "~/terminal-links";
+
+export function buildAttachmentBrowserPreviewResource(
+  attachment: Pick<ChatFileAttachment, "id" | "name" | "mimeType">,
+  threadId: ThreadId,
+): Extract<AssetResource, { readonly _tag: "attachment" }> {
+  return {
+    _tag: "attachment",
+    attachmentId: attachment.id,
+    threadId,
+    fileName: attachment.name,
+    mimeType: attachment.mimeType,
+    disposition: "inline",
+  };
+}
 
 export const isMarkdownPreviewFile = (path: string): boolean => /\.(?:md|mdx)$/i.test(path);
 

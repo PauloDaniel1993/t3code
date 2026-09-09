@@ -29,6 +29,7 @@ import {
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import {
+  makeCachedProviderMaintenanceResolution,
   makeManualOnlyProviderMaintenanceCapabilities,
   makePackageManagedProviderMaintenanceResolver,
   makeProviderMaintenanceCapabilities,
@@ -83,78 +84,56 @@ function isKimiWingetCommandPath(path: string): boolean {
 const PACKAGE_MANAGED_KIMI = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
   npmPackageName: "@moonshot-ai/kimi-code",
-  homebrewFormula: null,
   // On macOS and Linux `kimi upgrade` self-updates without prompting, so it
   // supervises exactly like `claude update` and `opencode upgrade`.
   nativeUpdate: {
-    executable: "kimi",
     args: ["upgrade"],
-    lockKey: "kimi-native",
     isCommandPath: isKimiNativeCommandPath,
   },
 });
 
-function isKnownPackageManagedKimiPath(path: string): boolean {
-  const normalized = normalizeCommandPath(path);
-  return [
-    "/node_modules/",
-    "/.bun/bin/",
-    "/.vite-plus/bin/",
-    "/pnpm/",
-    "/appdata/roaming/npm/",
-  ].some((marker) => normalized.includes(marker));
-}
-
 export const KIMI_MAINTENANCE_RESOLVER: ProviderMaintenanceCapabilitiesResolver = {
-  resolve: (options) => {
-    const resolvedPaths = [options?.resolvedCommandPath, options?.realCommandPath].filter(
-      (path): path is string => typeof path === "string" && path.length > 0,
-    );
+  resolve: (context) => {
+    const resolvedPaths = context ? [context.resolvedCommandPath, context.realCommandPath] : [];
     const isNativeInstall = resolvedPaths.some((path) => isKimiNativeCommandPath(path));
 
-    if (isNativeInstall && options?.platform === "win32") {
-      return makeManualOnlyProviderMaintenanceCapabilities({
-        provider: DRIVER_KIND,
-        packageName: "@moonshot-ai/kimi-code",
-        manualCommand: KIMI_WINDOWS_MANUAL_UPDATE_COMMAND,
-      });
+    if (isNativeInstall && context?.platform === "win32") {
+      return Effect.succeed(
+        makeManualOnlyProviderMaintenanceCapabilities({
+          provider: DRIVER_KIND,
+          packageName: "@moonshot-ai/kimi-code",
+          manualCommand: KIMI_WINDOWS_MANUAL_UPDATE_COMMAND,
+        }),
+      );
     }
 
     // Checked after the native branch: when a WinGet shim resolves into
     // `~/.kimi-code/bin`, the real executable is the native install and WinGet
     // does not own it.
     if (!isNativeInstall && resolvedPaths.some((path) => isKimiWingetCommandPath(path))) {
-      return makeProviderMaintenanceCapabilities({
-        provider: DRIVER_KIND,
-        packageName: "@moonshot-ai/kimi-code",
-        updateExecutable: "winget",
-        updateArgs: [
-          "upgrade",
-          "--id",
-          KIMI_WINGET_PACKAGE_ID,
-          "--silent",
-          "--accept-package-agreements",
-          "--accept-source-agreements",
-          "--disable-interactivity",
-        ],
-        updateLockKey: "winget",
-      });
+      return Effect.succeed(
+        makeProviderMaintenanceCapabilities({
+          provider: DRIVER_KIND,
+          packageName: "@moonshot-ai/kimi-code",
+          updateExecutable: "winget",
+          updateArgs: [
+            "upgrade",
+            "--id",
+            KIMI_WINGET_PACKAGE_ID,
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+          ],
+          updateLockKey: "winget",
+          platform: context!.platform,
+        }),
+      );
     }
 
-    // An unrecognized location gets no update action: `npm install -g` would
-    // write somewhere other than the executable actually in use. Package-manager,
-    // native-installer, and WinGet locations are all recognized.
-    if (
-      resolvedPaths.length > 0 &&
-      !resolvedPaths.some((path) => isKnownPackageManagedKimiPath(path)) &&
-      !isNativeInstall
-    ) {
-      return makeManualOnlyProviderMaintenanceCapabilities({
-        provider: DRIVER_KIND,
-        packageName: "@moonshot-ai/kimi-code",
-      });
-    }
-    return PACKAGE_MANAGED_KIMI.resolve(options);
+    // The shared resolver proves package-manager ownership and remains
+    // manual-only for every unrecognized location.
+    return PACKAGE_MANAGED_KIMI.resolve(context);
   },
 };
 
@@ -196,6 +175,8 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
@@ -213,12 +194,15 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
       });
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
-        KIMI_MAINTENANCE_RESOLVER,
-        {
+      const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
+        resolveProviderMaintenanceCapabilitiesEffect(KIMI_MAINTENANCE_RESOLVER, {
           binaryPath: effectiveConfig.binaryPath,
           env: processEnvironment,
-        },
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
       );
 
       const adapter = yield* makeKimiAdapter(effectiveConfig, {
@@ -238,7 +222,7 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
       );
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<KimiSettings>>({
-        maintenanceCapabilities,
+        resolveMaintenance,
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
@@ -251,16 +235,20 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
           }),
         checkProvider,
         enrichSnapshot: ({ settings, snapshot: currentSnapshot, getSnapshot, publishSnapshot }) =>
-          enrichKimiSnapshot({
-            snapshot: currentSnapshot,
-            modelState,
-            maintenanceCapabilities,
-            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
-            getSnapshot,
-            publishSnapshot,
-            stampIdentity,
-            httpClient,
-          }),
+          resolveMaintenance().pipe(
+            Effect.flatMap((maintenanceCapabilities) =>
+              enrichKimiSnapshot({
+                snapshot: currentSnapshot,
+                modelState,
+                maintenanceCapabilities,
+                enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+                getSnapshot,
+                publishSnapshot,
+                stampIdentity,
+                httpClient,
+              }),
+            ),
+          ),
       }).pipe(
         Effect.mapError(
           (cause) =>

@@ -230,7 +230,7 @@ export type ThreadTaskToolErrorReason = typeof ThreadTaskToolErrorReason.Type;
  * Structured failure so a delegating agent can adapt — wait for a slot, pick a
  * different model, drop the context — instead of blindly retrying.
  */
-export class ThreadTaskToolError extends Schema.TaggedErrorClass<ThreadTaskToolError>()(
+export class ThreadTaskToolError extends Schema.TaggedError<ThreadTaskToolError>()(
   "ThreadTaskToolError",
   {
     reason: ThreadTaskToolErrorReason,

@@ -1,5 +1,4 @@
 import {
-  DEFAULT_TERMINAL_FONT_SIZE,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
@@ -7,6 +6,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 type TerminalFont = { family?: string; size?: number };
+const DEFAULT_TERMINAL_FONT_SIZE = 12;
 
 const testState = vi.hoisted(() => ({
   frames: new Map<number, (timestamp: number) => void>(),
@@ -369,6 +369,8 @@ beforeEach(() => {
     },
     addEventListener: () => {},
     closest: () => drawerSurface,
+    contains: () => false,
+    isConnected: false,
     removeEventListener: () => {},
   };
   hooks.reset(testState.mount);

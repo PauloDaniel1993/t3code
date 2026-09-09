@@ -41,6 +41,9 @@ export interface ClientTracingConfig {
   readonly exportIntervalMs?: number;
 }
 
+// Toast lifecycle spans are created outside the configured exporter runtime.
+// Keep one stable tracer layer that delegates after configuration and remains
+// a no-op native tracer while telemetry is unavailable.
 export const ClientTracingLive = Layer.succeed(
   Tracer.Tracer,
   Tracer.make({

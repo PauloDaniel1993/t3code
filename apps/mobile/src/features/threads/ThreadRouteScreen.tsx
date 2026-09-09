@@ -10,15 +10,27 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import { Atom } from "effect/unstable/reactivity";
-import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  ThreadId,
+  type ProjectScript,
+} from "@t3tools/contracts";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { Platform, ScrollView, View } from "react-native";
+import {
+  projectScriptCwd,
+  projectScriptRuntimeEnv,
+  resolveProjectScripts,
+} from "@t3tools/shared/projectScripts";
+import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
+import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
+import { clearPendingThreadCreationOutcome } from "../../state/pending-thread-creation";
+import { recoverFailedThreadDraft } from "../../state/recover-failed-thread-draft";
 import { useEnvironmentQuery } from "../../state/query";
 import { useThreadTasksEnabled } from "../../state/preferences";
 import { useTaskAgentReadStateWhenEnabled } from "../../state/use-task-agent-read-state";
@@ -54,7 +66,7 @@ import {
   stagePendingTerminalLaunch,
 } from "../terminal/terminalLaunchContext";
 import { terminalDebugLog } from "../terminal/terminalDebugLog";
-import { ThreadDetailScreen } from "./ThreadDetailScreen";
+import { ThreadDetailScreen, type ThreadDetailScreenProps } from "./ThreadDetailScreen";
 import {
   ThreadGitControls,
   useThreadGitCenterHeaderItems,
@@ -69,6 +81,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
   useAdaptiveWorkspaceLayout,
   useAdaptiveWorkspacePaneRole,
@@ -279,6 +292,8 @@ function ThreadRouteContentCore(
     readonly taskAgentTaskSurface?: TaskAgentTaskSurfacePresentation;
   },
 ) {
+  const { materialYouStyleLayoutActive, themeVariables } = useAppearancePreferences();
+  const headerColor = themeVariables["--color-header"];
   const {
     fileInspector,
     layout,
@@ -289,8 +304,12 @@ function ThreadRouteContentCore(
   } = useAdaptiveWorkspaceLayout();
   const { connectionState } = useRemoteConnectionStatus();
   const { onReconnectEnvironment } = useRemoteConnections();
-  const { selectedThread, selectedThreadProject, selectedEnvironmentConnection } =
-    useThreadSelection();
+  const {
+    selectedThread,
+    selectedThreadCreation,
+    selectedThreadProject,
+    selectedEnvironmentConnection,
+  } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
   // "Load earlier turns" header state for windowed (paginated) thread loads.
@@ -725,7 +744,12 @@ function ThreadRouteContentCore(
     gitOperationLabel: gitState.gitOperationLabel,
     canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
     canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
-    projectScripts: selectedThreadProject?.scripts ?? [],
+    projectScripts: selectedThreadProject
+      ? resolveProjectScripts(
+          routeEnvironmentRuntime?.serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
+          selectedThreadProject,
+        )
+      : [],
     terminalSessions: terminalMenuSessions,
     showDirectFileControl: layout.usesSplitView,
     onOpenTerminal: handleOpenTerminal,
@@ -826,6 +850,52 @@ function ThreadRouteContentCore(
     selectedThreadProject?.workspaceRoot,
   ]);
 
+  const handleEditFailedCreation = useCallback(async () => {
+    const creation = selectedThreadCreation?.message;
+    if (!creation?.creation || routeThreadIdentity === null) {
+      return;
+    }
+    // The drain restored the prompt and attachments into the recovery draft
+    // the rejected creation owns. Open that draft by id: without it the sheet
+    // mints a fresh empty one and the restored content is unreachable.
+    try {
+      await recoverFailedThreadDraft(creation);
+    } catch (error) {
+      Alert.alert(
+        "Could not restore draft",
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
+    clearPendingThreadCreationOutcome(routeThreadIdentity);
+    navigation.dispatch(
+      StackActions.replace("NewTaskSheet", {
+        screen: "NewTaskDraft",
+        params: {
+          draftId: restoredNewTaskDraftKey(creation.messageId),
+          environmentId: String(creation.environmentId),
+          projectId: String(creation.creation.projectId),
+          ...(selectedThreadProject ? { title: selectedThreadProject.title } : {}),
+        },
+      }),
+    );
+  }, [navigation, routeThreadIdentity, selectedThreadCreation, selectedThreadProject]);
+  const creationState = ((): ThreadDetailScreenProps["creationState"] => {
+    if (selectedThreadCreation === null) {
+      return null;
+    }
+    if (selectedThreadCreation.outcome?.kind === "failed") {
+      return {
+        kind: "failed",
+        reason: selectedThreadCreation.outcome.reason,
+        onEditTask: handleEditFailedCreation,
+      };
+    }
+    return {
+      kind: "preparing",
+      preparingWorktree: selectedThreadCreation.message.creation?.workspaceMode === "worktree",
+    };
+  })();
   // Deep links / cold starts land with Thread as the ONLY route, where the
   // native back button does not render. Provide an explicit Home escape for
   // that case; when history exists the native back button is used instead.
@@ -851,12 +921,18 @@ function ThreadRouteContentCore(
     return <OpeningThreadLoadingScreen />;
   }
 
-  const contentPresentation = projectThreadContentPresentation({
-    hasDetail: selectedThreadDetail !== null,
-    detailError: Option.getOrNull(selectedThreadDetailState.error),
-    detailDeleted: selectedThreadDetailState.status === "deleted",
-    connectionState: routeConnectionState,
-  });
+  // A queued creation renders as ready content: its prompt is the whole
+  // conversation until the server creates the thread. The subscription's
+  // not-found error for that window is expected, not a load failure.
+  const contentPresentation =
+    creationState !== null
+      ? { kind: "ready" as const }
+      : projectThreadContentPresentation({
+          hasDetail: selectedThreadDetail !== null,
+          detailError: Option.getOrNull(selectedThreadDetailState.error),
+          detailDeleted: selectedThreadDetailState.status === "deleted",
+          connectionState: routeConnectionState,
+        });
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const renderThreadRouteBody = (showActionControls: boolean) => (
     <>
@@ -864,16 +940,31 @@ function ThreadRouteContentCore(
 
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
 
-      <View className="flex-1 bg-screen">
+      <View
+        className={materialYouStyleLayoutActive ? "flex-1 bg-thread-canvas" : "flex-1 bg-screen"}
+        style={
+          materialYouStyleLayoutActive
+            ? {
+                borderTopLeftRadius: 28,
+                borderTopRightRadius: 28,
+                marginRight: layout.usesSplitView ? 8 : 0,
+                overflow: "hidden",
+              }
+            : undefined
+        }
+      >
         <ThreadDetailScreen
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}
           screenTone={connectionTone(routeConnectionState)}
           connectionError={routeConnectionError}
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
+          feedbackSubmissions={composer.feedbackSubmissions}
+          onDismissFeedback={composer.dismissFeedback}
           selectedThreadFeed={composer.selectedThreadFeed}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           isCompacting={composer.isCompacting}
+          creationState={creationState}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
           activePendingUserInput={requests.activePendingUserInput}
@@ -889,6 +980,8 @@ function ThreadRouteContentCore(
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
           selectedThreadQueueCount={composer.selectedThreadQueueCount}
+          queuedMessages={composer.selectedThreadQueuedMessages}
+          dispatchingMessageId={composer.dispatchingQueuedMessageId}
           layoutVariant={layout.variant}
           usesAutomaticContentInsets={usesNativeHeaderGlass}
           onOpenConnectionEditor={handleOpenConnectionEditor}
@@ -908,6 +1001,7 @@ function ThreadRouteContentCore(
           onSelectUserInputOption={requests.onSelectUserInputOption}
           onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}
           onSubmitUserInput={requests.onSubmitUserInput}
+          onDismissUserInput={requests.onDismissUserInput}
           {...(props.taskAgentTaskSurface === undefined
             ? {}
             : { taskAgentTaskSurface: props.taskAgentTaskSurface })}
@@ -920,6 +1014,7 @@ function ThreadRouteContentCore(
     <>
       {activeInspectorRenderer ? <InspectorPaneRoleActivation /> : null}
       <NativeStackScreenOptions
+        optionsVersion={threadGitControlProps.projectScripts}
         options={{
           // Android draws its own in-flow header (AndroidScreenHeader below);
           // the native stack header stays iOS-only.
@@ -952,6 +1047,10 @@ function ThreadRouteContentCore(
               ? () => (layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems)
               : undefined,
           unstable_headerSubtitle: usesNativeHeaderGlass ? headerSubtitle : undefined,
+          contentStyle:
+            Platform.OS === "android" && materialYouStyleLayoutActive
+              ? { backgroundColor: headerColor }
+              : undefined,
         }}
       />
 
@@ -961,6 +1060,7 @@ function ThreadRouteContentCore(
           subtitle={headerSubtitle}
           onBack={layout.usesSplitView ? undefined : () => navigation.goBack()}
           actions={androidHeaderActions}
+          hideBottomBorder={materialYouStyleLayoutActive}
         />
       ) : null}
 

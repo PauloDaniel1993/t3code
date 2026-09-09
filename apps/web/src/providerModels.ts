@@ -30,19 +30,12 @@ export function getProviderModels(
   return getProviderSnapshot(providers, provider)?.models ?? [];
 }
 
-export function getProviderSnapshot(
+function getProviderSnapshot(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind,
 ): ServerProvider | undefined {
   const defaultInstanceId = defaultInstanceIdForDriver(provider);
   return providers.find((candidate) => candidate.instanceId === defaultInstanceId);
-}
-
-export function getProviderInteractionModeToggle(
-  providers: ReadonlyArray<ServerProvider>,
-  provider: ProviderDriverKind,
-): boolean {
-  return getProviderSnapshot(providers, provider)?.showInteractionModeToggle ?? true;
 }
 
 // Resolve an instance selection to the correlated live driver. If the
@@ -68,7 +61,7 @@ export function getProviderModelCapabilities(
   const slug = resolveSelectableModel(provider, model, models);
   const selectedModel = models.find((candidate) => candidate.slug === slug);
   const caps = selectedModel?.capabilities ?? EMPTY_CAPABILITIES;
-  if (planModeEnabled) {
+  if (planModeEnabled || provider !== "opencode") {
     return caps;
   }
   return withoutPlanAgentOption(caps);

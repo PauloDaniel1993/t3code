@@ -37,10 +37,14 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { Command, Flag } from "effect/unstable/cli";
 
+import {
+  reconcileBaseMigrationLedger,
+  runForkMigrations,
+} from "../src/persistence/ForkMigrations.ts";
 import { migrationManifest, runMigrations } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-export class MigrateDevDbNotInWorktreeError extends Schema.TaggedErrorClass<MigrateDevDbNotInWorktreeError>()(
+export class MigrateDevDbNotInWorktreeError extends Schema.TaggedError<MigrateDevDbNotInWorktreeError>()(
   "MigrateDevDbNotInWorktreeError",
   {},
 ) {
@@ -49,7 +53,7 @@ export class MigrateDevDbNotInWorktreeError extends Schema.TaggedErrorClass<Migr
   }
 }
 
-export class MigrateDevDbSharedHomeError extends Schema.TaggedErrorClass<MigrateDevDbSharedHomeError>()(
+export class MigrateDevDbSharedHomeError extends Schema.TaggedError<MigrateDevDbSharedHomeError>()(
   "MigrateDevDbSharedHomeError",
   {},
 ) {
@@ -58,7 +62,7 @@ export class MigrateDevDbSharedHomeError extends Schema.TaggedErrorClass<Migrate
   }
 }
 
-export class MigrateDevDbSourceMissingError extends Schema.TaggedErrorClass<MigrateDevDbSourceMissingError>()(
+export class MigrateDevDbSourceMissingError extends Schema.TaggedError<MigrateDevDbSourceMissingError>()(
   "MigrateDevDbSourceMissingError",
   {
     sourcePath: Schema.String,
@@ -69,7 +73,7 @@ export class MigrateDevDbSourceMissingError extends Schema.TaggedErrorClass<Migr
   }
 }
 
-export class MigrateDevDbSourceIsDestinationError extends Schema.TaggedErrorClass<MigrateDevDbSourceIsDestinationError>()(
+export class MigrateDevDbSourceIsDestinationError extends Schema.TaggedError<MigrateDevDbSourceIsDestinationError>()(
   "MigrateDevDbSourceIsDestinationError",
   {
     sourcePath: Schema.String,
@@ -80,7 +84,7 @@ export class MigrateDevDbSourceIsDestinationError extends Schema.TaggedErrorClas
   }
 }
 
-export class MigrateDevDbServerRunningError extends Schema.TaggedErrorClass<MigrateDevDbServerRunningError>()(
+export class MigrateDevDbServerRunningError extends Schema.TaggedError<MigrateDevDbServerRunningError>()(
   "MigrateDevDbServerRunningError",
   {
     databasePath: Schema.String,
@@ -92,7 +96,7 @@ export class MigrateDevDbServerRunningError extends Schema.TaggedErrorClass<Migr
   }
 }
 
-export class MigrateDevDbDestinationBusyError extends Schema.TaggedErrorClass<MigrateDevDbDestinationBusyError>()(
+export class MigrateDevDbDestinationBusyError extends Schema.TaggedError<MigrateDevDbDestinationBusyError>()(
   "MigrateDevDbDestinationBusyError",
   {
     databasePath: Schema.String,
@@ -114,7 +118,7 @@ export class MigrateDevDbDestinationBusyError extends Schema.TaggedErrorClass<Mi
  * recorded under a different name, so this checkout's migration was
  * silently skipped and its schema changes never applied.
  */
-export class MigrateDevDbSlotCollisionError extends Schema.TaggedErrorClass<MigrateDevDbSlotCollisionError>()(
+export class MigrateDevDbSlotCollisionError extends Schema.TaggedError<MigrateDevDbSlotCollisionError>()(
   "MigrateDevDbSlotCollisionError",
   {
     slot: Schema.Number,
@@ -127,7 +131,7 @@ export class MigrateDevDbSlotCollisionError extends Schema.TaggedErrorClass<Migr
   }
 }
 
-export class MigrateDevDbPhaseError extends Schema.TaggedErrorClass<MigrateDevDbPhaseError>()(
+export class MigrateDevDbPhaseError extends Schema.TaggedError<MigrateDevDbPhaseError>()(
   "MigrateDevDbPhaseError",
   {
     phase: Schema.Literals(["snapshot", "prune", "compact", "migrate", "verify"]),
@@ -300,6 +304,7 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
         "projection_pending_approvals",
         "projection_thread_proposed_plans",
         "checkpoint_diff_blobs",
+        "attachment_cleanup_queue",
       ]) {
         yield* sql.unsafe(
           `DELETE FROM ${table} WHERE thread_id NOT IN (SELECT thread_id FROM kept_threads)`,
@@ -435,7 +440,13 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
       const sql = yield* SqlClient.SqlClient;
       // Mirror server boot (persistence/Layers/Sqlite.ts).
       yield* sql.unsafe("PRAGMA foreign_keys = ON").unprepared;
-      return yield* runMigrations();
+      yield* reconcileBaseMigrationLedger();
+      const base = yield* runMigrations();
+      const fork = yield* runForkMigrations();
+      return [
+        ...base.map(([id, name]) => `base:${id}_${name}`),
+        ...fork.map(([id, name]) => `fork:${id}_${name}`),
+      ];
     }).pipe(
       Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
       wrapPhase("migrate", snapshotPath),
@@ -494,7 +505,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     sizeBytes: Number(size),
     projects: pruned.projects,
     eventCount: pruned.eventCount,
-    executedMigrations: executedMigrations.map(([id, name]) => `${id}_${name}`),
+    executedMigrations,
   };
 });
 

@@ -32,7 +32,7 @@ interface HarnessOptions {
   readonly fallbackPreferences?: unknown;
 }
 
-async function makeHarness(options: HarnessOptions = {}) {
+function makeHarness(options: HarnessOptions = {}) {
   let stored: StoredPreferencesJson | null =
     options.initialPreferences === undefined
       ? null
@@ -55,6 +55,7 @@ async function makeHarness(options: HarnessOptions = {}) {
   });
   const database = MobileDatabase.of({
     loadCache: () => Effect.succeed(Option.none()),
+    listCache: () => Effect.succeed([]),
     saveCache: () => Effect.void,
     removeCache: () => Effect.void,
     clearCacheKind: () => Effect.void,
@@ -90,81 +91,87 @@ async function makeHarness(options: HarnessOptions = {}) {
         secureValues.delete(key);
       }),
   });
-  const store = await Effect.runPromise(
-    make().pipe(
-      Effect.provide(
-        Layer.merge(
-          Layer.succeed(MobileDatabase, database),
-          Layer.succeed(MobileSecureStorage, secureStorage),
-        ),
+  return make().pipe(
+    Effect.provide(
+      Layer.merge(
+        Layer.succeed(MobileDatabase, database),
+        Layer.succeed(MobileSecureStorage, secureStorage),
       ),
     ),
+    Effect.map(
+      (store) =>
+        ({
+          store,
+          getSaveCount: () => saveCount,
+          getStoredPayload: () => stored?.payload ?? null,
+        }) as const,
+    ),
   );
-
-  return {
-    store,
-    getSaveCount: () => saveCount,
-    getStoredPayload: () => stored?.payload ?? null,
-  } as const;
 }
 
 describe("task-agent mobile preferences", () => {
-  it("round-trips task markers through the preferences store", async () => {
-    const harness = await makeHarness();
-    const taskAgentReadMarkers = {
-      parent: "2026-07-31T12:05:00.000Z",
-      task: "2026-07-31T12:05:00.000Z",
-    };
+  it.effect("round-trips task markers through the preferences store", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const taskAgentReadMarkers = {
+        parent: "2026-07-31T12:05:00.000Z",
+        task: "2026-07-31T12:05:00.000Z",
+      };
 
-    await Effect.runPromise(harness.store.savePatch({ taskAgentReadMarkers }));
+      yield* harness.store.savePatch({ taskAgentReadMarkers });
 
-    await expect(Effect.runPromise(harness.store.load)).resolves.toEqual({
-      taskAgentReadMarkers,
-    });
-  });
+      expect(yield* harness.store.load).toEqual({ taskAgentReadMarkers });
+    }),
+  );
 
-  it("loads empty preferences on a cold start with no storage", async () => {
-    const harness = await makeHarness();
+  it.effect("loads empty preferences on a cold start with no storage", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
 
-    await expect(Effect.runPromise(harness.store.load)).resolves.toEqual({});
-  });
+      expect(yield* harness.store.load).toEqual({});
+    }),
+  );
 
-  it("drops malformed and partial marker and beta values without throwing", async () => {
-    const harness = await makeHarness({
-      initialPreferences: {
-        threadListV2Enabled: true,
-        threadTasksEnabled: "yes",
-        taskAgentReadMarkers: {
-          parent: "2026-07-31T12:05:00.000Z",
-          invalidDate: "not-a-date",
-          invalidType: 42,
-          "": "2026-07-31T12:06:00.000Z",
+  it.effect("drops malformed and partial marker and beta values without throwing", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        initialPreferences: {
+          threadListV2Enabled: true,
+          threadTasksEnabled: "yes",
+          taskAgentReadMarkers: {
+            parent: "2026-07-31T12:05:00.000Z",
+            invalidDate: "not-a-date",
+            invalidType: 42,
+            "": "2026-07-31T12:06:00.000Z",
+          },
         },
-      },
-    });
+      });
 
-    await expect(Effect.runPromise(harness.store.load)).resolves.toEqual({
-      taskAgentReadMarkers: { parent: "2026-07-31T12:05:00.000Z" },
-    });
-  });
+      expect(yield* harness.store.load).toEqual({
+        taskAgentReadMarkers: { parent: "2026-07-31T12:05:00.000Z" },
+      });
+    }),
+  );
 
-  it("keeps the legacy-list and task flags persisted and independent", async () => {
-    const harness = await makeHarness({
-      initialPreferences: { legacyThreadListEnabled: true },
-    });
+  it.effect("keeps the legacy-list and task flags persisted and independent", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        initialPreferences: { legacyThreadListEnabled: true },
+      });
 
-    await Effect.runPromise(harness.store.savePatch({ threadTasksEnabled: true }));
-    expect(await Effect.runPromise(harness.store.load)).toMatchObject({
-      legacyThreadListEnabled: true,
-      threadTasksEnabled: true,
-    });
+      yield* harness.store.savePatch({ threadTasksEnabled: true });
+      expect(yield* harness.store.load).toMatchObject({
+        legacyThreadListEnabled: true,
+        threadTasksEnabled: true,
+      });
 
-    await Effect.runPromise(harness.store.savePatch({ legacyThreadListEnabled: false }));
-    expect(await Effect.runPromise(harness.store.load)).toMatchObject({
-      legacyThreadListEnabled: false,
-      threadTasksEnabled: true,
-    });
-  });
+      yield* harness.store.savePatch({ legacyThreadListEnabled: false });
+      expect(yield* harness.store.load).toMatchObject({
+        legacyThreadListEnabled: false,
+        threadTasksEnabled: true,
+      });
+    }),
+  );
 
   it("retains only the newest 1,000 valid markers", () => {
     const markers = Object.fromEntries(
@@ -181,33 +188,36 @@ describe("task-agent mobile preferences", () => {
     expect(normalized[`thread-${MAX_TASK_AGENT_READ_MARKERS + 4}`]).toBeDefined();
   });
 
-  it("loads the secure fallback when the database load fails", async () => {
-    const fallbackPreferences: Preferences = {
-      taskAgentReadMarkers: { task: "2026-07-31T12:05:00.000Z" },
-    };
-    const harness = await makeHarness({
-      databaseLoadFails: true,
-      fallbackPreferences,
-    });
+  it.effect("loads the secure fallback when the database load fails", () =>
+    Effect.gen(function* () {
+      const fallbackPreferences: Preferences = {
+        taskAgentReadMarkers: { task: "2026-07-31T12:05:00.000Z" },
+      };
+      const harness = yield* makeHarness({
+        databaseLoadFails: true,
+        fallbackPreferences,
+      });
 
-    await expect(Effect.runPromise(harness.store.load)).resolves.toEqual(fallbackPreferences);
-  });
+      expect(yield* harness.store.load).toEqual(fallbackPreferences);
+    }),
+  );
 
-  it("does not write or wipe the durable payload when every load path fails", async () => {
-    const initialPreferences = {
-      taskAgentReadMarkers: { task: "2026-07-31T12:05:00.000Z" },
-    };
-    const harness = await makeHarness({
-      initialPreferences,
-      databaseLoadFails: true,
-      secureLoadFails: true,
-    });
-    const originalPayload = harness.getStoredPayload();
+  it.effect("does not write or wipe the durable payload when every load path fails", () =>
+    Effect.gen(function* () {
+      const initialPreferences = {
+        taskAgentReadMarkers: { task: "2026-07-31T12:05:00.000Z" },
+      };
+      const harness = yield* makeHarness({
+        initialPreferences,
+        databaseLoadFails: true,
+        secureLoadFails: true,
+      });
+      const originalPayload = harness.getStoredPayload();
 
-    await expect(Effect.runPromise(harness.store.load)).rejects.toMatchObject({
-      _tag: "MobilePreferencesLoadError",
-    });
-    expect(harness.getStoredPayload()).toBe(originalPayload);
-    expect(harness.getSaveCount()).toBe(0);
-  });
+      const error = yield* Effect.flip(harness.store.load);
+      expect(error).toMatchObject({ _tag: "MobilePreferencesLoadError" });
+      expect(harness.getStoredPayload()).toBe(originalPayload);
+      expect(harness.getSaveCount()).toBe(0);
+    }),
+  );
 });

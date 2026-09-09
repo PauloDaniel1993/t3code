@@ -63,7 +63,7 @@ export function HomeRouteScreen() {
     unsnoozeThread,
     pinThread,
     unpinThread,
-    movePinnedThread,
+    moveThread,
     regenerateThreadTitle,
     unsettleThread,
   } = useThreadListActions();
@@ -213,7 +213,7 @@ export function HomeRouteScreen() {
           onUnsettleThread={unsettleThread}
           onPinThread={pinThread}
           onUnpinThread={unpinThread}
-          onMovePinnedThread={movePinnedThread}
+          onMoveThread={moveThread}
           onRegenerateThreadTitle={regenerateThreadTitle}
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
@@ -229,6 +229,17 @@ export function HomeRouteScreen() {
           onOpenTaskAgentDestination={handleOpenTaskAgentDestination}
           onSelectPendingTask={openPendingTask}
           onDeletePendingTask={confirmDeletePendingTask}
+          onNewThreadOnBranch={(thread) => {
+            navigation.navigate("NewTaskSheet", {
+              screen: "NewTaskDraft",
+              params: {
+                environmentId: String(thread.environmentId),
+                projectId: String(thread.projectId),
+                branch: thread.branch,
+                worktreePath: thread.worktreePath,
+              },
+            });
+          }}
           onNewThreadInProject={(project) => {
             navigation.navigate("NewTaskSheet", {
               screen: "NewTaskDraft",

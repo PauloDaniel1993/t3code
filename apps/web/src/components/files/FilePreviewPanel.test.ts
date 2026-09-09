@@ -1,13 +1,13 @@
 import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildAttachmentBrowserPreviewResource } from "./FilePreviewPanel";
 import {
   formatFileCommentRange,
   normalizeFileCommentRange,
   remapFileCommentAnnotations,
 } from "./fileCommentAnnotations";
 import {
+  buildAttachmentBrowserPreviewResource,
   isMarkdownPreviewFile,
   setMarkdownTaskChecked,
   shouldShowFileExplorer,

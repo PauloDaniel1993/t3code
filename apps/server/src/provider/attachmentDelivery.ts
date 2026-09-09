@@ -17,7 +17,7 @@ export interface ResolvedProviderAttachment {
   readonly bytes: Uint8Array;
 }
 
-export class ProviderAttachmentAccessError extends Schema.TaggedErrorClass<ProviderAttachmentAccessError>()(
+export class ProviderAttachmentAccessError extends Schema.TaggedError<ProviderAttachmentAccessError>()(
   "ProviderAttachmentAccessError",
   {
     attachment: ChatAttachment,
@@ -83,7 +83,7 @@ export const resolveProviderAttachment = Effect.fn("resolveProviderAttachment")(
   } satisfies ResolvedProviderAttachment;
 });
 
-export class ProviderTextDecodingError extends Schema.TaggedErrorClass<ProviderTextDecodingError>()(
+export class ProviderTextDecodingError extends Schema.TaggedError<ProviderTextDecodingError>()(
   "ProviderTextDecodingError",
   {
     fileName: Schema.String,
@@ -126,7 +126,7 @@ export function decodeProviderText(bytes: Uint8Array, fileName: string): string 
   }
 }
 
-export class ProviderInlineTextBudgetError extends Schema.TaggedErrorClass<ProviderInlineTextBudgetError>()(
+export class ProviderInlineTextBudgetError extends Schema.TaggedError<ProviderInlineTextBudgetError>()(
   "ProviderInlineTextBudgetError",
   {
     fileName: Schema.String,

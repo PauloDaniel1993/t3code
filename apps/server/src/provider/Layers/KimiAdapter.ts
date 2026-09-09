@@ -1649,6 +1649,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
     return {
       provider: PROVIDER,
       capabilities: { sessionModelSwitch: "in-session" },
+      compaction: { type: "slash-command", command: "/compact" },
       startSession,
       sendTurn,
       interruptTurn,

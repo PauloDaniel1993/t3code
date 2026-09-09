@@ -6,6 +6,7 @@ import {
   type ChatAttachment,
   OrchestrationDispatchCommandError,
   ThreadId,
+  UserInputAttachmentAnswerPayload,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -58,6 +59,7 @@ type AttachmentStageManifest = typeof AttachmentStageManifest.Type;
 const AttachmentStageManifestJson = Schema.fromJsonString(AttachmentStageManifest);
 const encodeAttachmentStageManifest = Schema.encodeSync(AttachmentStageManifestJson);
 const decodeAttachmentStageManifest = Schema.decodeUnknownOption(AttachmentStageManifestJson);
+const decodeQuestionAttachmentAnswer = Schema.decodeUnknownOption(UserInputAttachmentAnswerPayload);
 
 export interface AttachmentStage {
   readonly claim: Effect.Effect<void, OrchestrationDispatchCommandError>;
@@ -480,18 +482,26 @@ export const drainAttachmentCleanupQueue = Effect.fn("drainAttachmentCleanupQueu
       const currentThread = yield* input.snapshotQuery.getThreadDetailById(
         ThreadId.make(threadId),
         {
-          activityKinds: [],
+          activityKinds: ["user-input.answer-submitted"],
         },
       );
-      if (
-        Option.isSome(currentThread) &&
-        currentThread.value.messages.some((message) =>
+      if (Option.isSome(currentThread)) {
+        const referencedByMessage = currentThread.value.messages.some((message) =>
           message.attachments?.some(
             (attachment) => attachmentRelativePath(attachment) === relativePath,
           ),
-        )
-      ) {
-        return;
+        );
+        const referencedByAnswer = currentThread.value.activities.some((activity) => {
+          if (activity.kind !== "user-input.answer-submitted") return false;
+          const payload = decodeQuestionAttachmentAnswer(activity.payload);
+          return (
+            Option.isSome(payload) &&
+            Object.values(payload.value.attachmentsByQuestionId)
+              .flat()
+              .some((attachment) => attachmentRelativePath(attachment) === relativePath)
+          );
+        });
+        if (referencedByMessage || referencedByAnswer) return;
       }
       const absolutePath = resolveAttachmentRelativePath({
         attachmentsDir: input.attachmentsDir,

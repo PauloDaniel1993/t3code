@@ -6,6 +6,8 @@ import {
   type ClientOrchestrationCommand,
   type IsoDateTime,
   type OrchestrationCommand,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  type UserInputAttachments,
   type UploadChatAttachment,
   OrchestrationDispatchCommandError,
 } from "@t3tools/contracts";
@@ -180,8 +182,24 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
     };
   }
 
-  if (canonicalCommand.type !== "thread.turn.start") {
+  if (
+    canonicalCommand.type !== "thread.turn.start" &&
+    canonicalCommand.type !== "thread.user-input.respond"
+  ) {
     return { command: canonicalCommand as OrchestrationCommand };
+  }
+
+  const attachments =
+    canonicalCommand.type === "thread.turn.start"
+      ? canonicalCommand.message.attachments
+      : Object.values(canonicalCommand.attachmentsByQuestionId ?? {}).flat();
+  if (
+    canonicalCommand.type === "thread.user-input.respond" &&
+    attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS
+  ) {
+    return yield* new OrchestrationDispatchCommandError({
+      message: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per question response.`,
+    });
   }
 
   const serverConfig = yield* ServerConfig;
@@ -190,7 +208,7 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
 
   // Pending uploads require filesystem reads, but no attachment id is
   // allocated and no file is written until every attachment has validated.
-  for (const attachment of canonicalCommand.message.attachments) {
+  for (const attachment of attachments) {
     if ("dataUrl" in attachment) {
       inlineAttachments.push(attachment);
       validatedByIndex.push(null);
@@ -221,13 +239,16 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
 
   if (validatedAttachments.length === 0) {
     return {
-      command: {
-        ...canonicalCommand,
-        message: {
-          ...canonicalCommand.message,
-          attachments: [],
-        },
-      } satisfies OrchestrationCommand,
+      command:
+        canonicalCommand.type === "thread.turn.start"
+          ? ({
+              ...canonicalCommand,
+              message: {
+                ...canonicalCommand.message,
+                attachments: [],
+              },
+            } satisfies OrchestrationCommand)
+          : (canonicalCommand satisfies OrchestrationCommand),
     };
   }
 
@@ -236,6 +257,29 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
     threadId: canonicalCommand.threadId,
     attachments: validatedAttachments,
   });
+
+  if (canonicalCommand.type === "thread.user-input.respond") {
+    let index = 0;
+    const attachmentsByQuestionId = Object.fromEntries(
+      Object.entries(canonicalCommand.attachmentsByQuestionId ?? {}).map(
+        ([questionId, original]) => {
+          const claimed = staged.attachments.slice(
+            index,
+            index + original.length,
+          ) as UserInputAttachments[string];
+          index += original.length;
+          return [questionId, claimed];
+        },
+      ),
+    );
+    return {
+      command: {
+        ...canonicalCommand,
+        attachmentsByQuestionId,
+      } satisfies OrchestrationCommand,
+      attachmentStage: staged.stage,
+    } satisfies NormalizedDispatchCommand;
+  }
 
   return {
     command: {
@@ -247,4 +291,10 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
     } satisfies OrchestrationCommand,
     attachmentStage: staged.stage,
   } satisfies NormalizedDispatchCommand;
+});
+
+export const cleanupFailedUploadedAttachments = Effect.fn(
+  "Normalizer.cleanupFailedUploadedAttachments",
+)(function* (_command: ClientOrchestrationCommand, normalized: NormalizedDispatchCommand) {
+  yield* normalized.attachmentStage?.abort ?? Effect.void;
 });

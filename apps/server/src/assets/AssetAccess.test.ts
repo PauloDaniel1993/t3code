@@ -82,6 +82,30 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("reports pixel dimensions from an image header and nothing for other files", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-media-dimensions-" });
+      const png = Uint8Array.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0,
+        0x06, 0x40, 0, 0, 0x03, 0x84,
+      ]);
+      yield* fs.writeFile(path.join(root, "shot.png"), png);
+      yield* fs.writeFileString(path.join(root, "clip.mp4"), "video");
+      yield* fs.writeFileString(path.join(root, "broken.png"), "not a png");
+      const issue = (name: string) =>
+        issueAssetUrl({
+          resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: name },
+          workspaceRoot: root,
+        });
+
+      expect((yield* issue("shot.png")).imageDimensions).toEqual({ width: 1600, height: 900 });
+      expect((yield* issue("clip.mp4")).imageDimensions).toBeUndefined();
+      expect((yield* issue("broken.png")).imageDimensions).toBeUndefined();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("resolves relative media paths from the thread workspace, including outside it", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -767,7 +791,7 @@ describe("AssetAccess", () => {
         projectFaviconPath: "brand/custom.svg",
       });
 
-      expect(result.sourcePath).toBe(path.join("brand", "custom.svg"));
+      expect(result.sourcePath).toBe("brand/custom.svg");
       expect(result.relativeUrl).toMatch(/\/v[0-9a-f]{64}-custom\.svg$/);
     }).pipe(Effect.provide(testLayer)),
   );
@@ -826,7 +850,7 @@ describe("AssetAccess", () => {
         projectFaviconPath: "brand/saved.svg",
       });
 
-      expect(result.sourcePath).toBe(path.join("brand", "saved.svg"));
+      expect(result.sourcePath).toBe("brand/saved.svg");
       expect(result.relativeUrl).toMatch(/\/v[0-9a-f]{64}-saved\.svg$/);
     }).pipe(Effect.provide(testLayer)),
   );

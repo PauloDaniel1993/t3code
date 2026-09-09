@@ -30,7 +30,7 @@ export const PendingTurnStartRecoveryErrorCode = Schema.Literals([
 ]);
 export type PendingTurnStartRecoveryErrorCode = typeof PendingTurnStartRecoveryErrorCode.Type;
 
-export class PendingTurnStartRecoveryError extends Schema.TaggedErrorClass<PendingTurnStartRecoveryError>()(
+export class PendingTurnStartRecoveryError extends Schema.TaggedError<PendingTurnStartRecoveryError>()(
   "PendingTurnStartRecoveryError",
   {
     code: PendingTurnStartRecoveryErrorCode,

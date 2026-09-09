@@ -2,9 +2,15 @@ import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { ForwardCompatibleNullable, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import {
+  ForwardCompatibleNullable,
+  ProjectId,
+  TrimmedNonEmptyString,
+  TrimmedString,
+} from "./baseSchemas.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { EnvironmentMachineKind, ThreadEnvMode } from "./environment.ts";
+import { KeybindingShortcut } from "./keybindings.ts";
 import {
   CustomModelSetting,
   DEFAULT_TEXT_GENERATION_MODEL,
@@ -18,6 +24,7 @@ import {
   MIN_THREAD_TASK_MAX_RUNNING,
   MIN_THREAD_TASK_MAX_TOTAL,
   ModelSelection,
+  ProjectScript,
 } from "./orchestration.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
 import {
@@ -33,16 +40,17 @@ import {
   ProviderInstanceId,
   type ProviderDriverKind,
 } from "./providerInstance.ts";
+import { PullRequestMergeMethod } from "./pullRequest.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
-export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
+const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 
 export const DiffLayout = Schema.Literals(["stacked", "split"]);
 export type DiffLayout = typeof DiffLayout.Type;
-export const DEFAULT_DIFF_LAYOUT: DiffLayout = "stacked";
+const DEFAULT_DIFF_LAYOUT: DiffLayout = "stacked";
 
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
@@ -58,7 +66,7 @@ export const SidebarProjectGroupingMode = Schema.Literals([
   "separate",
 ]);
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
-export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
+const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
 export const MIN_SIDEBAR_THREAD_PREVIEW_COUNT = 1;
 export const MAX_SIDEBAR_THREAD_PREVIEW_COUNT = 15;
 export const SidebarThreadPreviewCount = Schema.Int.check(
@@ -68,7 +76,7 @@ export const SidebarThreadPreviewCount = Schema.Int.check(
   }),
 );
 export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
-export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
+const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
 export const MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 1;
 export const MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 90;
 export const SidebarAutoSettleAfterDays = Schema.Number.check(
@@ -78,7 +86,7 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
   }),
 );
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
-export const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;
+const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
 export const GlassOpacity = Schema.Int.check(
@@ -88,7 +96,7 @@ export const GlassOpacity = Schema.Int.check(
   }),
 );
 export type GlassOpacity = typeof GlassOpacity.Type;
-export const DEFAULT_GLASS_OPACITY: GlassOpacity = 80;
+const DEFAULT_GLASS_OPACITY: GlassOpacity = 80;
 
 export const MIN_APPEARANCE_CONTRAST = 50;
 export const MAX_APPEARANCE_CONTRAST = 200;
@@ -96,7 +104,7 @@ export const AppearanceContrast = Schema.Int.check(
   Schema.isBetween({ minimum: MIN_APPEARANCE_CONTRAST, maximum: MAX_APPEARANCE_CONTRAST }),
 );
 export type AppearanceContrast = typeof AppearanceContrast.Type;
-export const DEFAULT_APPEARANCE_CONTRAST: AppearanceContrast = 100;
+const DEFAULT_APPEARANCE_CONTRAST: AppearanceContrast = 100;
 export const MIN_PANEL_ANIMATION_DURATION_MS = 0;
 export const MAX_PANEL_ANIMATION_DURATION_MS = 400;
 export const PanelAnimationDurationMs = Schema.Int.check(
@@ -106,7 +114,7 @@ export const PanelAnimationDurationMs = Schema.Int.check(
   }),
 );
 export type PanelAnimationDurationMs = typeof PanelAnimationDurationMs.Type;
-export const DEFAULT_PANEL_ANIMATION_DURATION_MS: PanelAnimationDurationMs = 0;
+const DEFAULT_PANEL_ANIMATION_DURATION_MS: PanelAnimationDurationMs = 0;
 /**
  * Font size preferences, in CSS pixels. The ranges are deliberately narrow:
  * the interface size scales every rem-based dimension in the app, so the
@@ -142,15 +150,75 @@ export const TerminalFontSize = Schema.Int.check(
   Schema.isBetween({ minimum: MIN_TERMINAL_FONT_SIZE, maximum: MAX_TERMINAL_FONT_SIZE }),
 );
 export type TerminalFontSize = typeof TerminalFontSize.Type;
-export const DEFAULT_TERMINAL_FONT_SIZE: TerminalFontSize = 12;
+const DEFAULT_TERMINAL_FONT_SIZE: TerminalFontSize = 12;
 
 export const EnvironmentIdentificationMode = Schema.Literals(["artwork", "pill", "none"]);
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
 
+export const SnapShotKeyChord = KeybindingShortcut.check(
+  Schema.makeFilter(
+    (shortcut) =>
+      shortcut.metaKey ||
+      shortcut.ctrlKey ||
+      shortcut.shiftKey ||
+      shortcut.altKey ||
+      shortcut.modKey ||
+      "Snapshot shortcut requires a modifier.",
+  ),
+);
+export type SnapShotKeyChord = typeof SnapShotKeyChord.Type;
+export const SNAP_SHOT_MODIFIERS = ["shift", "meta", "control", "alt"] as const;
+export const SnapShotModifier = Schema.Literals(SNAP_SHOT_MODIFIERS);
+export type SnapShotModifier = typeof SnapShotModifier.Type;
+export const SnapShotShortcut = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("both-shift-keys") }),
+  Schema.Struct({ kind: Schema.Literal("modifier-pair"), modifier: SnapShotModifier }),
+  SnapShotKeyChord,
+]);
+export type SnapShotShortcut = typeof SnapShotShortcut.Type;
+export const SnapShotSound = Schema.Literals(["soft-pop", "camera-shutter"]);
+export type SnapShotSound = typeof SnapShotSound.Type;
+const DEFAULT_SNAP_SHOT_SOUND: SnapShotSound = "soft-pop";
+
+export type SnapShotModifierPairShortcut = Extract<SnapShotShortcut, { readonly kind: string }>;
+
+export function isModifierPairShortcut(
+  shortcut: SnapShotShortcut,
+): shortcut is SnapShotModifierPairShortcut {
+  return "kind" in shortcut;
+}
+
+export function snapShotShortcutModifierPair(
+  shortcut: SnapShotModifierPairShortcut,
+): SnapShotModifier {
+  return shortcut.kind === "both-shift-keys" ? "shift" : shortcut.modifier;
+}
+
+const APPLE_MODIFIER_LABELS: Record<SnapShotModifier, string> = {
+  shift: "Shift",
+  meta: "Command",
+  control: "Control",
+  alt: "Option",
+};
+const OTHER_MODIFIER_LABELS: Record<SnapShotModifier, string> = {
+  shift: "Shift",
+  meta: "Super",
+  control: "Ctrl",
+  alt: "Alt",
+};
+
+export function snapShotModifierPairLabel(modifier: SnapShotModifier, apple: boolean): string {
+  const label = (apple ? APPLE_MODIFIER_LABELS : OTHER_MODIFIER_LABELS)[modifier];
+  return `${label} + ${label}`;
+}
+const DEFAULT_SNAP_SHOT_SHORTCUT: SnapShotShortcut = {
+  kind: "both-shift-keys",
+};
+
 export const QuitConfirmationMode = Schema.Literals(["direct", "hold", "double-click"]);
 export type QuitConfirmationMode = typeof QuitConfirmationMode.Type;
-export const DEFAULT_QUIT_CONFIRMATION_MODE: QuitConfirmationMode = "hold";
+const DEFAULT_QUIT_CONFIRMATION_MODE: QuitConfirmationMode = "hold";
 
 const LegacyConfirmQuit = Schema.Boolean.pipe(
   Schema.decodeTo(
@@ -206,7 +274,14 @@ export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
 
+export const LoadBalancingWeights = Schema.Record(
+  TrimmedNonEmptyString,
+  Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+);
+
 export const ClientSettingsSchema = Schema.Struct({
+  loadBalancingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  loadBalancingWeights: LoadBalancingWeights.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   appearanceContrast: AppearanceContrast.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_CONTRAST)),
   ),
@@ -294,6 +369,13 @@ export const ClientSettingsSchema = Schema.Struct({
   // Grayscale `-webkit-font-smoothing: antialiased` (thinner strokes);
   // disabling restores the platform's heavier default. No effect off macOS.
   fontSmoothing: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // When the first-run welcome wizard finished (or was skipped), as an ISO
+  // timestamp. `null` alone does not mean "show the wizard" — every install
+  // that predates this field decodes to `null` — so the gate also requires an
+  // empty workspace before it treats the client as a fresh install.
+  onboardingCompletedAt: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
   // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
@@ -319,6 +401,10 @@ export const ClientSettingsSchema = Schema.Struct({
       modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  pullRequestMergeMethodOverrides: Schema.Record(
+    TrimmedNonEmptyString,
+    PullRequestMergeMethod,
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // Legacy plan mode. The composer's Build/Plan toggle was removed from the
   // default UI; this beta flag restores it (plus the /plan and /default slash
   // commands) for users who still rely on the old workflow.
@@ -326,9 +412,8 @@ export const ClientSettingsSchema = Schema.Struct({
   // Legacy context window meter. The composer hides it by default; users who
   // still want the old usage indicator can restore it from Settings.
   contextWindowMeterEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  // Desktop resting composer. Each trigger that settles an existing thread's
-  // composer into its single-line layout can be turned off on its own.
-  composerCollapseOnBlur: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Desktop resting composer: scrolling an existing thread's conversation
+  // settles the composer into its single-line layout. Losing focus never does.
   composerCollapseOnScroll: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   proactivePanelsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   showSkillsInSlashMenu: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -362,6 +447,19 @@ export const ClientSettingsSchema = Schema.Struct({
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
+  snapShotEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  snapShotIncludeAccessibility: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  snapShotShortcut: SnapShotShortcut.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SNAP_SHOT_SHORTCUT)),
+  ),
+  snapShotPlaySound: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  snapShotSound: SnapShotSound.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SNAP_SHOT_SOUND)),
+  ),
+  snapShotFlash: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  snapShotAnimations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
@@ -430,7 +528,7 @@ export type ProviderSettingsOrder<Fields extends Schema.Struct.Fields> = readonl
   string
 >[];
 
-export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fields>(
+function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fields>(
   fields: Fields,
   options?: {
     readonly order?: ProviderSettingsOrder<Fields> | undefined;
@@ -914,6 +1012,22 @@ export const ServerSettings = Schema.Struct({
    * between a desktop window and a phone attached to the same server.
    */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  projectAgentBrowserAccessOverrides: Schema.Record(ProjectId, Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  defaultAutoPull: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  defaultProjectScripts: Schema.Array(ProjectScript).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  projectScriptOverrides: Schema.Record(ProjectId, Schema.NullOr(Schema.Array(ProjectScript))).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  projectAutoPullOverrides: Schema.Record(ProjectId, Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  defaultModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
@@ -1057,7 +1171,7 @@ export const providerInstanceConfigEnabledFlag = (config: unknown): boolean | un
  * through `DEFAULT_SERVER_SETTINGS`, so the schema's decoding default stays
  * the single source of truth. Unknown (fork) drivers default to enabled.
  */
-export const defaultEnabledForDriver = (driver: ProviderDriverKind): boolean => {
+const defaultEnabledForDriver = (driver: ProviderDriverKind): boolean => {
   const legacyDefaults = DEFAULT_SERVER_SETTINGS.providers as Record<
     string,
     { readonly enabled?: boolean } | undefined
@@ -1095,7 +1209,7 @@ export const ServerSettingsOperation = Schema.Literals([
 ]);
 export type ServerSettingsOperation = typeof ServerSettingsOperation.Type;
 
-export class ServerSettingsError extends Schema.TaggedErrorClass<ServerSettingsError>()(
+export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>()(
   "ServerSettingsError",
   {
     settingsPath: Schema.String,
@@ -1198,6 +1312,18 @@ export const ServerSettingsPatch = Schema.Struct({
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  projectAgentBrowserAccessOverrides: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
+  ),
+  defaultAutoPull: Schema.optionalKey(Schema.Boolean),
+  defaultProjectScripts: Schema.optionalKey(Schema.Array(ProjectScript)),
+  projectScriptOverrides: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(Schema.Array(ProjectScript))),
+  ),
+  projectAutoPullOverrides: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
+  ),
+  defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
@@ -1262,6 +1388,8 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
+  loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
+  loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
   appearanceContrast: Schema.optionalKey(AppearanceContrast),
   panelAnimationDurationMs: Schema.optionalKey(PanelAnimationDurationMs),
   browserDefaultViewport: Schema.optionalKey(PreviewViewportSetting),
@@ -1281,6 +1409,7 @@ export const ClientSettingsPatch = Schema.Struct({
   diffLayout: Schema.optionalKey(DiffLayout),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
   glassOpacity: Schema.optionalKey(GlassOpacity),
+  onboardingCompletedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   fontSizeInterface: Schema.optionalKey(InterfaceFontSize),
   fontSizePrompt: Schema.optionalKey(PromptFontSize),
   fontSizeCode: Schema.optionalKey(CodeFontSize),
@@ -1311,9 +1440,11 @@ export const ClientSettingsPatch = Schema.Struct({
       }),
     ),
   ),
+  pullRequestMergeMethodOverrides: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, PullRequestMergeMethod),
+  ),
   planModeEnabled: Schema.optionalKey(Schema.Boolean),
   contextWindowMeterEnabled: Schema.optionalKey(Schema.Boolean),
-  composerCollapseOnBlur: Schema.optionalKey(Schema.Boolean),
   composerCollapseOnScroll: Schema.optionalKey(Schema.Boolean),
   proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
@@ -1327,6 +1458,13 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   threadTasksEnabled: Schema.optionalKey(Schema.Boolean),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  snapShotEnabled: Schema.optionalKey(Schema.Boolean),
+  snapShotIncludeAccessibility: Schema.optionalKey(Schema.Boolean),
+  snapShotShortcut: Schema.optionalKey(SnapShotShortcut),
+  snapShotPlaySound: Schema.optionalKey(Schema.Boolean),
+  snapShotSound: Schema.optionalKey(SnapShotSound),
+  snapShotFlash: Schema.optionalKey(Schema.Boolean),
+  snapShotAnimations: Schema.optionalKey(Schema.Boolean),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
