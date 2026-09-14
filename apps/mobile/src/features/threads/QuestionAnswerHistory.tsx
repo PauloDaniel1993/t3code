@@ -5,6 +5,7 @@ import type {
   UserInputAttachments,
 } from "@t3tools/contracts";
 import { Image, Linking, Pressable, View } from "react-native";
+import { getQuestionAnswerText } from "@t3tools/client-runtime/work-log/user-input";
 import { AppText as Text } from "../../components/AppText";
 import { useAssetUrl } from "../../state/assets";
 
@@ -45,6 +46,7 @@ export function QuestionAnswerHistory(props: {
     <View className="gap-2">
       {[
         ...new Set([
+          ...Object.keys(props.answer.questionTextById ?? {}),
           ...Object.keys(props.answer.answers),
           ...Object.keys(props.answer.attachmentsByQuestionId),
         ]),
@@ -55,12 +57,11 @@ export function QuestionAnswerHistory(props: {
               {props.answer.questionTextById[questionId]}
             </Text>
           ) : null}
-          <Text className="text-sm text-foreground">
-            {[props.answer.answers[questionId]]
-              .flat()
-              .filter((value): value is string => typeof value === "string")
-              .join(", ")}
-          </Text>
+          {getQuestionAnswerText(props.answer.answers[questionId]) ? (
+            <Text className="ml-3 text-sm text-foreground-muted">
+              {getQuestionAnswerText(props.answer.answers[questionId])}
+            </Text>
+          ) : null}
           {(props.answer.attachmentsByQuestionId[questionId] ?? []).map((attachment) => (
             <AnswerFile
               key={attachment.id}

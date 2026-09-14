@@ -32,6 +32,8 @@ dist-electron/
 .showcase/
 apps/mobile/.showcase/
 apps/server/.claude-work-test/
+apps/mobile/.generated/
+/.generated/
 artifacts/app-store/screenshots/
 .github/pr-assets/
 native/**/target/
@@ -46,3 +48,6 @@ output/
 devscreen*.png
 logcat*.txt
 apps/mobile/b2_view.json
+
+# pnpm content-addressable store; never belongs in the repo.
+.pnpm-store/

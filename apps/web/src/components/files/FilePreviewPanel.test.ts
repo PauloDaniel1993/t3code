@@ -1,38 +1,118 @@
-import { ThreadId } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { act, createElement, type ReactNode } from "react";
+import { create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
+const { attachmentFilePreviewSpy } = vi.hoisted(() => ({
+  attachmentFilePreviewSpy: vi.fn<(props: unknown) => void>(),
+}));
+
+vi.mock("./AttachmentFilePreview", () => ({
+  AttachmentFilePreview: (props: unknown) => {
+    attachmentFilePreviewSpy(props);
+    return null;
+  },
+}));
+vi.mock("../DiffWorkerPoolProvider", () => ({
+  DiffWorkerPoolProvider: ({ children }: { children: ReactNode }) => children,
+}));
+vi.mock("~/hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
+vi.mock("~/hooks/useSettings", () => ({
+  useClientSettings: (select: (settings: { wordWrap: boolean }) => unknown) =>
+    select({ wordWrap: false }),
+  useUpdateClientSettings: () => vi.fn(),
+}));
+vi.mock("~/hooks/useLocalStorage", () => ({
+  getLocalStorageItem: () => true,
+  setLocalStorageItem: vi.fn(),
+  useLocalStorage: (_key: string, initial: boolean) => [initial, vi.fn()],
+}));
+vi.mock("~/hooks/useWorkspaceMutationRefresh", () => ({
+  useWorkspaceMutationRefresh: () => undefined,
+}));
+vi.mock("~/remoteOpen", () => ({
+  useRemoteOpenState: () => ({ mode: "local-exec" }),
+}));
+vi.mock("~/state/environments", () => ({
+  useEnvironmentHttpBaseUrl: () => null,
+  usePrimaryEnvironmentId: () => null,
+}));
+vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
+vi.mock("~/state/use-atom-query-runner", () => ({ useAtomQueryRunner: () => vi.fn() }));
+vi.mock("./projectFilesQueryState", () => ({
+  getOptimisticProjectFileQueryData: () => null,
+  setProjectFileQueryData: vi.fn(),
+  useProjectFileQuery: () => ({ data: null, error: null, isPending: false, refresh: vi.fn() }),
+}));
+
+import FilePreviewPanel from "./FilePreviewPanel";
 import {
   formatFileCommentRange,
   normalizeFileCommentRange,
   remapFileCommentAnnotations,
 } from "./fileCommentAnnotations";
 import {
-  buildAttachmentBrowserPreviewResource,
   isMarkdownPreviewFile,
   setMarkdownTaskChecked,
   shouldShowFileExplorer,
 } from "./filePreviewMode";
 
-describe("buildAttachmentBrowserPreviewResource", () => {
-  it("scopes document preview URLs to the thread that owns the attachment", () => {
-    const threadId = ThreadId.make("thread-with-report");
+describe("attachment file preview", () => {
+  let renderer: ReactTestRenderer | undefined;
 
-    expect(
-      buildAttachmentBrowserPreviewResource(
-        {
-          id: "attachment-report-pdf",
-          name: "report.pdf",
-          mimeType: "application/pdf",
-        },
+  afterEach(async () => {
+    attachmentFilePreviewSpy.mockClear();
+    if (renderer) await act(() => renderer?.unmount());
+    renderer = undefined;
+  });
+
+  it.each([
+    ["notes.md", "text/markdown"],
+    ["records.csv", "text/csv"],
+    ["example.ts", "text/plain"],
+  ])("routes %s through the scoped attachment file renderer", async (name, mimeType) => {
+    const environmentId = EnvironmentId.make("attachment-environment");
+    const threadId = ThreadId.make("thread-with-attachment");
+    const threadRef = scopeThreadRef(environmentId, threadId);
+
+    await act(async () => {
+      renderer = create(
+        createElement(FilePreviewPanel, {
+          environmentId,
+          cwd: "C:/workspace",
+          projectName: "Workspace",
+          relativePath: name,
+          attachment: {
+            type: "file",
+            id: `attachment-${name}`,
+            name,
+            mimeType,
+            sizeBytes: 123,
+          },
+          threadRef,
+          composerDraftTarget: threadRef,
+          keybindings: {} as never,
+          availableEditors: [],
+          revealLine: null,
+          revealRequestId: 0,
+          onOpenFile: vi.fn(),
+          onPendingChange: vi.fn(),
+          selectedFilePending: false,
+          workspaceMutationId: null,
+        }),
+      );
+    });
+
+    expect(attachmentFilePreviewSpy).toHaveBeenCalledExactlyOnceWith({
+      name,
+      mimeType,
+      sizeBytes: 123,
+      asset: {
+        environmentId,
+        attachmentId: `attachment-${name}`,
         threadId,
-      ),
-    ).toEqual({
-      _tag: "attachment",
-      attachmentId: "attachment-report-pdf",
-      threadId,
-      fileName: "report.pdf",
-      mimeType: "application/pdf",
-      disposition: "inline",
+      },
     });
   });
 });

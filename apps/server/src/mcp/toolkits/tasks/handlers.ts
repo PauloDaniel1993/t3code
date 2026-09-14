@@ -150,7 +150,8 @@ const handlers = {
     // The decider re-checks this. Doing it here first is what turns a cap into
     // a structured `concurrency-cap` the agent can wait out, rather than an
     // opaque dispatch failure.
-    const limits = yield* yield* ThreadTaskLimitsSource;
+    const readThreadTaskLimits = yield* ThreadTaskLimitsSource;
+    const limits = yield* readThreadTaskLimits(parent.projectId);
     const rejection = checkTaskCreateEligibility({
       parent,
       parentThreadId: parent.id,

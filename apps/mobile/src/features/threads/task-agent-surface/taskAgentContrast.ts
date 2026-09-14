@@ -106,7 +106,7 @@ function parseRgbColor(value: string): ParsedColor {
     throw new TypeError(`Unsupported color: ${value}`);
   }
 
-  const components = match[1]
+  const components = match[1]!
     .replaceAll("/", " ")
     .split(/[\s,]+/)
     .filter(Boolean);
@@ -115,10 +115,10 @@ function parseRgbColor(value: string): ParsedColor {
   }
 
   return {
-    red: parseRgbComponent(components[0]),
-    green: parseRgbComponent(components[1]),
-    blue: parseRgbComponent(components[2]),
-    alpha: components.length === 4 ? parseAlphaComponent(components[3]) : 1,
+    red: parseRgbComponent(components[0]!),
+    green: parseRgbComponent(components[1]!),
+    blue: parseRgbComponent(components[2]!),
+    alpha: components.length === 4 ? parseAlphaComponent(components[3]!) : 1,
   };
 }
 
@@ -142,7 +142,7 @@ function parseHslColor(value: string): ParsedColor {
     throw new TypeError(`Unsupported color: ${value}`);
   }
 
-  const components = match[1]
+  const components = match[1]!
     .replaceAll("/", " ")
     .split(/[\s,]+/)
     .filter(Boolean);
@@ -152,15 +152,15 @@ function parseHslColor(value: string): ParsedColor {
     );
   }
 
-  const hueValue = components[0].trim().toLowerCase();
+  const hueValue = components[0]!.trim().toLowerCase();
   const hueDegrees = Number.parseFloat(hueValue.endsWith("deg") ? hueValue.slice(0, -3) : hueValue);
   if (!Number.isFinite(hueDegrees)) {
     throw new TypeError(`Invalid HSL hue: ${components[0]}`);
   }
 
   const hue = (((hueDegrees % 360) + 360) % 360) / 60;
-  const saturation = parseHslPercentage(components[1], "HSL saturation");
-  const lightness = parseHslPercentage(components[2], "HSL lightness");
+  const saturation = parseHslPercentage(components[1]!, "HSL saturation");
+  const lightness = parseHslPercentage(components[2]!, "HSL lightness");
   const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
   const secondComponent = chroma * (1 - Math.abs((hue % 2) - 1));
   const matchComponent = lightness - chroma / 2;
@@ -192,7 +192,7 @@ function parseHslColor(value: string): ParsedColor {
     red: (red + matchComponent) * 255,
     green: (green + matchComponent) * 255,
     blue: (blue + matchComponent) * 255,
-    alpha: components.length === 4 ? parseAlphaComponent(components[3]) : 1,
+    alpha: components.length === 4 ? parseAlphaComponent(components[3]!) : 1,
   };
 }
 

@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 import type { ComposerFileAttachment } from "../../composerDraftStore";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
+  wrapExpandedImageIndex,
   attachVideoThumbnail,
   buildAttachmentVideoAsset,
+  buildAttachmentVideoPreview,
   buildExpandedImagePreview,
   resolveMarkdownMediaPreview,
 } from "./ExpandedImagePreview";
@@ -29,6 +31,31 @@ describe("buildAttachmentVideoAsset", () => {
         mimeType: "video/mp4",
       },
     });
+  });
+
+  it("leaves a hydrated pending video attachment unscoped", () => {
+    const preview = buildAttachmentVideoPreview(
+      EnvironmentId.make("environment-1"),
+      ThreadId.make("thread-1"),
+      {
+        type: "file",
+        id: "pending-00000000-0000-0000-0000-000000000001-mp4",
+        name: "demo.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 3,
+      },
+    );
+
+    expect(preview?.images[0]?.actionsSource?.asset).toEqual({
+      environmentId: "environment-1",
+      resource: {
+        _tag: "attachment",
+        attachmentId: "pending-00000000-0000-0000-0000-000000000001-mp4",
+        fileName: "demo.mp4",
+        mimeType: "video/mp4",
+      },
+    });
+    expect(preview?.images[0]?.actionsSource?.asset?.resource).not.toHaveProperty("threadId");
   });
 });
 
@@ -125,4 +152,16 @@ describe("buildExpandedImagePreview", () => {
     detach();
     await expect(fetch(url)).rejects.toThrow();
   });
+});
+
+it("keeps backward media navigation visible beyond a complete cycle", () => {
+  const images = ["first", "second"];
+  expect(
+    Array.from({ length: 7 }, (_, step) => images[wrapExpandedImageIndex(-step, images.length)]),
+  ).toEqual(["first", "second", "first", "second", "first", "second", "first"]);
+  let index = 0;
+  for (let step = 1; step <= 7; step++) {
+    index = wrapExpandedImageIndex(index - 1, images.length);
+    expect(images[index]).toBe(step % 2 === 1 ? "second" : "first");
+  }
 });

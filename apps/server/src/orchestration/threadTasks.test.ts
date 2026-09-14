@@ -5,6 +5,7 @@ import {
   THREAD_TASK_RESULT_SUMMARY_MAX_CHARS,
   type OrchestrationMessage,
   type OrchestrationThread,
+  ComposerContextId,
   MessageId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -38,6 +39,7 @@ function message(
     updatedAt: overrides.updatedAt ?? "2026-07-25T00:00:00.000Z",
     ...(overrides.source === undefined ? {} : { source: overrides.source }),
     ...(overrides.attachments === undefined ? {} : { attachments: overrides.attachments }),
+    ...(overrides.context === undefined ? {} : { context: overrides.context }),
   } as OrchestrationMessage;
 }
 
@@ -249,6 +251,41 @@ describe("materializeTaskPrompt", () => {
     });
     expect(result.text).toContain("second");
     expect(result.text).not.toContain("first");
+  });
+
+  it("projects structured message context into a task prompt", () => {
+    const contextId = ComposerContextId.make("ctx_terminal");
+    const result = materializeTaskPrompt({
+      parentMessages: [
+        message({
+          id: "m1",
+          text: `[selection](t3-context://v1/terminal/${contextId})`,
+          context: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                contextId,
+                kind: "terminal",
+                label: "Terminal lines 3-4",
+                terminalId: "terminal-1",
+                terminalLabel: "Terminal",
+                lineStart: 3,
+                lineEnd: 4,
+                text: "boom\ntrace",
+              },
+            ],
+          },
+        }),
+      ],
+      context: { kind: "selected-messages", messageIds: [messageId("m1")] },
+      prompt: "diagnose",
+      parentTitle: "Parent",
+    });
+
+    expect(result.text).toContain("[Terminal: selection; ref=ctx_terminal]");
+    expect(result.text).toContain("3 | boom\n4 | trace");
+    expect(result.text).not.toContain('unavailable="true"');
   });
 
   it("drops oldest messages first when over budget and never trims the prompt", () => {

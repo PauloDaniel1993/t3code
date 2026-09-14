@@ -118,6 +118,43 @@ const validatePendingAttachment = Effect.fn("Normalizer.validatePendingAttachmen
   };
 });
 
+function preserveAttachmentSource(
+  original: ChatAttachment | UploadChatAttachment,
+  persisted: ChatAttachment,
+): ChatAttachment {
+  if (
+    original.type === "image" &&
+    "source" in original &&
+    persisted.type === "image" &&
+    original.source !== undefined
+  ) {
+    return {
+      type: "image",
+      id: persisted.id,
+      name: persisted.name,
+      mimeType: persisted.mimeType,
+      sizeBytes: persisted.sizeBytes,
+      source: original.source,
+    };
+  }
+  if (
+    original.type === "file" &&
+    "source" in original &&
+    persisted.type === "file" &&
+    original.source !== undefined
+  ) {
+    return {
+      type: "file",
+      id: persisted.id,
+      name: persisted.name,
+      mimeType: persisted.mimeType,
+      sizeBytes: persisted.sizeBytes,
+      source: original.source,
+    };
+  }
+  return persisted;
+}
+
 export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchCommand")(function* (
   command: ClientOrchestrationCommand,
 ) {
@@ -201,6 +238,18 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
       message: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per question response.`,
     });
   }
+  if (canonicalCommand.type === "thread.turn.start") {
+    const clientAttachmentIds = new Set<string>();
+    for (const attachment of attachments) {
+      if (attachment.id === undefined) continue;
+      if (clientAttachmentIds.has(attachment.id)) {
+        return yield* new OrchestrationDispatchCommandError({
+          message: `Attachment '${attachment.name}' cannot be sent: duplicate attachment id.`,
+        });
+      }
+      clientAttachmentIds.add(attachment.id);
+    }
+  }
 
   const serverConfig = yield* ServerConfig;
   const inlineAttachments: UploadChatAttachment[] = [];
@@ -257,13 +306,17 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
     threadId: canonicalCommand.threadId,
     attachments: validatedAttachments,
   });
+  const normalizedAttachments = staged.attachments.map((attachment, index) => {
+    const original = attachments[index];
+    return original === undefined ? attachment : preserveAttachmentSource(original, attachment);
+  });
 
   if (canonicalCommand.type === "thread.user-input.respond") {
     let index = 0;
     const attachmentsByQuestionId = Object.fromEntries(
       Object.entries(canonicalCommand.attachmentsByQuestionId ?? {}).map(
         ([questionId, original]) => {
-          const claimed = staged.attachments.slice(
+          const claimed = normalizedAttachments.slice(
             index,
             index + original.length,
           ) as UserInputAttachments[string];
@@ -281,12 +334,38 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
     } satisfies NormalizedDispatchCommand;
   }
 
+  const finalAttachmentIdByClientId = new Map<string, string>();
+  for (const [index, attachment] of attachments.entries()) {
+    if (attachment.id === undefined) continue;
+    const persisted = normalizedAttachments[index];
+    if (persisted !== undefined) {
+      finalAttachmentIdByClientId.set(attachment.id, persisted.id);
+    }
+  }
+  const context = canonicalCommand.message.context;
+  const normalizedContext =
+    context === undefined
+      ? undefined
+      : {
+          ...context,
+          records: context.records.map((record) =>
+            (record.kind === "image" || record.kind === "file") && "attachmentId" in record
+              ? {
+                  ...record,
+                  attachmentId:
+                    finalAttachmentIdByClientId.get(record.attachmentId) ?? record.attachmentId,
+                }
+              : record,
+          ),
+        };
+
   return {
     command: {
       ...canonicalCommand,
       message: {
         ...canonicalCommand.message,
-        attachments: staged.attachments,
+        attachments: normalizedAttachments,
+        ...(normalizedContext !== undefined ? { context: normalizedContext } : {}),
       },
     } satisfies OrchestrationCommand,
     attachmentStage: staged.stage,

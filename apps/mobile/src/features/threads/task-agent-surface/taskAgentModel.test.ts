@@ -52,6 +52,7 @@ function makeThread(
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     ...input,
+    pullRequests: input.pullRequests ?? [],
   };
 }
 

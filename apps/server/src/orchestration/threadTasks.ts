@@ -22,6 +22,7 @@ import {
   type ThreadTaskOutcome,
   type ThreadId,
 } from "@t3tools/contracts";
+import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 /** A thread is a task when it carries a parent link. */
 export function isTaskThread(thread: {
@@ -160,7 +161,11 @@ function describeAttachments(attachments: ReadonlyArray<ChatAttachment> | undefi
 function renderContextMessage(message: OrchestrationMessage): string {
   const role =
     message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
-  return `<message role="${role}">\n${message.text}${describeAttachments(message.attachments)}\n</message>`;
+  const text = projectComposerContextForProvider({
+    text: message.text,
+    records: message.context?.records ?? [],
+  });
+  return `<message role="${role}">\n${text}${describeAttachments(message.attachments)}\n</message>`;
 }
 
 export interface MaterializedTaskPrompt {

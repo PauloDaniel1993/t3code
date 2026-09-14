@@ -34,7 +34,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlError from "effect/unstable/sql/SqlError";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
@@ -106,7 +106,10 @@ function makeFailingTransactionSqlLayer(consumeFailure: () => boolean) {
   ).pipe(Layer.provide(SqlitePersistenceMemory));
 }
 
-function makeOrchestrationLayer(databasePath?: string) {
+function makeOrchestrationLayer(
+  databasePath?: string,
+  repositoryIdentityResolver?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
+) {
   const persistence = databasePath
     ? makeSqlitePersistenceLive(databasePath)
     : SqlitePersistenceMemory;
@@ -124,7 +127,14 @@ function makeOrchestrationLayer(databasePath?: string) {
     Layer.provide(ThreadPlanProgress.layer),
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
-    Layer.provide(RepositoryIdentityResolver.layer),
+    Layer.provide(
+      repositoryIdentityResolver
+        ? Layer.succeed(
+            RepositoryIdentityResolver.RepositoryIdentityResolver,
+            repositoryIdentityResolver,
+          )
+        : RepositoryIdentityResolver.layer,
+    ),
     Layer.provide(persistence),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
@@ -135,8 +145,13 @@ function makeOrchestrationTestLayer() {
   return makeOrchestrationLayer();
 }
 
-async function createOrchestrationSystem(databasePath?: string) {
-  const runtime = ManagedRuntime.make(makeOrchestrationLayer(databasePath));
+async function createOrchestrationSystem(
+  databasePath?: string,
+  repositoryIdentityResolver?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
+) {
+  const runtime = ManagedRuntime.make(
+    makeOrchestrationLayer(databasePath, repositoryIdentityResolver),
+  );
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
   return {
@@ -152,6 +167,13 @@ async function createOrchestrationSystem(databasePath?: string) {
 async function createSettingsBackedOrchestrationSystem(settings: {
   readonly threadTaskMaxRunning?: number;
   readonly threadTaskMaxTotal?: number | null;
+  readonly projectSettingsOverrides?: Record<
+    string,
+    {
+      readonly threadTaskMaxRunning?: number;
+      readonly threadTaskMaxTotal?: number | null;
+    }
+  >;
 }) {
   const taskLimitsLayer = ThreadTaskLimitsSourceLive.pipe(
     Layer.provideMerge(ServerSettingsService.layerTest(settings)),
@@ -276,6 +298,27 @@ describe("OrchestrationEngine", () => {
     const loweredLimit = await system.run(Effect.exit(tasks.createTask("27")));
     expect(Exit.isFailure(loweredLimit)).toBe(true);
     expect(JSON.stringify(loweredLimit)).toContain("has created 26 tasks (limit 26)");
+
+    await system.dispose();
+  });
+
+  it("uses the parent project's task cap in authoritative dispatch", async () => {
+    const suffix = "project-scoped";
+    const projectId = asProjectId(`project-task-limits-${suffix}`);
+    const system = await createSettingsBackedOrchestrationSystem({
+      threadTaskMaxTotal: 100,
+      projectSettingsOverrides: {
+        [projectId]: { threadTaskMaxTotal: 1 },
+      },
+    });
+    const tasks = await initializeTaskParent(system, suffix);
+
+    await system.run(tasks.createTask("1"));
+    await system.run(tasks.finishTask("1"));
+
+    const projectLimit = await system.run(Effect.exit(tasks.createTask("2")));
+    expect(Exit.isFailure(projectLimit)).toBe(true);
+    expect(JSON.stringify(projectLimit)).toContain("has created 1 tasks (limit 1)");
 
     await system.dispose();
   });
@@ -568,6 +611,7 @@ describe("OrchestrationEngine", () => {
           runtimeMode: "full-access" as const,
           branch: null,
           worktreePath: null,
+          pullRequests: [],
           latestTurn: null,
           createdAt: "2026-03-03T00:00:02.000Z",
           updatedAt: "2026-03-03T00:00:03.000Z",
@@ -628,6 +672,7 @@ describe("OrchestrationEngine", () => {
           getEventReplayStats: () => Effect.die("unused"),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getProjectShellById: () => Effect.succeed(Option.none()),
+          getProjectShells: () => Effect.succeed([]),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
           getImportedAgentSessionSources: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
@@ -1684,7 +1729,22 @@ describe("OrchestrationEngine", () => {
   it.each(["unlink", "relink", "branch", "worktree", "project", "delete"] as const)(
     "rejects PR discovery completed after a newer %s command",
     async (change) => {
-      const system = await createOrchestrationSystem();
+      const system = await createOrchestrationSystem(undefined, {
+        resolve: (workspaceRoot) =>
+          Effect.succeed({
+            canonicalKey: "example.test/owner/repository",
+            provider: "github",
+            displayName: "owner/repository",
+            rootPath: workspaceRoot,
+            locator: {
+              source: "git-remote",
+              remoteName: "origin",
+              remoteUrl: "https://example.test/owner/repository.git",
+            },
+          }),
+      });
+      // Same-tick links must replace the old PR, not rely on timestamp ordering.
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(now()));
       try {
         const projectId = ProjectId.make("pr-race-project");
         const threadId = ThreadId.make("pr-race-thread");
@@ -1733,6 +1793,7 @@ describe("OrchestrationEngine", () => {
             linkedPullRequest: previous,
           }),
         );
+        expect((await system.readModel()).threads[0]?.linkedPullRequest).toEqual(previous);
         const metadataChanges = {
           unlink: { linkedPullRequest: null },
           relink: {
@@ -1786,6 +1847,9 @@ describe("OrchestrationEngine", () => {
         if (change === "delete") return;
         const current = (await system.readModel()).threads[0];
         expect(current?.branchPullRequest ?? null).toBeNull();
+        expect(current?.pullRequests.map((link) => link.number)).toEqual(
+          change === "unlink" ? [] : change === "relink" ? [3] : [1],
+        );
         expect(current?.linkedPullRequest ?? null).toEqual(
           change === "unlink"
             ? null
@@ -1794,6 +1858,7 @@ describe("OrchestrationEngine", () => {
               : previous,
         );
       } finally {
+        clock.mockRestore();
         await system.dispose();
       }
     },

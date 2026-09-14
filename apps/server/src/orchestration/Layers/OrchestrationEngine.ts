@@ -217,7 +217,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
         // Read per command, not once at startup: the task caps are settings,
         // and editing them has to take hold without a server restart.
-        const limits = yield* readThreadTaskLimits;
+        const taskParentThreadId =
+          envelope.command.type === "thread.task.create" ? envelope.command.parentThreadId : null;
+        const taskParent =
+          taskParentThreadId === null
+            ? undefined
+            : commandReadModel.threads.find((thread) => thread.id === taskParentThreadId);
+        const limits = yield* readThreadTaskLimits(taskParent?.projectId ?? null);
 
         if (
           envelope.command.type === "thread.auto-settle" &&
@@ -258,6 +264,29 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             commandType: envelope.command.type,
             detail: `thread ${envelope.command.threadId} has live background work`,
           });
+        }
+
+        // New and moved projects do not carry a resolved identity in the event-derived
+        // command model. Legacy PR edits need it to identify the link they replace.
+        if (
+          envelope.command.type === "thread.meta.update" &&
+          envelope.command.linkedPullRequest !== undefined
+        ) {
+          const threadId = envelope.command.threadId;
+          const thread = commandReadModel.threads.find((thread) => thread.id === threadId);
+          if (thread !== undefined) {
+            const project = yield* projectionSnapshotQuery.getProjectShellById(thread.projectId);
+            if (Option.isSome(project)) {
+              commandReadModel = {
+                ...commandReadModel,
+                projects: commandReadModel.projects.map((entry) =>
+                  entry.id === thread.projectId
+                    ? { ...entry, repositoryIdentity: project.value.repositoryIdentity }
+                    : entry,
+                ),
+              };
+            }
+          }
         }
 
         // Command snapshots omit activities at startup and cap them while running.

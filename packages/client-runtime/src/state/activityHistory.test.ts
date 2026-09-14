@@ -54,6 +54,7 @@ function thread(
     deletedAt: null,
     settledOverride: null,
     settledAt: null,
+    pullRequests: [],
     messages: [],
     proposedPlans: [],
     activities,

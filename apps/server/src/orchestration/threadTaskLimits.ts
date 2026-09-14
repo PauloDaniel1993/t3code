@@ -14,33 +14,36 @@
  * when no server settings layer is in scope.
  */
 import { DEFAULT_THREAD_TASK_LIMITS, resolveThreadTaskLimits } from "@t3tools/contracts";
-import type { ThreadTaskLimits } from "@t3tools/contracts";
+import type { ProjectId, ThreadTaskLimits } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { ServerSettingsService } from "../serverSettings.ts";
 
-export const ThreadTaskLimitsSource = Context.Reference<Effect.Effect<ThreadTaskLimits>>(
-  "@t3tools/server/orchestration/ThreadTaskLimitsSource",
-  {
-    defaultValue: () => Effect.succeed(DEFAULT_THREAD_TASK_LIMITS),
-  },
-);
+export const ThreadTaskLimitsSource = Context.Reference<
+  (projectId: ProjectId | null) => Effect.Effect<ThreadTaskLimits>
+>("@t3tools/server/orchestration/ThreadTaskLimitsSource", {
+  defaultValue: () => () => Effect.succeed(DEFAULT_THREAD_TASK_LIMITS),
+});
 
 export const ThreadTaskLimitsSourceLive = Layer.effect(
   ThreadTaskLimitsSource,
-  Effect.map(ServerSettingsService, (serverSettingsService) =>
-    serverSettingsService.getSettings.pipe(
-      Effect.map((settings) =>
-        resolveThreadTaskLimits({
-          maxRunning: settings.threadTaskMaxRunning,
-          maxTotal: settings.threadTaskMaxTotal,
+  Effect.map(
+    ServerSettingsService,
+    (serverSettingsService) => (projectId) =>
+      serverSettingsService.getSettings.pipe(
+        Effect.map((settings) => {
+          const resolved = resolveProjectSettings(settings, projectId).settings;
+          return resolveThreadTaskLimits({
+            maxRunning: resolved.threadTaskMaxRunning,
+            maxTotal: resolved.threadTaskMaxTotal,
+          });
         }),
+        // An unreadable settings file must not make task creation impossible;
+        // the built-in caps are a working answer.
+        Effect.orElseSucceed(() => DEFAULT_THREAD_TASK_LIMITS),
       ),
-      // An unreadable settings file must not make task creation impossible;
-      // the built-in caps are a working answer.
-      Effect.orElseSucceed(() => DEFAULT_THREAD_TASK_LIMITS),
-    ),
   ),
 );
