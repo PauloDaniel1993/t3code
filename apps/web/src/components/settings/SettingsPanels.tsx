@@ -44,6 +44,7 @@ import {
   MIN_PANEL_ANIMATION_DURATION_MS,
   MIN_PROMPT_FONT_SIZE,
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
+  type ResponseStreamingMode,
   MIN_TERMINAL_FONT_SIZE,
   type QuitConfirmationMode,
 } from "@t3tools/contracts/settings";
@@ -100,6 +101,15 @@ import { isMacPlatform } from "../../lib/utils";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
@@ -166,12 +176,23 @@ import {
 import { searchableSetting } from "./settingsSearch";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
-import { CompactSidebarPreview } from "./CompactSidebarPreview";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
   artwork: "Artwork",
   pill: "Version pill",
   none: "None",
+};
+
+const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
+  turn: "Wait for the full response",
+  paragraph: "Show finished paragraphs",
+  token: "Token by token (legacy)",
+};
+
+const RESPONSE_STREAMING_MODE_DESCRIPTIONS: Record<ResponseStreamingMode, string> = {
+  turn: "Text appears once the agent finishes its turn.",
+  paragraph: "Each paragraph or code block appears as soon as it is complete.",
+  token: "Every token repaints the message as it arrives. Slower and harder to read.",
 };
 
 const TIMESTAMP_FORMAT_LABELS = {
@@ -508,10 +529,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(theme !== "system" ? ["Theme"] : []),
       ...(!followSystem ? ["Follow system"] : []),
       ...(themeHalves !== null ? ["Theme mix"] : []),
-      ...(settings.compactSidebarEnabled !== DEFAULT_UNIFIED_SETTINGS.compactSidebarEnabled ||
-      settings.sidebarCompactThreadRows !== DEFAULT_UNIFIED_SETTINGS.sidebarCompactThreadRows
-        ? ["Compact sidebar"]
-        : []),
       ...(settings.appearanceContrast !== DEFAULT_UNIFIED_SETTINGS.appearanceContrast
         ? ["Contrast"]
         : []),
@@ -567,12 +584,14 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.composerCollapseOnScroll !== DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll
         ? ["Collapse composer on scroll"]
         : []),
+      ...(settings.followUpBehavior !== DEFAULT_UNIFIED_SETTINGS.followUpBehavior
+        ? ["Follow-up behavior"]
+        : []),
       ...(settings.contextWindowMeterEnabled !== DEFAULT_UNIFIED_SETTINGS.contextWindowMeterEnabled
         ? ["Context window indicator"]
         : []),
-      ...(settings.enableLegacyTokenStreaming !==
-      DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming
-        ? ["Stream token by token"]
+      ...(settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode
+        ? ["Response streaming"]
         : []),
       ...(settings.enableProviderUpdateChecks !==
       DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
@@ -635,7 +654,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.browserLinkTarget,
       settings.browserAutoShowFloatingPreview,
       settings.appearanceContrast,
-      settings.compactSidebarEnabled,
       settings.diffColorScheme,
       settings.enableAgentBrowserAccess,
       settings.confirmQuit,
@@ -643,6 +661,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadDelete,
       settings.confirmThreadUnpin,
       settings.composerCollapseOnScroll,
+      settings.followUpBehavior,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
@@ -662,12 +681,11 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.fontSizeTerminal,
       settings.glassOpacity,
       settings.panelAnimationDurationMs,
-      settings.enableLegacyTokenStreaming,
+      settings.responseStreamingMode,
       settings.enableProviderUpdateChecks,
       settings.continueThreadsAfterServerUpdate,
       settings.sidebarAutoSettleAfterDays,
       settings.sidebarAutoSettleOnMerge,
-      settings.sidebarCompactThreadRows,
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.showSkillsInSlashMenu,
@@ -745,7 +763,6 @@ export function useSettingsRestore(onRestored?: () => void) {
     }
     updateSettings({
       appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
-      compactSidebarEnabled: DEFAULT_UNIFIED_SETTINGS.compactSidebarEnabled,
       diffColorScheme: DEFAULT_UNIFIED_SETTINGS.diffColorScheme,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       notificationMode: DEFAULT_UNIFIED_SETTINGS.notificationMode,
@@ -757,6 +774,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
+      followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
       contextWindowMeterEnabled: DEFAULT_UNIFIED_SETTINGS.contextWindowMeterEnabled,
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
@@ -767,10 +785,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       threadTasksEnabled: DEFAULT_UNIFIED_SETTINGS.threadTasksEnabled,
       threadTaskMaxRunning: DEFAULT_UNIFIED_SETTINGS.threadTaskMaxRunning,
       threadTaskMaxTotal: DEFAULT_UNIFIED_SETTINGS.threadTaskMaxTotal,
-      sidebarCompactThreadRows: DEFAULT_UNIFIED_SETTINGS.sidebarCompactThreadRows,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
-      enableLegacyTokenStreaming: DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming,
+      responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
@@ -821,6 +838,44 @@ export function useSettingsRestore(onRestored?: () => void) {
     changedSettingLabels,
     restoreDefaults,
   };
+}
+
+/**
+ * Gate in front of the legacy token-by-token mode. The primary action steers
+ * the user to paragraph streaming; the legacy path is the quiet option.
+ */
+function TokenStreamingWarningDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+  onUseParagraphs,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+  onUseParagraphs: () => void;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogPopup className="max-w-lg">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Token by token is a worse experience</AlertDialogTitle>
+          <AlertDialogDescription>
+            Token streaming repaints the message on every delta. It is slower, harder to read, and
+            costs more CPU on every connected device. This mode stays only for backwards
+            compatibility. Use paragraph streaming instead.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <Button variant="ghost-muted" className="sm:mr-auto" onClick={onConfirm}>
+            Use token by token
+          </Button>
+          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+          <Button onClick={onUseParagraphs}>Use paragraphs</Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
 }
 
 function BackgroundActivityAdvancedDialog({
@@ -1110,19 +1165,6 @@ export function AppearanceSettingsPanel() {
   const [isImportThemeOpen, setIsImportThemeOpen] = useState(false);
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const compactSidebarMode = settings.compactSidebarEnabled
-    ? settings.sidebarCompactThreadRows
-      ? "both"
-      : "rail"
-    : settings.sidebarCompactThreadRows
-      ? "threads"
-      : "off";
-  const compactSidebarModes = {
-    off: "Off",
-    rail: "Rail only",
-    threads: "Threads only",
-    both: "Both",
-  };
   const environmentStageLabel = useEnvironmentStageLabel();
   const showEnvironmentIdentification =
     resolveEnvironmentIdentificationPillLabel(environmentStageLabel) !== null;
@@ -1405,64 +1447,6 @@ export function AppearanceSettingsPanel() {
                 }
               />
             ) : null
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection id="appearance-sidebar" title="Sidebar">
-        <SettingsRow
-          {...searchableSetting("compact-sidebar")}
-          description="Choose a collapsed icon rail, denser thread rows, or both. Click the preview to collapse or expand."
-          resetAction={
-            settings.compactSidebarEnabled !== DEFAULT_UNIFIED_SETTINGS.compactSidebarEnabled ||
-            settings.sidebarCompactThreadRows !==
-              DEFAULT_UNIFIED_SETTINGS.sidebarCompactThreadRows ? (
-              <SettingResetButton
-                label="compact sidebar"
-                onClick={() =>
-                  updateSettings({
-                    compactSidebarEnabled: DEFAULT_UNIFIED_SETTINGS.compactSidebarEnabled,
-                    sidebarCompactThreadRows: DEFAULT_UNIFIED_SETTINGS.sidebarCompactThreadRows,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <div className="grid w-full grid-cols-[5rem_1fr] items-center gap-3 sm:w-auto sm:grid-cols-[7rem_10rem] sm:gap-4">
-              <CompactSidebarPreview
-                key={compactSidebarMode}
-                railEnabled={settings.compactSidebarEnabled}
-                compactRows={settings.sidebarCompactThreadRows}
-              />
-              <Select
-                value={compactSidebarMode}
-                onValueChange={(value) => {
-                  if (
-                    value !== "off" &&
-                    value !== "rail" &&
-                    value !== "threads" &&
-                    value !== "both"
-                  )
-                    return;
-                  updateSettings({
-                    compactSidebarEnabled: value === "rail" || value === "both",
-                    sidebarCompactThreadRows: value === "threads" || value === "both",
-                  });
-                }}
-              >
-                <SelectTrigger size="sm" className="w-full" aria-label="Compact sidebar">
-                  <SelectValue>{compactSidebarModes[compactSidebarMode]}</SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {Object.entries(compactSidebarModes).map(([value, label]) => (
-                    <SelectItem key={value} hideIndicator value={value}>
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
-            </div>
           }
         />
       </SettingsSection>
@@ -2000,6 +1984,8 @@ function AutoSettleDaysInput({
   value: number;
   onCommit: (days: number) => void;
 }) {
+  // Local draft so the field can be emptied mid-edit; the setting only moves
+  // on valid input and snaps back to the persisted value on blur.
   const [draft, setDraft] = useState(String(value));
   useEffect(() => {
     setDraft(String(value));
@@ -2015,6 +2001,9 @@ function AutoSettleDaysInput({
       value={draft}
       onChange={(event) => {
         setDraft(event.target.value);
+        // Number(), not parseInt: "3.5" must be rejected (not truncated to a
+        // committed 3 while the field shows 3.5) — commit only when the
+        // persisted value matches the displayed one.
         const parsed = Number(event.target.value);
         if (
           Number.isInteger(parsed) &&
@@ -2084,7 +2073,6 @@ function BoundedNumberInput({
 const LEGACY_FEATURE_TARGET_IDS: ReadonlySet<string> = new Set([
   "legacy-plan-mode",
   "legacy-context-window-indicator",
-  "legacy-token-streaming",
   "legacy-sidebar",
 ]);
 
@@ -2153,35 +2141,6 @@ function LegacyFeaturesSection() {
               }
             />
             <SettingsRow
-              serverScoped
-              settingKeys={["enableLegacyTokenStreaming"]}
-              {...searchableSetting("legacy-token-streaming")}
-              description="Stream output token by token. This legacy mode is slower and harder to follow."
-              control={
-                <ScopedSwitch
-                  settingKeys={["enableLegacyTokenStreaming"]}
-                  checked={settings.enableLegacyTokenStreaming}
-                  onCheckedChange={(checked) => {
-                    if (!checked) {
-                      updateSettings({ enableLegacyTokenStreaming: false });
-                      return;
-                    }
-                    void (async () => {
-                      const api = readLocalApi();
-                      const confirmed = await (api ?? ensureLocalApi()).dialogs.confirm(
-                        [
-                          "Turn on token-by-token output?",
-                          "It is significantly slower than the default buffered output and hurts the reading experience. This switch exists only for backwards compatibility.",
-                        ].join("\n"),
-                      );
-                      if (confirmed) updateSettings({ enableLegacyTokenStreaming: true });
-                    })();
-                  }}
-                  aria-label="Stream token by token (legacy)"
-                />
-              }
-            />
-            <SettingsRow
               {...searchableSetting("legacy-sidebar")}
               description="Restore per-project thread trees instead of the default flat sidebar."
               control={
@@ -2214,6 +2173,8 @@ export function GeneralSettingsPanel() {
   const isEnvironmentScope = scope.environmentIds.length === 1 && environmentId !== null;
   const hasServerTargets = connectedEnvironments.length > 0;
   const [backgroundActivityDialogOpen, setBackgroundActivityDialogOpen] = useState(false);
+  const [tokenStreamingWarningOpen, setTokenStreamingWarningOpen] = useState(false);
+  const mixedResponseStreamingMode = useScopedSettingsMixed(["responseStreamingMode"]);
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
   );
@@ -2517,6 +2478,76 @@ export function GeneralSettingsPanel() {
           }
         />
         <SettingsRow
+          serverScoped
+          settingKeys={["responseStreamingMode"]}
+          {...searchableSetting("response-streaming")}
+          description={
+            mixedResponseStreamingMode
+              ? "The selected targets use different streaming modes."
+              : RESPONSE_STREAMING_MODE_DESCRIPTIONS[settings.responseStreamingMode]
+          }
+          resetAction={
+            settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode ? (
+              <SettingResetButton
+                label="response streaming"
+                onClick={() =>
+                  updateSettings({
+                    responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <>
+              <Select
+                value={mixedResponseStreamingMode ? null : settings.responseStreamingMode}
+                onValueChange={(value) => {
+                  if (value === "token") {
+                    // The legacy path needs an explicit confirmation.
+                    setTokenStreamingWarningOpen(true);
+                    return;
+                  }
+                  if (value === "turn" || value === "paragraph") {
+                    updateSettings({ responseStreamingMode: value });
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" className="w-full sm:w-56" aria-label="Response streaming">
+                  <SelectValue>
+                    {(value: ResponseStreamingMode | null) =>
+                      value === null ? "Mixed" : RESPONSE_STREAMING_MODE_LABELS[value]
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem hideIndicator value="turn">
+                    {RESPONSE_STREAMING_MODE_LABELS.turn}
+                  </SelectItem>
+                  <SelectItem hideIndicator value="paragraph">
+                    {RESPONSE_STREAMING_MODE_LABELS.paragraph}
+                  </SelectItem>
+                  <SelectItem hideIndicator value="token">
+                    {RESPONSE_STREAMING_MODE_LABELS.token}
+                  </SelectItem>
+                </SelectPopup>
+              </Select>
+              <TokenStreamingWarningDialog
+                open={tokenStreamingWarningOpen}
+                onOpenChange={setTokenStreamingWarningOpen}
+                onConfirm={() => {
+                  updateSettings({ responseStreamingMode: "token" });
+                  setTokenStreamingWarningOpen(false);
+                }}
+                onUseParagraphs={() => {
+                  updateSettings({ responseStreamingMode: "paragraph" });
+                  setTokenStreamingWarningOpen(false);
+                }}
+              />
+            </>
+          }
+        />
+        <SettingsRow
           {...searchableSetting("hide-whitespace-changes")}
           description="Set whether the diff panel ignores whitespace-only edits by default."
           resetAction={
@@ -2694,6 +2725,47 @@ export function GeneralSettingsPanel() {
               }
               aria-label="Collapse composer on scroll"
             />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("follow-up-behavior")}
+          description="Queue follow-ups while the agent runs or steer the current turn."
+          resetAction={
+            settings.followUpBehavior !== DEFAULT_UNIFIED_SETTINGS.followUpBehavior ? (
+              <SettingResetButton
+                label="follow-up behavior"
+                onClick={() =>
+                  updateSettings({
+                    followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.followUpBehavior}
+              onValueChange={(value) => {
+                if (value === "queue" || value === "steer") {
+                  updateSettings({ followUpBehavior: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Follow-up behavior">
+                <SelectValue>
+                  {settings.followUpBehavior === "queue" ? "Queue" : "Steer"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="queue">
+                  Queue
+                </SelectItem>
+                <SelectItem hideIndicator value="steer">
+                  Steer
+                </SelectItem>
+              </SelectPopup>
+            </Select>
           }
         />
 

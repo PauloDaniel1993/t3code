@@ -16,6 +16,7 @@ import {
   failEnvironmentNotFound,
   requireEnvironmentScope,
 } from "../auth/http.ts";
+import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import * as ServerRuntimeStartup from "../serverRuntimeStartup.ts";
@@ -30,6 +31,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const awaitRecoveredState = startup.awaitCommandReady.pipe(
       Effect.catch((cause) => failEnvironmentInternal("orchestration_snapshot_failed", cause)),
     );
+    const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
 
     return handlers
       .handle(
@@ -101,10 +103,18 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.dispatch")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          yield* ProjectCloneTracker.rejectCommandsDuringClone(
+            projectCloneTracker,
+            args.payload,
+          ).pipe(
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+            ),
+          );
           const normalized = yield* normalizeDispatchCommand(args.payload).pipe(
             Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
           );
-          return yield* startup
+          const result = yield* startup
             .enqueueCommand(
               orchestrationEngine.dispatch(
                 normalized.command,
@@ -119,6 +129,11 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
                 failEnvironmentInternal("orchestration_dispatch_failed", cause),
               ),
             );
+          yield* ProjectCloneTracker.discardCloneForDeletedProject(
+            projectCloneTracker,
+            normalized.command,
+          );
+          return result;
         }),
       );
   }),

@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { ExecutionEnvironmentDescriptor, ORCHESTRATION_PROTOCOL_VERSION } from "./environment.ts";
 
 const decodeDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
 
@@ -14,6 +14,29 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("keeps protocol negotiation and fork capabilities independent", () => {
+    const decoded = decodeDescriptor({
+      ...descriptor,
+      orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+      capabilities: {
+        ...descriptor.capabilities,
+        projectCloneTracking: true,
+        threadTasks: true,
+      },
+    });
+
+    expect(decoded.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
+    expect(decoded.capabilities.projectCloneTracking).toBe(true);
+    expect(decoded.capabilities.threadTasks).toBe(true);
+  });
+
+  it("leaves versioned capabilities absent for older descriptors", () => {
+    const decoded = decodeDescriptor(descriptor);
+    expect(decoded.orchestrationProtocolVersion).toBeUndefined();
+    expect(decoded.capabilities.projectCloneTracking).toBeUndefined();
+    expect(decoded.capabilities.threadTasks).toBeUndefined();
+  });
+
   it("treats a missing pull-request capability as unsupported under version skew", () => {
     expect(decodeDescriptor(descriptor).capabilities.pullRequests).toBeUndefined();
   });

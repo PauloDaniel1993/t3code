@@ -88,6 +88,7 @@ function createProviderServiceHarness(
   hasSession = true,
   sessionCwd = cwd,
   providerName: ProviderSession["provider"] = ProviderDriverKind.make("codex"),
+  sessionThreadIds: ReadonlyArray<ThreadId> = [ThreadId.make("thread-1")],
 ) {
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -102,17 +103,20 @@ function createProviderServiceHarness(
     Effect.die(new Error("Unsupported provider call in test")) as Effect.Effect<A, never>;
   const listSessions = () =>
     hasSession
-      ? Effect.succeed([
-          {
-            provider: providerName,
-            status: "ready",
-            runtimeMode: "full-access",
-            threadId: ThreadId.make("thread-1"),
-            cwd: sessionCwd,
-            createdAt: now,
-            updatedAt: now,
-          },
-        ] satisfies ReadonlyArray<ProviderSession>)
+      ? Effect.succeed(
+          sessionThreadIds.map(
+            (threadId) =>
+              ({
+                provider: providerName,
+                status: "ready",
+                runtimeMode: "full-access",
+                threadId,
+                cwd: sessionCwd,
+                createdAt: now,
+                updatedAt: now,
+              }) satisfies ProviderSession,
+          ),
+        )
       : Effect.succeed([] as ReadonlyArray<ProviderSession>);
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
@@ -300,6 +304,7 @@ describe("CheckpointReactor", () => {
     readonly localStatusRefName?: string | null;
     readonly providerSessionCwd?: string;
     readonly providerName?: ProviderDriverKind;
+    readonly providerSessionThreadIds?: ReadonlyArray<ThreadId>;
     readonly gitStatusRefreshCalls?: Array<string>;
     readonly pullRequestRefreshCalls?: Array<string>;
     readonly pullRequestRefresh?: Effect.Effect<void>;
@@ -314,6 +319,7 @@ describe("CheckpointReactor", () => {
       options?.hasSession ?? true,
       options?.providerSessionCwd ?? cwd,
       options?.providerName ?? ProviderDriverKind.make("codex"),
+      options?.providerSessionThreadIds,
     );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -335,8 +341,9 @@ describe("CheckpointReactor", () => {
     const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
       prefix: "t3-checkpoint-reactor-test-",
     });
-    const pullRequestRefreshes: number[] = [];
-    const refreshAfterTurn = Effect.sync(() => void pullRequestRefreshes.push(1));
+    const pullRequestRefreshes: ProjectId[] = [];
+    const refreshAfterTurn = (projectId: ProjectId) =>
+      Effect.sync(() => void pullRequestRefreshes.push(projectId));
     const vcsStatusBroadcasterLayer = Layer.succeed(VcsStatusBroadcaster, {
       getStatus: () => Effect.die("getStatus should not be called in this test"),
       refreshLocalStatus: (cwd: string) =>
@@ -880,6 +887,68 @@ describe("CheckpointReactor", () => {
     expect(pullRequestRefreshCalls).toEqual([harness.cwd]);
   });
 
+  effectIt.effect("refreshes a task turn's owning project once", () =>
+    Effect.gen(function* () {
+      const pullRequestRefreshCalls: string[] = [];
+      const taskThreadId = ThreadId.make("task-thread-1");
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          seedFilesystemCheckpoints: false,
+          threadBranch: "t3code/feature",
+          localStatusRefName: "t3code/feature",
+          providerSessionThreadIds: [taskThreadId],
+          pullRequestRefreshCalls,
+        }),
+      );
+      const taskTurnId = asTurnId("task-turn-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+
+      yield* harness.engine.dispatch({
+        type: "thread.task.create",
+        commandId: CommandId.make("cmd-task-create-refresh-pr"),
+        parentThreadId: ThreadId.make("thread-1"),
+        taskThreadId,
+        title: "Task",
+        prompt: "Complete the task.",
+        context: { kind: "none" },
+        createdBy: "user",
+        createdAt,
+      });
+
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.make("evt-task-turn-started-refresh-pr"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: taskThreadId,
+        turnId: taskTurnId,
+      });
+      yield* Effect.promise(() =>
+        waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(taskThreadId, 0)),
+      );
+      NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "task turn\n", "utf8");
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.make("evt-task-turn-completed-refresh-pr"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: taskThreadId,
+        turnId: taskTurnId,
+        payload: { state: "completed" },
+      });
+
+      yield* Effect.promise(harness.drain);
+
+      const taskThread = (yield* Effect.promise(harness.readModel)).threads.find(
+        (thread) => thread.id === taskThreadId,
+      );
+      expect(taskThread?.projectId).toBe(asProjectId("project-1"));
+      expect(taskThread?.checkpoints).toHaveLength(1);
+      expect(pullRequestRefreshCalls).toEqual([harness.cwd]);
+      expect(harness.pullRequestRefreshes).toEqual([asProjectId("project-1")]);
+    }),
+  );
+
   effectIt.effect("captures files while the pull request lookup is still pending", () =>
     Effect.gen(function* () {
       const lookupStarted = yield* Deferred.make<void>();
@@ -1173,7 +1242,7 @@ describe("CheckpointReactor", () => {
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
     await harness.drain();
     expect(pullRequestRefreshCalls).toEqual([harness.cwd]);
-    expect(harness.pullRequestRefreshes).toEqual([1]);
+    expect(harness.pullRequestRefreshes).toEqual([asProjectId("project-1")]);
   });
 
   it("captures pre-turn and completion checkpoints for claude runtime events", async () => {

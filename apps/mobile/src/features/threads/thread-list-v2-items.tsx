@@ -1,3 +1,5 @@
+import { RowPressable } from "../../components/RowPressable";
+import { CustomSnoozeSheet } from "./CustomSnoozeSheet";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
@@ -312,7 +314,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
         onPressAction={handleMenuAction}
         shouldOpenOnLongPress
       >
-        <Pressable
+        <RowPressable
           accessibilityHint={
             isDraft
               ? "Opens the draft in the new task composer"
@@ -320,7 +322,8 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
           }
           accessibilityLabel={pendingTask.title}
           accessibilityRole="button"
-          className={sidebarPane ? "bg-drawer active:bg-subtle" : undefined}
+          key={pendingTask.key}
+          className={sidebarPane ? "bg-drawer" : "bg-screen"}
           onPress={() => onSelectPendingTask(pendingTask)}
           style={
             sidebarPane
@@ -329,20 +332,20 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
                   paddingHorizontal: 12,
                   paddingVertical: 10,
                 }
-              : ({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })
+              : undefined
           }
         >
           {sidebarPane ? (
             rowContent
           ) : (
-            <View className="bg-screen">
+            <View>
               <View className="px-5 py-2.5">{rowContent}</View>
               {props.showTrailingDivider !== false ? (
                 <View className="ml-5 h-px bg-border-subtle" />
               ) : null}
             </View>
           )}
-        </Pressable>
+        </RowPressable>
       </ControlPillMenu>
     </>
   );
@@ -397,6 +400,7 @@ function ThreadListV2RowComponent(props: {
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly onNewThreadOnBranch: (thread: EnvironmentThreadShell) => void;
+  readonly onRenameThread: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => void;
   readonly onSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly onSnoozeThread: (thread: EnvironmentThreadShell, snoozedUntil: string) => void;
@@ -441,6 +445,7 @@ function ThreadListV2RowComponent(props: {
     variant,
     onSelectThread,
     onDeleteThread,
+    onRenameThread,
     onRegenerateThreadTitle,
     onNewThreadOnBranch,
     onSettleThread,
@@ -462,7 +467,6 @@ function ThreadListV2RowComponent(props: {
   const theme = useUniwindTheme();
   const screenColor = theme["--color-screen"];
   const drawerColor = theme["--color-drawer"];
-  const pressedBackgroundColor = theme["--color-subtle"];
   const selectedBackgroundColor =
     theme[materialYouStyleLayoutActive ? "--color-thread-selected" : "--color-user-bubble"];
   const sidebarPane = props.pane === "sidebar";
@@ -488,11 +492,13 @@ function ThreadListV2RowComponent(props: {
     settledTimestamp !== null ? relativeTime(settledTimestamp) : threadTimeLabel(thread);
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
+  const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
     [onRegenerateThreadTitle, thread],
   );
   const handleSettle = useCallback(() => onSettleThread(thread), [onSettleThread, thread]);
+  const [customSnoozeOpen, setCustomSnoozeOpen] = useState(false);
   const handleSnooze = useCallback(
     (snoozedUntil: string) => onSnoozeThread(thread, snoozedUntil),
     [onSnoozeThread, thread],
@@ -530,12 +536,14 @@ function ThreadListV2RowComponent(props: {
     [props.snoozePresetMinute, swipeActions.secondary],
   );
   const snoozePresetActions = useMemo<MenuAction[]>(
-    () =>
-      snoozePresets.map((preset) => ({
+    () => [
+      ...snoozePresets.map((preset) => ({
         id: `snooze:${preset.id}`,
         title: preset.label,
         subtitle: preset.whenLabel,
       })),
+      { id: "snooze:custom", title: "Custom…" },
+    ],
     [snoozePresets],
   );
   // Task children never move in a top-level section or gain a new pin. A stale
@@ -577,12 +585,14 @@ function ThreadListV2RowComponent(props: {
       thread.pinnedAt,
     ],
   );
-  const titleRegenerationMenuItems = useMemo<MenuAction[]>(
-    () =>
-      buildThreadTitleRegenerationMenuItems({
+  const titleMenuItems = useMemo<MenuAction[]>(
+    () => [
+      { id: "rename", title: "Rename", image: "square.and.pencil" },
+      ...buildThreadTitleRegenerationMenuItems({
         supported: props.titleRegenerationSupported,
         isRegenerating: thread.titleRegeneration != null,
       }),
+    ],
     [props.titleRegenerationSupported, thread.titleRegeneration],
   );
   const snoozableCardMenuActions = useMemo<MenuAction[]>(
@@ -595,19 +605,19 @@ function ThreadListV2RowComponent(props: {
         subactions: snoozePresetActions,
       },
       ...arrangementMenuItems,
-      ...titleRegenerationMenuItems,
+      ...titleMenuItems,
       { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
     ],
-    [arrangementMenuItems, snoozePresetActions, titleRegenerationMenuItems],
+    [arrangementMenuItems, snoozePresetActions, titleMenuItems],
   );
   const cardMenuActions = useMemo<MenuAction[]>(
     () => [
       CARD_MENU_ACTIONS[0]!,
       ...arrangementMenuItems,
-      ...titleRegenerationMenuItems,
+      ...titleMenuItems,
       ...CARD_MENU_ACTIONS.slice(1),
     ],
-    [arrangementMenuItems, titleRegenerationMenuItems],
+    [arrangementMenuItems, titleMenuItems],
   );
   const slimMenuActions = useMemo<MenuAction[]>(
     () => [
@@ -615,23 +625,23 @@ function ThreadListV2RowComponent(props: {
       ...arrangementMenuItems.filter(
         (action) => action.id !== "move-up" && action.id !== "move-down",
       ),
-      ...titleRegenerationMenuItems,
+      ...titleMenuItems,
       SLIM_MENU_ACTIONS[1]!,
     ],
-    [arrangementMenuItems, titleRegenerationMenuItems],
+    [arrangementMenuItems, titleMenuItems],
   );
   const snoozedMenuActions = useMemo<MenuAction[]>(
-    () => [SNOOZED_MENU_ACTIONS[0]!, ...titleRegenerationMenuItems, SNOOZED_MENU_ACTIONS[1]!],
-    [titleRegenerationMenuItems],
+    () => [SNOOZED_MENU_ACTIONS[0]!, ...titleMenuItems, SNOOZED_MENU_ACTIONS[1]!],
+    [titleMenuItems],
   );
   const legacyMenuActions = useMemo<MenuAction[]>(
     () => [
       LEGACY_MENU_ACTIONS[0]!,
       ...arrangementMenuItems,
-      ...titleRegenerationMenuItems,
+      ...titleMenuItems,
       LEGACY_MENU_ACTIONS[1]!,
     ],
-    [arrangementMenuItems, titleRegenerationMenuItems],
+    [arrangementMenuItems, titleMenuItems],
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
@@ -645,8 +655,13 @@ function ThreadListV2RowComponent(props: {
       if (nativeEvent.event === "move-up") handleMoveUp();
       if (nativeEvent.event === "move-down") handleMoveDown();
       if (nativeEvent.event === "archive") handleArchive();
+      if (nativeEvent.event === "rename") handleRename();
       if (nativeEvent.event === "regenerate-title") handleRegenerateTitle();
       if (nativeEvent.event === "delete") handleDelete();
+      if (nativeEvent.event === "snooze:custom") {
+        setCustomSnoozeOpen(true);
+        return;
+      }
       const snoozeSelection = resolveThreadListV2SnoozeMenuSelection({
         event: nativeEvent.event,
         displayedPresets: snoozePresets,
@@ -664,6 +679,7 @@ function ThreadListV2RowComponent(props: {
       handleArchive,
       handleDelete,
       handleRegenerateTitle,
+      handleRename,
       handleMoveDown,
       handleMoveUp,
       handlePin,
@@ -954,6 +970,12 @@ function ThreadListV2RowComponent(props: {
       taskAgentDisclosure === null ? null : (
         <TaskAgentDisclosureChip {...taskAgentDisclosure} onPressThread={handleOpenThread} />
       );
+    const rowInteractionClassName =
+      selected && (sidebarPane || materialYouStyleLayoutActive)
+        ? materialYouStyleLayoutActive
+          ? "bg-thread-selected-foreground"
+          : "bg-user-bubble-foreground"
+        : "bg-primary";
     const existingSlimContent = (
       /* Settled history recedes: dimmed favicon + muted title. */
       <View
@@ -1016,7 +1038,10 @@ function ThreadListV2RowComponent(props: {
       </View>
     );
     const existingCardRow = (
-      <Pressable
+      <RowPressable
+        key={`${thread.environmentId}:${thread.id}`}
+        interactionClassName={rowInteractionClassName}
+        className={sidebarPane || materialYouStyleLayoutActive ? undefined : "bg-screen"}
         accessibilityHint={swipeAccessibilityHint}
         accessibilityLabel={
           props.hasQueuedMessages ? `${thread.title}, messages queued to send` : thread.title
@@ -1026,18 +1051,16 @@ function ThreadListV2RowComponent(props: {
         onPress={handleOpenThread}
         style={
           sidebarPane || materialYouStyleLayoutActive
-            ? ({ pressed }) => ({
+            ? {
                 backgroundColor: selected
                   ? selectedBackgroundColor
-                  : pressed
-                    ? pressedBackgroundColor
-                    : sidebarPane
-                      ? drawerColor
-                      : screenColor,
+                  : sidebarPane
+                    ? drawerColor
+                    : screenColor,
                 borderRadius: SIDEBAR_V2_ROW_RADIUS,
                 ...(sidebarPane ? { paddingHorizontal: 12, paddingVertical: 10 } : null),
-              })
-            : ({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })
+              }
+            : undefined
         }
       >
         {sidebarPane ? (
@@ -1047,14 +1070,14 @@ function ThreadListV2RowComponent(props: {
              labels and text hierarchy carry state, an inset hairline
              separates rows. The opaque screen background stays so swipe
              actions reveal behind the row. */
-          <View className={materialYouStyleLayoutActive ? undefined : "bg-screen"}>
+          <View>
             <View className="px-5 py-2.5">{cardContent}</View>
             {props.showTrailingDivider !== false ? (
               <View className="ml-5 h-px bg-border-subtle" />
             ) : null}
           </View>
         )}
-      </Pressable>
+      </RowPressable>
     );
     const integratedCardRow =
       disclosureChip === null ? (
@@ -1075,7 +1098,10 @@ function ThreadListV2RowComponent(props: {
               : undefined
           }
         >
-          <Pressable
+          <RowPressable
+            key={`${thread.environmentId}:${thread.id}`}
+            interactionClassName={rowInteractionClassName}
+            className={sidebarPane || materialYouStyleLayoutActive ? undefined : "bg-screen"}
             accessibilityHint={`Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`}
             accessibilityLabel={thread.title}
             accessibilityRole="button"
@@ -1083,27 +1109,27 @@ function ThreadListV2RowComponent(props: {
             onPress={handleOpenThread}
             style={
               sidebarPane || materialYouStyleLayoutActive
-                ? ({ pressed }) => ({
-                    backgroundColor: pressed
-                      ? pressedBackgroundColor
-                      : selected
-                        ? selectedBackgroundColor
-                        : sidebarPane
-                          ? drawerColor
-                          : screenColor,
+                ? {
+                    backgroundColor: selected
+                      ? selectedBackgroundColor
+                      : sidebarPane
+                        ? drawerColor
+                        : screenColor,
                     ...(sidebarPane ? { paddingHorizontal: 12, paddingTop: 10 } : null),
-                  })
-                : ({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })
+                  }
+                : undefined
             }
           >
             {sidebarPane ? cardContent : <View className="px-5 pt-2.5">{cardContent}</View>}
-          </Pressable>
+          </RowPressable>
           <View className={sidebarPane ? "px-3 pb-2.5" : "px-5 pb-2.5"}>{disclosureChip}</View>
           {sidebarPane ? null : <View className="ml-5 h-px bg-border-subtle" />}
         </View>
       );
     const existingSlimRow = (
-      <Pressable
+      <RowPressable
+        key={`${thread.environmentId}:${thread.id}`}
+        interactionClassName={rowInteractionClassName}
         accessibilityHint={swipeAccessibilityHint}
         accessibilityLabel={
           props.hasQueuedMessages ? `${thread.title}, messages queued to send` : thread.title
@@ -1114,21 +1140,19 @@ function ThreadListV2RowComponent(props: {
         onPress={handleOpenThread}
         style={
           sidebarPane || materialYouStyleLayoutActive
-            ? ({ pressed }) => ({
+            ? {
                 backgroundColor: selected
                   ? selectedBackgroundColor
-                  : pressed
-                    ? pressedBackgroundColor
-                    : sidebarPane
-                      ? drawerColor
-                      : screenColor,
+                  : sidebarPane
+                    ? drawerColor
+                    : screenColor,
                 borderRadius: SIDEBAR_V2_ROW_RADIUS,
-              })
-            : ({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })
+              }
+            : undefined
         }
       >
         {existingSlimContent}
-      </Pressable>
+      </RowPressable>
     );
     const integratedSlimRow =
       disclosureChip === null ? (
@@ -1149,7 +1173,10 @@ function ThreadListV2RowComponent(props: {
               : undefined
           }
         >
-          <Pressable
+          <RowPressable
+            key={`${thread.environmentId}:${thread.id}`}
+            interactionClassName={rowInteractionClassName}
+            className={sidebarPane || materialYouStyleLayoutActive ? undefined : "bg-screen"}
             accessibilityHint={`Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`}
             accessibilityLabel={thread.title}
             accessibilityRole="button"
@@ -1157,21 +1184,19 @@ function ThreadListV2RowComponent(props: {
             onPress={handleOpenThread}
             style={
               sidebarPane || materialYouStyleLayoutActive
-                ? ({ pressed }) => ({
-                    backgroundColor: pressed
-                      ? pressedBackgroundColor
-                      : selected
-                        ? selectedBackgroundColor
-                        : sidebarPane
-                          ? drawerColor
-                          : screenColor,
+                ? {
+                    backgroundColor: selected
+                      ? selectedBackgroundColor
+                      : sidebarPane
+                        ? drawerColor
+                        : screenColor,
                     borderRadius: SIDEBAR_V2_ROW_RADIUS,
-                  })
-                : ({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })
+                  }
+                : undefined
             }
           >
             {existingSlimContent}
-          </Pressable>
+          </RowPressable>
           <View className={sidebarPane ? "px-3 pb-2" : "px-5 pb-2"}>{disclosureChip}</View>
         </View>
       );
@@ -1183,6 +1208,9 @@ function ThreadListV2RowComponent(props: {
     taskAgentDisclosure: Omit<TaskAgentDisclosureChipProps, "onPressThread"> | null,
   ) => (
     <>
+      {customSnoozeOpen && (
+        <CustomSnoozeSheet onClose={() => setCustomSnoozeOpen(false)} onSnooze={handleSnooze} />
+      )}
       <ThreadSwipeable
         threadKey={`${thread.environmentId}:${thread.id}`}
         backgroundColor={sidebarPane ? drawerColor : screenColor}
@@ -1241,7 +1269,7 @@ function ThreadListV2RowComponent(props: {
 
   // Keep this binding and early return as the structural regression gate:
   // without a rollup, rowContent receives null and yields the established
-  // Pressable/Swipeable tree without an added wrapper or padding change.
+  // RowPressable/Swipeable tree without an added wrapper or padding change.
   const existingThreadRow = buildThreadRow(null);
 
   const taskAgentPresentation = props.taskAgentPresentation;

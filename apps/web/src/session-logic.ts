@@ -614,7 +614,12 @@ export function deriveWorkLogEntries(
       });
     }
     if (keyedTaskActivityIds.has(activity.id)) continue;
-    if (activity.tone !== "error" && isWorktreeSetupActivity(activity.kind)) continue;
+    if (
+      isWorktreeSetupActivity(activity.kind) &&
+      (activity.tone !== "error" || activity.kind === "worktree-setup")
+    ) {
+      continue;
+    }
     if (activity.kind === "tool.started") continue;
     // Agent task.started rows are CTA seeds: they carry the true spawn turn,
     // which is the batch key (completions of background subagents arrive
@@ -1850,8 +1855,7 @@ export function compareActivitiesByOrder(
     return -1;
   }
 
-  const createdAtComparison =
-    left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0;
+  const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
   if (createdAtComparison !== 0) {
     return createdAtComparison;
   }
@@ -1862,7 +1866,7 @@ export function compareActivitiesByOrder(
     return lifecycleRankComparison;
   }
 
-  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+  return left.id.localeCompare(right.id);
 }
 
 function compareActivityLifecycleRank(kind: string): number {

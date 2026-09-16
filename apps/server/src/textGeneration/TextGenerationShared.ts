@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import * as TextGeneration from "./TextGeneration.ts";
+import type * as TextGeneration from "./TextGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
@@ -186,6 +186,7 @@ export function makeJsonTextGeneration(
         message: input.message,
         attachments: input.attachments,
         previousTitle: input.previousTitle,
+        linkedContext: input.linkedContext,
       });
       const generated = yield* runJson({
         operation: "generateThreadTitle",
@@ -194,7 +195,10 @@ export function makeJsonTextGeneration(
         outputSchema,
         modelSelection: input.modelSelection,
       });
-      return { title: sanitizeThreadTitle(generated.title) };
+      return {
+        title: sanitizeThreadTitle(generated.title),
+        ...(generated.needsRefinement ? { needsRefinement: true } : {}),
+      } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
   return {

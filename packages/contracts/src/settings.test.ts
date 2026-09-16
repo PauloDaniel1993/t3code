@@ -9,6 +9,7 @@ import {
   KIMI_DEFAULT_MODEL_NAME,
   PROVIDER_DISPLAY_NAMES,
 } from "./model.ts";
+import { DEFAULT_THREAD_TASK_MAX_RUNNING, resolveThreadTaskLimits } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsPatch,
@@ -507,18 +508,7 @@ describe("ClientSettings appearance ownership", () => {
 
 describe("ClientSettings sidebar", () => {
   it("defaults to the current sidebar", () => {
-    const settings = decodeClientSettings({});
-    expect(settings.legacySidebarEnabled).toBe(false);
-    expect(settings.sidebarCompactThreadRows).toBe(false);
-  });
-
-  it("preserves an explicit compact thread row preference", () => {
-    expect(decodeClientSettings({ sidebarCompactThreadRows: true }).sidebarCompactThreadRows).toBe(
-      true,
-    );
-    expect(
-      decodeClientSettingsPatch({ sidebarCompactThreadRows: true }).sidebarCompactThreadRows,
-    ).toBe(true);
+    expect(decodeClientSettings({}).legacySidebarEnabled).toBe(false);
   });
 
   it("drops the retired sidebar v2 beta keys, resetting everyone to the default", () => {
@@ -529,6 +519,14 @@ describe("ClientSettings sidebar", () => {
     expect(decoded.legacySidebarEnabled).toBe(false);
     expect(decoded).not.toHaveProperty("sidebarV2Enabled");
     expect(decoded).not.toHaveProperty("sidebarV2ConfiguredByUser");
+  });
+
+  it("drops the retired compact sidebar keys for users who opted in", () => {
+    const stored = { compactSidebarEnabled: true, sidebarCompactThreadRows: true };
+    const decoded = decodeClientSettings(stored);
+    expect(decoded).not.toHaveProperty("compactSidebarEnabled");
+    expect(decoded).not.toHaveProperty("sidebarCompactThreadRows");
+    expect(decodeClientSettingsPatch(stored)).toEqual({});
   });
 
   it("preserves an explicit legacy sidebar opt-in", () => {
@@ -554,6 +552,19 @@ describe("ClientSettings context window meter", () => {
     expect(
       decodeClientSettingsPatch({ contextWindowMeterEnabled: true }).contextWindowMeterEnabled,
     ).toBe(true);
+  });
+});
+
+describe("ClientSettings follow-up behavior", () => {
+  it("defaults to queue and accepts either behavior", () => {
+    expect(decodeClientSettings({}).followUpBehavior).toBe("queue");
+    for (const followUpBehavior of ["queue", "steer"]) {
+      expect(decodeClientSettings({ followUpBehavior }).followUpBehavior).toBe(followUpBehavior);
+      expect(decodeClientSettingsPatch({ followUpBehavior }).followUpBehavior).toBe(
+        followUpBehavior,
+      );
+    }
+    expect(() => decodeClientSettingsPatch({ followUpBehavior: "invalid" })).toThrow();
   });
 });
 
@@ -605,6 +616,46 @@ describe("ClientSettings thread tasks", () => {
     expect(decodeClientSettings({}).threadTasksEnabled).toBe(false);
     expect(decodeClientSettings({ threadTasksEnabled: true }).threadTasksEnabled).toBe(true);
     expect(decodeClientSettingsPatch({ threadTasksEnabled: true }).threadTasksEnabled).toBe(true);
+  });
+});
+
+describe("ServerSettings thread task limits", () => {
+  it("defaults the concurrent cap and derives the lifetime cap", () => {
+    const decoded = decodeServerSettings({});
+    expect(decoded.threadTaskMaxRunning).toBe(DEFAULT_THREAD_TASK_MAX_RUNNING);
+    expect(decoded.threadTaskMaxTotal).toBeNull();
+    expect(
+      resolveThreadTaskLimits({
+        maxRunning: decoded.threadTaskMaxRunning,
+        maxTotal: decoded.threadTaskMaxTotal,
+      }),
+    ).toEqual({ maxRunning: DEFAULT_THREAD_TASK_MAX_RUNNING, maxTotal: 25 });
+  });
+
+  it("round-trips environment and project-specific task caps", () => {
+    const input = {
+      threadTaskMaxRunning: 8,
+      threadTaskMaxTotal: 80,
+      projectSettingsOverrides: {
+        project: { threadTaskMaxRunning: 2, threadTaskMaxTotal: null },
+      },
+    };
+
+    expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+    expect(decodeServerSettingsPatch(input)).toEqual(input);
+    expect(resolveThreadTaskLimits({ maxRunning: 8, maxTotal: null })).toEqual({
+      maxRunning: 8,
+      maxTotal: 40,
+    });
+  });
+
+  it.each([
+    ["threadTaskMaxRunning", 0],
+    ["threadTaskMaxRunning", 101],
+    ["threadTaskMaxTotal", 0],
+    ["threadTaskMaxTotal", 10_001],
+  ] as const)("rejects an invalid %s value: %s", (key, value) => {
+    expect(() => decodeServerSettingsPatch({ [key]: value })).toThrow();
   });
 });
 
