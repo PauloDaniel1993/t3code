@@ -90,6 +90,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { T3_CODE_TASK_TOOL_INSTRUCTIONS } from "../T3CodeTaskInstructions.ts";
 import {
   decodeProviderText,
   ProviderInlineTextBudget,
@@ -5092,7 +5093,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           type: "preset",
           preset: "claude_code",
           // Model and effort can change after this session-level prompt is set.
-          append: buildRuntimeInstructions({ harness: "Claude Code" }),
+          append: [
+            buildRuntimeInstructions({ harness: "Claude Code" }),
+            T3_CODE_TASK_TOOL_INSTRUCTIONS,
+          ].join("\n\n"),
         },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is

@@ -19,6 +19,7 @@ import { describe, expect } from "vite-plus/test";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import * as EffectAcpErrors from "effect-acp/errors";
+import { T3_CODE_TASK_TOOL_INSTRUCTIONS } from "../T3CodeTaskInstructions.ts";
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
@@ -641,6 +642,49 @@ describe("AcpSessionRuntime", () => {
       Effect.provide(NodeServices.layer),
     ),
   );
+
+  it.effect("prepends initial provider instructions to only the first ACP prompt", () => {
+    const requestEvents: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+    const instructions = T3_CODE_TASK_TOOL_INSTRUCTIONS.trim();
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "first" }] });
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "second" }] });
+
+      const promptRequests = requestEvents.filter(
+        (event) => event.method === "session/prompt" && event.status === "started",
+      );
+      expect(promptRequests).toHaveLength(2);
+      expect(promptRequests[0]?.payload).toMatchObject({
+        prompt: [
+          { type: "text", text: instructions },
+          { type: "text", text: "first" },
+        ],
+      });
+      expect(promptRequests[1]?.payload).toMatchObject({
+        prompt: [{ type: "text", text: "second" }],
+      });
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
 
   it.effect("keeps assistant item IDs unique when a provider session restarts", () => {
     const collectFirstAssistantItemId = Effect.gen(function* () {

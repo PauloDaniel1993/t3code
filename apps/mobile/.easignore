@@ -1,0 +1,45 @@
+# Dependencies and generated output are recreated by EAS Build.
+**/node_modules/
+**/.expo/
+**/dist/
+**/build/
+**/*.tsbuildinfo
+**/*.log
+
+# Continuous Native Generation: build these fresh from app.config.ts.
+/android/
+/ios/
+
+# Local state, caches, and repository-only material.
+.git/
+.claude/
+.repos/
+.t3/
+.t3-dev/
+.turbo/
+.bun/
+.idea/
+.vscode/
+.logs/
+.vitest-*/
+
+# Large outputs and unrelated native/application surfaces.
+release/
+release-mock/
+squashfs-root/
+native/
+apps/desktop/
+apps/marketing/
+apps/server/
+apps/web/
+infra/
+
+# Local configuration and test artifacts.
+.env
+.env.*
+!.env.example
+**/.showcase/
+**/.playwright/
+**/playwright-report/
+**/__screenshots__/
+artifacts/

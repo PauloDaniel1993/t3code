@@ -23,6 +23,7 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { PROVIDER_EVENT_FLOW_CONTROL } from "../../orchestration/ProviderEventFlowControl.ts";
+import { T3_CODE_TASK_TOOL_INSTRUCTIONS } from "../T3CodeTaskInstructions.ts";
 import {
   collectSessionConfigOptionValues,
   decideToolCallUpdateEmission,
@@ -374,6 +375,9 @@ export const make = (
     const stoppingRef = yield* Ref.make(false);
     const stderrFailure = yield* Deferred.make<never, EffectAcpErrors.AcpError>();
     const runtimeClosed = yield* Deferred.make<void>();
+    const initialPromptInstructionsRef = yield* Ref.make<string | undefined>(
+      T3_CODE_TASK_TOOL_INSTRUCTIONS.trim(),
+    );
     const promptSerializationSemaphore = yield* Semaphore.make(1);
     const promptDispatchSemaphore = yield* Semaphore.make(1);
     const activePromptRef = yield* Ref.make<Option.Option<AcpActivePrompt>>(Option.none());
@@ -1073,18 +1077,32 @@ export const make = (
             promptDispatchSemaphore.withPermit(
               Effect.gen(function* () {
                 const started = yield* getStartedState;
+                const initialPromptInstructions = yield* Ref.getAndSet(
+                  initialPromptInstructionsRef,
+                  undefined,
+                );
                 yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
                 yield* Ref.set(assistantUpdatesOpenRef, true);
                 const requestPayload = {
                   sessionId: started.sessionId,
                   ...payload,
+                  prompt: initialPromptInstructions
+                    ? [{ type: "text", text: initialPromptInstructions }, ...payload.prompt]
+                    : payload.prompt,
                 } satisfies EffectAcpSchema.PromptRequest;
                 const completed = yield* Deferred.make<void>();
                 const fiber = yield* runLoggedRequest(
                   "session/prompt",
                   requestPayload,
                   acp.agent.prompt(requestPayload),
-                ).pipe(Effect.forkIn(runtimeScope));
+                ).pipe(
+                  Effect.tapError(() =>
+                    initialPromptInstructions
+                      ? Ref.set(initialPromptInstructionsRef, initialPromptInstructions)
+                      : Effect.void,
+                  ),
+                  Effect.forkIn(runtimeScope),
+                );
                 const active = { fiber, completed } satisfies AcpActivePrompt;
                 yield* Ref.set(activePromptRef, Option.some(active));
                 if (promptOptions?.dispatched) {

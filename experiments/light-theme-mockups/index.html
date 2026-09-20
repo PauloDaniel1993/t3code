@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="en" data-theme="a" data-screen="chat">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Light theme rework — 4 color-only candidates</title>
+    <link rel="stylesheet" href="mockup.css" />
+  </head>
+  <body>
+    <div class="frame">
+      <!-- ======================== CHAT SCREEN ======================== -->
+      <aside class="sidebar screen-chat">
+        <div class="brand"><span class="logo">T3</span> T3 Code</div>
+        <div class="side-scroll">
+          <div class="search">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            Search
+          </div>
+          <div class="all-projects">
+            <svg
+              class="ic"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            <span class="grow">All projects</span>
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </div>
+
+          <div class="group">
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-t3">T3</span> t3code <span class="time">27m</span>
+              </div>
+              <div class="trow-title">Merge Upstream Changes</div>
+              <div class="trow-meta">
+                dev <span class="spacer"></span> <span class="status working">✳</span>
+              </div>
+            </div>
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-t3">T3</span> t3code <span class="time">3h</span>
+              </div>
+              <div class="trow-title">Find Obsidian Job Search Automation Thread</div>
+              <div class="trow-meta">
+                dev <span class="spacer"></span> <span class="status idle">✳</span>
+              </div>
+            </div>
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-t3">T3</span> t3code <span class="time">23h</span>
+              </div>
+              <div class="trow-title">spec analisys</div>
+              <div class="trow-meta">
+                dev <span class="spacer"></span> <span class="status working">✳</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-jobs">J</span> jobs <span class="time">9h</span>
+              </div>
+              <div class="trow-title">Improve LinkedIn Social Selling Index</div>
+              <div class="trow-meta">
+                feat/build-applyos-linkedin-importer
+                <span class="spacer"></span>
+                <span class="task-chip">⌄ 3 tasks · 1 agent</span>
+                <span class="status working">✳</span>
+              </div>
+            </div>
+            <div class="subs">
+              <div class="sub">
+                <svg
+                  class="ic ic-done"
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="m8.5 12.5 2.5 2.5 4.5-5.5" />
+                </svg>
+                <span class="label">Store research-integrations .NET CV change plan</span>
+                <svg
+                  class="ic ic-link"
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                  <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+                </svg>
+                <span class="time">36s</span>
+              </div>
+              <div class="sub">
+                <svg
+                  class="ic ic-done"
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="m8.5 12.5 2.5 2.5 4.5-5.5" />
+                </svg>
+                <span class="label">Store Jobgether full-stack CV change plan</span>
+                <svg
+                  class="ic ic-link"
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                  <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+                </svg>
+                <span class="time">27s</span>
+              </div>
+              <div class="sub">
+                <svg
+                  class="ic ic-done"
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="m8.5 12.5 2.5 2.5 4.5-5.5" />
+                </svg>
+                <span class="label">Search jobs repo for Recovery (itaú) role data</span>
+                <svg
+                  class="ic ic-link"
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                  <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+                </svg>
+                <span class="time">7m</span>
+              </div>
+              <div class="sub sub-head">
+                <span class="label">⌄ Latest turn · 1 agent</span>
+                <span class="time" style="color: var(--destructive)">✕ 1</span>
+              </div>
+              <div class="sub">
+                <svg
+                  class="ic ic-fail"
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="m9 9 6 6M15 9l-6 6" />
+                </svg>
+                <span class="label">Search repo for Recovery role data</span>
+                <span class="time">8s</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-t3">T3</span> t3code <span class="time">1d</span>
+              </div>
+              <div class="trow-title">Clear Pre-Existing Test Debt</div>
+              <div class="trow-meta">
+                fix/pre-existing-test-debt <span class="spacer"></span>
+                <span class="task-chip">› 6 tasks</span> <span class="status working">✳</span>
+              </div>
+            </div>
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-whisper">W</span> Whisper <span class="time">1d</span>
+              </div>
+              <div class="trow-title">Check Project Status</div>
+              <div class="trow-meta">
+                dev <span class="spacer"></span> <span class="task-chip">› 4 tasks</span>
+                <span class="status working">✳</span>
+              </div>
+            </div>
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-qq">Q</span> quick-questions <span class="time">1d</span>
+              </div>
+              <div class="trow-title">Investigate Disk Space Usage via MCP</div>
+              <div class="trow-meta">
+                <span class="spacer"></span> <span class="task-chip">⌄ 1 task</span>
+                <span class="status working">✳</span>
+              </div>
+            </div>
+            <div class="subs">
+              <div class="sub">
+                <svg
+                  class="ic ic-done"
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="m8.5 12.5 2.5 2.5 4.5-5.5" />
+                </svg>
+                <span class="label"
+                  >I am tring to install this https://github.com/Obelous/Jelly…</span
+                >
+                <svg
+                  class="ic ic-link"
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                  <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+                </svg>
+                <span class="time">6m</span>
+              </div>
+            </div>
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-t3">T3</span> t3code <span class="time">1d</span>
+              </div>
+              <div class="trow-title">Make Skills Available Across Coding Agents</div>
+              <div class="trow-meta">
+                fix/pre-existing-test-debt <span class="spacer"></span>
+                <span class="status working">✳</span>
+              </div>
+            </div>
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-t3">T3</span> t3code <span class="time">11m</span>
+              </div>
+              <div class="trow-title">Rebase Dev and Rework Changes</div>
+              <div class="trow-meta">
+                dev <span class="spacer"></span> <span class="status working">✳</span>
+              </div>
+            </div>
+            <div class="trow">
+              <div class="trow-top">
+                <span class="picon picon-life">L</span> Life <span class="time">21h</span>
+              </div>
+              <div class="trow-title">Design Job Application Tracking Workflow</div>
+              <div class="trow-meta">
+                <span class="spacer"></span> <span class="status working">✳</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="side-foot">
+          <span>⚙ Settings</span>
+          <span class="avatar"></span>
+        </div>
+      </aside>
+
+      <main class="main screen-chat">
+        <div class="topbar">
+          <div class="crumb">
+            <span class="logo sm">T3</span> t3code <span class="sep">/</span>
+            <span class="muted">New thread</span>
+          </div>
+          <div class="top-actions">
+            <button class="btn">
+              <svg
+                class="ic"
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              Add action <span class="chev">▾</span>
+            </button>
+            <button class="btn">
+              <svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="#22c55e">
+                <path d="m4 4 7 8-7 8h4l7-8-7-8z" />
+                <path d="M13 17h7v3h-7z" />
+              </svg>
+              Open <span class="chev">▾</span>
+            </button>
+            <button class="btn">
+              <svg class="ic" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0z"
+                />
+              </svg>
+              Commit, push &amp; PR <span class="chev">▾</span>
+            </button>
+            <span class="icon-btn"
+              ><svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <path d="M15 3v18" /></svg
+            ></span>
+            <span class="icon-btn"
+              ><svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <path d="M9 3v18" /></svg
+            ></span>
+            <div class="win"><span>–</span><span>▢</span><span>✕</span></div>
+          </div>
+        </div>
+
+        <div class="hero">
+          <h1>What should we build in <span class="u-dotted">t3code</span>?</h1>
+          <div class="composer-wrap">
+            <div class="composer">
+              <div class="placeholder">Ask for follow-up changes or attach images</div>
+              <div class="composer-bar">
+                <span class="tool-chip"
+                  ><svg
+                    class="ic"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path
+                      d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                    /></svg
+                ></span>
+                <span class="tool-chip"
+                  ><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="#f97316">
+                    <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z" />
+                  </svg>
+                  Claude Opus 5 <span class="chev">▾</span></span
+                >
+                <span class="tool-chip textual">High · 1M <span class="chev">▾</span></span>
+                <span class="tool-chip textual"
+                  ><svg
+                    class="ic"
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="4" y="11" width="16" height="10" rx="2" />
+                    <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                  </svg>
+                  Full access <span class="chev">▾</span></span
+                >
+                <span class="tool-chip textual"
+                  ><svg
+                    class="ic"
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="5" y="8" width="14" height="11" rx="2" />
+                    <path d="M12 4v4M8 13h.01M16 13h.01M9 17h6" />
+                  </svg>
+                  Build</span
+                >
+                <span class="send"
+                  ><svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                  >
+                    <path d="M12 19V5M5 12l7-7 7 7" /></svg
+                ></span>
+              </div>
+            </div>
+            <div class="context-strip">
+              <span class="left"
+                ><svg
+                  class="ic"
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <rect x="3" y="3" width="18" height="18" rx="3" />
+                </svg>
+                Current checkout</span
+              >
+              <span class="right">⌗ dev ▾</span>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- ======================== SETTINGS SCREEN ======================== -->
+      <aside class="sidebar screen-settings">
+        <div class="brand"><span class="logo">T3</span> T3 Code</div>
+        <div class="side-scroll">
+          <div class="search">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            Search
+            <span style="margin-left: auto; font-size: 11px; opacity: 0.7">/</span>
+          </div>
+          <div class="snav selected">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />
+            </svg>
+            General
+          </div>
+          <div class="snav">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 3a9 9 0 0 1 0 18 4.5 4.5 0 0 1 0-9 4.5 4.5 0 0 0 0-9z" />
+            </svg>
+            Appearance
+          </div>
+          <div class="snav">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="2" y="6" width="20" height="12" rx="2" />
+              <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
+            </svg>
+            Keybindings
+          </div>
+          <div class="snav">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="m12 2 8.5 4.5v11L12 22l-8.5-4.5v-11z" />
+              <path d="M12 11 3.5 6.5M12 11l8.5-4.5M12 11v11" />
+            </svg>
+            Providers
+          </div>
+          <div class="snav">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="6" cy="6" r="2.5" />
+              <circle cx="6" cy="18" r="2.5" />
+              <circle cx="18" cy="8" r="2.5" />
+              <path d="M6 8.5v7M18 10.5c0 4-5 3-7 5.5" />
+            </svg>
+            Source Control
+          </div>
+          <div class="snav">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+              <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+            </svg>
+            Connections
+          </div>
+          <div class="snav">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M9 3h6M10 3v6.3L4.7 19a2 2 0 0 0 1.8 3h11a2 2 0 0 0 1.8-3L14 9.3V3" />
+              <path d="M7.5 15h9" />
+            </svg>
+            Beta
+          </div>
+          <div class="snav">
+            <svg
+              class="ic"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="3" y="4" width="18" height="5" rx="1" />
+              <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4" />
+            </svg>
+            Archive
+          </div>
+        </div>
+        <div class="side-foot">
+          <span>← Back</span>
+          <span class="avatar"></span>
+        </div>
+      </aside>
+
+      <main class="main screen-settings">
+        <div class="topbar">
+          <div class="crumb">Settings</div>
+          <div class="top-actions">
+            <button
+              class="btn"
+              style="
+                border-color: transparent;
+                background: transparent;
+                color: var(--muted-foreground);
+              "
+            >
+              <svg
+                class="ic"
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                <path d="M3 3v5h5" />
+              </svg>
+              Restore defaults
+            </button>
+            <div class="win"><span>–</span><span>▢</span><span>✕</span></div>
+          </div>
+        </div>
+
+        <div class="settings-body">
+          <div class="settings-col">
+            <h2>Display</h2>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Glass opacity</div>
+                <div class="desc">
+                  Control how transparent glass surfaces are. Higher values make menus, dialogs, and
+                  the composer more solid.
+                </div>
+              </div>
+              <div class="slider-row">
+                <span class="slider-val">80%</span><span class="slider"></span>
+              </div>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Environment identification</div>
+                <div class="desc">Choose how Dev and Nightly environments are identified.</div>
+              </div>
+              <span class="select">Artwork <span class="chev">▾</span></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Word wrap</div>
+                <div class="desc">
+                  Wrap long lines in code blocks, tables, diffs, and file previews by default.
+                </div>
+              </div>
+              <span class="toggle on"></span>
+            </div>
+
+            <h2>General</h2>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Project grouping</div>
+                <div class="desc">Combine matching repositories across environments.</div>
+              </div>
+              <span class="toggle on"></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Time format</div>
+                <div class="desc">System default follows your browser or OS clock preference.</div>
+              </div>
+              <span class="select">System default <span class="chev">▾</span></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Hide whitespace changes</div>
+                <div class="desc">
+                  Set whether the diff panel ignores whitespace-only edits by default.
+                </div>
+              </div>
+              <span class="toggle on"></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Assistant output</div>
+                <div class="desc">Show token-by-token output while a response is in progress.</div>
+              </div>
+              <span class="toggle"></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Provider update checks</div>
+                <div class="desc">Check installed provider CLIs for newer available versions.</div>
+              </div>
+              <span class="toggle on"></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Background activity</div>
+                <div class="desc">
+                  Pauses background probes when clients are idle, the host is locked, or low power
+                  mode is active.
+                </div>
+              </div>
+              <span class="select">Balanced <span class="chev">▾</span></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Auto-open task panel</div>
+                <div class="desc">
+                  Open the right-side plan and task panel automatically when steps appear.
+                </div>
+              </div>
+              <span class="toggle"></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">New threads</div>
+                <div class="desc">
+                  Pick the default workspace mode for newly created draft threads.
+                </div>
+              </div>
+              <span class="select">Local <span class="chev">▾</span></span>
+            </div>
+            <div class="srow">
+              <div class="texts">
+                <div class="title">Add project starts in</div>
+                <div class="desc">Leave empty to use "~/" when the Add Project browser opens.</div>
+              </div>
+              <span class="text-input">~/</span>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- ======================== MOCKUP SWITCHER ======================== -->
+      <div class="switcher">
+        <button class="sw" data-screen-btn="chat">Chat <span class="key">c</span></button>
+        <button class="sw" data-screen-btn="settings">Settings <span class="key">s</span></button>
+        <span class="sw-sep"></span>
+        <button class="sw" data-theme-btn="0">
+          <span class="dots"
+            ><i style="background: #fcfcfd"></i><i style="background: #fafafa"></i
+            ><i style="background: #fff"></i
+          ></span>
+          Current <span class="key">0</span>
+        </button>
+        <button class="sw" data-theme-btn="a">
+          <span class="dots"
+            ><i style="background: #f6f5f1"></i><i style="background: #efece5"></i
+            ><i style="background: #fff"></i
+          ></span>
+          1 · Paper <span class="key">1</span>
+        </button>
+        <button class="sw" data-theme-btn="b">
+          <span class="dots"
+            ><i style="background: #eceff4"></i><i style="background: #dfe6ee"></i
+            ><i style="background: #fff"></i
+          ></span>
+          2 · Slate <span class="key">2</span>
+        </button>
+        <button class="sw" data-theme-btn="c">
+          <span class="dots"
+            ><i style="background: #fff"></i><i style="background: #f3f3f5"></i
+            ><i style="background: #fff"></i
+          ></span>
+          3 · Anchored White <span class="key">3</span>
+        </button>
+        <button class="sw" data-theme-btn="d">
+          <span class="dots"
+            ><i style="background: #eef2f8"></i><i style="background: #e3eaf4"></i
+            ><i style="background: #fff"></i
+          ></span>
+          4 · Porcelain <span class="key">4</span>
+        </button>
+      </div>
+    </div>
+
+    <script>
+      const root = document.documentElement;
+      const params = new URLSearchParams(location.search);
+      let theme = params.get("theme") ?? "a";
+      let screen = params.get("screen") ?? "chat";
+      const THEMES = new Set(["0", "a", "b", "c", "d"]);
+      const SCREENS = new Set(["chat", "settings"]);
+
+      function apply() {
+        root.dataset.theme = theme;
+        root.dataset.screen = screen;
+        for (const b of document.querySelectorAll("[data-theme-btn]")) {
+          b.classList.toggle("active", b.dataset.themeBtn === theme);
+        }
+        for (const b of document.querySelectorAll("[data-screen-btn]")) {
+          b.classList.toggle("active", b.dataset.screenBtn === screen);
+        }
+        history.replaceState(null, "", `?theme=${theme}&screen=${screen}`);
+      }
+
+      for (const b of document.querySelectorAll("[data-theme-btn]")) {
+        b.addEventListener("click", () => {
+          theme = b.dataset.themeBtn;
+          apply();
+        });
+      }
+      for (const b of document.querySelectorAll("[data-screen-btn]")) {
+        b.addEventListener("click", () => {
+          screen = b.dataset.screenBtn;
+          apply();
+        });
+      }
+      addEventListener("keydown", (e) => {
+        const keyMap = { 0: "0", 1: "a", 2: "b", 3: "c", 4: "d" };
+        if (keyMap[e.key]) {
+          theme = keyMap[e.key];
+          apply();
+        } else if (e.key === "c") {
+          screen = "chat";
+          apply();
+        } else if (e.key === "s") {
+          screen = "settings";
+          apply();
+        }
+      });
+      if (!THEMES.has(theme)) theme = "a";
+      if (!SCREENS.has(screen)) screen = "chat";
+      apply();
+    </script>
+  </body>
+</html>

@@ -1012,6 +1012,60 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  it.effect("checks the installable Spectre runtime components for Windows builds", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-windows-preflight-" });
+        const pythonPath = path.join(tempDir, "python.exe");
+        const rustLibDir = path.join(tempDir, "rust-lib");
+        yield* fs.writeFileString(pythonPath, "python");
+        yield* fs.makeDirectory(rustLibDir);
+        yield* fs.writeFileString(path.join(rustLibDir, "libstd-test.rlib"), "rust");
+        const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
+          [];
+        const spawner = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            const childProcess = command as unknown as {
+              readonly command: string;
+              readonly args: ReadonlyArray<string>;
+            };
+            commands.push(childProcess);
+            return Effect.succeed(
+              mockProcess(0, childProcess.command === "rustc" ? `${rustLibDir}\n` : ""),
+            );
+          }),
+        );
+        const config = ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { npm_config_python: pythonPath } }),
+        );
+
+        for (const arch of ["x64", "arm64"] as const) {
+          yield* preflightWindowsDesktopBuild({ arch, bundlesWslRuntime: false }).pipe(
+            Effect.provide(Layer.merge(spawner, config)),
+          );
+        }
+
+        const powershellScripts = commands
+          .filter((command) => command.command === "powershell.exe")
+          .map((command) => command.args.at(-1));
+        assert.lengthOf(powershellScripts, 2);
+        assert.include(
+          powershellScripts[0],
+          "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
+        );
+        assert.include(
+          powershellScripts[1],
+          "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre",
+        );
+        assert.notInclude(powershellScripts.join("\n"), ".VC.Tools.x86.x64.Spectre");
+        assert.notInclude(powershellScripts.join("\n"), ".VC.Tools.ARM64.Spectre");
+      }),
+    ),
+  );
+
   it.effect("does not require MSVC when reusing a prebuilt Windows resource monitor", () =>
     Effect.scoped(
       Effect.gen(function* () {

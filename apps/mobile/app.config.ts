@@ -211,7 +211,7 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 
 const config: ExpoConfig = {
   name: variant.appName,
-  slug: "t3-code",
+  slug: "paulodaniel1993",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
   version: "1.2.0",
@@ -225,8 +225,8 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    enabled: false,
+    url: "https://u.expo.dev/30427ac8-5ec3-46b0-afd3-39f45a66b401",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -453,10 +453,10 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+      projectId: "30427ac8-5ec3-46b0-afd3-39f45a66b401",
     },
   },
-  owner: "pingdotgg",
+  owner: "paulodaniel1993s-team",
 };
 
 export default config;

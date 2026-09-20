@@ -108,6 +108,13 @@ it("tells a task what to do instead of creating a task of its own", () => {
   }
 });
 
+it("prefers T3 tasks over provider-native agents", () => {
+  const create = TasksToolkit.tools.task_create.description ?? "";
+  expect(create).toContain("T3 Code's product-native task delegation");
+  expect(create).toContain("Prefer this over provider-native agent or sub-agent tools");
+  expect(create).toContain("unless the user explicitly asks for an agent");
+});
+
 it("annotates the write and destructive tools honestly", () => {
   // Same read path McpHttpServer uses to publish the MCP behaviour hints.
   const annotations = (tool: (typeof TasksToolkit.tools)[keyof typeof TasksToolkit.tools]) => ({

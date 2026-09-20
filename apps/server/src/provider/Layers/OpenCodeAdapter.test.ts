@@ -37,6 +37,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
+import { T3_CODE_TASK_TOOL_INSTRUCTIONS } from "../T3CodeTaskInstructions.ts";
 import {
   OpenCodeRuntime,
   OpenCodeRuntimeError,
@@ -1709,7 +1710,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(prompt.parts, [{ type: "text", text: "/unknown explain this" }]);
       NodeAssert.equal(
         prompt.system,
-        buildRuntimeInstructions({ harness: "OpenCode", model: "openai/gpt-5" }),
+        [
+          buildRuntimeInstructions({ harness: "OpenCode", model: "openai/gpt-5" }),
+          T3_CODE_TASK_TOOL_INSTRUCTIONS,
+        ].join("\n\n"),
       );
       yield* adapter.stopSession(threadId);
     }),
@@ -6535,10 +6539,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         },
         agent: "github-copilot",
         variant: "high",
-        system: buildRuntimeInstructions({
-          harness: "OpenCode",
-          model: "anthropic/claude-sonnet-4-5",
-        }),
+        system: [
+          buildRuntimeInstructions({
+            harness: "OpenCode",
+            model: "anthropic/claude-sonnet-4-5",
+          }),
+          T3_CODE_TASK_TOOL_INSTRUCTIONS,
+        ].join("\n\n"),
         parts: [{ type: "text", text: "Fix it" }],
       });
       const started = yield* Fiber.join(startedFiber);
@@ -6591,10 +6598,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           providerID: "anthropic",
           modelID: "claude-sonnet-4-5",
         },
-        system: buildRuntimeInstructions({
-          harness: "OpenCode",
-          model: "anthropic/claude-sonnet-4-5",
-        }),
+        system: [
+          buildRuntimeInstructions({
+            harness: "OpenCode",
+            model: "anthropic/claude-sonnet-4-5",
+          }),
+          T3_CODE_TASK_TOOL_INSTRUCTIONS,
+        ].join("\n\n"),
         parts: [{ type: "text", text: "Fix it" }],
       });
     }).pipe(Effect.provide(adapterLayer));

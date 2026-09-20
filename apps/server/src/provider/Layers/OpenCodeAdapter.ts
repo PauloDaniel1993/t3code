@@ -35,6 +35,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { T3_CODE_TASK_TOOL_INSTRUCTIONS } from "../T3CodeTaskInstructions.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -3280,10 +3281,13 @@ export function makeOpenCodeAdapter(
                     ...(context.activeAgent ? { agent: context.activeAgent } : {}),
                     ...(context.activeVariant ? { variant: context.activeVariant } : {}),
                     // OpenCode appends this after its own agent/provider prompts.
-                    system: buildRuntimeInstructions({
-                      harness: "OpenCode",
-                      model: `${parsedModel.providerID}/${parsedModel.modelID}`,
-                    }),
+                    system: [
+                      buildRuntimeInstructions({
+                        harness: "OpenCode",
+                        model: `${parsedModel.providerID}/${parsedModel.modelID}`,
+                      }),
+                      T3_CODE_TASK_TOOL_INSTRUCTIONS,
+                    ].join("\n\n"),
                     parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
                   },
                   { signal },

@@ -154,10 +154,11 @@ the CLI's live configuration rather than the values captured when the session st
 
 ## Subagents
 
-Kimi can use its built-in `Agent` subagents in T3 Code. For work needed to answer the current
-request, T3 asks Kimi to run those agents in foreground mode. Independent agents can still run in
-parallel, but their results return through the active ACP prompt so Kimi can synthesize them before
-the turn ends.
+T3 Code's cross-provider task system is preferred when you ask for tasks, delegation, or parallel
+work. Kimi's built-in `Agent` subagents remain available when you explicitly ask for an agent or
+subagent. For work needed to answer the current request, T3 asks Kimi to run those native agents in
+foreground mode. Independent agents can still run in parallel, but their results return through the
+active ACP prompt so Kimi can synthesize them before the turn ends.
 
 Detached Kimi background agents are different: current Kimi ACP releases return the launch receipt
 but do not publish the later autonomous completion turn to the ACP client. T3 therefore does not

@@ -672,6 +672,21 @@ describe("T3 browser developer instructions", () => {
   });
 });
 
+describe("T3 task developer instructions", () => {
+  it("prefers product-native tasks over collaboration agents in both modes", () => {
+    for (const instructions of [
+      codexDefaultModeDeveloperInstructions(true),
+      codexPlanModeDeveloperInstructions(true),
+    ]) {
+      NodeAssert.match(instructions, /task_models/);
+      NodeAssert.match(instructions, /task_create/);
+      NodeAssert.match(instructions, /mcp__t3_code__task_/);
+      NodeAssert.match(instructions, /prefer these T3 task tools over native provider agents/);
+      NodeAssert.match(instructions, /explicitly asks for an agent or sub-agent/);
+    }
+  });
+});
+
 describe("hasConfiguredMcpServer", () => {
   it("detects inline Codex MCP configuration arguments", () => {
     NodeAssert.equal(hasConfiguredMcpServer(undefined), false);
