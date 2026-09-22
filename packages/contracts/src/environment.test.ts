@@ -37,6 +37,26 @@ describe("ExecutionEnvironmentDescriptor", () => {
     expect(decoded.capabilities.threadTasks).toBeUndefined();
   });
 
+  it("requires advertised bootstrap and cleanup capabilities", () => {
+    const olderCapabilities = decodeDescriptor(descriptor).capabilities;
+    expect(olderCapabilities.requiredWorktreeBootstrap).toBeUndefined();
+    expect(olderCapabilities.storageCleanup).toBeUndefined();
+    expect(olderCapabilities.projectWorktreeCleanup).toBeUndefined();
+
+    const capabilities = decodeDescriptor({
+      ...descriptor,
+      capabilities: {
+        ...descriptor.capabilities,
+        requiredWorktreeBootstrap: true,
+        storageCleanup: true,
+        projectWorktreeCleanup: true,
+      },
+    }).capabilities;
+    expect(capabilities.requiredWorktreeBootstrap).toBe(true);
+    expect(capabilities.storageCleanup).toBe(true);
+    expect(capabilities.projectWorktreeCleanup).toBe(true);
+  });
+
   it("treats a missing pull-request capability as unsupported under version skew", () => {
     expect(decodeDescriptor(descriptor).capabilities.pullRequests).toBeUndefined();
   });

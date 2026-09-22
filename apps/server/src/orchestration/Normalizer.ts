@@ -4,9 +4,9 @@ import * as FileSystem from "effect/FileSystem";
 import {
   type ChatAttachment,
   type ClientOrchestrationCommand,
+  getProviderAttachmentLimitError,
   type IsoDateTime,
   type OrchestrationCommand,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type UserInputAttachments,
   type UploadChatAttachment,
   OrchestrationDispatchCommandError,
@@ -230,13 +230,9 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
     canonicalCommand.type === "thread.turn.start"
       ? canonicalCommand.message.attachments
       : Object.values(canonicalCommand.attachmentsByQuestionId ?? {}).flat();
-  if (
-    canonicalCommand.type === "thread.user-input.respond" &&
-    attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS
-  ) {
-    return yield* new OrchestrationDispatchCommandError({
-      message: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per question response.`,
-    });
+  const attachmentLimitError = getProviderAttachmentLimitError(attachments);
+  if (attachmentLimitError) {
+    return yield* new OrchestrationDispatchCommandError({ message: attachmentLimitError });
   }
   if (canonicalCommand.type === "thread.turn.start") {
     const clientAttachmentIds = new Set<string>();
@@ -284,6 +280,11 @@ export const normalizeDispatchCommand = Effect.fn("Normalizer.normalizeDispatchC
       });
     }
     validatedAttachments.push(inlineAttachment);
+  }
+
+  const decodedAttachmentLimitError = getProviderAttachmentLimitError(validatedAttachments);
+  if (decodedAttachmentLimitError) {
+    return yield* new OrchestrationDispatchCommandError({ message: decodedAttachmentLimitError });
   }
 
   if (validatedAttachments.length === 0) {

@@ -13,6 +13,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
@@ -64,6 +65,54 @@ function turnStartCommand(input: {
 }
 
 describe("normalizeDispatchCommand attachments", () => {
+  it.effect("accepts 100 inline images and rejects 101 before writing files", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const attachments = Array.from({ length: 100 }, () => ({
+        dataUrl: "data:image/png;base64,cGl4ZWxz",
+        sizeBytes: 6,
+      }));
+      const rejected = yield* normalizeDispatchCommand(
+        turnStartCommand({ attachments: [...attachments, attachments[0]!] }),
+      ).pipe(Effect.flip);
+      expect(rejected.message).toContain("up to 100");
+      expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
+      const accepted = yield* normalizeDispatchCommand(turnStartCommand({ attachments }));
+      if (accepted.command.type !== "thread.turn.start") throw new Error("Wrong command");
+      expect(accepted.command.message.attachments).toHaveLength(100);
+      expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([".staging"]);
+      yield* accepted.attachmentStage?.abort ?? Effect.void;
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects decoded image overflow before writing it and removes earlier files", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      let writtenBytes = 0;
+      const dataUrl = `data:image/png;base64,${Buffer.alloc(5 * 1024 * 1024).toString("base64")}`;
+      const command = turnStartCommand({
+        attachments: [
+          ...Array.from({ length: 16 }, () => ({ dataUrl, sizeBytes: 5 * 1024 * 1024 })),
+          { dataUrl: "data:image/png;base64,YQ==", sizeBytes: 1 },
+        ],
+      });
+      const error = yield* normalizeDispatchCommand(command).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fileSystem,
+          writeFile: (path, data, options) => {
+            writtenBytes += data.byteLength;
+            return fileSystem.writeFile(path, data, options);
+          },
+        }),
+        Effect.flip,
+      );
+      expect(error.message).toContain("80 MiB");
+      expect(writtenBytes).toBe(0);
+      expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects duplicate client ids before persisting attachments", () =>
     Effect.gen(function* () {
       const error = yield* normalizeDispatchCommand(
@@ -500,18 +549,18 @@ describe("question attachments", () => {
         answers: { first: "", second: "" },
         createdAt: "2026-08-01T00:00:00.000Z",
         attachmentsByQuestionId: {
-          first: Array.from({ length: 4 }, () => attachment),
-          second: Array.from({ length: 5 }, () => attachment),
+          first: Array.from({ length: 50 }, () => attachment),
+          second: Array.from({ length: 51 }, () => attachment),
         },
       };
       const failure = yield* normalizeDispatchCommand(command).pipe(Effect.flip);
-      expect(failure.message).toContain("up to 8");
+      expect(failure.message).toContain("up to 100");
       expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([`${id}.txt`]);
       const accepted = {
         ...command,
         attachmentsByQuestionId: {
           ...command.attachmentsByQuestionId,
-          second: Array.from({ length: 4 }, () => attachment),
+          second: Array.from({ length: 50 }, () => attachment),
         },
       };
       const normalized = yield* normalizeDispatchCommand(accepted);
@@ -521,8 +570,8 @@ describe("question attachments", () => {
       yield* normalized.attachmentStage.claim;
       yield* normalized.attachmentStage.commit;
       const attachments = Object.values(normalized.command.attachmentsByQuestionId!).flat();
-      expect(attachments).toHaveLength(8);
-      expect(new Set(attachments.map((item) => item.id)).size).toBe(8);
+      expect(attachments).toHaveLength(100);
+      expect(new Set(attachments.map((item) => item.id)).size).toBe(100);
       for (const item of attachments) {
         expect(item.name).toBe(attachment.name);
         expect(

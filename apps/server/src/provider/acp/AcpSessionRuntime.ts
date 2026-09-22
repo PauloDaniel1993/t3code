@@ -24,6 +24,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { PROVIDER_EVENT_FLOW_CONTROL } from "../../orchestration/ProviderEventFlowControl.ts";
 import { T3_CODE_TASK_TOOL_INSTRUCTIONS } from "../T3CodeTaskInstructions.ts";
+import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./AcpStderr.ts";
 import {
   collectSessionConfigOptionValues,
   decideToolCallUpdateEmission,
@@ -374,6 +375,8 @@ export const make = (
     );
     const stoppingRef = yield* Ref.make(false);
     const stderrFailure = yield* Deferred.make<never, EffectAcpErrors.AcpError>();
+    const stderrTailRef = yield* Ref.make("");
+    const stderrDrained = yield* Deferred.make<void>();
     const runtimeClosed = yield* Deferred.make<void>();
     const initialPromptInstructionsRef = yield* Ref.make<string | undefined>(
       T3_CODE_TASK_TOOL_INSTRUCTIONS.trim(),
@@ -397,22 +400,45 @@ export const make = (
       }
     });
 
+    const enrichProcessExitWithStderr = (
+      error: EffectAcpErrors.AcpError,
+    ): Effect.Effect<EffectAcpErrors.AcpError> =>
+      error._tag !== "AcpProcessExitedError" || (error.stderr?.trim().length ?? 0) > 0
+        ? Effect.succeed(error)
+        : Deferred.await(stderrDrained).pipe(
+            Effect.timeout("250 millis"),
+            Effect.ignore,
+            Effect.andThen(Ref.get(stderrTailRef)),
+            Effect.map((tail) => {
+              const stderr = sanitizeAcpStderrExcerpt(tail);
+              return stderr.length === 0
+                ? error
+                : new EffectAcpErrors.AcpProcessExitedError({
+                    ...(error.code !== undefined ? { code: error.code } : {}),
+                    ...(error.pid !== undefined ? { pid: error.pid } : {}),
+                    stderr,
+                    ...(error.cause !== undefined ? { cause: error.cause } : {}),
+                  });
+            }),
+          );
+
     const recordTermination = Effect.fn("AcpSessionRuntime.recordTermination")(function* (
       error: EffectAcpErrors.AcpError,
     ) {
       if (yield* Ref.get(stoppingRef)) {
         return;
       }
+      const enriched = yield* enrichProcessExitWithStderr(error);
       const firstTermination = yield* Ref.modify(terminationErrorRef, (current) =>
         Option.isSome(current)
           ? ([false, current] as const)
-          : ([true, Option.some(error)] as const),
+          : ([true, Option.some(enriched)] as const),
       );
       if (!firstTermination) {
         return;
       }
       yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
-      yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error });
+      yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error: enriched });
     });
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
@@ -429,6 +455,9 @@ export const make = (
             ? Effect.raceFirst(effect, Deferred.await(stderrFailure))
             : effect
           ).pipe(
+            Effect.catch((error) =>
+              enrichProcessExitWithStderr(error).pipe(Effect.flatMap(Effect.fail)),
+            ),
             Effect.tap((result) =>
               logRequest({
                 method,
@@ -476,10 +505,10 @@ export const make = (
     yield* child.stderr.pipe(
       Stream.decodeText(),
       Stream.runForEach((chunk) =>
-        (options.onStderr
-          ? options.onStderr(chunk.slice(-maxStderrChunkLength))
-          : Effect.void
-        ).pipe(
+        Ref.update(stderrTailRef, (current) => appendAcpStderrTail(current, chunk)).pipe(
+          Effect.andThen(
+            options.onStderr ? options.onStderr(chunk.slice(-maxStderrChunkLength)) : Effect.void,
+          ),
           Effect.catch((error) =>
             Effect.gen(function* () {
               yield* Deferred.fail(stderrFailure, error);
@@ -489,6 +518,7 @@ export const make = (
           ),
         ),
       ),
+      Effect.ensuring(Deferred.succeed(stderrDrained, undefined)),
       Effect.ignore,
       Effect.forkIn(runtimeScope),
     );

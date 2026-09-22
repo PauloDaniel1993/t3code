@@ -6,7 +6,6 @@ import {
 import * as Effect from "effect/Effect";
 
 const DATA_URL_CHARS_ROUNDING = 1_000_000;
-const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const MEDIA_TYPE_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const PARAMETER_PATTERN =
   /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\s*=\s*(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"[^"\r\n]*")$/;
@@ -40,6 +39,33 @@ function maximumDataUrlChars(maximumBytes: number): number {
 
 function maximumBase64Chars(maximumBytes: number): number {
   return 4 * Math.ceil(maximumBytes / 3);
+}
+
+function isBase64AlphabetCode(code: number): boolean {
+  return (
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57) ||
+    code === 43 ||
+    code === 47
+  );
+}
+
+function isCanonicalBase64(value: string): boolean {
+  if (value.length === 0 || value.length % 4 !== 0) return false;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const contentLength = value.length - padding;
+  for (let index = 0; index < contentLength; index += 1) {
+    if (!isBase64AlphabetCode(value.charCodeAt(index))) return false;
+  }
+  for (let index = contentLength; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 61) return false;
+  }
+  return padding === 0
+    ? contentLength % 4 === 0
+    : padding === 1
+      ? contentLength % 4 === 3
+      : contentLength % 4 === 2;
 }
 
 function decodeStrictBase64DataUrl(
@@ -108,7 +134,7 @@ function decodeStrictBase64DataUrl(
         `has an encoded payload exceeding the ${maximumBytes}-byte limit.`,
       );
     }
-    if (base64.length % 4 !== 0 || !BASE64_PATTERN.test(base64)) {
+    if (!isCanonicalBase64(base64)) {
       return yield* attachmentError(attachment.name, "has invalid or non-canonical base64 data.");
     }
 

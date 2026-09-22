@@ -1,3 +1,5 @@
+import { Platform } from "react-native";
+
 import { DEFAULT_MOBILE_THEME_ID, type MobileThemeId } from "../../../lib/mobileTheme";
 import { getMobileThemeRuntimeVariables } from "../../../lib/mobileThemeVariables";
 
@@ -91,7 +93,7 @@ export const TASK_AGENT_THEMES: Readonly<Record<TaskAgentThemeMode, TaskAgentThe
 };
 
 function deriveTaskAgentTheme(mode: TaskAgentThemeMode, themeId: MobileThemeId): TaskAgentTheme {
-  const variables = getMobileThemeRuntimeVariables(themeId, mode);
+  const variables = getMobileThemeRuntimeVariables(themeId, mode, Platform.OS);
   const taskTheme = TASK_AGENT_THEMES[mode];
 
   return {

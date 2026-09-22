@@ -67,6 +67,7 @@ import {
   makeCodexSessionRuntime,
   type CodexSessionRuntimeError,
   type CodexSessionRuntimeOptions,
+  type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -832,6 +833,8 @@ function toRequestTypeFromMethod(method: string): CanonicalRequestType {
       return "file_change_approval";
     case "mcpServer/elicitation/request":
       return "mcp_elicitation_approval";
+    case "item/permissions/requestApproval":
+      return "permission_approval";
     case "applyPatchApproval":
       return "apply_patch_approval";
     case "execCommandApproval":
@@ -857,6 +860,8 @@ function toRequestTypeFromKind(kind: ProviderRequestKind | undefined): Canonical
       return "file_change_approval";
     case "mcp-elicitation":
       return "mcp_elicitation_approval";
+    case "permission":
+      return "permission_approval";
     default:
       return "unknown";
   }
@@ -1368,6 +1373,20 @@ function mapToRuntimeEvents(
         }
         case "mcpServer/elicitation/request":
           return elicitation?.message;
+        case "item/permissions/requestApproval": {
+          const payload = readPayload(
+            EffectCodexSchema.ServerRequest__PermissionsRequestApprovalParams,
+            event.payload,
+          );
+          const requestedPaths = [
+            ...(payload?.permissions.fileSystem?.read ?? []),
+            ...(payload?.permissions.fileSystem?.write ?? []),
+          ];
+          return (
+            nonEmptyDetail(payload?.reason) ??
+            (requestedPaths.length > 0 ? `Access: ${requestedPaths.join(", ")}` : undefined)
+          );
+        }
         case "applyPatchApproval": {
           const payload = readPayload(
             EffectCodexSchema.ServerRequest__ApplyPatchApprovalParams,
@@ -2220,9 +2239,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   options?: CodexAdapterLiveOptions,
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
-  const fileSystem = yield* FileSystem.FileSystem;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
   const serverConfig = yield* Effect.service(ServerConfig);
   const nativeEventLogger =
     options?.nativeEventLogger ??
@@ -2500,8 +2519,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     switch (attachment.type) {
       case "image":
         return {
-          type: "image" as const,
-          url: `data:${attachment.mimeType};base64,${Buffer.from(resolved.bytes).toString("base64")}`,
+          type: "localImage" as const,
+          path: resolved.absolutePath,
         };
       case "file":
         return {
@@ -2513,8 +2532,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   });
 
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
-    // Unknown future attachment kinds use ProviderService's path fallback.
-    // Codex accepts current generic files as native mention inputs.
+    // Images are passed by path so turn/start requests do not scale with file
+    // size. Generic files remain native mentions after the same ownership and
+    // readability validation.
     const codexAttachments = yield* Effect.forEach(
       (input.attachments ?? []).filter(
         (attachment): attachment is Extract<ChatAttachment, { readonly type: "image" | "file" }> =>

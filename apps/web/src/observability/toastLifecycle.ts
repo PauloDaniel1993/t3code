@@ -7,7 +7,7 @@ import type {
 } from "@base-ui/react/toast";
 import * as Effect from "effect/Effect";
 
-import { ClientTracingLive } from "./clientTracing";
+import * as ClientTracer from "./clientTracer";
 
 export type ToastManagerName = "anchored" | "viewport";
 
@@ -345,7 +345,7 @@ function recordToastLifecycleTrace(record: ToastLifecycleRecord): void {
   Effect.logInfo("web.toast.lifecycle").pipe(
     Effect.annotateLogs(attributes),
     Effect.withSpan("web.toast.lifecycle", { root: true, attributes }),
-    Effect.provide(ClientTracingLive),
+    Effect.provide(ClientTracer.layer),
     Effect.runFork,
   );
 }

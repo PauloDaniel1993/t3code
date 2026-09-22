@@ -240,7 +240,7 @@ const seedLegacyRecoveryAndCompactionMigrations = Effect.gen(function* () {
   `;
 });
 
-const freshLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const freshLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 freshLayer("ForkMigrations (fresh database)", (it) => {
   it.effect("runs base then fork migrations into separate ledgers", () =>
@@ -268,7 +268,7 @@ freshLayer("ForkMigrations (fresh database)", (it) => {
 // The projection folds in-session agents as their activities arrive and never
 // re-reads stored ones, so agents that ran before the feature existed — or that
 // migration 007 cleared — would stay invisible forever without a backfill.
-const backfillLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const backfillLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 backfillLayer("ForkMigrations (in-session agent backfill)", (it) => {
   it.effect("rebuilds agents from stored activities, ignoring non-agent tasks", () =>
@@ -357,7 +357,7 @@ backfillLayer("ForkMigrations (in-session agent backfill)", (it) => {
   );
 });
 
-const baseOnlyLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const baseOnlyLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 baseOnlyLayer("ForkMigrations (existing base-only database)", (it) => {
   it.effect("adds the fork ledger to a database that never ran fork migrations", () =>
@@ -392,7 +392,7 @@ baseOnlyLayer("ForkMigrations (existing base-only database)", (it) => {
   );
 });
 
-const legacyLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const legacyLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 legacyLayer("ForkMigrations (legacy base-ledger entry)", (it) => {
   it.effect(
@@ -417,7 +417,9 @@ legacyLayer("ForkMigrations (legacy base-ledger entry)", (it) => {
   );
 });
 
-const legacyRecoveryLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const legacyRecoveryLayer = it.layer(
+  Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })),
+);
 
 legacyRecoveryLayer("ForkMigrations (legacy recovery and compaction rows)", (it) => {
   it.effect("moves legacy base rows into the fork ledger without replacing their schema", () =>
@@ -440,7 +442,9 @@ legacyRecoveryLayer("ForkMigrations (legacy recovery and compaction rows)", (it)
   );
 });
 
-const upstreamBaseLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const upstreamBaseLayer = it.layer(
+  Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })),
+);
 
 upstreamBaseLayer("ForkMigrations (upstream base migrations)", (it) => {
   it.effect("leaves upstream base migrations 33 and 34 untouched", () =>
@@ -461,7 +465,7 @@ upstreamBaseLayer("ForkMigrations (upstream base migrations)", (it) => {
   );
 });
 
-const restartLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const restartLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 restartLayer("ForkMigrations (restart reconciliation)", (it) => {
   it.effect("keeps the reconciled ledgers and schema unchanged across restarts", () =>

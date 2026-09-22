@@ -79,16 +79,6 @@ export const GetProjectionThreadInput = Schema.Struct({
 });
 export type GetProjectionThreadInput = typeof GetProjectionThreadInput.Type;
 
-export const DeleteProjectionThreadInput = Schema.Struct({
-  threadId: ThreadId,
-});
-export type DeleteProjectionThreadInput = typeof DeleteProjectionThreadInput.Type;
-
-export const ListProjectionThreadsByProjectInput = Schema.Struct({
-  projectId: ProjectId,
-});
-export type ListProjectionThreadsByProjectInput = typeof ListProjectionThreadsByProjectInput.Type;
-
 export const ListProjectionThreadsByParentInput = Schema.Struct({
   parentThreadId: ThreadId,
 });
@@ -113,15 +103,6 @@ export interface ProjectionThreadRepositoryShape {
   ) => Effect.Effect<Option.Option<ProjectionThread>, ProjectionRepositoryError>;
 
   /**
-   * List projected threads for a project.
-   *
-   * Returned in deterministic creation order.
-   */
-  readonly listByProjectId: (
-    input: ListProjectionThreadsByProjectInput,
-  ) => Effect.Effect<ReadonlyArray<ProjectionThread>, ProjectionRepositoryError>;
-
-  /**
    * List a parent thread's task threads, including soft-deleted rows so callers
    * can enforce the lifetime cap. Resolves through the partial
    * `parent_thread_id` index rather than scanning.
@@ -129,13 +110,6 @@ export interface ProjectionThreadRepositoryShape {
   readonly listByParentThreadId: (
     input: ListProjectionThreadsByParentInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThread>, ProjectionRepositoryError>;
-
-  /**
-   * Soft-delete a projected thread row by id.
-   */
-  readonly deleteById: (
-    input: DeleteProjectionThreadInput,
-  ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 /**

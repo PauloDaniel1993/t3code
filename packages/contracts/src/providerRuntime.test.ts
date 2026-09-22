@@ -1,21 +1,16 @@
-import { describe, expect, expectTypeOf, it } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
   classifyTaskAgentKind,
   ProviderRuntimeEvent,
   TaskUsageSnapshot,
-  type ProviderRuntimeEventType,
 } from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 const decodeTaskUsageSnapshot = Schema.decodeUnknownSync(TaskUsageSnapshot);
 
 describe("ProviderRuntimeEvent", () => {
-  it("includes every runtime event in the public event type", () => {
-    expectTypeOf<ProviderRuntimeEvent["type"]>().toEqualTypeOf<ProviderRuntimeEventType>();
-  });
-
   it("requires input and output totals for complete turn usage", () => {
     const completeEvent = {
       type: "turn.completed",
@@ -77,6 +72,40 @@ describe("ProviderRuntimeEvent", () => {
 
     expect(parsed.provider).toBe("ollama");
     expect(parsed.providerInstanceId).toBe("ollama_local");
+  });
+
+  it("decodes every current request kind including app permission approval", () => {
+    const requestTypes = [
+      "command_execution_approval",
+      "file_read_approval",
+      "file_change_approval",
+      "apply_patch_approval",
+      "exec_command_approval",
+      "mcp_elicitation_approval",
+      "permission_approval",
+      "tool_user_input",
+      "dynamic_tool_call",
+      "auth_tokens_refresh",
+      "unknown",
+    ] as const;
+
+    for (const requestType of requestTypes) {
+      const parsed = decodeRuntimeEvent({
+        type: "request.opened",
+        eventId: `event-request-${requestType}`,
+        provider: "codex",
+        createdAt: "2026-02-28T00:00:00.000Z",
+        threadId: "thread-1",
+        requestId: `request-${requestType}`,
+        payload: { requestType },
+      });
+
+      expect(parsed.type).toBe("request.opened");
+      if (parsed.type !== "request.opened") {
+        throw new Error("expected request.opened");
+      }
+      expect(parsed.payload.requestType).toBe(requestType);
+    }
   });
 
   it("decodes turn.plan.updated for plan rendering", () => {

@@ -5,6 +5,7 @@ import {
   CommandId,
   type ChatAttachment,
   OrchestrationDispatchCommandError,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ThreadId,
   UserInputAttachmentAnswerPayload,
 } from "@t3tools/contracts";
@@ -46,13 +47,17 @@ const AttachmentStageManifest = Schema.Union([
   Schema.Struct({
     version: Schema.Literal(1),
     commandId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)),
-    finalRelativePaths: Schema.Array(Schema.String).check(Schema.isMaxLength(8)),
+    finalRelativePaths: Schema.Array(Schema.String).check(
+      Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
+    ),
   }),
   Schema.Struct({
     version: Schema.Literal(2),
     commandId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)),
     threadId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
-    finalRelativePaths: Schema.Array(Schema.String).check(Schema.isMaxLength(8)),
+    finalRelativePaths: Schema.Array(Schema.String).check(
+      Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
+    ),
   }),
 ]);
 type AttachmentStageManifest = typeof AttachmentStageManifest.Type;

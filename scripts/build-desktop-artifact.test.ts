@@ -752,7 +752,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "@ff-labs/fff-node": "0.9.4",
           "@opencode-ai/sdk": "^1.3.15",
           "@pierre/diffs": "1.3.0",
-          "msgpackr-extract": "3.0.4",
           "node-pty": "1.1.0",
         },
         desktopDependencies: {
@@ -764,7 +763,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }),
       {
         "@ff-labs/fff-node": "0.9.4",
-        "msgpackr-extract": "3.0.4",
         "node-pty": "1.1.0",
         "@napi-rs/keyring": "1.3.0",
         "playwright-core": "1.60.0",
@@ -1160,6 +1158,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
+        const hostPlatform = yield* HostProcessPlatform;
         const repoRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-kde-stage-test-" });
         const protocols = path.join(repoRoot, "native/hyprland-snap-shot/protocols");
         yield* fs.makeDirectory(protocols, { recursive: true });
@@ -1182,7 +1181,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
                 Effect.gen(function* () {
                   assert.equal(command._tag, "StandardCommand");
                   if (command._tag !== "StandardCommand") return mockProcess(1);
-                  assert.equal(command.command, "cargo");
+                  assert.match(path.basename(command.command).toLowerCase(), /^cargo(?:\.exe)?$/);
                   assert.deepEqual(command.args, [
                     "build",
                     "--locked",
@@ -1210,7 +1209,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
               `${backend}-capture/t3-${backend}-snap-shot`,
             );
             assert.equal(yield* fs.readFileString(installed), `helper-${arch}`);
-            assert.equal((yield* fs.stat(installed)).mode & 0o777, 0o755);
+            if (hostPlatform !== "win32") {
+              assert.equal((yield* fs.stat(installed)).mode & 0o777, 0o755);
+            }
             if (backend === "hyprland")
               assert.equal(
                 yield* fs.readFileString(
