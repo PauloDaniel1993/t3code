@@ -166,7 +166,7 @@ export function NewThreadTaskDialog(props: {
           </DialogDescription>
         </DialogHeader>
 
-        <DialogPanel className="space-y-4">
+        <DialogPanel>
           <form
             id={formId}
             className="space-y-4"
