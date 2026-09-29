@@ -510,7 +510,9 @@ export function AddProviderInstanceDialog({
                 <SettingsRow
                   title={<label htmlFor="add-provider-label">Label</label>}
                   description={
-                    <span id="add-provider-label-description">Shown in the provider list.</span>
+                    <span id="add-provider-label-description">
+                      {driverOption.description ?? "Shown in the provider list."}
+                    </span>
                   }
                   control={
                     <Input
