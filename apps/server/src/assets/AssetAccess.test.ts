@@ -13,6 +13,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HttpClient, HttpClientResponse, HttpServerResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { vi } from "vite-plus/test";
@@ -29,6 +30,7 @@ import { openMediaFile } from "./MediaFile.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import { githubMediaResponse } from "./GitHubMediaFetch.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFSP>();
@@ -38,7 +40,41 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-asset-access-test-",
 });
+const encodeAttachmentFixture = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const attachmentOwnershipLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+    VALUES ('project-1', 'Test', '/test', '[]', '2026-01-01', '2026-01-01')`;
+    yield* sql`INSERT INTO orchestration_v2_projection_threads (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
+    VALUES ('thread-1', 'project-1', 'Test', 'codex', 'full-access', 'default', '2026-01-01', '2026-01-01', '{}')`;
+    const attachments = [
+      {
+        type: "image",
+        id: "thread-1-00000000-0000-4000-8000-000000000001",
+        name: "image.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+      },
+      ...[
+        ["00000000-0000-4000-8000-000000000001", "mp4"],
+        ["00000000-0000-4000-8000-000000000001", "pdf"],
+        ["00000000-0000-4000-8000-000000000003", "wav"],
+        ["00000000-0000-4000-8000-000000000002", "zip"],
+      ].map(([uuid, extension]) => ({
+        type: "file",
+        id: `thread-1-${uuid}-${extension}`,
+        name: `file.${extension}`,
+        mimeType: "application/octet-stream",
+        sizeBytes: 3,
+      })),
+    ];
+    yield* sql`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
+    VALUES ('message-1', 'thread-1', 'user', 0, '2026-01-01', '2026-01-01', ${encodeAttachmentFixture({ attachments })})`;
+  }),
+).pipe(Layer.provideMerge(SqlitePersistenceMemory));
 const testLayer = Layer.mergeAll(
+  attachmentOwnershipLayer,
   NodeHttpPlatform.layer,
   configLayer,
   WorkspacePaths.layer,
@@ -730,7 +766,7 @@ describe("AssetAccess", () => {
       const separatorIndex = suffix.indexOf("/");
       const token = suffix.slice(0, separatorIndex);
 
-      expect(yield* resolveAsset(token, "ignored.png")).toEqual({
+      expect(yield* resolveAsset(token, "ignored.png")).toMatchObject({
         kind: "file",
         path: attachmentPath,
       });
@@ -760,7 +796,7 @@ describe("AssetAccess", () => {
 
       expect(
         yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
-      ).toEqual({
+      ).toMatchObject({
         kind: "file",
         path: attachmentPath,
         fileName: "demo.mp4",
@@ -808,7 +844,7 @@ describe("AssetAccess", () => {
 
       expect(
         yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
-      ).toEqual({
+      ).toMatchObject({
         kind: "file",
         path: attachmentPath,
         fileName: "report.pdf",
@@ -840,7 +876,7 @@ describe("AssetAccess", () => {
         const separatorIndex = suffix.indexOf("/");
         expect(
           yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
-        ).toEqual({
+        ).toMatchObject({
           kind: "file",
           path: attachmentPath,
           fileName: "recording.wav",

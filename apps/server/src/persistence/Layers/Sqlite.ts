@@ -7,6 +7,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "../Migrations.ts";
 import { initializeV2Database } from "../initializeV2Database.ts";
+import { initializeIsolatedAttachments } from "../../attachmentIsolation.ts";
 import { ServerConfig } from "../../config.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
@@ -52,8 +53,9 @@ export const SqlitePersistenceMemory = Layer.provideMerge(
 
 export const layerConfig = Layer.unwrap(
   Effect.gen(function* () {
-    const { dbPath } = yield* ServerConfig;
-    yield* initializeV2Database(dbPath);
-    return makeSqlitePersistenceLive(dbPath);
+    const config = yield* ServerConfig;
+    yield* initializeV2Database(config.dbPath);
+    yield* initializeIsolatedAttachments(config);
+    return makeSqlitePersistenceLive(config.dbPath);
   }),
 );

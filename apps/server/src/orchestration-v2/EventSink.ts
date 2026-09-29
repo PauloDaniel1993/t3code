@@ -24,6 +24,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/Services/OrchestrationEventStore.ts";
 import { projectDomainEventForWire } from "./WireProjection.ts";
+import { applyWithAttachmentPruning } from "./AttachmentReferences.ts";
 
 import {
   CommandReceiptStoreV2,
@@ -311,9 +312,17 @@ const baseLayer: Layer.Layer<
 
     const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) =>
       Effect.gen(function* () {
-        yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
-          concurrency: 1,
-        });
+        const cleanupCounts = yield* Effect.forEach(
+          storedEvents,
+          (stored) =>
+            applyWithAttachmentPruning(stored, projectionStore.apply(stored.event)).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.provideService(EffectOutboxV2, effectOutbox),
+            ),
+          {
+            concurrency: 1,
+          },
+        );
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -337,6 +346,7 @@ const baseLayer: Layer.Layer<
               updated_at = excluded.updated_at
           `;
         }
+        return cleanupCounts.reduce<number>((total, count) => total + count, 0);
       });
 
     const writeEffect = Effect.fn("orchestrationV2.EventSink.write")(function* (
@@ -348,7 +358,7 @@ const baseLayer: Layer.Layer<
         "orchestration_v2.thread_id": input.events[0]?.threadId ?? null,
       });
 
-      const storedEvents = yield* sql.withTransaction(
+      const { storedEvents, cleanupCount } = yield* sql.withTransaction(
         Effect.gen(function* () {
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
@@ -359,13 +369,13 @@ const baseLayer: Layer.Layer<
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
             events: normalized,
           });
-          yield* applyStoredEvents(committed);
+          const cleanupCount = yield* applyStoredEvents(committed);
           yield* effectOutbox.enqueue(input.effects);
-          return committed;
+          return { storedEvents: committed, cleanupCount };
         }),
       );
-      if (input.effects.length > 0) {
-        yield* effectOutbox.notifyAvailable(input.effects.length);
+      if (input.effects.length + cleanupCount > 0) {
+        yield* effectOutbox.notifyAvailable(input.effects.length + cleanupCount);
       }
       yield* eventStore.publishCommitted(storedEvents);
       yield* publishLiveEvents(storedEvents);
@@ -404,6 +414,7 @@ const baseLayer: Layer.Layer<
               return {
                 committed: false as const,
                 storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+                cleanupCount: 0,
               };
             }
 
@@ -416,15 +427,16 @@ const baseLayer: Layer.Layer<
               ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
               events: normalized,
             });
-            yield* applyStoredEvents(storedEvents);
-            return { committed: true as const, storedEvents };
+            const cleanupCount = yield* applyStoredEvents(storedEvents);
+            return { committed: true as const, storedEvents, cleanupCount };
           }),
         );
         if (result.committed) {
+          if (result.cleanupCount > 0) yield* effectOutbox.notifyAvailable(result.cleanupCount);
           yield* eventStore.publishCommitted(result.storedEvents);
           yield* publishLiveEvents(result.storedEvents);
         }
-        return result;
+        return { committed: result.committed, storedEvents: result.storedEvents };
       },
     );
 
@@ -465,6 +477,7 @@ const baseLayer: Layer.Layer<
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              cleanupCount: 0,
             };
           }
 
@@ -477,15 +490,16 @@ const baseLayer: Layer.Layer<
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
             events: normalized,
           });
-          yield* applyStoredEvents(storedEvents);
-          return { committed: true as const, storedEvents };
+          const cleanupCount = yield* applyStoredEvents(storedEvents);
+          return { committed: true as const, storedEvents, cleanupCount };
         }),
       );
       if (result.committed) {
+        if (result.cleanupCount > 0) yield* effectOutbox.notifyAvailable(result.cleanupCount);
         yield* eventStore.publishCommitted(result.storedEvents);
         yield* publishLiveEvents(result.storedEvents);
       }
-      return result;
+      return { committed: result.committed, storedEvents: result.storedEvents };
     });
 
     const existingCommandResult = (commandId: CommandId) =>
@@ -519,7 +533,12 @@ const baseLayer: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
-            return { ...existing, committed: false as const, cancelledEffectIds: [] };
+            return {
+              ...existing,
+              committed: false as const,
+              cancelledEffectIds: [],
+              cleanupCount: 0,
+            };
           }
 
           const normalized = yield* normalizeEvents(input.events);
@@ -533,7 +552,7 @@ const baseLayer: Layer.Layer<
               new Error(`Command ${input.commandId} produced no orchestration events.`),
             );
           }
-          yield* applyStoredEvents(storedEvents);
+          const cleanupCount = yield* applyStoredEvents(storedEvents);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptV2 = {
             commandId: input.commandId,
@@ -552,12 +571,18 @@ const baseLayer: Layer.Layer<
                   threadId: input.threadId,
                   ...input.cancelUnsettledEffects,
                 });
-          return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
+          return {
+            receipt,
+            storedEvents,
+            committed: true as const,
+            cancelledEffectIds,
+            cleanupCount,
+          };
         }),
       );
       yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
-      if (result.committed && input.effects.length > 0) {
-        yield* effectOutbox.notifyAvailable(input.effects.length);
+      if (result.committed && input.effects.length + result.cleanupCount > 0) {
+        yield* effectOutbox.notifyAvailable(input.effects.length + result.cleanupCount);
       }
       if (result.committed) {
         yield* eventStore.publishCommitted(result.storedEvents);

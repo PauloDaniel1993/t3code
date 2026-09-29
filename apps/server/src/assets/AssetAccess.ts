@@ -47,8 +47,11 @@ import {
   timingSafeEqualBase64Url,
 } from "../auth/utils.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../attachmentStore.ts";
+import { parseAttachmentFileExtension } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import { ThreadId } from "@t3tools/contracts";
+import { findReadableAttachment } from "../orchestration-v2/AttachmentReferences.ts";
+import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
@@ -109,6 +112,8 @@ const AssetClaimsSchema = Schema.Union([
     version: Schema.Literal(1),
     kind: Schema.Literal("attachment"),
     attachmentId: Schema.String,
+    threadId: Schema.optionalKey(ThreadId),
+    relativePath: Schema.optionalKey(Schema.String),
     /** Decided at mint time. Absent tokens (from before this field) serve
         inline, which is only ever the image case. */
     download: Schema.optionalKey(Schema.Boolean),
@@ -249,6 +254,18 @@ const resolveCanonicalWorkspaceFileForRequest = (input: {
     ),
     Effect.orElseSucceed(() => null),
   );
+
+// Attachment references name exact stored files. Even an in-root symlink must
+// not substitute another attachment for the one whose ownership was checked.
+const resolveCanonicalAttachmentFile = Effect.fn("AssetAccess.resolveCanonicalAttachmentFile")(
+  function* (input: { readonly workspaceRoot: string; readonly relativePath: string }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.realPath(input.workspaceRoot);
+    const canonical = yield* resolveCanonicalWorkspaceFile({ ...input, workspaceRoot: root });
+    return canonical === path.join(root, input.relativePath) ? canonical : null;
+  },
+);
 
 /**
  * Reads pixel dimensions from an image's header so clients can reserve the
@@ -520,14 +537,30 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
     }
     case "attachment": {
       const config = yield* ServerConfig.ServerConfig;
-      const attachmentPath = resolveAttachmentPathById({
+      const reference = yield* findReadableAttachment(
+        input.resource.attachmentId,
+        input.resource.threadId,
+      ).pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource: input.resource })));
+      if (reference === null) {
+        return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
+      }
+      const attachmentPath = resolveAttachmentRelativePath({
         attachmentsDir: config.attachmentsDir,
-        attachmentId: input.resource.attachmentId,
+        relativePath: reference.relativePath,
       });
       if (!attachmentPath) {
         return yield* new AssetAttachmentNotFoundError({
           resource: input.resource,
         });
+      }
+      const canonical = yield* resolveCanonicalAttachmentFile({
+        workspaceRoot: config.attachmentsDir,
+        relativePath: reference.relativePath,
+      }).pipe(
+        Effect.mapError(() => new AssetAttachmentNotFoundError({ resource: input.resource })),
+      );
+      if (canonical === null) {
+        return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
       }
       // Generic files carry their extension inside the attachment id (that
       // shape resolves the on-disk path); images do not. Videos and images
@@ -548,6 +581,8 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         version: 1,
         kind: "attachment",
         attachmentId: input.resource.attachmentId,
+        threadId: reference.threadId,
+        relativePath: reference.relativePath,
         ...(isGenericFile && !isVideo && inlinePreviewMimeType === undefined
           ? { download: true }
           : {}),
@@ -739,27 +774,31 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
 
   if (claims.kind === "attachment") {
+    // Old unbound capabilities are deliberately refused, including pending uploads.
+    if (claims.threadId === undefined || claims.relativePath === undefined) return null;
+    const reference = yield* findReadableAttachment(claims.attachmentId, claims.threadId).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+    if (reference === null || reference.relativePath !== claims.relativePath) return null;
     const config = yield* ServerConfig.ServerConfig;
-    const attachmentPath = resolveAttachmentPathById({
+    const attachmentPath = resolveAttachmentRelativePath({
       attachmentsDir: config.attachmentsDir,
-      attachmentId: claims.attachmentId,
+      relativePath: reference.relativePath,
     });
     if (!attachmentPath) return null;
-    const fileSystem = yield* FileSystem.FileSystem;
-    const info = yield* optionOnNotFound(fileSystem.stat(attachmentPath)).pipe(
-      Effect.tapError((cause) =>
-        Effect.logError("Failed to inspect attachment asset.", {
-          attachmentId: claims.attachmentId,
-          path: attachmentPath,
-          cause,
-        }),
-      ),
-      Effect.orElseSucceed(() => Option.none()),
-    );
-    return Option.isSome(info) && info.value.type === "File"
+    const canonical = yield* resolveCanonicalAttachmentFile({
+      workspaceRoot: config.attachmentsDir,
+      relativePath: reference.relativePath,
+    }).pipe(Effect.orElseSucceed(() => null));
+    const file =
+      canonical === null
+        ? null
+        : yield* openMediaFile(canonical).pipe(Effect.orElseSucceed(() => null));
+    return canonical !== null && file !== null
       ? ({
           kind: "file",
-          path: attachmentPath,
+          path: canonical,
+          file,
           ...(claims.download ? { download: true } : {}),
           ...(claims.fileName !== undefined ? { fileName: claims.fileName } : {}),
           ...(claims.mimeType !== undefined ? { mimeType: claims.mimeType } : {}),

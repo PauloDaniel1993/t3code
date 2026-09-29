@@ -31,6 +31,8 @@ export const AssetResource = Schema.Union([
   }),
   Schema.TaggedStruct("attachment", {
     attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    /** If omitted, the server derives an owner from persisted thread references. */
+    threadId: Schema.optionalKey(ThreadId),
     /** Display name and mime from the `ChatAttachment` the caller holds. The
         server bakes both into the signed URL so downloads carry the real
         filename and Content-Type. Absent on older clients, which fall back to
