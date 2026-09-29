@@ -32,6 +32,7 @@ import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import { EventSinkV2 } from "./EventSink.ts";
+import { makeLoggedIdleSessionRelease } from "./ForkProviderSessionReleaseLogging.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
 import { makeKeyedSerialExecutor } from "./KeyedSerialExecutor.ts";
 import { ProviderEventIngestorV2 } from "./ProviderEventIngestor.ts";
@@ -851,88 +852,12 @@ export const layerWithOptions = (
           ),
         );
 
-      // Annotated to break the releaseIfStillIdle <-> scheduleIdleReleaseInternal
-      // inference cycle introduced by the pin re-arm below.
-      const releaseIfStillIdle = (input: {
-        readonly providerSessionId: ProviderSessionId;
-        readonly generation: number;
-      }): Effect.Effect<void> =>
-        Effect.gen(function* () {
-          const current = yield* Ref.get(sessions);
-          const key = sessionKey(input.providerSessionId);
-          const entry = current.get(key);
-          if (
-            entry === undefined ||
-            entry.busyCount > 0 ||
-            entry.idleGeneration !== input.generation
-          ) {
-            return;
-          }
-          // Capture runtime identity before yielding: a replacement session
-          // can reuse the same providerSessionId while this fiber is parked.
-          const probedRuntime = entry.runtime;
-          const hasPendingWork =
-            probedRuntime.hasPendingBackgroundWork === undefined
-              ? false
-              : yield* probedRuntime.hasPendingBackgroundWork.pipe(
-                  Effect.catchCause(() => Effect.succeed(false)),
-                );
-          if (hasPendingWork) {
-            const now = yield* Clock.currentTimeMillis;
-            const pinnedSinceMs = entry.pinnedSinceMs ?? now;
-            if (now - pinnedSinceMs < maxIdlePinMs) {
-              const shouldContinuePin = yield* Ref.modify(sessions, (latest) => {
-                const latestEntry = latest.get(key);
-                if (
-                  latestEntry === undefined ||
-                  latestEntry.busyCount > 0 ||
-                  latestEntry.idleGeneration !== input.generation ||
-                  latestEntry.runtime !== probedRuntime
-                ) {
-                  return [false, latest] as const;
-                }
-                const updated = new Map(latest);
-                updated.set(key, { ...latestEntry, pinnedSinceMs });
-                return [true, updated] as const;
-              });
-              if (!shouldContinuePin) {
-                // Generation or runtime advanced while we probed pending work;
-                // the current owner of the entry owns idle release.
-                return;
-              }
-              yield* Effect.logInfo("orchestration-v2.driver-session.idle-release-deferred", {
-                providerSessionId: input.providerSessionId,
-                pinnedForMs: now - pinnedSinceMs,
-              });
-              // Re-check on this fiber after another idle window. Do not call
-              // scheduleIdleReleaseInternal: that cancels entry.idleFiber, which
-              // is this fiber, and can self-deadlock on Fiber.interrupt.
-              yield* Effect.sleep(Duration.millis(idleTimeoutMs));
-              return yield* releaseIfStillIdle(input);
-            }
-            yield* Effect.logWarning("orchestration-v2.driver-session.idle-release-pin-expired", {
-              providerSessionId: input.providerSessionId,
-              pinnedForMs: now - pinnedSinceMs,
-            });
-          }
-          // hasPendingBackgroundWork yields to the adapter, so the idle
-          // decision above can go stale; the generation guard revalidates
-          // busyCount and idleGeneration inside releaseEntry's atomic
-          // entry removal.
-          yield* releaseEntry({
-            providerSessionId: input.providerSessionId,
-            reason: "idle_timeout",
-            cancelIdleFiber: false,
-            onlyIfIdleGeneration: input.generation,
-          }).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("orchestration-v2.driver-session.idle-release-failed", {
-                providerSessionId: input.providerSessionId,
-                cause,
-              }),
-            ),
-          );
-        });
+      const releaseIfStillIdle = makeLoggedIdleSessionRelease({
+        sessions,
+        releaseEntry,
+        idleTimeoutMs,
+        maxIdlePinMs,
+      });
 
       const withActivityError = <A, E, R>(
         providerSessionId: ProviderSessionId,
