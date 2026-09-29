@@ -36,6 +36,30 @@ on macOS and Ctrl on Windows and Linux, including GNOME, KDE Plasma, Niri, and
 Hyprland. If a custom desktop shortcut takes the same keys, choose another binding
 in Settings.
 
+## Delegate a task
+
+In an existing thread on web or desktop, choose **New task** in the chat header
+or command palette, or press `mod+alt+n`. Choose the task's provider instance,
+model and reasoning level, then describe the work. The parent agent receives a
+request to delegate, queued behind any active turn. Creating the child depends
+on the agent following that request.
+
+The request uses one turn on the parent's model. When the task finishes, its
+result wakes the parent for a second turn. The child inherits the parent's
+permissions and interaction mode: a Plan parent can refuse delegation, and any
+child it creates also only plans. The parent will ask for approval when its
+runtime requires it; a Claude read-only sandbox may deny delegation when approvals
+are disabled.
+
+The child receives the task prompt; parent conversation history is not copied.
+Optionally enable **Let the parent add relevant thread context** to ask the
+parent's agent to append a summary of the context the child needs. This is off
+by default; the child receives the agent's summary, rather than a conversation copy.
+Prompts are limited to 12,000 characters because the parent must repeat them in
+a tool call. Include necessary context and put longer material in files the child
+can read. Change the shortcut under
+**Settings → Keybindings → Thread: New Task**.
+
 ## Copy pull request references
 
 With a PR open in the right panel or on the Pull Requests page, use `mod+shift+c`
