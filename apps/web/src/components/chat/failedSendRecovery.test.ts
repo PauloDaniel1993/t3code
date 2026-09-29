@@ -1,26 +1,45 @@
-import type { ToastManagerAddOptions } from "@base-ui/react/toast";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+// @vitest-environment jsdom
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   EnvironmentId,
-  MessageId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ThreadId,
+  ProjectId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-
 import {
   DraftId,
   type ComposerThreadTarget,
   useComposerDraftStore,
+  composerFileNeedsReattach,
+  markPromotedDraftThreadByRef,
+  finalizePromotedDraftThreadByRef,
 } from "../../composerDraftStore";
 import { threadContextRecord } from "../../lib/composerContextRecords";
-import type { ChatMessage } from "../../types";
-import type { ThreadToastData } from "../ui/toast";
-import {
-  type FailedSendDraft,
-  recoverFailedSendDraft,
-  removeFailedOptimisticMessage,
-} from "./failedSendRecovery";
+import { type FailedSendDraft } from "./failedSendRecovery";
+import { createSendHarness } from "./ChatView.send.testSupport";
+
+const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
+  toasts: { add: vi.fn(), close: vi.fn(), update: vi.fn() },
+  retry: vi.fn(),
+  uploads: vi.fn(),
+}));
+vi.mock("../../rpc/atomRegistry", () => ({ appAtomRegistry: { get: mocks.get } }));
+vi.mock("../../state/threads", () => ({
+  environmentThreadDetails: { threadAtom: (ref: unknown) => ref },
+  environmentThreadShells: {},
+}));
+vi.mock("../ui/toast", () => ({ toastManager: mocks.toasts }));
+vi.mock("../../lib/attachmentUploadQueue", () => ({
+  readAttachmentUpload: () => undefined,
+  retryAttachmentUpload: mocks.retry,
+  startAttachmentUpload: vi.fn(),
+  awaitAttachmentUploads: async () => {},
+  releaseDraftAttachments: vi.fn(),
+  getUploadedAttachments: mocks.uploads,
+}));
 
 const environmentId = EnvironmentId.make("local");
 const threadId = ThreadId.make("sending-thread");
@@ -28,7 +47,11 @@ const target = scopeThreadRef(environmentId, threadId);
 const now = "2026-09-29T00:00:00.000Z";
 
 function resetDrafts() {
-  useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
+  useComposerDraftStore.setState({
+    draftsByThreadKey: {},
+    draftThreadsByThreadKey: {},
+    logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+  });
 }
 
 function makeDraft(label: string): FailedSendDraft {
@@ -63,7 +86,7 @@ function makeDraft(label: string): FailedSendDraft {
       {
         id: `${label}-terminal`,
         threadId,
-        terminalId: "terminal",
+        terminalId: `${label}-terminal`,
         terminalLabel: "Terminal",
         lineStart: 1,
         lineEnd: 2,
@@ -116,218 +139,390 @@ function writeDraft(draft: FailedSendDraft, destination: ComposerThreadTarget = 
   return saved;
 }
 
-function recoveryOptions(failedDraft: FailedSendDraft, destination = target) {
-  const toasts = {
-    add: vi.fn((_toast: ToastManagerAddOptions<ThreadToastData>) => "recovery"),
-    update: vi.fn(),
-    close: vi.fn(),
-  };
+function plain(prompt: string): FailedSendDraft {
   return {
-    target: destination,
-    failedDraft,
-    isSendPending: () => false,
-    onRestored: vi.fn(),
-    openComposer: vi.fn(),
-    toasts,
+    prompt,
+    images: [],
+    files: [],
+    terminalContexts: [],
+    previewAnnotations: [],
+    reviewComments: [],
+    threadContexts: [],
   };
 }
 
-function clickRestore(options: ReturnType<typeof recoveryOptions>) {
-  const action = options.toasts.add.mock.calls[0]?.[0].actionProps?.onClick;
-  if (!action) throw new Error("No recovery action was offered");
-  Reflect.apply(action, undefined, []);
+async function failSend(
+  harness: ReturnType<typeof createSendHarness>,
+  newer?: FailedSendDraft,
+  destination: ComposerThreadTarget = target,
+) {
+  const sent = harness.send();
+  await Promise.race([
+    harness.started.promise,
+    sent.then(() => {
+      throw new Error(
+        `Send finished before turn start: ${JSON.stringify(harness.setThreadError.mock.calls)}`,
+      );
+    }),
+  ]);
+  if (newer) {
+    writeDraft(newer, destination);
+    harness.refresh(destination);
+  }
+  harness.result.resolve(await harness.failure);
+  await sent;
 }
 
-function message(id: string, draft: FailedSendDraft): ChatMessage {
-  return {
-    id: MessageId.make(id),
-    role: "user",
-    text: draft.prompt,
-    attachments: draft.images,
-    runId: null,
-    createdAt: now,
-    updatedAt: now,
-    streaming: false,
-  };
+async function reloadDrafts() {
+  window.dispatchEvent(new Event("beforeunload"));
+  const options = useComposerDraftStore.persist.getOptions();
+  const saved = await options.storage?.getItem(options.name ?? "t3code:composer-drafts:v1");
+  if (!saved) throw new Error("Composer was not persisted");
+  resetDrafts();
+  // Read the previously flushed disk value without serializing the test reset.
+  useComposerDraftStore.persist.setOptions({
+    storage: { getItem: () => saved, setItem: () => {}, removeItem: () => {} },
+  });
+  await useComposerDraftStore.persist.rehydrate();
+  useComposerDraftStore.persist.setOptions({ storage: options.storage });
 }
 
-describe("single-send failure recovery", () => {
+describe("ChatView single-send failures", () => {
   beforeEach(() => {
     resetDrafts();
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:retry");
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    mocks.get.mockImplementation((atom) =>
+      atom === "configs"
+        ? new Map([
+            [
+              environmentId,
+              {
+                environment: {
+                  capabilities: {
+                    attachmentUploads: true,
+                    inlineMessageContext: true,
+                    fileAttachments: { maxUploadBytes: 50000000 },
+                  },
+                },
+              },
+            ],
+          ])
+        : null,
+    );
+    mocks.toasts.add.mockReset();
+    mocks.retry.mockClear();
+    mocks.uploads.mockImplementation(({ images }: { images: FailedSendDraft["images"] }) =>
+      images.map((image) => ({
+        type: image.type,
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+      })),
+    );
+    URL.createObjectURL = vi.fn(() => "blob:retry");
+    URL.revokeObjectURL = vi.fn();
   });
   afterEach(() => {
     resetDrafts();
     vi.restoreAllMocks();
   });
 
-  it("keeps a newer draft and recovers every failed payload after a pending send rejects", async () => {
-    const failedDraft = writeDraft(makeDraft("failed"));
-    const failedMessage = message("failed-message", failedDraft);
-    const sentMessage = message("sent-message", makeDraft("sent"));
-    let messages = [sentMessage, failedMessage];
-    let rejectSend: (error: Error) => void = () => {
-      throw new Error("Send promise was not initialized");
-    };
-    const send = new Promise<void>((_resolve, reject) => {
-      rejectSend = reject;
-    });
-    const options = recoveryOptions(failedDraft);
-    const settled = send.catch(() => {
-      messages = removeFailedOptimisticMessage(messages, failedMessage.id);
-      recoverFailedSendDraft(options);
-    });
-    useComposerDraftStore.getState().clearComposerContent(target);
-    const newerDraft = writeDraft(makeDraft("newer"));
-    rejectSend(new Error("Send rejected"));
-    await settled;
-
-    expect(messages).toEqual([sentMessage]);
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:failed");
-    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:sent");
-    expect(useComposerDraftStore.getState().getComposerDraft(target)).toBe(newerDraft);
-    expect(options.toasts.add.mock.calls[0]?.[0].timeout).toBe(0);
-    clickRestore(options);
-    expect(useComposerDraftStore.getState().getComposerDraft(target)).toBe(newerDraft);
-    expect(options.toasts.close).not.toHaveBeenCalled();
-
-    useComposerDraftStore.getState().clearComposerContent(target);
-    clickRestore(options);
-    const restored = useComposerDraftStore.getState().getComposerDraft(target);
-    expect(restored).toMatchObject({
-      prompt: failedDraft.prompt,
-      images: [{ ...failedDraft.images[0], previewUrl: "blob:retry" }],
-      files: failedDraft.files,
-      terminalContexts: failedDraft.terminalContexts,
-      previewAnnotations: failedDraft.previewAnnotations,
-      reviewComments: failedDraft.reviewComments,
-      threadContexts: failedDraft.threadContexts,
-    });
-    expect(restored?.images[0]?.file).toBe(failedDraft.images[0]?.file);
-    expect(restored?.files[0]?.file).toBe(failedDraft.files[0]?.file);
-    expect(newerDraft.prompt).toContain("newer prompt");
-    expect(options.toasts.close).toHaveBeenCalledWith("recovery");
+  it("restores an empty composer and removes the failed conversation row", async () => {
+    writeDraft(makeDraft("failed"));
+    const harness = createSendHarness(target);
+    await failSend(harness);
+    const draft = useComposerDraftStore.getState().getComposerDraft(target);
+    expect(draft?.prompt).toContain("failed prompt");
+    expect(draft?.images[0]?.name).toBe("failed.png");
+    expect(draft?.files[0]?.name).toBe("failed.txt");
+    expect(draft?.terminalContexts[0]?.text).toBe("failed terminal output");
+    expect(draft?.previewAnnotations[0]?.comment).toBe("failed annotation");
+    expect(draft?.reviewComments[0]?.text).toBe("failed review");
+    expect(draft?.threadContexts).toHaveLength(1);
+    expect(harness.messages).toEqual([]);
+    expect(harness.refs.sendInFlightRef.current).toBe(false);
+    expect(mocks.toasts.add).not.toHaveBeenCalled();
   });
 
-  it("restores an empty composer immediately, even while the failing send owns the pending flag", () => {
-    const failed = writeDraft(makeDraft("failed"));
-    useComposerDraftStore.getState().clearComposerContent(target);
-    const options = { ...recoveryOptions(failed), isSendPending: () => true };
-    recoverFailedSendDraft(options);
-    expect(useComposerDraftStore.getState().getComposerDraft(target)).toMatchObject({
-      ...failed,
-      images: [{ ...failed.images[0], previewUrl: "blob:retry" }],
-    });
-    expect(options.toasts.add).not.toHaveBeenCalled();
+  it("keeps upstream's empty-composer restore for an ordinary text send", async () => {
+    writeDraft(plain("failed"));
+    const harness = createSendHarness(target);
+    await failSend(harness);
+    expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toBe("failed");
+    expect(harness.messages).toEqual([]);
   });
 
-  it("retains two full attachment sets separately without exceeding the composer limit", () => {
-    const fullDraft = (label: string) => {
-      const draft = makeDraft(label);
-      return {
-        ...draft,
-        files: Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1 }, (_, index) => ({
-          ...draft.files[0]!,
-          id: `${label}-file-${index}`,
-        })),
-      };
-    };
-    const failed = writeDraft(fullDraft("failed"));
-    useComposerDraftStore.getState().clearComposerContent(target);
-    const newer = writeDraft(fullDraft("newer"));
-    const options = recoveryOptions(failed);
-    recoverFailedSendDraft(options);
-    expect(useComposerDraftStore.getState().getComposerDraft(target)).toBe(newer);
-    expect(newer.images.length + newer.files.length).toBe(PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
-    useComposerDraftStore.getState().clearComposerContent(target);
-    clickRestore(options);
-    const restored = useComposerDraftStore.getState().getComposerDraft(target);
-    expect(restored?.files).toEqual(failed.files);
-    expect((restored?.images.length ?? 0) + (restored?.files.length ?? 0)).toBe(
-      PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  it("merges a failed prompt after a newer draft without a Restore action", async () => {
+    writeDraft(plain("failed"));
+    const harness = createSendHarness(target);
+    await failSend(harness, plain("newer"));
+    expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toBe(
+      "newer\n\nfailed",
+    );
+    expect(harness.messages).toEqual([]);
+    expect(mocks.toasts.add).not.toHaveBeenCalled();
+  });
+
+  it("keeps whitespace written while the send was pending", async () => {
+    writeDraft(plain("failed"));
+    await failSend(createSendHarness(target), plain(" \n "));
+    expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toBe(
+      " \n \n\nfailed",
     );
   });
 
-  it.each([
-    "prompt",
-    "images",
-    "files",
-    "terminalContexts",
-    "previewAnnotations",
-    "reviewComments",
-    "threadContexts",
-  ] as const)("does not overwrite a newer draft containing only %s", (field) => {
+  it("preserves distinct authored files with identical names and metadata", async () => {
+    const failed = plain("failed");
+    const newer = plain("newer");
+    const attachment = (id: string, bytes: string): FailedSendDraft["files"][number] => ({
+      type: "file",
+      id,
+      name: "same.txt",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+      file: new File([bytes], "same.txt", { type: "text/plain" }),
+    });
+    failed.files = [attachment("failed-file", "old!")];
+    newer.files = [attachment("newer-file", "new!")];
+    writeDraft(failed);
+    await failSend(createSendHarness(target), newer);
+    const files = useComposerDraftStore.getState().getComposerDraft(target)?.files;
+    expect(files).toHaveLength(2);
+    expect(files?.[0]?.file).toBe(newer.files[0]?.file);
+    expect(files?.[1]?.file).toBe(failed.files[0]?.file);
+  });
+
+  it("preserves both drafts' attachments and context across an app reload", async () => {
+    writeDraft(makeDraft("failed"));
+    const harness = createSendHarness(target);
+    await failSend(harness, makeDraft("newer"));
+    await reloadDrafts();
+    const draft = useComposerDraftStore.getState().getComposerDraft(target);
+    expect(draft?.prompt.indexOf("newer prompt")).toBeLessThan(
+      draft!.prompt.indexOf("failed prompt"),
+    );
+    expect(draft?.images.map((image) => image.name)).toEqual(["newer.png", "failed.png"]);
+    expect(draft?.files.map((file) => file.name)).toEqual(["newer.txt", "failed.txt"]);
+    expect(draft?.files.every((file) => composerFileNeedsReattach(file) === false)).toBe(true);
+    expect(draft?.terminalContexts.map((context) => context.text)).toEqual([
+      "newer terminal output",
+      "failed terminal output",
+    ]);
+    expect(draft?.previewAnnotations.map((context) => context.comment)).toEqual([
+      "newer annotation",
+      "failed annotation",
+    ]);
+    expect(draft?.reviewComments.map((context) => context.text)).toEqual([
+      "newer review",
+      "failed review",
+    ]);
+    expect(draft?.threadContexts).toHaveLength(1);
+  });
+
+  it("preserves different text from the same terminal selection in the recovered chip", async () => {
     const failed = makeDraft("failed");
-    const empty: FailedSendDraft = {
-      prompt: "",
-      images: [],
-      files: [],
-      terminalContexts: [],
-      previewAnnotations: [],
-      reviewComments: [],
-      threadContexts: [],
-    };
-    const newer = writeDraft({ ...empty, [field]: makeDraft("newer")[field] });
-    const options = recoveryOptions(failed);
-    recoverFailedSendDraft(options);
-    clickRestore(options);
-    expect(useComposerDraftStore.getState().getComposerDraft(target)).toBe(newer);
-    expect(options.toasts.close).not.toHaveBeenCalled();
+    const newer = makeDraft("newer");
+    newer.terminalContexts[0]!.terminalId = failed.terminalContexts[0]!.terminalId;
+    writeDraft(failed);
+    await failSend(createSendHarness(target), newer);
+    await reloadDrafts();
+    const contexts = useComposerDraftStore.getState().getComposerDraft(target)?.terminalContexts;
+    expect(contexts).toHaveLength(1);
+    expect(contexts?.[0]?.text).toBe("newer terminal output\n\nfailed terminal output");
   });
 
-  it("preserves whitespace typed while sending", () => {
-    useComposerDraftStore.getState().setPrompt(target, " \n ");
-    const options = recoveryOptions(makeDraft("failed"));
-    recoverFailedSendDraft(options);
-    clickRestore(options);
-    expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toBe(" \n ");
+  it("recovers two sends that fail in a row with a newer draft each time", async () => {
+    writeDraft(makeDraft("first"));
+    await failSend(createSendHarness(target), makeDraft("second"));
+    await failSend(createSendHarness(target), makeDraft("third"));
+    const draft = useComposerDraftStore.getState().getComposerDraft(target);
+    expect(draft?.prompt).toContain("third prompt");
+    expect(draft?.prompt).toContain("second prompt");
+    expect(draft?.prompt).toContain("first prompt");
+    expect(draft?.images.map((image) => image.name)).toEqual([
+      "third.png",
+      "second.png",
+      "first.png",
+    ]);
+    expect(draft?.files.map((file) => file.name)).toEqual(["third.txt", "second.txt", "first.txt"]);
   });
 
-  it("waits for a subsequent pending send before restoring into its cleared composer", () => {
+  it("recovers the first send into the real thread after draft promotion", async () => {
+    const draftId = DraftId.make("new-thread");
+    useComposerDraftStore.setState({
+      draftThreadsByThreadKey: {
+        [draftId]: {
+          threadId,
+          environmentId,
+          logicalProjectKey: "project",
+          projectId: ProjectId.make("project"),
+          createdAt: now,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "main",
+          worktreePath: null,
+          envMode: "local",
+          startFromOrigin: false,
+          promotedTo: null,
+        },
+      },
+    });
+    writeDraft(makeDraft("failed"), draftId);
+    const harness = createSendHarness(target, draftId);
+    const sent = harness.send();
+    await Promise.race([
+      harness.started.promise,
+      sent.then(() => {
+        throw new Error(
+          `Send finished before turn start: ${JSON.stringify(harness.setThreadError.mock.calls)}`,
+        );
+      }),
+    ]);
+    writeDraft(makeDraft("newer"), draftId);
+    harness.refresh(draftId);
+    markPromotedDraftThreadByRef(target);
+    finalizePromotedDraftThreadByRef(target);
+    harness.result.resolve(await harness.failure);
+    await sent;
+    expect(useComposerDraftStore.getState().getDraftSession(draftId)).toBeNull();
+    expect(useComposerDraftStore.getState().getComposerDraft(draftId)).toBeNull();
+    const draft = useComposerDraftStore.getState().getComposerDraft(target);
+    expect(draft?.prompt).toContain("newer prompt");
+    expect(draft?.prompt).toContain("failed prompt");
+    expect(draft?.files).toHaveLength(2);
+    await reloadDrafts();
+    expect(useComposerDraftStore.getState().getComposerDraft(target)?.images).toHaveLength(2);
+  });
+
+  it("recovers into the sending thread after navigation and leaves the visible thread alone", async () => {
+    const other = scopeThreadRef(EnvironmentId.make("remote"), threadId);
+    writeDraft(makeDraft("failed"));
+    const harness = createSendHarness(target);
+    const sent = harness.send();
+    await Promise.race([
+      harness.started.promise,
+      sent.then(() => {
+        throw new Error(
+          `Send finished before turn start: ${JSON.stringify(harness.setThreadError.mock.calls)}`,
+        );
+      }),
+    ]);
     writeDraft(makeDraft("newer"));
-    let pending = true;
-    const options = { ...recoveryOptions(makeDraft("failed")), isSendPending: () => pending };
-    recoverFailedSendDraft(options);
-    useComposerDraftStore.getState().clearComposerContent(target);
-    clickRestore(options);
-    expect(useComposerDraftStore.getState().getComposerDraft(target)).toBeNull();
-    pending = false;
-    clickRestore(options);
+    const otherDraft = writeDraft(makeDraft("other"), other);
+    harness.refs.currentRouteThreadKeyRef.current = scopedThreadKey(other);
+    harness.refresh(other);
+    const resets = harness.resetCursorState.mock.calls.length;
+    harness.result.resolve(await harness.failure);
+    await sent;
+    expect(useComposerDraftStore.getState().getComposerDraft(other)).toBe(otherDraft);
+    expect(harness.refs.promptRef.current).toBe(otherDraft.prompt);
+    expect(harness.resetCursorState).toHaveBeenCalledTimes(resets);
+    expect(harness.messages).toEqual([]);
+    await reloadDrafts();
+    const draft = useComposerDraftStore.getState().getComposerDraft(target);
+    expect(draft?.prompt).toContain("failed prompt");
+    expect(draft?.images).toHaveLength(2);
+  });
+
+  it("reports every attachment left out by the combined cap by name", async () => {
+    writeDraft(makeDraft("failed"));
+    const newer = makeDraft("newer");
+    newer.files = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1 }, (_, index) => ({
+      ...newer.files[0]!,
+      id: `file-${index}`,
+      name: `file-${index}.txt`,
+    }));
+    await failSend(createSendHarness(target), newer);
+    const draft = useComposerDraftStore.getState().getComposerDraft(target);
+    expect((draft?.images.length ?? 0) + (draft?.files.length ?? 0)).toBe(
+      PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+    );
+    expect(draft?.prompt).toContain("failed prompt");
+    expect(mocks.toasts.add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining("'failed.png', 'failed.txt'"),
+        data: expect.objectContaining({ threadRef: target }),
+      }),
+    );
+  });
+
+  it("removes the optimistic row and merges on settings persistence failure", async () => {
+    writeDraft(makeDraft("failed"));
+    const harness = createSendHarness(target);
+    harness.delaySettings();
+    const sent = harness.send();
+    await Promise.race([
+      harness.settingsStarted.promise,
+      sent.then(() => {
+        throw new Error("Send finished before settings persistence");
+      }),
+    ]);
+    writeDraft(makeDraft("newer"));
+    harness.refresh();
+    harness.settingsResult.resolve(await harness.failure);
+    await sent;
+    expect(harness.startThreadTurn).not.toHaveBeenCalled();
+    expect(harness.messages).toEqual([]);
     expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toContain(
       "failed prompt",
     );
   });
 
-  it("restores only the original environment's composer after navigation", () => {
-    const other = scopeThreadRef(EnvironmentId.make("remote"), threadId);
-    const failed = writeDraft(makeDraft("failed"));
-    useComposerDraftStore.getState().clearComposerContent(target);
-    const otherDraft = writeDraft(makeDraft("other"), other);
-    recoverFailedSendDraft(recoveryOptions(failed));
-    expect(useComposerDraftStore.getState().getComposerDraft(other)).toBe(otherDraft);
-    expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toBe(failed.prompt);
-  });
-
-  it("does not resurrect a removed local draft", () => {
-    const options = recoveryOptions(makeDraft("failed"));
-    recoverFailedSendDraft({ ...options, target: DraftId.make("removed-draft") });
-    clickRestore(options);
-    expect(useComposerDraftStore.getState().draftsByThreadKey).toEqual({});
-    expect(options.toasts.close).not.toHaveBeenCalled();
-  });
-
-  it("cannot duplicate restoration or overwrite work typed after restoring", () => {
+  it("removes the optimistic row and merges on attachment preparation failure", async () => {
+    writeDraft(makeDraft("failed"));
+    const harness = createSendHarness(target);
+    harness.delaySettings();
+    mocks.uploads
+      .mockReturnValueOnce([
+        { type: "image", id: "uploaded" },
+        { type: "file", id: "uploaded-file" },
+      ])
+      .mockReturnValue(null);
+    const sent = harness.send();
+    await Promise.race([
+      harness.settingsStarted.promise,
+      sent.then(() => {
+        throw new Error("Send finished before settings persistence");
+      }),
+    ]);
     writeDraft(makeDraft("newer"));
-    const options = recoveryOptions(makeDraft("failed"));
-    recoverFailedSendDraft(options);
-    useComposerDraftStore.getState().clearComposerContent(target);
-    clickRestore(options);
-    useComposerDraftStore.getState().setPrompt(target, "Work after restoration");
-    const restored = useComposerDraftStore.getState().getComposerDraft(target);
-    clickRestore(options);
-    expect(useComposerDraftStore.getState().getComposerDraft(target)).toBe(restored);
-    expect(restored?.images).toHaveLength(1);
-    expect(restored?.files).toHaveLength(1);
+    harness.refresh();
+    harness.settingsResult.resolve(AsyncResult.success(undefined));
+    await sent;
+    expect(harness.startThreadTurn).not.toHaveBeenCalled();
+    expect(harness.messages).toEqual([]);
+    expect(useComposerDraftStore.getState().getComposerDraft(target)?.files).toHaveLength(2);
   });
+
+  it.each([false, true])(
+    "does not restore a send already acknowledged by its original projection, newer=%s",
+    async (newer) => {
+      writeDraft(makeDraft("failed"));
+      const harness = createSendHarness(target);
+      const sent = harness.send();
+      await Promise.race([
+        harness.started.promise,
+        sent.then(() => {
+          throw new Error(
+            `Send finished before turn start: ${JSON.stringify(harness.setThreadError.mock.calls)}`,
+          );
+        }),
+      ]);
+      if (newer) {
+        writeDraft(makeDraft("newer"));
+        harness.refresh();
+      }
+      const before = useComposerDraftStore.getState().getComposerDraft(target);
+      mocks.get.mockImplementation((atom) =>
+        atom === "configs"
+          ? new Map()
+          : { projection: { messages: [{ id: "message-1", role: "user" }] } },
+      );
+      harness.result.resolve(await harness.failure);
+      await sent;
+      expect(useComposerDraftStore.getState().getComposerDraft(target)).toBe(before);
+      expect(harness.messages).toEqual([]);
+      expect(mocks.retry).not.toHaveBeenCalled();
+    },
+  );
 });
