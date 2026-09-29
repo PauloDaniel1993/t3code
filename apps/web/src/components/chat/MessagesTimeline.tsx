@@ -44,6 +44,7 @@ import {
 } from "@t3tools/client-runtime/work-log/presentation";
 import { resolveWorkGroupScrollAnchor } from "@t3tools/client-runtime/work-log/scroll-anchor";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
+import { NativeAgentOutcomeSummary } from "./NativeAgentOutcomeSummary";
 import {
   subagentGroupSummary,
   summarizeSubagentStatuses,
@@ -3001,6 +3002,7 @@ const V2SubagentGroup = memo(function V2SubagentGroup({
     };
   });
   const summary = subagentGroupSummary(agents);
+  const nativeAgents = agents.filter(({ item }) => item.origin === "provider_native");
   const label = `${members.length} ${members.length === 1 ? "subagent" : "subagents"}`;
   const statusSummary = summarizeSubagentStatuses(agents.map(({ status }) => status));
   const toggleExpanded = (open: boolean) => {
@@ -3041,14 +3043,24 @@ const V2SubagentGroup = memo(function V2SubagentGroup({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-xs font-semibold">{label}</span>
-            <span
-              className={cn(
-                "block truncate text-3xs text-muted-foreground",
-                summary.active ? "text-info" : summary.failed && "text-destructive",
-              )}
-            >
-              {statusSummary}
-            </span>
+            {nativeAgents.length === members.length ? (
+              <NativeAgentOutcomeSummary agents={nativeAgents} />
+            ) : (
+              <span
+                className={cn(
+                  "block truncate text-3xs text-muted-foreground",
+                  summary.active ? "text-info" : summary.failed && "text-destructive",
+                )}
+              >
+                {statusSummary}
+              </span>
+            )}
+            {nativeAgents.length > 0 && nativeAgents.length < members.length ? (
+              <span className="flex flex-wrap items-center gap-1">
+                <span className="text-3xs text-muted-foreground">Native agents</span>
+                <NativeAgentOutcomeSummary agents={nativeAgents} />
+              </span>
+            ) : null}
           </span>
           <span className="shrink-0 font-mono text-3xs text-muted-foreground">
             <SubagentElapsed agent={subagentGroupTiming(agents)} />

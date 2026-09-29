@@ -126,6 +126,7 @@ import {
 } from "./ThreadComposer";
 import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
 import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
+import { useNativeAgentRollup } from "./use-native-agent-rollup";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
@@ -362,7 +363,18 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
   });
-  const agentsSegment = resolveSubagentPillSegment(turnSubagents);
+  const nativeAgentRollup = useNativeAgentRollup({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+  });
+  const agentsSegment =
+    resolveSubagentPillSegment(turnSubagents) ??
+    (nativeAgentRollup.agentCount > 0
+      ? {
+          label: `${nativeAgentRollup.agentCount} ${nativeAgentRollup.agentCount === 1 ? "agent" : "agents"}`,
+          accessibilityLabel: `${nativeAgentRollup.agentCount} recent native agents`,
+        }
+      : null);
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
   // A provider-native subagent shows status instead of a composer.
   const isProviderSubagent = isProviderNativeSubagentThread(props.selectedThread.source);

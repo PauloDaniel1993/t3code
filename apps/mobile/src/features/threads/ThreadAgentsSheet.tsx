@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { ThreadTurnSubagents } from "@t3tools/client-runtime/state/thread-subagents";
+import type { NativeAgentRollupGroup } from "@t3tools/client-runtime/state/native-agent-rollup";
 import {
   isOrchestrationV2WorkActive,
   type EnvironmentId,
@@ -24,6 +25,8 @@ import { nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { resolveSubagentRowPresentation } from "./threadAgentsPresentation";
 
 import { SubagentStatusDot } from "./SubagentStatusDot";
+import { NativeAgentOutcomeSummary } from "./NativeAgentOutcomeSummary";
+import { useNativeAgentRollup } from "./use-native-agent-rollup";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
@@ -39,8 +42,18 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const insets = useSafeAreaInsets();
   const theme = useUniwindTheme();
   const turn = useThreadTurnSubagents(target);
-  const subagents = turn?.subagents ?? [];
+  const turnRunStatus = useAtomValue(
+    environmentThreadDetails.threadAtom(target),
+    (thread) => thread?.projection.runs.find((run) => run.id === turn?.runId)?.status,
+  );
+  const subagents = turnRunStatus === "rolled_back" ? [] : (turn?.subagents ?? []);
   const hasLiveAgent = (turn?.liveCount ?? 0) > 0;
+  const rollup = useNativeAgentRollup(target);
+  const currentAgentIds = new Set(subagents.map((agent) => agent.id));
+  const nativeHistory = rollup.groups.filter((group) =>
+    group.agents.some((agent) => !currentAgentIds.has(agent.id)),
+  );
+  const currentNativeAgents = subagents.filter((agent) => agent.origin === "provider_native");
 
   const openChildThread = (childThreadId: ThreadId) => {
     void Haptics.selectionAsync();
@@ -63,6 +76,17 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
+      {nativeHistory.length > 0 && subagents.length > 0 ? (
+        <Text accessibilityRole="header" className="pt-4 font-t3-medium text-sm text-foreground">
+          Current turn
+        </Text>
+      ) : null}
+      {currentNativeAgents.length > 0 ? (
+        <View className="gap-1 pt-4">
+          <Text className="text-xs text-foreground-muted">Native agents</Text>
+          <NativeAgentOutcomeSummary agents={currentNativeAgents} />
+        </View>
+      ) : null}
       {subagents.length === 0 ? (
         <Text className="pt-6 text-center text-sm text-foreground-muted">
           No agents in this turn.
@@ -77,6 +101,25 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
           />
         ))
       )}
+      {nativeHistory.length > 0 ? (
+        <View className="gap-3 pt-5">
+          <Text accessibilityRole="header" className="font-t3-medium text-sm text-foreground">
+            Turn agents
+          </Text>
+          {nativeHistory.map((group) => (
+            <NativeAgentTurn
+              key={`${target.environmentId}:${target.threadId}:${group.key}`}
+              group={group}
+              onOpen={openChildThread}
+            />
+          ))}
+        </View>
+      ) : null}
+      {rollup.hiddenSettledCount > 0 ? (
+        <Text className="pt-3 text-xs text-foreground-muted">
+          {rollup.hiddenSettledCount} older settled agents remain in the transcript.
+        </Text>
+      ) : null}
     </ScrollView>
   );
 
@@ -116,6 +159,45 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
     <View collapsable={false} className="flex-1 bg-sheet">
       <AndroidSheetHeader title="Agents" onBack={() => navigation.goBack()} />
       {content}
+    </View>
+  );
+}
+
+function NativeAgentTurn(props: {
+  readonly group: NativeAgentRollupGroup;
+  readonly onOpen: (childThreadId: ThreadId) => void;
+}) {
+  const [override, setOverride] = useState<boolean | null>(null);
+  const expanded = override ?? props.group.expandedByDefault;
+  return (
+    <View className="rounded-xl border border-border bg-card px-3">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${props.group.label}, ${props.group.summary.label}`}
+        accessibilityState={{ expanded }}
+        onPress={() => setOverride(!expanded)}
+        className="min-h-14 flex-row items-center gap-2 py-3"
+      >
+        <View className="min-w-0 flex-1 gap-1">
+          <Text className="text-xs text-foreground-muted">{props.group.label}</Text>
+          <NativeAgentOutcomeSummary agents={props.group.agents} />
+        </View>
+        <SymbolView
+          name={expanded ? "chevron.up" : "chevron.down"}
+          size={12}
+          tintColorClassName="accent-icon-subtle"
+        />
+      </Pressable>
+      {expanded
+        ? props.group.agents.map((subagent) => (
+            <AgentRow
+              key={subagent.id}
+              subagent={subagent}
+              tickSeconds={props.group.summary.runningCount > 0}
+              onOpen={props.onOpen}
+            />
+          ))
+        : null}
     </View>
   );
 }
