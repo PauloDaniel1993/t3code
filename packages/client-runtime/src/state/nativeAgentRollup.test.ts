@@ -72,6 +72,7 @@ describe("deriveNativeAgentRollup", () => {
   it("does not invent agents for imported threads or app-owned delegated tasks", () => {
     expect(deriveNativeAgentRollup({ runs: [], subagents: [] })).toEqual({
       groups: [],
+      agents: [],
       hiddenSettledCount: 0,
       agentCount: 0,
     });
@@ -81,7 +82,7 @@ describe("deriveNativeAgentRollup", () => {
     ).toBe(0);
   });
 
-  it("retains all live and resumable work and only the newest 12 terminal agents", () => {
+  it("retains all live work and only the newest 12 inactive agents", () => {
     const settled = Array.from({ length: 20 }, (_, index) =>
       agent(`settled-${index}`, {
         status: "completed",
@@ -93,8 +94,8 @@ describe("deriveNativeAgentRollup", () => {
     const idle = agent("idle", { status: "idle", updatedAt: at(0) });
     const rollup = deriveNativeAgentRollup({ runs: [], subagents: [...settled, ...live, idle] });
     const retained = rollup.groups.flatMap((group) => group.agents);
-    expect(rollup.agentCount).toBe(28);
-    expect(rollup.hiddenSettledCount).toBe(8);
+    expect(rollup.agentCount).toBe(27);
+    expect(rollup.hiddenSettledCount).toBe(9);
     expect(
       retained.filter((entry) => entry.status === "completed").map((entry) => entry.id),
     ).toEqual(
@@ -103,8 +104,52 @@ describe("deriveNativeAgentRollup", () => {
         .map((entry) => entry.id)
         .sort(),
     );
-    expect(retained).toContain(idle);
+    expect(retained).not.toContain(idle);
     expect(retained.filter((entry) => entry.status === "running")).toHaveLength(15);
+  });
+
+  it("bounds idle history while preserving its resumable outcome", () => {
+    const idle = Array.from({ length: 20 }, (_, index) =>
+      agent(`idle-${index}`, { status: "idle", updatedAt: at(index + 10) }),
+    );
+    const rollup = deriveNativeAgentRollup({ runs: [], subagents: idle });
+    expect(rollup.agentCount).toBe(12);
+    expect(rollup.hiddenSettledCount).toBe(8);
+    expect(new Set(rollup.agents)).toEqual(new Set(idle.slice(8)));
+    expect(rollup.groups[0]?.summary.idleCount).toBe(12);
+    expect(rollup.groups[0]?.summary.finishedCount).toBe(0);
+  });
+
+  it("shares one history cap across idle and terminal states without capping live states", () => {
+    const history = Array.from({ length: 20 }, (_, index) =>
+      agent(`history-${index}`, {
+        status: index % 2 === 0 ? "idle" : "completed",
+        updatedAt: at(index + 10),
+      }),
+    );
+    const liveStatuses = ["pending", "running", "waiting"] as const;
+    const live = liveStatuses.map((status) => agent(status, { status, updatedAt: at(0) }));
+    const rollup = deriveNativeAgentRollup({ runs: [], subagents: [...history, ...live] });
+    expect(new Set(rollup.agents)).toEqual(new Set([...history.slice(8), ...live]));
+    expect(rollup.agentCount).toBe(15);
+    expect(rollup.hiddenSettledCount).toBe(8);
+  });
+
+  it("exports the same ordered roster for flat sidebar and grouped card callers", () => {
+    const rollup = deriveNativeAgentRollup({
+      runs: [{ id: RunId.make("removed"), status: "rolled_back" }],
+      subagents: [
+        agent("b", { startedAt: at(3), updatedAt: at(20) }),
+        agent("old", { runId: RunId.make("turn-0"), updatedAt: at(10) }),
+        agent("a", { startedAt: at(3), updatedAt: at(15) }),
+        agent("removed", { runId: RunId.make("removed"), status: "idle" }),
+        agent("task", { origin: "app_owned" }),
+      ],
+    });
+    expect(rollup.agents.map((entry) => entry.id)).toEqual(["old", "a", "b"]);
+    expect(rollup.agents).toEqual(rollup.groups.flatMap((group) => group.agents));
+    expect(rollup.agents).toHaveLength(rollup.agentCount);
+    expect(rollup.hiddenSettledCount).toBe(0);
   });
 
   it("caps failed and stopped history too without discarding their reasons or links", () => {

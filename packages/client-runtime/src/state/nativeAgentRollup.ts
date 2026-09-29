@@ -1,9 +1,23 @@
+/**
+ * Shared native-agent selection for a thread's card, mobile history and sidebar.
+ * Import deriveNativeAgentRollup from @t3tools/client-runtime/state/native-agent-rollup
+ * and pass that thread's projection (or its runs and subagents arrays). Use groups
+ * for turn labels, counters and disclosure defaults, or agents for a flat roster.
+ * Both contain the same records: provider_native only, excluding known rolled-back
+ * runs, all pending/running/waiting work, and the newest 12 idle or terminal agents
+ * together. Missing runs in partial history are retained; null run IDs stay separate.
+ * Groups run oldest to newest by latest update (key breaks ties); rows within each
+ * group run by start time, falling back to update time, then ID. The flat roster
+ * follows that group/row order. Callers should not reapply selection or history caps.
+ * hiddenSettledCount includes omitted idle/resumable agents. It is a display window,
+ * not deletion: older records remain in the transcript. Idle is never a success.
+ */
 import type { OrchestrationV2Subagent, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { isActiveSubagentStatus, isTerminalSubagentStatus } from "./subagentRuntime.ts";
+import { isActiveSubagentStatus } from "./subagentRuntime.ts";
 
-/** A display window only; the V2 records and the transcript remain intact. */
+/** One shared display window for idle/resumable and terminal agents. */
 export const NATIVE_AGENT_SETTLED_WINDOW = 12;
 
 export function nativeAgentOutcomeSummary(
@@ -70,16 +84,14 @@ export function deriveNativeAgentRollup(projection: {
       (agent.runId === null || !rolledBackRuns.has(agent.runId)),
   );
   const settled = native
-    .filter((agent) => isTerminalSubagentStatus(agent.status))
+    .filter((agent) => !isActiveSubagentStatus(agent.status))
     .sort(
       (left, right) =>
         DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
         left.id.localeCompare(right.id),
     );
-  // Idle is resumable in V2. Like active work, it must not disappear behind
-  // the fork's terminal-history cap or be counted as a successful result.
   const retained = [
-    ...native.filter((agent) => !isTerminalSubagentStatus(agent.status)),
+    ...native.filter((agent) => isActiveSubagentStatus(agent.status)),
     ...settled.slice(0, NATIVE_AGENT_SETTLED_WINDOW),
   ];
   const byRun = new Map<string, OrchestrationV2Subagent[]>();
@@ -105,6 +117,7 @@ export function deriveNativeAgentRollup(projection: {
     }))
     .sort((left, right) => left.latestAt - right.latestAt || left.key.localeCompare(right.key));
   return {
+    agents: groups.flatMap((group) => group.agents),
     groups: groups.map((group, index): NativeAgentRollupGroup => {
       const latest = index === groups.length - 1;
       const count = group.agents.length;
@@ -121,3 +134,5 @@ export function deriveNativeAgentRollup(projection: {
     agentCount: retained.length,
   };
 }
+
+export type NativeAgentRollup = ReturnType<typeof deriveNativeAgentRollup>;
