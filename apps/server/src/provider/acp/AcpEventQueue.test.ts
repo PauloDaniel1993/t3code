@@ -20,6 +20,7 @@ const classify = (event: Event) => ({
   ...(event.key === undefined ? {} : { replacementKey: event.key }),
   ...(event.barrier === undefined ? {} : { barrier: event.barrier }),
 });
+const decodeTurnItem = Schema.decodeUnknownEffect(OrchestrationV2TurnItem);
 
 describe("ACP fair coalescing intake", () => {
   it.effect("keeps the latest status when a tool returns from waiting to running", () =>
@@ -33,7 +34,7 @@ describe("ACP fair coalescing intake", () => {
         ["tool", "running", "last"],
         ["marker", "completed", "marker"],
       ]) {
-        const turnItem = yield* Schema.decodeUnknownEffect(OrchestrationV2TurnItem)({
+        const turnItem = yield* decodeTurnItem({
           id,
           status,
           title,

@@ -121,7 +121,7 @@ describe("secret-safe ACP tool activity", () => {
       {
         type: "dynamic_tool",
         toolName: "write_file",
-        input: {},
+        input: { path: "a.ts", content: code },
         output: {
           content: [{ type: "text", text: code }],
           matrix: [
