@@ -19,11 +19,12 @@ it.layer(NodeServices.layer)("Kimi status", (it) => {
       expect(snapshot.badgeLabel).toBe("Early Access");
     }),
   );
-  it.effect("requires ACP protocol 1 and native resume or load support", () =>
+  it.effect("reports readiness for ACP 1 or 2 and surfaces runtime compatibility failures", () =>
     Effect.gen(function* () {
       for (const probe of [
         { protocolVersion: 1, agentCapabilities: { loadSession: true } },
         { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { resume: {} } } },
+        { protocolVersion: 2, agentCapabilities: { sessionCapabilities: { resume: {} } } },
       ]) {
         expect(
           (yield* checkKimiProviderStatus(config, {}, undefined, {
@@ -35,7 +36,8 @@ it.layer(NodeServices.layer)("Kimi status", (it) => {
       expect(
         (yield* checkKimiProviderStatus(config, {}, undefined, {
           runVersion: version,
-          probeAcp: () => Effect.succeed({ protocolVersion: 1, agentCapabilities: {} }),
+          probeAcp: () =>
+            Effect.fail(AcpErrors.AcpRequestError.invalidParams("No native resume support")),
         })).status,
       ).toBe("error");
     }),

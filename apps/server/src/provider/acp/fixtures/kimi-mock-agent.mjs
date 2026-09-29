@@ -21,6 +21,11 @@ const request = (method, params) =>
   });
 let model = "kimi-live";
 let mode = "yolo";
+let activeSessionId;
+const statePath = (sessionId) =>
+  NodePath.join(process.env.KIMI_CODE_HOME, "sessions", sessionId, "model.json");
+const saveSelection = () =>
+  NodeFS.writeFileSync(statePath(activeSessionId), JSON.stringify({ model, mode }));
 const configOptions = () => [
   {
     id: "llm",
@@ -50,15 +55,25 @@ const configOptions = () => [
       ]),
   { id: "thinking", name: "Thinking", type: "boolean", currentValue: true },
 ];
-const setup = (sessionId) => {
+const setup = (sessionId, resumed = false) => {
   const home = process.env.KIMI_CODE_HOME;
   const sessionDir = NodePath.join(home, "sessions", sessionId);
   NodeFS.mkdirSync(NodePath.join(sessionDir, "logs"), { recursive: true });
+  activeSessionId = sessionId;
+  if (resumed && NodeFS.existsSync(statePath(sessionId))) {
+    ({ model, mode } = JSON.parse(NodeFS.readFileSync(statePath(sessionId), "utf8")));
+  }
+  saveSelection();
   NodeFS.appendFileSync(
     NodePath.join(home, "session_index.jsonl"),
     `${JSON.stringify({ sessionId, sessionDir })}\n`,
   );
-  return { sessionId, configOptions: configOptions() };
+  return {
+    sessionId,
+    ...(resumed && process.env.T3_KIMI_RESUME_NO_CONFIG === "1"
+      ? {}
+      : { configOptions: configOptions() }),
+  };
 };
 let waitingPrompt;
 const lines = NodeReadline.createInterface({ input: process.stdin });
@@ -87,11 +102,12 @@ lines.on("line", async (line) => {
   switch (method) {
     case "initialize":
       reply({
-        protocolVersion: 1,
+        protocolVersion: Number(process.env.T3_KIMI_PROTOCOL_VERSION ?? "1"),
         agentInfo: { name: "kimi-code-mock", version: "0.29.0" },
         authMethods: [{ id: "login", name: "Kimi login" }],
         agentCapabilities: {
           loadSession: true,
+          mcpCapabilities: { http: true, sse: false },
           sessionCapabilities: process.env.T3_KIMI_LOAD_ONLY ? {} : { resume: {} },
           promptCapabilities: { image: process.env.T3_KIMI_IMAGE === "1" },
         },
@@ -107,7 +123,7 @@ lines.on("line", async (line) => {
       break;
     case "session/resume":
     case "session/load":
-      reply(setup(params.sessionId));
+      reply(setup(params.sessionId, true));
       break;
     case "session/set_config_option":
       if (params.configId === "llm") {
@@ -115,6 +131,7 @@ lines.on("line", async (line) => {
         mode = "yolo";
       }
       if (params.configId === "mode") mode = params.value;
+      saveSelection();
       reply({ configOptions: configOptions() });
       break;
     case "session/cancel":
@@ -152,7 +169,10 @@ lines.on("line", async (line) => {
             content: [
               {
                 type: "content",
-                content: { type: "text", text: question ? "Choose a route" : "git status" },
+                content: {
+                  type: "text",
+                  text: question ? "Choose a route" : "Requesting approval to Running: git status",
+                },
               },
             ],
           },

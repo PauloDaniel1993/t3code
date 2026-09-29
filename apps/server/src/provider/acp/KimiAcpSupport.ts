@@ -50,7 +50,7 @@ export function isKimiAuthenticationRequired(error: AcpErrors.AcpError) {
 
 export function isKimiAcpCompatible(initialized: AcpSchema.InitializeResponse) {
   return (
-    initialized.protocolVersion === 1 &&
+    (initialized.protocolVersion === 1 || initialized.protocolVersion === 2) &&
     (initialized.agentCapabilities?.sessionCapabilities?.resume != null ||
       initialized.agentCapabilities?.loadSession === true)
   );
@@ -95,7 +95,10 @@ export const applyKimiAcpModelSelection = Effect.fn("applyKimiAcpModelSelection"
     if (input.model === KIMI_DEFAULT_MODEL || input.model === "default") {
       return option?.type === "select" ? option.currentValue : undefined;
     }
-    if (!option || !kimiConfigChoices(option).some((choice) => choice.value === input.model)) {
+    // Some Kimi versions omit model options on resume. Keep the native
+    // session's selected model instead of trying to select it again.
+    if (!option) return undefined;
+    if (!kimiConfigChoices(option).some((choice) => choice.value === input.model)) {
       return yield* AcpErrors.AcpRequestError.invalidParams(
         `Kimi model "${input.model}" is not available in this session.`,
       );
@@ -202,7 +205,7 @@ export const makeKimiAcpRuntime = Effect.fn("makeKimiAcpRuntime")(function* (
     const initialized = yield* runtime.initialize();
     if (!isKimiAcpCompatible(initialized))
       return yield* AcpErrors.AcpRequestError.invalidParams(
-        "Kimi Code requires ACP protocol 1 and native session resume or load support.",
+        "Kimi Code requires ACP protocol 1 or 2 and native session resume or load support.",
       );
     return initialized;
   });

@@ -9,7 +9,6 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import type * as AcpSchema from "effect-acp/compat";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -22,6 +21,7 @@ import { makeKimiAcpRuntime, type KimiAcpRuntimeInput } from "../acp/KimiAcpSupp
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { buildKimiModels } from "../KimiModels.ts";
+import { makeKimiModelCatalog } from "../KimiModelCatalog.ts";
 import {
   buildInitialKimiProviderSnapshot,
   checkKimiProviderStatus,
@@ -146,7 +146,7 @@ export type KimiDriverEnv =
 
 export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
   driverKind: DRIVER_KIND,
-  metadata: { displayName: "Kimi", supportsMultipleInstances: true },
+  metadata: { displayName: "Kimi Code (supported)", supportsMultipleInstances: true },
   configSchema: KimiSettings,
   defaultConfig: () => decodeKimiSettings({}),
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
@@ -178,9 +178,13 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
       });
-      const catalog = yield* SubscriptionRef.make<ReadonlyArray<AcpSchema.SessionConfigOption>>([]);
-      const publishCatalog = (configOptions: ReadonlyArray<AcpSchema.SessionConfigOption>) =>
-        SubscriptionRef.set(catalog, configOptions);
+      const { catalog, publish: publishCatalog } = yield* makeKimiModelCatalog({
+        cacheDir: serverConfig.providerStatusCacheDir,
+        instanceId,
+        binaryPath: settings.binaryPath,
+        environment: environment ?? [],
+        processEnvironment,
+      });
       const provideRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(
           Effect.provideService(Crypto.Crypto, crypto),
@@ -210,7 +214,8 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
         initialSnapshot: () =>
-          buildInitialKimiProviderSnapshot(settings).pipe(
+          SubscriptionRef.get(catalog).pipe(
+            Effect.flatMap((options) => buildInitialKimiProviderSnapshot(settings, options)),
             Effect.map((draft) => stampIdentity({ ...draft, supportsTextGeneration: true })),
           ),
         checkProvider: checkKimiProviderStatus(

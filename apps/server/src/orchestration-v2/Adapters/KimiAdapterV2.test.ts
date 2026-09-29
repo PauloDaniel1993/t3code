@@ -53,7 +53,7 @@ const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
     options: [
       { id: "mode", value: "yolo" },
       { id: "llm", value: "kimi-live" },
-      { id: "_t3/session-mode", value: "auto" },
+      { id: "_t3/session-mode", value: "plan" },
     ],
   };
   const policy = ProviderAdapterV2RuntimePolicy.make({
@@ -223,7 +223,8 @@ it.layer(testLayer, { excludeTestServices: true })("Kimi V2 adapter", (it) => {
                 (event) =>
                   event.type === "turn_item.updated" &&
                   event.turnItem.type === "approval_request" &&
-                  event.turnItem.requestKind === "command",
+                  event.turnItem.requestKind === "command" &&
+                  event.turnItem.prompt === "git status",
               ),
             ).toBe(true);
         }).pipe(Effect.scoped),

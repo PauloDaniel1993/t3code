@@ -1,4 +1,5 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind, type ModelSelection } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as AcpErrors from "effect-acp/errors";
 
@@ -44,7 +45,6 @@ export function makeKimiAcpAdapterFlavor(options: KimiAdapterV2Options): AcpAdap
     runtimeHarness: "Kimi Code",
     capabilities: AcpProviderCapabilitiesV2,
     makeRuntime: options.makeRuntime,
-    preferResumeSession: true,
     applyModelSelection: ({ runtime, modelSelection }) =>
       applyKimiAcpModelSelection({
         runtime,
@@ -64,5 +64,45 @@ export function makeKimiAcpAdapterFlavor(options: KimiAdapterV2Options): AcpAdap
 }
 
 export function makeKimiAdapterV2(options: KimiAdapterV2Options) {
-  return makeAcpAdapterV2({ ...options, flavor: makeKimiAcpAdapterFlavor(options) });
+  const adapter = makeAcpAdapterV2({ ...options, flavor: makeKimiAcpAdapterFlavor(options) });
+  // This synthetic option belonged to the generic ACP mode picker. Kimi's
+  // mode comes exclusively from the turn policy, including entering plan.
+  const selection = (value: ModelSelection): ModelSelection => ({
+    ...value,
+    ...(value.options
+      ? { options: value.options.filter((option) => option.id !== "_t3/session-mode") }
+      : {}),
+  });
+  return {
+    ...adapter,
+    openSession: (input: Parameters<typeof adapter.openSession>[0]) =>
+      adapter.openSession({ ...input, modelSelection: selection(input.modelSelection) }).pipe(
+        Effect.map((session) => ({
+          ...session,
+          ensureThread: (input: Parameters<typeof session.ensureThread>[0]) =>
+            session.ensureThread({ ...input, modelSelection: selection(input.modelSelection) }),
+          resumeThread: (input: Parameters<typeof session.resumeThread>[0]) =>
+            session.resumeThread({
+              ...input,
+              ...(input.modelSelection ? { modelSelection: selection(input.modelSelection) } : {}),
+            }),
+          startTurn: (input: Parameters<typeof session.startTurn>[0]) =>
+            session.startTurn({ ...input, modelSelection: selection(input.modelSelection) }),
+          ...(session.compactThread
+            ? {
+                compactThread: (input: Parameters<NonNullable<typeof session.compactThread>>[0]) =>
+                  session.compactThread!({
+                    ...input,
+                    modelSelection: selection(input.modelSelection),
+                  }),
+              }
+            : {}),
+          forkThread: (input: Parameters<typeof session.forkThread>[0]) =>
+            session.forkThread({
+              ...input,
+              ...(input.modelSelection ? { modelSelection: selection(input.modelSelection) } : {}),
+            }),
+        })),
+      ),
+  };
 }

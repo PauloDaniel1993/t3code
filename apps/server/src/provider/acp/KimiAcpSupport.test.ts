@@ -6,11 +6,28 @@ import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
 
 import { makeKimiTestHarness } from "./KimiTestHarness.ts";
-import { applyKimiAcpModelSelection } from "./KimiAcpSupport.ts";
+import { applyKimiAcpModelSelection, isKimiAcpCompatible } from "./KimiAcpSupport.ts";
 import { buildKimiModels } from "../KimiModels.ts";
 import { extractKimiPermissionQuestion } from "./KimiProtocol.ts";
 
 it.layer(NodeServices.layer, { excludeTestServices: true })("Kimi ACP runtime", (it) => {
+  for (const version of [1, 2, 3]) {
+    it.effect(`negotiates ACP ${version} through the real transport`, () =>
+      Effect.gen(function* () {
+        const h = yield* makeKimiTestHarness({ T3_KIMI_PROTOCOL_VERSION: String(version) });
+        const runtime = yield* h.makeRuntime({
+          cwd: h.root,
+          clientInfo: { name: "kimi-test", version: "0.0.0" },
+        });
+        if (version <= 2) {
+          expect((yield* runtime.start()).initializeResult.protocolVersion).toBe(version);
+        } else {
+          expect((yield* runtime.start().pipe(Effect.flip)).message).toContain("protocol 1 or 2");
+          expect((yield* h.requests).map((request) => request.method)).toEqual(["initialize"]);
+        }
+      }).pipe(Effect.scoped),
+    );
+  }
   for (const loadOnly of [false, true]) {
     it.effect(`restores a native session with ${loadOnly ? "load" : "resume"}`, () =>
       Effect.gen(function* () {
@@ -127,6 +144,13 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("Kimi ACP runtime", 
 });
 
 describe("Kimi questions", () => {
+  it("rejects incompatible versions and agents without native resume support", () => {
+    for (const protocolVersion of [0, 3])
+      expect(
+        isKimiAcpCompatible({ protocolVersion, agentCapabilities: { loadSession: true } }),
+      ).toBe(false);
+    expect(isKimiAcpCompatible({ protocolVersion: 2, agentCapabilities: {} })).toBe(false);
+  });
   it("matches answer labels and option IDs and cancels invalid answers", () => {
     const request = {
       sessionId: "s",

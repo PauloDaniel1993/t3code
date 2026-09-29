@@ -23,7 +23,13 @@ export function normalizeKimiPermissionRequest(request: AcpSchema.RequestPermiss
     toolCall: {
       ...request.toolCall,
       ...(command && !request.toolCall.kind ? { kind: "execute" as const } : {}),
-      ...(command && detail ? { rawInput: request.toolCall.rawInput ?? { command: detail } } : {}),
+      ...(command && detail
+        ? {
+            rawInput: request.toolCall.rawInput ?? {
+              command: detail.replace(/^Requesting approval to Running:\s*/i, ""),
+            },
+          }
+        : {}),
     },
   };
 }

@@ -25,13 +25,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
   isKimiAuthenticationRequired,
-  isKimiAcpCompatible,
   probeKimiAcpAuthentication,
   type KimiAcpProbeResult,
 } from "../acp/KimiAcpSupport.ts";
 
 const KIMI_PRESENTATION = {
-  displayName: "Kimi",
+  displayName: "Kimi Code (supported)",
   badgeLabel: "Early Access",
   // Kimi exposes a native read-only plan mode ("Read-only planning; no tool
   // execution") through its `mode` config option, so the plan/implement toggle
@@ -255,20 +254,6 @@ export const checkKimiProviderStatus = Effect.fn("checkKimiProviderStatus")(func
       message: `Kimi ACP authentication timed out after ${ACP_PROBE_TIMEOUT_MS}ms.`,
     });
   }
-  if (!isKimiAcpCompatible(acpResult.value.value)) {
-    return makeKimiSnapshot({
-      settings: kimiSettings,
-      checkedAt,
-      models,
-      installed: true,
-      version,
-      status: "error",
-      auth: { status: "authenticated" },
-      message:
-        "Kimi Code CLI authenticated, but this version does not advertise native ACP session resume or load.",
-    });
-  }
-
   return makeKimiSnapshot({
     settings: kimiSettings,
     checkedAt,

@@ -1,6 +1,20 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  MessageId,
+  NodeId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  RunAttemptId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Stream from "effect/Stream";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -13,6 +27,11 @@ import { ServerConfig } from "../../config.ts";
 import { layer as idAllocatorLayer } from "../../orchestration-v2/IdAllocator.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../../orchestration-v2/ProviderAdapter.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { OrchestratorMcpService, layer as mcpLayer } from "../../mcp/OrchestratorMcpService.ts";
+import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
+import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
+import { ScheduledTaskService } from "../../scheduledTasks/ScheduledTaskService.ts";
 import { makeKimiTestHarness } from "../acp/KimiTestHarness.ts";
 import { BUILT_IN_DRIVERS } from "../builtInDrivers.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
@@ -54,24 +73,251 @@ const makeInstance = Effect.fn("KimiDriverTest.makeInstance")(function* (
   enabled = true,
 ) {
   const h = yield* makeKimiTestHarness(fixtureEnvironment);
-  const instance = yield* KimiDriver.create({
-    instanceId: ProviderInstanceId.make(name),
-    displayName: name,
-    enabled,
-    config: {
-      ...KimiDriver.defaultConfig(),
-      binaryPath: process.execPath,
-      homePath: h.home,
-      customModels: [`${name}-model`],
-    },
-    environment: Object.entries(h.environment).flatMap(([name, value]) =>
-      value === undefined ? [] : [{ name, value, sensitive: false }],
-    ),
-  }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, h.childProcessSpawner));
-  return { ...h, instance };
+  const recreate = () =>
+    KimiDriver.create({
+      instanceId: ProviderInstanceId.make(name),
+      displayName: name,
+      enabled,
+      config: {
+        ...KimiDriver.defaultConfig(),
+        binaryPath: process.execPath,
+        homePath: h.home,
+        customModels: [`${name}-model`],
+      },
+      environment: Object.entries(h.environment).flatMap(([name, value]) =>
+        value === undefined ? [] : [{ name, value, sensitive: false }],
+      ),
+    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, h.childProcessSpawner));
+  const instance = yield* recreate();
+  return { ...h, instance, recreate };
 });
 
 it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle", (it) => {
+  it.effect(
+    "restores the catalog before delegation and keeps the chosen model on a config-free resume",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeInstance("restart-account", { T3_KIMI_RESUME_NO_CONFIG: "1" });
+        const threadId = ThreadId.make("kimi-restart-thread");
+        const modelSelection = { instanceId: h.instance.instanceId, model: "kimi-saved" };
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          cwd: h.root,
+        });
+        const providerThread = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const session = yield* h.instance.orchestrationAdapter.openSession({
+              threadId,
+              providerSessionId: ProviderSessionId.make("before-restart"),
+              modelSelection,
+              runtimePolicy,
+            });
+            return yield* session.ensureThread({ threadId, modelSelection, runtimePolicy });
+          }),
+        );
+        const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+        if (!nativeThreadId) {
+          return yield* Effect.die(new Error("Kimi did not return a native thread ID"));
+        }
+        const restarted = yield* h.recreate();
+        const restoredModels = (yield* restarted.snapshot.getSnapshot).models.map(
+          (model) => model.slug,
+        );
+        expect(restoredModels).toContain("kimi-saved");
+        yield* restarted.snapshot.refresh;
+        const delegationCountBeforeSession = (yield* h.requests).filter(
+          (request) => request.method === "session/new",
+        ).length;
+
+        const parentThreadId = ThreadId.make("delegating-parent");
+        const parentInstanceId = ProviderInstanceId.make("codex");
+        const runId = RunId.make("parent-run");
+        const parentNodeId = NodeId.make("parent-node");
+        let dispatchedModel: string | undefined;
+        const task = {
+          id: NodeId.make("kimi-delegation"),
+          threadId: parentThreadId,
+          runId,
+          parentNodeId,
+          origin: "app_owned",
+          driver: "kimi",
+          providerInstanceId: restarted.instanceId,
+          childThreadId: ThreadId.make("kimi-child"),
+          model: "kimi-saved",
+          status: "running",
+          result: null,
+        };
+        const parent = {
+          thread: {
+            id: parentThreadId,
+            projectId: ProjectId.make("kimi-project"),
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            modelSelection: { instanceId: parentInstanceId, model: "parent-model" },
+          },
+          runs: [
+            {
+              id: runId,
+              ordinal: 1,
+              status: "running",
+              rootNodeId: parentNodeId,
+              providerInstanceId: parentInstanceId,
+            },
+          ],
+          contextTransfers: [],
+          subagents: [task],
+        } as unknown as OrchestrationV2ThreadProjection;
+        const child = {
+          thread: { id: task.childThreadId },
+          runs: [],
+          contextTransfers: [],
+          messages: [],
+          subagents: [],
+          providerThreads: [],
+          turnItems: [],
+        } as unknown as OrchestrationV2ThreadProjection;
+        const delegate = () =>
+          Effect.gen(function* () {
+            const mcp = yield* OrchestratorMcpService;
+            const result = yield* mcp.delegateTask(
+              {
+                environmentId: EnvironmentId.make("kimi-test"),
+                threadId: parentThreadId,
+                providerInstanceId: parentInstanceId,
+                providerSessionId: "parent-session",
+                capabilities: new Set(["orchestration"]),
+                issuedAt: 1,
+              },
+              {
+                task: "Summarize the diff",
+                target: { driverKind: ProviderDriverKind.make("kimi"), model: "kimi-saved" },
+                mode: "async",
+              },
+            );
+            expect(result.status).toBe("running");
+            expect(result.providerInstanceId).toBe(restarted.instanceId);
+            expect(dispatchedModel).toBe("kimi-saved");
+          }).pipe(
+            Effect.provide(
+              mcpLayer.pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    Layer.mock(ProviderRegistry)({
+                      getProviders: restarted.snapshot.getSnapshot.pipe(
+                        Effect.map((snapshot) => [snapshot]),
+                      ),
+                    }),
+                    Layer.mock(ProviderAdapterRegistryV2)({
+                      list: () => Effect.succeed([restarted.instanceId]),
+                      get: () => Effect.succeed(restarted.orchestrationAdapter),
+                    }),
+                    Layer.mock(ThreadManagementService)({
+                      getThreadRecords: (id) =>
+                        Effect.succeed(id === parentThreadId ? parent : child),
+                      dispatch: (command) =>
+                        Effect.sync(() => {
+                          if (command.type !== "delegated_task.request")
+                            throw new Error("Expected delegation");
+                          dispatchedModel = command.modelSelection.model;
+                          return {
+                            sequence: 1,
+                            storedEvents: [
+                              {
+                                sequence: 1,
+                                commandId: command.commandId,
+                                event: { type: "subagent.updated", payload: task },
+                              },
+                            ],
+                          } as never;
+                        }),
+                    }),
+                    Layer.mock(ScheduledTaskService)({}),
+                  ),
+                ),
+              ),
+            ),
+          );
+        yield* delegate();
+        expect(
+          (yield* h.requests).filter((request) => request.method === "session/new"),
+        ).toHaveLength(delegationCountBeforeSession);
+        const session = yield* restarted.orchestrationAdapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("after-restart"),
+          modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: nativeThreadId,
+        });
+        const resumed = yield* session.resumeThread({
+          providerThread,
+          modelSelection,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
+        yield* session.startTurn({
+          appThread: {
+            id: threadId,
+            projectId: ProjectId.make("kimi-project"),
+            title: "Kimi restart",
+            createdBy: "user",
+            creationSource: "web",
+            providerInstanceId: restarted.instanceId,
+            modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: resumed.id,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+          threadId,
+          runId: RunId.make("resumed-run"),
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: RunAttemptId.make("resumed-attempt"),
+          rootNodeId: NodeId.make("resumed-node"),
+          providerThread: resumed,
+          modelSelection,
+          runtimePolicy,
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make("resumed-message"),
+            text: "Continue",
+            attachments: [],
+          },
+        });
+        const events = yield* session.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        expect(events.at(-1)).toMatchObject({ type: "turn.terminal", status: "completed" });
+        expect(
+          (yield* h.requests).find((request) => request.method === "session/prompt")?.params
+            .modelAtPrompt,
+        ).toBe("kimi-saved");
+        expect((yield* h.requests).map((request) => request.method)).toContain("session/resume");
+        expect(
+          (yield* h.requests).filter(
+            (request) =>
+              request.method === "session/set_config_option" && request.params.configId === "llm",
+          ),
+        ).toHaveLength(1);
+        expect((yield* restarted.snapshot.refresh).models.map((model) => model.slug)).toEqual(
+          restoredModels,
+        );
+        yield* delegate();
+      }).pipe(Effect.scoped),
+  );
   it.effect("checks existing login without creating a native session", () =>
     Effect.gen(function* () {
       const h = yield* makeInstance("signed-in");
@@ -156,7 +402,7 @@ describe("KimiDriver", () => {
   it("registers a disabled, multi-instance Kimi driver", () => {
     expect(KimiDriver.driverKind).toBe("kimi");
     expect(KimiDriver.metadata).toEqual({
-      displayName: "Kimi",
+      displayName: "Kimi Code (supported)",
       supportsMultipleInstances: true,
     });
     expect(KimiDriver.defaultConfig()).toEqual({
