@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
+import { resolveRealLocalPath } from "../../../../scripts/lib/real-local-path.ts";
 
 import {
   LOCAL_DESKTOP_IDENTITY,
@@ -57,9 +58,17 @@ export function applyInstalledDesktopBootstrap(
   if (!path.isAbsolute(t3Home)) {
     throw new Error(`${LOCAL_DESKTOP_BOOTSTRAP_VERSION}: the local desktop home must be absolute.`);
   }
-  t3Home = path.resolve(t3Home);
+  const homeRoots = [
+    input.homeDirectory,
+    ...[".t3", ".t3.local"].map((name) => path.join(input.homeDirectory, name)),
+  ];
+  t3Home = resolveRealLocalPath(t3Home, homeRoots, input.platform);
   for (const name of [".t3", ".t3.local"]) {
-    const protectedHome = path.join(input.homeDirectory, name);
+    const protectedHome = resolveRealLocalPath(
+      path.join(input.homeDirectory, name),
+      homeRoots,
+      input.platform,
+    );
     const relative = path.relative(protectedHome, t3Home);
     const reverse = path.relative(t3Home, protectedHome);
     const within = (value: string) =>

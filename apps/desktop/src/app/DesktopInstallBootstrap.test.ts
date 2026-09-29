@@ -1,4 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
+// @effect-diagnostics nodeBuiltinImport:off - Local-home alias fixtures do not access installed homes.
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import {
   applyInstalledDesktopBootstrap,
@@ -24,6 +28,40 @@ const read = (path: string) =>
     : JSON.stringify(localMetadata);
 
 describe("installed local identity", () => {
+  it("refuses metadata homes reached through UNC shares or junctions into a live-home fixture", async () => {
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Synchronous bootstrap fixture requiring Windows SMB shares.
+    if (NodeOS.platform() !== "win32") return;
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-bootstrap-alias-"));
+    try {
+      const homeDirectory = NodePath.join(root, "user");
+      const liveHome = NodePath.join(homeDirectory, ".t3.local");
+      await NodeFSP.mkdir(liveHome, { recursive: true });
+      const drive = NodePath.parse(root).root;
+      const unc = `\\\\localhost\\${drive[0]}$\\${liveHome.slice(drive.length)}`;
+      const junction = NodePath.join(root, "junction");
+      await NodeFSP.symlink(liveHome, junction, "junction");
+      for (const t3Home of [unc, `${unc}\\userdata`, NodePath.join(junction, "missing")]) {
+        const env: NodeJS.ProcessEnv = {};
+        assert.throws(
+          () =>
+            applyInstalledDesktopBootstrap({
+              ...defaults,
+              homeDirectory,
+              env,
+              readFileString: (path) =>
+                path.endsWith("package.json")
+                  ? read(path)
+                  : JSON.stringify({ ...localMetadata, t3Home }),
+            }),
+          /overlaps/,
+        );
+        assert.deepEqual(env, {});
+      }
+    } finally {
+      await NodeFSP.rmdir(NodePath.join(root, "junction"));
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  });
   it("isolates a taskbar launch even when it inherits the alpha.local environment", () => {
     const env: NodeJS.ProcessEnv = {
       T3CODE_HOME: "C:\\Users\\alice\\.t3.local",

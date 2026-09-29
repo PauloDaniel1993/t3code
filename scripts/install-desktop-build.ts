@@ -8,6 +8,7 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { extractFile } from "@electron/asar";
 import { LOCAL_DESKTOP_IDENTITY, hasLocalDesktopBootstrap } from "./lib/local-desktop-identity.ts";
+import { resolveRealLocalPath } from "./lib/real-local-path.ts";
 import * as Schema from "effect/Schema";
 import {
   getWindowsUserDirectories,
@@ -434,14 +435,7 @@ async function assertArtifactOutputDirectory(directory: string): Promise<void> {
 }
 
 async function canonicalPath(path: string): Promise<string> {
-  try {
-    return await NodeFSP.realpath(path);
-  } catch (cause) {
-    if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) throw cause;
-    const parent = NodePath.dirname(path);
-    if (parent === path) throw cause;
-    return NodePath.join(await canonicalPath(parent), NodePath.basename(path));
-  }
+  return resolveRealLocalPath(path, [REPO_ROOT]);
 }
 
 export async function assertCanonicalInstallPaths(
@@ -530,10 +524,10 @@ export async function assertSeparateFromKnownInstalls(
     }
   };
   for (const directory of knownInstallDirs) await inspect(directory, false);
-  // Search install/state descendants as well as their ancestors. Output's own
-  // unpacked artifact is intentional, so inspect only its ancestors here.
+  // Only the install tree is replaced. Worktree builds below persistent state
+  // and output artifacts are intentional; inspect their roots/ancestors only.
   for (const [index, candidate] of candidates.entries()) {
-    await inspect(candidate, index < 2);
+    await inspect(candidate, index === 0);
     let parent = NodePath.dirname(candidate);
     while (!pathEquals(parent, NodePath.dirname(parent))) {
       await inspect(parent, false);
@@ -1160,7 +1154,8 @@ async function launchInstalledApp(
 
   const command = platform === "mac" ? "open" : target;
   const args = platform === "mac" ? [target] : [];
-  const env = { ...process.env };
+  const env: NodeJS.ProcessEnv =
+    platform === "win" ? restoreWindowsUserDirectories(process.env) : { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   if (platform === "win") {
     env.T3CODE_HOME = options.stateDir;

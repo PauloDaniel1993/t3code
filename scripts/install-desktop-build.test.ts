@@ -142,7 +142,10 @@ it("finds custom installs above and below the selected directories without a kno
       await NodeFSP.mkdir(NodePath.dirname(markerPath), { recursive: true });
       await NodeFSP.writeFile(markerPath, marker.endsWith("json") ? "{}" : "fixture");
       for (const key of ["installDir", "stateDir"] as const) {
-        for (const candidate of [NodePath.join(other, "nested"), NodePath.dirname(other)]) {
+        for (const candidate of [
+          NodePath.join(other, "nested"),
+          ...(key === "installDir" ? [NodePath.dirname(other)] : []),
+        ]) {
           await expect(
             assertInstallDesktopBuildPaths(
               { ...safe, [key]: candidate },
@@ -160,6 +163,102 @@ it("finds custom installs above and below the selected directories without a kno
       ).rejects.toThrow(other);
     }
   } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("allows updates when state worktrees contain desktop artifacts, without inspecting their subtrees", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-state-worktrees-"));
+  try {
+    const safe = parseInstallDesktopBuildArgs(
+      ["--install-dir", "install", "--state-dir", "state", "--output-dir", "output"],
+      {},
+      root,
+      "win32",
+      NodePath.join(root, "user"),
+    );
+    const worktree = NodePath.join(safe.stateDir, "worktrees", "repo");
+    for (const marker of [
+      "win-unpacked/resources/app.asar",
+      ".t3code-install.json",
+      "node_modules/.pnpm/fixture/resources/app.asar",
+    ]) {
+      const file = NodePath.join(worktree, marker);
+      await NodeFSP.mkdir(NodePath.dirname(file), { recursive: true });
+      await NodeFSP.writeFile(file, "not install metadata");
+    }
+    await NodeFSP.mkdir(safe.installDir);
+    await NodeFSP.writeFile(
+      NodePath.join(safe.installDir, ".t3code-install.json"),
+      renderInstallMetadata({
+        installedAt: "fixture",
+        branch: "fixture",
+        commit: "fixture",
+        sourceAppRoot: "fixture",
+        stateDir: safe.stateDir,
+      }),
+    );
+    await assertInstallDesktopBuildPaths(safe, NodePath.join(root, "user"), []);
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(worktree, ".t3code-install.json"), "utf8"),
+      "not install metadata",
+    );
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("refuses UNC and junction aliases of another install or its home before replacement", async () => {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone filesystem test requiring Windows SMB shares.
+  if (NodeOS.platform() !== "win32") return;
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-unc-guard-"));
+  try {
+    const home = NodePath.join(root, "user");
+    const otherInstall = NodePath.join(root, "other-install");
+    const otherHome = NodePath.join(root, "other-home");
+    const liveHome = NodePath.join(home, ".t3.local");
+    for (const directory of [otherInstall, otherHome, liveHome])
+      await NodeFSP.mkdir(directory, { recursive: true });
+    await NodeFSP.writeFile(
+      NodePath.join(otherInstall, ".t3code-install.json"),
+      JSON.stringify({ t3Home: otherHome, displayName: "T3 alpha.local" }),
+    );
+    const safe = parseInstallDesktopBuildArgs(
+      ["--install-dir", "install", "--state-dir", "state", "--output-dir", "output"],
+      {},
+      root,
+      "win32",
+      home,
+    );
+    const drive = NodePath.parse(root).root;
+    const unc = (directory: string) =>
+      `\\\\localhost\\${drive[0]}$\\${directory.slice(drive.length)}`;
+    const alias = NodePath.join(root, "junction");
+    await NodeFSP.symlink(liveHome, alias, "junction");
+    for (const key of ["installDir", "stateDir", "outputDir"] as const) {
+      for (const protectedDir of [otherInstall, otherHome, liveHome]) {
+        for (const candidate of [
+          unc(protectedDir),
+          `${unc(protectedDir)}\\missing`,
+          unc(NodePath.dirname(protectedDir)),
+        ]) {
+          await expect(
+            assertInstallDesktopBuildPaths({ ...safe, [key]: candidate }, home, [otherInstall]),
+          ).rejects.toThrow(/overlap|home directory|not a T3 v2.local install/);
+        }
+      }
+      await expect(
+        assertInstallDesktopBuildPaths({ ...safe, [key]: NodePath.join(alias, "missing") }, home, [
+          otherInstall,
+        ]),
+      ).rejects.toThrow(/live home/);
+    }
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(otherInstall, ".t3code-install.json"), "utf8"),
+      JSON.stringify({ t3Home: otherHome, displayName: "T3 alpha.local" }),
+    );
+  } finally {
+    await NodeFSP.rmdir(NodePath.join(root, "junction"));
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
 });
