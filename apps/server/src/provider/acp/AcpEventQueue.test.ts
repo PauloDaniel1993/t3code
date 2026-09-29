@@ -2,7 +2,11 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
-import { acpRuntimeEventDelivery, makeAcpEventQueue } from "./AcpEventQueue.ts";
+import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
+import { OrchestrationV2TurnItem, ProviderDriverKind } from "@t3tools/contracts";
+import type { ProviderAdapterV2Event } from "../../orchestration-v2/ProviderAdapter.ts";
+import { makeAcpEventQueue, makeAcpProviderEventDelivery } from "./AcpEventQueue.ts";
 
 interface Event {
   readonly route: string;
@@ -17,7 +21,56 @@ const classify = (event: Event) => ({
   ...(event.barrier === undefined ? {} : { barrier: event.barrier }),
 });
 
-describe("ACP bounded intake", () => {
+describe("ACP fair coalescing intake", () => {
+  it.effect("keeps the latest status when a tool returns from waiting to running", () =>
+    Effect.gen(function* () {
+      const queue = yield* makeAcpEventQueue<ProviderAdapterV2Event>({
+        classify: makeAcpProviderEventDelivery("thread"),
+      });
+      for (const [id, status, title] of [
+        ["tool", "running", "first"],
+        ["tool", "waiting", "second"],
+        ["tool", "running", "last"],
+        ["marker", "completed", "marker"],
+      ]) {
+        const turnItem = yield* Schema.decodeUnknownEffect(OrchestrationV2TurnItem)({
+          id,
+          status,
+          title,
+          threadId: "thread",
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: DateTime.makeUnsafe(0),
+          type: "dynamic_tool",
+          toolName: "tool",
+          input: {},
+        });
+        yield* queue.offer({
+          type: "turn_item.updated",
+          driver: ProviderDriverKind.make("acpRegistry"),
+          turnItem,
+        });
+      }
+      const events = yield* queue.stream.pipe(
+        Stream.takeUntil(
+          (event) => event.type === "turn_item.updated" && event.turnItem.id === "marker",
+        ),
+        Stream.runCollect,
+      );
+      const snapshots = events.flatMap((event) =>
+        event.type === "turn_item.updated" && event.turnItem.id === "tool" ? [event.turnItem] : [],
+      );
+      assert.equal(snapshots.at(-1)?.status, "running");
+      assert.equal(snapshots.at(-1)?.title, "last");
+    }),
+  );
   it.effect("does not move later progress across a lifecycle event", () =>
     Effect.gen(function* () {
       const queue = yield* makeAcpEventQueue<Event>({ classify });
@@ -47,30 +100,6 @@ describe("ACP bounded intake", () => {
       );
     }),
   );
-  it("classifies runtime completion as lossless and in-progress tools as replaceable", () => {
-    const toolCall = { toolCallId: "tool", data: {} };
-    assert.equal(
-      acpRuntimeEventDelivery({
-        _tag: "ToolCallUpdated",
-        toolCall: { ...toolCall, status: "inProgress" },
-        rawPayload: undefined,
-      }).replacementKey,
-      "tool:tool:inProgress",
-    );
-    for (const status of ["completed", "failed"] as const) {
-      assert.isUndefined(
-        acpRuntimeEventDelivery({
-          _tag: "ToolCallUpdated",
-          toolCall: { ...toolCall, status },
-          rawPayload: undefined,
-        }).replacementKey,
-      );
-    }
-    assert.isUndefined(
-      acpRuntimeEventDelivery({ _tag: "AssistantItemCompleted", itemId: "assistant" })
-        .replacementKey,
-    );
-  });
   it.effect("rotates threads without reordering each thread's lifecycle", () =>
     Effect.gen(function* () {
       const queue = yield* makeAcpEventQueue<Event>({ classify });
@@ -102,44 +131,76 @@ describe("ACP bounded intake", () => {
     }),
   );
 
-  it.effect("reserves lifecycle capacity when unique progress fills a thread", () =>
+  it.effect(
+    "delivers the review probe's queued completion and final message through saturation",
+    () =>
+      Effect.gen(function* () {
+        const queue = yield* makeAcpEventQueue<Event>({ classify });
+        // IDs 1 and 2 represent the already accepted tool completion and final reply.
+        for (let id = 1; id < 12; id++) yield* queue.offer({ route: "thread", id });
+        const delivered: Array<number> = [];
+        const exit = yield* queue.stream.pipe(
+          Stream.take(11),
+          Stream.tap((event) => Effect.sync(() => delivered.push(event.id))),
+          Stream.runDrain,
+          Effect.exit,
+        );
+        assert.deepEqual(
+          delivered,
+          Array.from({ length: 11 }, (_, index) => index + 1),
+        );
+        assert.isTrue(Exit.isSuccess(exit));
+      }),
+  );
+
+  it.effect("keeps every distinct tool's last progress and all irreducible lifecycle events", () =>
     Effect.gen(function* () {
-      const queue = yield* makeAcpEventQueue<Event>({
-        classify,
-        capacity: 8,
-        routeCapacity: 6,
-        reservedCapacity: 2,
-      });
-      for (let id = 0; id < 100; id++) yield* queue.offer({ route: "busy", id, key: String(id) });
-      yield* queue.offer({ route: "busy", id: 100 });
-      yield* queue.offer({ route: "busy", id: 101 });
-      yield* queue.offer({ route: "quiet", id: 102 });
-      const events = yield* queue.stream.pipe(Stream.take(7), Stream.runCollect);
-      assert.equal(events[1]!.id, 102);
+      const queue = yield* makeAcpEventQueue<Event>({ classify });
+      for (let id = 0; id < 600; id++) yield* queue.offer({ route: "thread", id, key: String(id) });
+      for (let id = 600; id < 1200; id++) yield* queue.offer({ route: "thread", id });
+      const delivered: Array<number> = [];
+      const exit = yield* queue.stream.pipe(
+        Stream.take(1200),
+        Stream.tap((event) => Effect.sync(() => delivered.push(event.id))),
+        Stream.runDrain,
+        Effect.exit,
+      );
       assert.deepEqual(
-        events.filter((event) => event.route === "busy").map((event) => event.id),
-        [0, 1, 2, 3, 100, 101],
+        delivered,
+        Array.from({ length: 1200 }, (_, index) => index),
+      );
+      assert.isTrue(Exit.isSuccess(exit));
+    }),
+  );
+
+  it.effect("coalesces root progress across an unrelated child's lifecycle", () =>
+    Effect.gen(function* () {
+      const queue = yield* makeAcpEventQueue<Event>({ classify });
+      yield* queue.offer({ route: "root", id: 1, key: "tool" });
+      yield* queue.offer({ route: "child", id: 2 });
+      yield* queue.offer({ route: "root", id: 3, key: "tool" });
+      const delivered = yield* queue.stream.pipe(Stream.take(2), Stream.runCollect);
+      assert.deepEqual(
+        delivered.map((event) => event.id),
+        [3, 2],
       );
     }),
   );
 
-  it.effect("reports lossless overload once without blocking the producer", () =>
+  it.effect("drains 50,000 irreducible events in order without failing or shedding them", () =>
     Effect.gen(function* () {
-      let failures = 0;
-      const queue = yield* makeAcpEventQueue<Event>({
-        classify,
-        capacity: 4,
-        routeCapacity: 3,
-        reservedCapacity: 1,
-        onOverflow: () =>
+      const queue = yield* makeAcpEventQueue<Event>({ classify });
+      for (let id = 0; id < 50_000; id++) yield* queue.offer({ route: "thread", id });
+      let expected = 0;
+      yield* queue.stream.pipe(
+        Stream.take(50_000),
+        Stream.runForEach((event) =>
           Effect.sync(() => {
-            failures += 1;
+            assert.equal(event.id, expected++);
           }),
-      });
-      for (let id = 0; id < 20; id++) yield* queue.offer({ route: "busy", id });
-      const exit = yield* queue.stream.pipe(Stream.runCollect, Effect.exit);
-      assert.isTrue(Exit.isFailure(exit));
-      assert.equal(failures, 1);
+        ),
+      );
+      assert.equal(expected, 50_000);
     }),
   );
 });

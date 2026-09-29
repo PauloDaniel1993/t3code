@@ -7216,15 +7216,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           driver,
           providerSessionId: input.providerSessionId,
           providerSession,
-          events: events.stream.pipe(
-            Stream.mapError(
-              (error) =>
-                new ProviderAdapterProtocolError({
-                  driver,
-                  detail: error.detail,
-                }),
-            ),
-          ),
+          events: events.stream,
           ...(postSettleContinuationEnabled
             ? {
                 hasPendingBackgroundWork: Effect.gen(function* () {
