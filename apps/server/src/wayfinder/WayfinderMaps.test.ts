@@ -20,9 +20,14 @@ const WorkspaceLayer = Layer.merge(
   PlatformLayer,
   WorkspacePaths.layer.pipe(Layer.provide(PlatformLayer)),
 );
+// Scan spacing is covered in WayfinderMapsRefresh.test.ts; here scans run back to back.
+const noScanSpacing = Layer.succeed(WayfinderMaps.WayfinderMapsTuning, {
+  minScanInterval: Duration.zero,
+  watchDebounce: WayfinderMaps.WAYFINDER_MAPS_DEFAULT_WATCH_DEBOUNCE,
+});
 const TestLayer = Layer.merge(
   WorkspaceLayer,
-  WayfinderMaps.layer.pipe(Layer.provide(WorkspaceLayer)),
+  WayfinderMaps.layer.pipe(Layer.provide(WorkspaceLayer), Layer.provide(noScanSpacing)),
 );
 
 const makeTempDir = Effect.gen(function* () {
