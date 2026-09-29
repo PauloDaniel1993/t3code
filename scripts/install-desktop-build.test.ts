@@ -16,6 +16,8 @@ import {
   assertLocalDesktopArtifact,
   assertCanonicalInstallPaths,
   assertSeparateFromKnownInstalls,
+  assertInstallDesktopBuildPaths,
+  resolveInstallerHomeDirectory,
   resolveWindowsStartMenuShortcut,
   replaceInstallDir,
   writePosixLocalLauncher,
@@ -29,6 +31,16 @@ import {
 } from "./install-desktop-build.ts";
 import { LOCAL_DESKTOP_BOOTSTRAP_VERSION } from "./lib/local-desktop-identity.ts";
 import { getWindowsUserDirectories } from "./lib/windows-user-directories.ts";
+
+it("gets non-Windows installer defaults from the OS account instead of an inherited HOME", () => {
+  try {
+    vi.stubEnv("HOME", NodePath.resolve("fixture-alpha-home"));
+    assert.equal(resolveInstallerHomeDirectory("linux"), NodeOS.userInfo().homedir);
+    assert.equal(resolveInstallerHomeDirectory("darwin"), NodeOS.userInfo().homedir);
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
 
 it("creates a Linux launcher without overwriting the packaged executable", async () => {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-posix-launcher-"));
@@ -132,7 +144,11 @@ it("finds custom installs above and below the selected directories without a kno
       for (const key of ["installDir", "stateDir"] as const) {
         for (const candidate of [NodePath.join(other, "nested"), NodePath.dirname(other)]) {
           await expect(
-            assertSeparateFromKnownInstalls({ ...safe, [key]: candidate }, []),
+            assertInstallDesktopBuildPaths(
+              { ...safe, [key]: candidate },
+              NodePath.join(root, "user"),
+              [],
+            ),
           ).rejects.toThrow(other);
         }
       }
@@ -320,6 +336,30 @@ it("resolves junctions before allowing state paths, using only fixture homes", a
       homeDir,
     );
     await expect(assertCanonicalInstallPaths(options, homeDir)).rejects.toThrow(/live home/);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("protects a live-home fixture that is itself a junction to an external directory", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-protected-junction-"));
+  try {
+    const homeDir = NodePath.join(root, "user");
+    const protectedTarget = NodePath.join(root, "external", "alpha-state");
+    await NodeFSP.mkdir(homeDir);
+    await NodeFSP.mkdir(protectedTarget, { recursive: true });
+    await NodeFSP.symlink(protectedTarget, NodePath.join(homeDir, ".t3.local"), "junction");
+    const options = parseInstallDesktopBuildArgs(
+      ["--install-dir", "install", "--output-dir", "output", "--state-dir", protectedTarget],
+      {},
+      root,
+      "win32",
+      homeDir,
+    );
+    await expect(assertInstallDesktopBuildPaths(options, homeDir, [])).rejects.toThrow(
+      /live home.*\.t3.local/,
+    );
+    assert.deepEqual(await NodeFSP.readdir(protectedTarget), []);
   } finally {
     await NodeFSP.rm(root, { recursive: true, force: true });
   }

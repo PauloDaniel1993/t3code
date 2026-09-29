@@ -148,7 +148,7 @@ function defaultStateDir(homeDir: string): string {
 }
 
 export function resolveInstallerHomeDirectory(platform = readCliHostPlatform()): string {
-  return platform === "win32" ? getWindowsUserDirectories().home : NodeOS.homedir();
+  return platform === "win32" ? getWindowsUserDirectories().home : NodeOS.userInfo().homedir;
 }
 
 export function parseInstallDesktopBuildArgs(
@@ -457,6 +457,20 @@ export async function assertCanonicalInstallPaths(
   ]);
   assertSafeInstallDir(installDir, { repoRoot, outputDir, homeDir: canonicalHome });
   assertSafeStateDir(stateDir, { installDir, outputDir, homeDir: canonicalHome });
+  for (const name of [".t3", ".t3.local"]) {
+    const protectedHome = NodePath.join(homeDir, name);
+    const canonicalProtectedHome = await canonicalPath(protectedHome);
+    for (const candidate of [installDir, outputDir, stateDir]) {
+      if (
+        isSameOrInsidePath(candidate, canonicalProtectedHome) ||
+        isSameOrInsidePath(canonicalProtectedHome, candidate)
+      ) {
+        throw new InstallDesktopBuildError(
+          `Refusing ${candidate}: it overlaps live home ${protectedHome} (${canonicalProtectedHome}).`,
+        );
+      }
+    }
+  }
 }
 
 /** Updates/uninstallers replace whole trees, so equality checks alone are insufficient. */
@@ -1166,23 +1180,32 @@ async function launchInstalledApp(
   child.unref();
 }
 
-export async function installDesktopBuild(options: InstallDesktopBuildOptions): Promise<void> {
+/** Read-only preflight, completed before building, staging or writing shortcuts. */
+export async function assertInstallDesktopBuildPaths(
+  options: InstallDesktopBuildOptions,
+  homeDir = resolveInstallerHomeDirectory(),
+  knownInstallDirs?: ReadonlyArray<string>,
+): Promise<void> {
   assertSafeInstallDir(options.installDir, {
     repoRoot: REPO_ROOT,
     outputDir: options.outputDir,
-    homeDir: resolveInstallerHomeDirectory(),
+    homeDir,
   });
   assertSafeStateDir(options.stateDir, {
-    homeDir: resolveInstallerHomeDirectory(),
+    homeDir,
     installDir: options.installDir,
     outputDir: options.outputDir,
   });
 
+  await assertCanonicalInstallPaths(options, homeDir);
+  await assertSeparateFromKnownInstalls(options, knownInstallDirs);
   await assertLocalInstallDirectory(options.installDir);
   await assertLocalInstallBackup(`${options.installDir}.previous`);
-  await assertCanonicalInstallPaths(options);
-  await assertSeparateFromKnownInstalls(options);
   await assertArtifactOutputDirectory(options.outputDir);
+}
+
+export async function installDesktopBuild(options: InstallDesktopBuildOptions): Promise<void> {
+  await assertInstallDesktopBuildPaths(options);
 
   if (options.reuseArtifact) {
     process.stdout.write(
