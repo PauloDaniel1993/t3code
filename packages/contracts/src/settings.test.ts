@@ -21,12 +21,13 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 describe("task sidebar preference", () => {
-  it("defaults off and round-trips the local opt-in", () => {
-    expect(decodeClientSettings({}).threadTasksEnabled).toBe(false);
+  it("defaults on and round-trips an explicit local opt-out", () => {
+    expect(decodeClientSettings({}).threadTasksEnabled).toBe(true);
     expect(
-      decodeClientSettings(encodeClientSettings(decodeClientSettings({ threadTasksEnabled: true })))
-        .threadTasksEnabled,
-    ).toBe(true);
+      decodeClientSettings(
+        encodeClientSettings(decodeClientSettings({ threadTasksEnabled: false })),
+      ).threadTasksEnabled,
+    ).toBe(false);
     expect(decodeClientSettingsPatch({ threadTasksEnabled: false }).threadTasksEnabled).toBe(false);
   });
 });
