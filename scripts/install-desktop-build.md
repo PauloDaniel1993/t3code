@@ -14,12 +14,16 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    **v2/carry-fork-data-into-v2** and **v2/attachment-protections-on-v2**:
 
    ```powershell
+   . {
    $integrationCheckout = 'I:\tmp\v2wt\<your-integrate-v2-worktree>'
+   Set-Location -LiteralPath $integrationCheckout
    git -C $integrationCheckout branch --show-current
    git -C $integrationCheckout merge-base --is-ancestor v2/carry-fork-data-into-v2 HEAD
    if ($LASTEXITCODE -ne 0) { throw 'The build is missing the current data carry-over branch.' }
    git -C $integrationCheckout merge-base --is-ancestor v2/attachment-protections-on-v2 HEAD
    if ($LASTEXITCODE -ne 0) { throw 'The build is missing the current attachment branch.' }
+   if (git -C $integrationCheckout status --porcelain) { throw 'Commit or set aside changes before building.' }
+   }
    ```
 
    Look for `integrate/v2` and two successful ancestry checks. Also require ticket
@@ -35,10 +39,12 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    For x64, run this read-only query:
 
    ```powershell
+   . {
    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
    $visualStudio = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre -property installationPath
    $toolset = Get-ChildItem (Join-Path $visualStudio 'VC\Tools\MSVC') -Directory | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
    Test-Path (Join-Path $toolset.FullName 'lib\spectre\x64')
+   }
    ```
 
    Look for a selected instance and `True` (on the verified machine, Community
@@ -54,6 +60,7 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    artifact directories:
 
    ```powershell
+   . {
    $localInstall = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'T3 v2.local'
    $v2Home = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.t3.v2'
    $artifactOutput = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.t3-v2-desktop-artifacts'
@@ -61,8 +68,10 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    node scripts/install-desktop-build.ts --install-dir $localInstall --platform win --arch x64 --state-dir $v2Home --output-dir $artifactOutput --no-launch
    if ($LASTEXITCODE -ne 0) { throw 'Installation failed; do not seed or launch.' }
    $metadata = Get-Content -LiteralPath (Join-Path $localInstall '.t3code-install.json') -Raw | ConvertFrom-Json
-   $buildCommit = git -C $integrationCheckout rev-parse HEAD
+   $buildCommit = git -C $integrationCheckout rev-parse --short=12 HEAD
+   if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the build commit.' }
    if ($metadata.commit -ne $buildCommit -or $metadata.t3Home -ne $v2Home -or $metadata.displayName -ne 'T3 v2.local') { throw 'Wrong build or home; rebuild before seeding.' }
+   }
    ```
 
    Look for the expected commit, V2 home and `T3 v2.local` identity in the metadata.
@@ -74,18 +83,16 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    live `state.sqlite`, opened read-only, using a consistent VACUUM INTO snapshot:
 
    ```powershell
+   . {
    $sourceHome = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.t3.local'
    $sourceDatabase = Join-Path $sourceHome 'userdata\state.sqlite'
    $v2Userdata = Join-Path $v2Home 'userdata'
    if (Test-Path (Join-Path $v2Userdata 'state*.sqlite*')) { throw 'Preserve this destination and choose a fresh V2 home; do not overwrite it.' }
    New-Item -ItemType Directory -Path $v2Userdata -Force | Out-Null
-   $env:T3_V2_COPY_SOURCE = $sourceDatabase
-   $env:T3_V2_COPY_DEST = Join-Path $v2Userdata 'state.sqlite'
-   node --input-type=module -e 'import { DatabaseSync } from "node:sqlite"; const db = new DatabaseSync(process.env.T3_V2_COPY_SOURCE, { readOnly: true }); db.prepare("VACUUM INTO ?").run(process.env.T3_V2_COPY_DEST); db.close();'
+   $snapshotDestination = Join-Path $v2Userdata 'state.sqlite'
+   node scripts/snapshot-v2-database.ts $sourceDatabase $snapshotDestination
    if ($LASTEXITCODE -ne 0) { throw 'Snapshot failed; do not launch.' }
-   node --input-type=module -e 'import { DatabaseSync } from "node:sqlite"; const db = new DatabaseSync(process.env.T3_V2_COPY_DEST, { readOnly: true }); console.log(db.prepare("PRAGMA quick_check").get()); db.close();'
-   if ($LASTEXITCODE -ne 0) { throw 'Snapshot check failed; do not launch.' }
-   Remove-Item Env:T3_V2_COPY_SOURCE, Env:T3_V2_COPY_DEST
+   }
    ```
 
    Look for the new `userdata\state.sqlite`, a quick check of `ok`, and **no
@@ -100,15 +107,20 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    first launch.** Ticket 36's branch creates and reads this private directory:
 
    ```powershell
+   . {
    $attachmentSource = Join-Path $sourceHome 'userdata\attachments'
    $attachmentDestination = Join-Path $v2Home 'userdata\attachments-v2'
    if (!(Test-Path -LiteralPath $attachmentSource -PathType Container)) { throw 'Attachment source missing; do not launch.' }
    New-Item -ItemType Directory -Path $attachmentDestination -Force | Out-Null
-   Get-ChildItem -LiteralPath $attachmentSource -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $attachmentDestination -Recurse -Force -ErrorAction Stop }
-   Get-ChildItem -LiteralPath $attachmentSource -File -Recurse -Force | ForEach-Object {
-     $relative = $_.FullName.Substring($attachmentSource.Length).TrimStart('\')
-     $copy = Join-Path $attachmentDestination $relative
-     if (!(Test-Path -LiteralPath $copy -PathType Leaf) -or (Get-FileHash -LiteralPath $_.FullName).Hash -ne (Get-FileHash -LiteralPath $copy).Hash) { throw "Missing or different attachment: $relative; do not launch." }
+   $attachmentFiles = @(Get-ChildItem -LiteralPath $attachmentSource -File -Force -ErrorAction Stop | Where-Object {
+     !$_.Name.StartsWith('.') -and !$_.Name.EndsWith('.part', [StringComparison]::OrdinalIgnoreCase) -and
+     !($_.Attributes -band [IO.FileAttributes]::Hidden) -and !($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+   })
+   $attachmentFiles | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $attachmentDestination -ErrorAction Stop }
+   $attachmentFiles | ForEach-Object {
+     $copy = Join-Path $attachmentDestination $_.Name
+     if (!(Test-Path -LiteralPath $copy -PathType Leaf) -or (Get-FileHash -LiteralPath $_.FullName).Hash -ne (Get-FileHash -LiteralPath $copy).Hash) { throw "Missing or different attachment: $($_.Name); do not launch." }
+   }
    }
    ```
 
@@ -120,6 +132,9 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    hashes differ or copying fails, correct the source/destination, repeat the
    copy and verification, and keep V2 unstarted. Copy bytes; never move them or
    link the destination back to the live source. A database-only seed is incomplete.
+   Only top-level regular files are copied and verified: `.staging`, directories,
+   dot files, Windows hidden files, symlinks/junctions and `.part` uploads stay out,
+   matching ticket 36's seed exclusions.
 
 7. Leave Chromium profiles, safeStorage keys, `secrets`, and `settings.json` out of
    the seed. In particular, do not copy an enabled Tailscale/network-exposure
@@ -129,7 +144,38 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    credentials/profile/exposure settings were copied, preserve the mistaken seed
    and repeat with a fresh home before launch.
 
-8. Launch only `T3 v2.local.cmd` or its new shortcut. Check About/display name,
+8. Before first launch, record a read-only baseline of V2 files in the other
+   homes. Paste each complete code block together; the dot-sourced blocks retain
+   variables and stop at a thrown error in both Windows PowerShell 5.1 and 7.
+   This function only lists paths; it does not open databases or change files:
+
+   ```powershell
+   . {
+   $accountHome = [Environment]::GetFolderPath('UserProfile')
+   function Get-V2FilesInOtherHomes {
+     foreach ($name in @('.t3', '.t3.local')) {
+       $otherHome = Join-Path $accountHome $name
+       $userdata = Join-Path $otherHome 'userdata'
+       if (Test-Path -LiteralPath $userdata -PathType Container) {
+         Get-ChildItem -LiteralPath $userdata -Filter 'statev2.sqlite*' -Force -ErrorAction Stop | ForEach-Object { $_.FullName }
+       }
+       foreach ($relative in @('userdata\attachments-v2', 'userdata\.attachments-v2-seed-report.json', 'userdata\.attachments-v2-seeded', 'appdata\t3code-v2-local')) {
+         $candidate = Join-Path $otherHome $relative
+         if (Test-Path -LiteralPath $candidate) { (Get-Item -LiteralPath $candidate -Force -ErrorAction Stop).FullName }
+       }
+     }
+     Get-ChildItem -LiteralPath $accountHome -Directory -Force -ErrorAction Stop | Where-Object { $_.Name -match '^\.t3(?:\.local)?[. ]+$' } | ForEach-Object { $_.FullName }
+   }
+   $beforeV2Files = @(Get-V2FilesInOtherHomes | Sort-Object -Unique)
+   $beforeV2Files
+   if ($beforeV2Files.Count) { throw 'V2 files or folded home names already exist beside another install; investigate before launching V2.' }
+   }
+   ```
+
+   Expect no listed paths. Any existing marker or trailing-dot/space sibling is
+   a reason to pause and investigate, without deleting anything from either home.
+
+9. Launch only `T3 v2.local.cmd` or its new shortcut. Check About/display name,
    `~/.t3.v2\userdata\statev2.sqlite`, the private profile
    `~/.t3.v2\appdata\t3code-v2-local`, distinct taskbar grouping, imported task
    links/reasoning/source tags, and an imported image/PDF opening from
@@ -141,13 +187,33 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
    start another install until the callback completes. If a callback is stolen,
    restart sign-in in the intended install.
 
-9. For updates, close only V2 manually and repeat step 4 from a verified checkout,
-   preserving its existing home; **do not repeat the first-install seed**. Keep
-   artifact output outside that home even when using a V2-managed worktree.
-   Own metadata takes precedence over inherited `T3CODE_HOME`; move the home by
-   reinstalling with an explicit `--state-dir`. If an update names a partial
-   `.previous` backup, inspect that exact backup and remove it manually only when
-   safe, then retry. A V2 agent shell deliberately has no `T3CODE_HOME`: use
-   `t3 pair --base-dir "$v2Home"` (likewise trace/triage) and check the printed home
-   before proceeding. If it names `~/.t3` or another install, stop and supply the
-   V2 base directory explicitly.
+10. After first start, list and compare again in the same PowerShell window:
+
+    ```powershell
+    . {
+    $afterV2Files = @(Get-V2FilesInOtherHomes | Sort-Object -Unique)
+    $afterV2Files
+    Compare-Object -ReferenceObject @('baseline'; $beforeV2Files) -DifferenceObject @('baseline'; $afterV2Files)
+    if ($afterV2Files.Count) { throw 'V2 files appeared in another home; close only V2 and investigate.' }
+    }
+    ```
+
+    Expect no paths and no comparison differences. Specifically, neither home
+    should gain `statev2.sqlite*`, `attachments-v2`, its seed report/marker, or
+    `appdata\t3code-v2-local`; no folded home sibling should appear. Confirm in
+    V2's own server log that the home/base directory is the selected `.t3.v2`
+    and its database is `.t3.v2\userdata\statev2.sqlite`. If anything appears or
+    the log names another home, close **only V2**, preserve its home/logs and
+    investigate before another launch. Leave stable and alpha.local running;
+    never delete or repair their files as part of this check.
+
+11. For updates, close only V2 manually and repeat step 4 from a verified checkout,
+    preserving its existing home; **do not repeat the first-install seed**. Keep
+    artifact output outside that home even when using a V2-managed worktree.
+    Own metadata takes precedence over inherited `T3CODE_HOME`; move the home by
+    reinstalling with an explicit `--state-dir`. If an update names a partial
+    `.previous` backup, inspect that exact backup and remove it manually only when
+    safe, then retry. A V2 agent shell deliberately has no `T3CODE_HOME`: use
+    `t3 pair --base-dir "$v2Home"` (likewise trace/triage) and check the printed home
+    before proceeding. If it names `~/.t3` or another install, stop and supply the
+    V2 base directory explicitly.
