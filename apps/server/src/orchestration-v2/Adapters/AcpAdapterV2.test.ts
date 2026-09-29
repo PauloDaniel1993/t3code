@@ -605,6 +605,157 @@ function makeTurnInput(input: {
 }
 
 describe("AcpAdapterV2", () => {
+  for (const flush of ["timer", "settlement"] as const) {
+    it.effect(`keeps one assistant reply across a held tool-progress projection on ${flush}`, () =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("acp-held-progress");
+        const threadId = ThreadId.make("thread-acp-held-progress");
+        const path = yield* Path.Path;
+        const textStarted = yield* Deferred.make<void>();
+        const progressProjected = yield* Deferred.make<void>();
+        const continueText = yield* Deferred.make<void>();
+        type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+        let handler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+        const adapter = makeAcpAdapterV2({
+          crypto: yield* Crypto.Crypto,
+          instanceId,
+          fileSystem: yield* FileSystem.FileSystem,
+          idAllocator: yield* IdAllocatorV2,
+          serverConfig: yield* ServerConfig,
+          selfInvocation: yield* resolveSelfInvocation(),
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            extractBackgroundTaskId: (toolCall) =>
+              toolCall.toolCallId === "held" ? "persistent-held" : undefined,
+            isPersistentBackgroundTool: () => true,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+              mockAgentPath: yield* path.fromFileUrl(
+                new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+              ),
+              wrapRuntime: (runtime) => ({
+                ...runtime,
+                handleSessionUpdate: (next) =>
+                  Effect.sync(() => {
+                    handler = next;
+                  }).pipe(Effect.andThen(runtime.handleSessionUpdate(next))),
+                prompt: () =>
+                  Effect.gen(function* () {
+                    if (handler === undefined) return yield* Effect.die("Missing session handler");
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "tool_call",
+                        toolCallId: "held",
+                        kind: "other",
+                        status: "inProgress",
+                        title: "First progress",
+                        rawInput: { path: "a.ts" },
+                      },
+                    });
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "tool_call_update",
+                        toolCallId: "held",
+                        status: "inProgress",
+                        title: "Held progress",
+                      },
+                    });
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "agent_message_chunk",
+                        content: { type: "text", text: "Hello " },
+                      },
+                    });
+                    yield* Deferred.succeed(textStarted, undefined);
+                    yield* Deferred.await(continueText);
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "agent_message_chunk",
+                        content: { type: "text", text: "world." },
+                      },
+                    });
+                    if (flush === "timer") {
+                      yield* handler({
+                        sessionId: "mock-session-1",
+                        update: {
+                          sessionUpdate: "tool_call_update",
+                          toolCallId: "held",
+                          status: "completed",
+                          rawOutput: "done",
+                        },
+                      });
+                    }
+                    return { stopReason: "end_turn" } as const;
+                  }),
+              }),
+            }),
+          },
+        });
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("session-acp-held-progress"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const items: Array<
+          Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }>["turnItem"]
+        > = [];
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              if (event.type !== "turn_item.updated") return;
+              items.push(event.turnItem);
+              if (event.turnItem.title === "Held progress" && event.turnItem.status === "running")
+                yield* Deferred.succeed(progressProjected, undefined);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+          }),
+        );
+        yield* Deferred.await(textStarted);
+        if (flush === "timer") {
+          yield* TestClock.adjust("100 millis");
+          yield* Deferred.await(progressProjected);
+        }
+        yield* Deferred.succeed(continueText, undefined);
+        yield* Fiber.join(collected);
+        const replies = items.filter((item) => item.type === "assistant_message");
+        assert.equal(new Set(replies.map((item) => item.id)).size, 1);
+        const reply = replies.at(-1);
+        assert.equal(reply?.type === "assistant_message" ? reply.text : undefined, "Hello world.");
+        assert.equal(reply?.status, "completed");
+        const tools = items.filter((item) => item.type === "dynamic_tool");
+        assert.equal(tools.at(-1)?.status, flush === "timer" ? "completed" : "running");
+        assert.equal(tools.at(-1)?.title, "Held progress");
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+    );
+  }
+
   it.effect("coalesces ACP tool floods before projection and retains secret-safe completion", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("acp-hardening-flood");

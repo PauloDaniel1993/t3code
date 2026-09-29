@@ -2972,7 +2972,6 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           context: ActiveAcpTurn,
           incoming: AcpToolCallState,
           projectedStatus?: ProjectedToolStatus,
-          flushProgress?: boolean,
         ) => Effect.Effect<void> = () => Effect.void;
 
         const markAwaitingBackgroundHydration = (context: ActiveAcpTurn, taskId: string) =>
@@ -3029,7 +3028,6 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           context: ActiveAcpTurn,
           incoming: AcpToolCallState,
           projectedStatus?: ProjectedToolStatus,
-          flushProgress = false,
         ) {
           // An identified message can stream concurrently with tool updates.
           // Keep its identity until the provider starts another message.
@@ -3166,11 +3164,11 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             }
           }
           const status = projectedStatus ?? toolStatus(toolCall.status);
+          const projection = projectTool(context, toolCall, status);
           if (
-            !flushProgress &&
             !progressForTurn(context).offer(
-              toolCall.toolCallId,
-              emitTool(context, toolCall, undefined, true),
+              `root:${toolCall.toolCallId}`,
+              projection,
               status,
               yield* Clock.currentTimeMillis,
             )
@@ -3178,6 +3176,15 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             yield* Queue.offer(toolProgressWake, undefined);
             return;
           }
+          yield* projection;
+        });
+
+        // A delayed snapshot must not repeat stream boundaries or monitor hydration.
+        const projectTool = Effect.fnUntraced(function* (
+          context: ActiveAcpTurn,
+          toolCall: AcpToolCallState,
+          status: ProjectedToolStatus,
+        ) {
           const now = yield* DateTime.now;
           const nativeItemId = `${context.nativeThreadId}:tool:${toolCall.toolCallId}`;
           const ordinal = yield* resolveItemOrdinal(context, nativeItemId);
@@ -4359,40 +4366,38 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 const key = `${nativeTaskId}:tool:${toolCall.toolCallId}`;
                 const merged = mergeToolCallState(context.tools.get(key), toolCall);
                 context.tools.set(key, merged);
-                const projectTool = Effect.gen(function* () {
-                  const now = yield* DateTime.now;
-                  const status = toolStatus(merged.status);
-                  const startedAt = context.toolStartedAt.get(key) ?? now;
-                  context.toolStartedAt.set(key, startedAt);
-                  const ordinal = resolveSubagentChildOrdinal(subagent, key);
-                  yield* emitProviderEvent({
-                    type: "turn_item.updated",
-                    driver,
-                    turnItem: {
-                      id: providerTurnItemId(key),
-                      threadId: subagent.childThreadId,
-                      runId: null,
-                      nodeId: subagent.childRootNodeId,
-                      providerThreadId: subagent.task.providerThreadId,
-                      providerTurnId: null,
-                      nativeItemRef: { driver, nativeId: key, strength: "strong" },
-                      parentItemId: null,
-                      ordinal,
-                      status,
-                      title: merged.title ?? merged.kind ?? "Tool",
-                      startedAt,
-                      completedAt: completedAtForStatus(status, now),
-                      updatedAt: now,
-                      type: "dynamic_tool",
-                      toolName: merged.title ?? merged.kind ?? "Tool",
-                      input: merged.data.rawInput ?? null,
-                      output: merged.data.rawOutput ?? merged.data.content ?? null,
-                    },
-                  });
+                const now = yield* DateTime.now;
+                const status = toolStatus(merged.status);
+                const startedAt = context.toolStartedAt.get(key) ?? now;
+                context.toolStartedAt.set(key, startedAt);
+                const ordinal = resolveSubagentChildOrdinal(subagent, key);
+                const projectTool = emitProviderEvent({
+                  type: "turn_item.updated",
+                  driver,
+                  turnItem: {
+                    id: providerTurnItemId(key),
+                    threadId: subagent.childThreadId,
+                    runId: null,
+                    nodeId: subagent.childRootNodeId,
+                    providerThreadId: subagent.task.providerThreadId,
+                    providerTurnId: null,
+                    nativeItemRef: { driver, nativeId: key, strength: "strong" },
+                    parentItemId: null,
+                    ordinal,
+                    status,
+                    title: merged.title ?? merged.kind ?? "Tool",
+                    startedAt,
+                    completedAt: completedAtForStatus(status, now),
+                    updatedAt: now,
+                    type: "dynamic_tool",
+                    toolName: merged.title ?? merged.kind ?? "Tool",
+                    input: merged.data.rawInput ?? null,
+                    output: merged.data.rawOutput ?? merged.data.content ?? null,
+                  },
                 });
                 if (
                   !progressForTurn(context).offer(
-                    key,
+                    `child:${key}`,
                     projectTool,
                     toolStatus(merged.status),
                     yield* Clock.currentTimeMillis,

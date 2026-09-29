@@ -1,12 +1,14 @@
-/** Retains one latest update per tool; first, status changes, and terminal states pass immediately. */
+/**
+ * Retains one latest update per tool; first, status changes, and terminals pass.
+ * State lasts for the owning turn: evicting pending values loses last states,
+ * and evicting terminal tombstones lets stale updates reopen completed tools.
+ */
 export function makeAcpToolProgressCoalescer<A>(
   options: {
     readonly intervalMs?: number;
-    readonly capacity?: number;
   } = {},
 ) {
   const intervalMs = options.intervalMs ?? 100;
-  const capacity = options.capacity ?? 256;
   const entries = new Map<
     string,
     {
@@ -26,7 +28,6 @@ export function makeAcpToolProgressCoalescer<A>(
     ) {
       entries.delete(key);
       entries.set(key, { lastEmittedAt: now, status });
-      if (entries.size > capacity) entries.delete(entries.keys().next().value!);
       return true;
     }
     if (
@@ -43,7 +44,6 @@ export function makeAcpToolProgressCoalescer<A>(
     ) {
       entries.delete(key);
       entries.set(key, { lastEmittedAt: now, status });
-      if (entries.size > capacity) entries.delete(entries.keys().next().value!);
       return true;
     }
     previous.pending = value;
@@ -58,7 +58,6 @@ export function makeAcpToolProgressCoalescer<A>(
       delete entry.pending;
       entry.lastEmittedAt = now;
     }
-    if (all) entries.clear();
     return pending;
   };
 

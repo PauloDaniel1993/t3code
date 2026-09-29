@@ -27,7 +27,7 @@ describe("ACP tool progress", () => {
     assert.isFalse(progress.offer("a", 4, "running", 101));
     assert.deepEqual(progress.flush(102, true), [4]);
     assert.deepEqual(progress.flush(200), []);
-    assert.isTrue(progress.offer("a", 5, "running", 201));
+    assert.isTrue(progress.offer("a", 5, "running", 202));
   });
 
   it("keeps tools independent and sends waiting, failure and cancellation immediately", () => {
@@ -41,13 +41,25 @@ describe("ACP tool progress", () => {
     assert.deepEqual(progress.flush(100), []);
   });
 
-  it("bounds pending tool state and still delivers terminals after eviction", () => {
-    const progress = makeAcpToolProgressCoalescer<number>({ capacity: 2 });
-    for (let id = 0; id < 100; id++) {
+  it("keeps each tool's last held state when more than 256 tools are active", () => {
+    const progress = makeAcpToolProgressCoalescer<number>();
+    for (let id = 0; id < 600; id++) {
       progress.offer(String(id), id, "running", 0);
       progress.offer(String(id), id + 1, "running", 1);
     }
-    assert.deepEqual(progress.flush(100), [99, 100]);
+    assert.deepEqual(
+      progress.flush(100),
+      Array.from({ length: 600 }, (_, id) => id + 1),
+    );
     assert.isTrue(progress.offer("0", 101, "completed", 101));
+  });
+
+  it("keeps terminal tombstones through saturation and settlement flushes", () => {
+    const progress = makeAcpToolProgressCoalescer<number>();
+    assert.isTrue(progress.offer("finished", 1, "completed", 0));
+    for (let id = 0; id < 600; id++) progress.offer(String(id), id, "running", 1);
+    progress.flush(100, true);
+    assert.isFalse(progress.offer("finished", 2, "running", 101));
+    assert.deepEqual(progress.flush(200), []);
   });
 });
