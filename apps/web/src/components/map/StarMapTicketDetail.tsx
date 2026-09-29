@@ -7,6 +7,10 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { useRightPanelStore } from "~/rightPanelStore";
 
+import {
+  buildStarMapTicketTaskDraft,
+  type StarMapTicketTaskDraft,
+} from "./StarMapTicketDetail.logic";
 import type { StarMapGraph, StarMapGraphNode } from "./starMapGraph";
 
 export interface StarMapTicketDetailProps {
@@ -18,6 +22,21 @@ export interface StarMapTicketDetailProps {
   readonly threadRef: ScopedThreadRef | null;
   readonly onSelectTicket: (ticketId: string) => void;
 }
+
+/**
+ * Open as task is waiting on the New task dialog host (ticket 31). Flip this once
+ * `requestOpenAsTask` below is wired: the button then becomes live and drops its tooltip.
+ */
+const OPEN_AS_TASK_AVAILABLE = false as boolean;
+
+/**
+ * THE ONE CALL SITE for ticket 31. The host takes an open request that names the parent thread
+ * and can carry a prefilled title and prompt: send it `threadRef` and `draft` from here.
+ */
+function requestOpenAsTask(_request: {
+  readonly threadRef: ScopedThreadRef;
+  readonly draft: StarMapTicketTaskDraft;
+}): void {}
 
 function statusText(node: StarMapGraphNode): string {
   switch (node.status) {
@@ -69,6 +88,18 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
     useRightPanelStore.getState().openFile(props.threadRef, node.relativePath);
   };
 
+  const openAsTask = () => {
+    if (props.threadRef === null) return;
+    requestOpenAsTask({
+      threadRef: props.threadRef,
+      draft: buildStarMapTicketTaskDraft({
+        node,
+        contents: fileQuery.data?.contents ?? null,
+        truncated: fileQuery.data?.truncated ?? false,
+      }),
+    });
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-star-map-ticket-detail="">
       <div className="shrink-0 space-y-2 border-b border-border/60 px-4 py-3">
@@ -93,27 +124,38 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                 <FileText className="size-3.5" aria-hidden />
                 Open as file
               </button>
-              {/* Waiting on the delegate button: it will ask this thread's agent to
-                    delegate the ticket as a task. Until then the action stays visible
-                    but inert. aria-disabled rather than disabled, so the tooltip that
-                    explains it still opens on hover. */}
+              {/* A disabled button swallows pointer events, so the tooltip hangs off a focusable
+                  wrapper instead: hover or Tab reaches the explanation while the button itself
+                  cannot be clicked or activated from the keyboard. */}
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <button
-                      type="button"
-                      aria-disabled
-                      className="flex h-6 cursor-not-allowed items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground opacity-50"
-                      aria-label={`Open ${node.label} as a task (not available yet)`}
-                    >
-                      <ListTodo className="size-3.5" aria-hidden />
-                      Open as task
-                    </button>
+                    <span
+                      className="inline-flex"
+                      tabIndex={OPEN_AS_TASK_AVAILABLE ? undefined : 0}
+                    />
                   }
-                />
-                <TooltipPopup side="bottom">
-                  Opening a ticket as a task is not available yet
-                </TooltipPopup>
+                >
+                  <button
+                    type="button"
+                    disabled={!OPEN_AS_TASK_AVAILABLE}
+                    onClick={openAsTask}
+                    className="flex h-6 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                    aria-label={
+                      OPEN_AS_TASK_AVAILABLE
+                        ? `Open ${node.label} as a task`
+                        : `Open ${node.label} as a task (not available yet)`
+                    }
+                  >
+                    <ListTodo className="size-3.5" aria-hidden />
+                    Open as task
+                  </button>
+                </TooltipTrigger>
+                {OPEN_AS_TASK_AVAILABLE ? null : (
+                  <TooltipPopup side="bottom">
+                    Opening a ticket as a task is not available yet
+                  </TooltipPopup>
+                )}
               </Tooltip>
             </div>
           ) : null}
