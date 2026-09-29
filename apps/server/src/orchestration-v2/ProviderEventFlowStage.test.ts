@@ -398,7 +398,7 @@ describe("provider tool payloads", () => {
     expect(isProviderEvent(final)).toBe(true);
   });
 
-  it("redacts nested fields and credentials embedded in JSON tool strings", () => {
+  it("redacts nested structured fields and preserves JSON tool strings", () => {
     const base = progress(1);
     const tool = {
       ...base,
@@ -417,7 +417,11 @@ describe("provider tool payloads", () => {
     } satisfies ProviderAdapterV2Event;
     const sanitized = sanitizeProviderEvent(tool);
     const json = testJson(sanitized);
-    expect(json).not.toContain("hidden-");
+    expect(json).not.toContain("hidden-input");
+    expect(json).not.toContain("hidden-auth");
+    expect(sanitized).toMatchObject({
+      turnItem: { output: { rawOutput: tool.turnItem.output.rawOutput } },
+    });
     expect(json).toContain("[REDACTED]");
     expect(isProviderEvent(sanitized)).toBe(true);
     const running = sanitizeProviderEvent({

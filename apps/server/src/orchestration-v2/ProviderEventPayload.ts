@@ -7,6 +7,7 @@ import {
 import * as Predicate from "effect/Predicate";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 
 import type { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
 
@@ -14,15 +15,18 @@ import type { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
  * Tool payload limits apply before persistence and before live fan-out, including
  * runless artifacts. They do not modify the provider's own context. Messages,
  * reasoning, errors and approval/input requests are never clipped or redacted.
- * Named credential fields (including environment/header names) are redacted by
- * structure. Text only redacts literal credential formats, literal sensitive
- * environment assignments, JSON string fields and Authorization header lines.
- * Ordinary identifiers, expressions and prose such as `token = getToken()` pass
- * through unchanged. This is not a general secret detector.
+ * Redaction uses ACP's case-insensitive field words across camel/snake/kebab
+ * spelling, including name/value or key/value pairs. Free text (source, commands,
+ * diffs and JSON strings) is never
+ * searched for secrets. A secret inside a command line is stored as written.
+ * Redaction is idempotent and preserves ACP's already-redacted values.
  *
  * Final tool data has a shared 64 KiB encoded JSON budget, including keys and
- * escaping. Titles/names/paths use 4 KiB; command arguments use 16 KiB. Running
- * dynamic input uses 4 KiB so its purpose remains visible, with no output.
+ * escaping, with output before input. Task/thread links and the error flag take
+ * priority over a large result preview. Nesting beyond 128 containers becomes
+ * "[TRUNCATED: depth limit]" so the store's native JSON encoder can persist it.
+ * Titles/names/paths use 4 KiB; command arguments use 16 KiB. Running
+ * dynamic input uses 16 KiB to match ACP, with no output.
  * Search queries share 16 KiB, with 4 KiB per query: normal questions survive.
  * Traversal charges every inspected field; JS own-key enumeration, adapter
  * decoding and the incoming raw object are outside this allocation guarantee.
@@ -31,53 +35,41 @@ export const PROVIDER_TOOL_DETAIL_BYTES = 4 * 1024;
 export const PROVIDER_TOOL_INPUT_BYTES = 16 * 1024;
 export const PROVIDER_TOOL_RESULT_BYTES = 64 * 1024;
 export const PROVIDER_SEARCH_QUERY_BYTES = 16 * 1024;
+export const PROVIDER_TOOL_RESULT_MAX_DEPTH = 128;
 const SENSITIVE_FIELD =
-  /(?:^|[_-])(?:authorization|cookie|credentials?|password|secret|token|(?:access|refresh)[_-]?token|(?:api|private)[_-]?key|secret[_-]access[_-]key|client[_-]secret)$/i;
-const JSON_SECRET =
-  /("(?:[^"\\]*[_-])?(?:authorization|cookie|credentials?|password|secret|token|(?:access|refresh)[_-]?token|(?:api|private)[_-]?key|secret[_-]access[_-]key|client[_-]secret)"\s*:\s*)"(?:\\.|[^"\\])*(?:"|$)/giu;
-const ENV_SECRET =
-  /\b([A-Z][A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|SECRET_ACCESS_KEY|API_KEY|PRIVATE_KEY))=("(?:\\.|[^"\\])*"|'[^']*'|[^\s;]+)/gu;
-
-function redactText(value: string): string {
-  if (!/["=]|sk-|gh[pousr]_|github_pat_|AKIA|authorization:/iu.test(value)) return value;
-  return value
-    .replace(JSON_SECRET, '$1"[REDACTED]"')
-    .replace(ENV_SECRET, (match, name: string, literal: string) =>
-      /[$`]/u.test(literal) ? match : `${name}=[REDACTED]`,
-    )
-    .replace(
-      /^(\s*[+-]?\s*Authorization:\s*(?:Bearer|Basic)\s+)[A-Za-z0-9+/_=.-]{8,}/gimu,
-      "$1[REDACTED]",
-    )
-    .replace(
-      /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{3,}|github_pat_[A-Za-z0-9_]{16,}|AKIA[A-Z0-9]{16})\b/gu,
-      "[REDACTED]",
-    );
+  /(?:^|_)(?:authorization|cookies?|credentials?|password|passwd|secret|token|api_key|private_key)(?:_|$)/;
+function sensitiveField(key: string): boolean {
+  return SENSITIVE_FIELD.test(
+    key
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[^a-z0-9]+/gi, "_")
+      .toLowerCase(),
+  );
 }
 
 /** Includes JSON escaping; only materializes a bounded prefix of large text. */
 function boundedString(value: string, maxBytes: number): string {
   const prefix = value.slice(0, maxBytes + 1024);
-  const redacted = redactText(prefix);
   // Six bytes per UTF-16 unit covers JSON escaping and UTF-8 without encoding
   // the usual short title/argument strings on the shared pump.
-  if (prefix.length === value.length && redacted.length * 6 + 2 <= maxBytes) return redacted;
-  if (prefix.length === value.length && Buffer.byteLength(JSON.stringify(redacted)) <= maxBytes)
-    return redacted;
+  if (prefix.length === value.length && prefix.length * 6 + 2 <= maxBytes) return prefix;
+  if (prefix.length === value.length && Buffer.byteLength(JSON.stringify(prefix)) <= maxBytes)
+    return prefix;
   if (maxBytes < 5) return "";
   let low = 0;
-  let high = Math.min(redacted.length, maxBytes);
+  let high = Math.min(prefix.length, maxBytes);
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(JSON.stringify(`${redacted.slice(0, middle)}…`)) <= maxBytes)
-      low = middle;
+    if (Buffer.byteLength(JSON.stringify(`${prefix.slice(0, middle)}…`)) <= maxBytes) low = middle;
     else high = middle - 1;
   }
-  if (low > 0 && /[\uD800-\uDBFF]/u.test(redacted[low - 1]!)) low -= 1;
-  return `${redacted.slice(0, low)}…`;
+  if (low > 0 && /[\uD800-\uDBFF]/u.test(prefix[low - 1]!)) low -= 1;
+  // Copy UTF-16 units, including lone surrogates, out of any source-backed slice.
+  return Buffer.from(`${prefix.slice(0, low)}…`, "utf16le").toString("utf16le");
 }
 
-/** Iterative cloning preserves every JSON value that fits, including deep arrays. */
+/** Iterative cloning preserves JSON within the byte and persistence-safe depth limits. */
 export function boundProviderToolResult(
   value: unknown,
   maxBytes = PROVIDER_TOOL_RESULT_BYTES,
@@ -86,7 +78,13 @@ export function boundProviderToolResult(
   let inspected = maxBytes;
   const ancestors = new WeakSet<object>();
   type Container = unknown[] | Record<string, unknown>;
-  type Frame = { source: object; target: Container; keys: Iterator<string>; count: number };
+  type Frame = {
+    source: object;
+    target: Container;
+    keys: Iterator<string>;
+    count: number;
+    sensitivePair: boolean;
+  };
   const stack: Frame[] = [];
   function* keys(source: object): Generator<string> {
     if (Array.isArray(source)) {
@@ -109,10 +107,18 @@ export function boundProviderToolResult(
       remaining -= 4;
       return null;
     }
+    if (stack.length >= PROVIDER_TOOL_RESULT_MAX_DEPTH) return visit("[TRUNCATED: depth limit]");
     const target: Container = Array.isArray(current) ? [] : {};
     remaining -= 2;
     ancestors.add(current);
-    stack.push({ source: current, target, keys: keys(current), count: 0 });
+    const sensitivePair =
+      !Array.isArray(current) &&
+      Object.getOwnPropertyNames(current).some((key) => {
+        if (!/^(?:name|key)$/i.test(key)) return false;
+        const name = Reflect.get(current, key);
+        return Predicate.isString(name) && sensitiveField(name);
+      });
+    stack.push({ source: current, target, keys: keys(current), count: 0, sensitivePair });
     return target;
   };
   const result = visit(value);
@@ -147,7 +153,9 @@ export function boundProviderToolResult(
       continue;
     }
     const current =
-      !isArray && SENSITIVE_FIELD.test(key) ? "[REDACTED]" : Reflect.get(frame.source, key);
+      !isArray && (sensitiveField(key) || (frame.sensitivePair && /^value$/i.test(key)))
+        ? "[REDACTED]"
+        : Reflect.get(frame.source, key);
     const minimum = Predicate.isString(current)
       ? 2
       : (Array.isArray(current) || Predicate.isObject(current)) && !ancestors.has(current)
@@ -173,6 +181,56 @@ export function boundProviderToolResult(
   return result;
 }
 
+/** Read only the result envelope used by T3's tool summaries; never redact JSON text. */
+function criticalToolResult(value: unknown, depth = 0): Record<string, unknown> | undefined {
+  if (depth >= PROVIDER_TOOL_RESULT_MAX_DEPTH) return undefined;
+  if (Predicate.isString(value)) {
+    try {
+      return criticalToolResult(JSON.parse(value), depth + 1);
+    } catch {
+      return undefined;
+    }
+  }
+  if (Array.isArray(value)) {
+    let result: Record<string, unknown> | undefined;
+    for (const block of value) {
+      const child = criticalToolResult(
+        Predicate.isObject(block) ? block.text : undefined,
+        depth + 1,
+      );
+      if (child !== undefined) {
+        const failed = child.isError === true || result?.isError === true;
+        result = Object.assign(child, result);
+        if (failed) result.isError = true;
+      }
+    }
+    return result;
+  }
+  if (!Predicate.isObject(value)) return undefined;
+  const content = value.structuredContent ?? value.content;
+  const nested = content === undefined ? undefined : criticalToolResult(content, depth + 1);
+  const compact = compactDynamicToolOutput({
+    threadId: value.threadId,
+    messageId: value.messageId,
+    taskId: value.taskId,
+    scheduledTaskId: value.scheduledTaskId,
+    thread: value.thread,
+    threads: value.threads,
+    status: value.status,
+  });
+  const flag =
+    value.isError === true ||
+    value.is_error === true ||
+    value.error != null ||
+    value._tag === "OrchestratorMcpFailure"
+      ? true
+      : Predicate.isBoolean(value.isError)
+        ? value.isError
+        : nested?.isError;
+  const result = { ...compact, ...nested, ...(flag === undefined ? {} : { isError: flag }) };
+  return Object.keys(result).length === 0 ? undefined : result;
+}
+
 const decodeFileChange = Schema.decodeUnknownOption(OrchestrationV2FileChangeDetail);
 const decodeFileSearchResult = Schema.decodeUnknownOption(OrchestrationV2FileSearchResult);
 const decodeWebSearchResult = Schema.decodeUnknownOption(OrchestrationV2WebSearchResult);
@@ -193,10 +251,25 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
   switch (item.type) {
     case "dynamic_tool": {
       const { input, output, ...detail } = item;
-      const result = boundProviderToolResult(
-        { input, ...(final && output !== undefined ? { output } : {}) },
-        final ? PROVIDER_TOOL_RESULT_BYTES : PROVIDER_TOOL_DETAIL_BYTES,
+      // Reserve the required input:null field if output consumes the whole allowance.
+      const bytes = final ? PROVIDER_TOOL_RESULT_BYTES - 13 : PROVIDER_TOOL_INPUT_BYTES;
+      let result = boundProviderToolResult(
+        { ...(final && output !== undefined ? { output } : {}), input },
+        bytes,
       );
+      const critical = final ? criticalToolResult(output) : undefined;
+      if (
+        critical !== undefined &&
+        Predicate.isObject(result) &&
+        (JSON.stringify(criticalToolResult(result.output)) !== JSON.stringify(critical) ||
+          JSON.stringify(compactDynamicToolOutput(result.output)) !==
+            JSON.stringify(compactDynamicToolOutput(critical)))
+      ) {
+        result = boundProviderToolResult(
+          { output: { ...critical, preview: output }, input },
+          bytes,
+        );
+      }
       return {
         ...detail,
         title,

@@ -25,6 +25,7 @@ import { ProviderEventIngestorV2, layer as ingestorLayer } from "./ProviderEvent
 import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
 import { makeProviderEventFlowStage } from "./ProviderEventFlowStage.ts";
 import { PROVIDER_TOOL_RESULT_BYTES } from "./ProviderEventPayload.ts";
+import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 
 const driver = ProviderDriverKind.make("codex");
 
@@ -168,6 +169,83 @@ it.effect(
 function testJson(value: unknown): string {
   return JSON.stringify(value);
 }
+
+it.effect("stores task links behind large arguments and marks excessively deep results", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSinkV2;
+    const store = yield* EventStoreV2;
+    const ingestor = yield* ProviderEventIngestorV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("payload-regression-thread");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const providerSessionId = ProviderSessionId.make("payload-regression-session");
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("payload-create"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: makeThread(threadId, providerInstanceId, now),
+        },
+      ],
+    });
+    const stage = yield* makeProviderEventFlowStage({ driver, providerSessionId });
+    let deep: unknown = "leaf";
+    for (let i = 0; i < 5_000; i++) deep = [deep];
+    const output = {
+      content: [{ type: "text", text: testJson({ threadId: "child", taskId: "task" }) }],
+      isError: true,
+    };
+    for (const [index, result] of [output, { ok: true, deep }].entries()) {
+      yield* stage.offer({
+        type: "turn_item.updated",
+        driver,
+        turnItem: {
+          id: TurnItemId.make(`payload-tool-${index}`),
+          threadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: index,
+          status: "completed",
+          title: "Result",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "dynamic_tool",
+          toolName: "task_create",
+          input: { prompt: "i".repeat(70_000) },
+          output: result,
+        },
+      });
+    }
+    yield* stage.end;
+    yield* stage.events.pipe(
+      Stream.runForEach((event) =>
+        ingestor.ingestNormalized({ providerSessionId, providerInstanceId, threadId, event }),
+      ),
+    );
+    const stored = yield* store
+      .read({ threadId, eventType: "turn-item.updated" })
+      .pipe(Stream.runCollect);
+    expect(stored).toHaveLength(2);
+    const task = stored[0]?.event;
+    if (task?.type !== "turn-item.updated" || task.payload.type !== "dynamic_tool")
+      throw new Error("Expected task result");
+    expect(task.payload.output).toEqual(output);
+    expect(compactDynamicToolOutput(task.payload.output)).toEqual({
+      threadId: "child",
+      taskId: "task",
+      isError: true,
+    });
+    expect(stored[1]?.event).toMatchObject({ payload: { output: { ok: true } } });
+    expect(testJson(stored[1])).toContain("[TRUNCATED: depth limit]");
+  }).pipe(Effect.provide(testLayer)),
+);
 
 it.effect("writes accepted completed array results before reporting transport failure", () =>
   Effect.gen(function* () {

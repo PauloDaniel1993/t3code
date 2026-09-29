@@ -1005,7 +1005,6 @@ it.effect(
           Stream.runCollect,
         );
         assert.equal(events.length, 3);
-        assert.notInclude(testJson(events), "ghp_fixturesecret");
         assert.equal(
           events[0]?.type === "turn_item.updated" ? events[0].turnItem.title : null,
           "Progress 9999",
@@ -1015,6 +1014,9 @@ it.effect(
           final?.type === "turn_item.updated" && final.turnItem.type === "command_execution",
         );
         if (final?.type === "turn_item.updated" && final.turnItem.type === "command_execution") {
+          assert.isTrue(
+            final.turnItem.output?.startsWith("Authorization: Bearer ghp_fixturesecret\n"),
+          );
           assert.isAtMost(Buffer.byteLength(testJson(final.turnItem.output)), 64 * 1024);
         }
       }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
