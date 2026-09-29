@@ -12,7 +12,7 @@ import {
 import { CommandId, type ModelSelection, type ScopedThreadRef } from "@t3tools/contracts";
 import { useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { resolveShortcutCommand } from "../keybindings";
+import { matchesShortcut, resolveShortcutCommand } from "../keybindings";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { newMessageId, randomUUID } from "../lib/utils";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
@@ -101,14 +101,13 @@ export function NewThreadTaskHost() {
   );
 
   useEffect(() => {
+    const taskShortcuts = keybindings
+      .filter((binding) => binding.command === "thread.newTask")
+      .map((binding) => binding.shortcut);
+    const platform = navigator.platform;
     const handler = (event: KeyboardEvent) => {
-      if (
-        event.defaultPrevented ||
-        event.repeat ||
-        event.isComposing ||
-        isCommandPaletteOpen() ||
-        document.querySelector('[role="dialog"]')
-      )
+      if (!taskShortcuts.some((shortcut) => matchesShortcut(event, shortcut, platform))) return;
+      if (event.defaultPrevented || event.repeat || event.isComposing || isCommandPaletteOpen())
         return;
       const threadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
       const projection = threadRef
@@ -138,7 +137,7 @@ export function NewThreadTaskHost() {
           isDesktop: isElectron,
         },
       });
-      if (command !== "thread.newTask") return;
+      if (command !== "thread.newTask" || document.querySelector('[role="dialog"]')) return;
       event.preventDefault();
       event.stopPropagation();
       const problem = threadRef

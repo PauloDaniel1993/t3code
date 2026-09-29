@@ -7,6 +7,9 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { makeThreadProjectionFixture } from "../test-fixtures";
 import { openNewThreadTaskDialog } from "../newThreadTaskBus";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { useTerminalUiStateStore } from "../terminalUiStateStore";
+import { useRightPanelStore } from "../rightPanelStore";
 import { NewThreadTaskHost } from "./NewThreadTaskHost";
 import { NewThreadTaskAction } from "./NewThreadTaskAction";
 
@@ -131,6 +134,7 @@ beforeEach(() => {
   root = createRoot(container);
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
@@ -230,6 +234,41 @@ describe("shared task host", () => {
       }),
     );
     expect(state.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("does no DOM or store lookup for non-matching keys typed in the composer", async () => {
+    await act(async () => root.render(<NewThreadTaskHost />));
+    const composer = document.createElement("textarea");
+    composer.dataset.testid = "composer-editor";
+    container.append(composer);
+    composer.focus();
+    const query = vi.spyOn(document, "querySelector");
+    const focus = vi.spyOn(document, "activeElement", "get");
+    const registry = vi.spyOn(appAtomRegistry, "get");
+    const terminal = vi.spyOn(useTerminalUiStateStore, "getState");
+    const panel = vi.spyOn(useRightPanelStore, "getState");
+
+    for (const options of [
+      { key: "n", code: "KeyN", ctrlKey: false, altKey: false },
+      { key: "x", code: "KeyX" },
+    ]) {
+      const event = new KeyboardEvent("keydown", {
+        ctrlKey: true,
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+        ...options,
+      });
+      await act(async () => composer.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(false);
+    }
+
+    expect(query).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
+    expect(registry).not.toHaveBeenCalled();
+    expect(terminal).not.toHaveBeenCalled();
+    expect(panel).not.toHaveBeenCalled();
+    expect(state.toast).not.toHaveBeenCalled();
   });
 
   it("leaves terminal input, repeated keys and composition alone", async () => {
