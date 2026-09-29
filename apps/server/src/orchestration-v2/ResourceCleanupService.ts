@@ -1,3 +1,4 @@
+/** Delete files only when the reference index is verified complete and reports no reference. */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

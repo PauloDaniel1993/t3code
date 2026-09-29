@@ -39,6 +39,11 @@ import { EventSinkV2 } from "./EventSink.ts";
 import { EffectOutboxV2, layer as outboxLayer } from "./EffectOutbox.ts";
 import * as ResourceCleanup from "./ResourceCleanupService.ts";
 import { OrchestrationV2EventSinkLayerLive } from "./runtimeLayer.ts";
+import {
+  initializeAttachmentReferenceIndex,
+  rebuildAttachmentReferenceIndex,
+  rebuildAttachmentReferenceIndexPass,
+} from "./AttachmentReferenceIndex.ts";
 
 const configLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-attachment-protections-" });
 const databaseLayer = SqlitePersistenceMemory;
@@ -493,6 +498,116 @@ describe("signed attachment ownership", () => {
 });
 
 describe("attachment pruning through the effect outbox", () => {
+  it.effect(
+    "retains a newly referenced file after a trigger is dropped, throughout repair, and after rebuilding",
+    () =>
+      Effect.gen(function* () {
+        const { file } = yield* seedAttachment();
+        const minted = yield* issue();
+        const other = yield* createThread(ThreadId.make("shared-after-trigger-loss"));
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TRIGGER fork_v2_attachment_message_insert`;
+        const sink = yield* EventSinkV2;
+        yield* sink.write({
+          events: [
+            yield* messageEvent("new:unindexed-reference", [attachment], other.id),
+            yield* messageEvent("old:removed-reference", []),
+          ],
+        });
+        const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+        expect((yield* cleanup.cleanupAttachments([attachment.id]).pipe(Effect.flip))._tag).toBe(
+          "ResourceCleanupError",
+        );
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(file)).toBe(true);
+        // Stale ownership also cannot authorize a download with an old token.
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "image.png")).toBeNull();
+        expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
+        yield* initializeAttachmentReferenceIndex();
+        yield* rebuildAttachmentReferenceIndexPass();
+        expect((yield* cleanup.cleanupAttachments([attachment.id]).pipe(Effect.flip))._tag).toBe(
+          "ResourceCleanupError",
+        );
+        expect(yield* fs.exists(file)).toBe(true);
+        yield* rebuildAttachmentReferenceIndex();
+        yield* cleanup.cleanupAttachments([attachment.id]);
+        expect(yield* fs.exists(file)).toBe(true);
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "image.png")).toBeNull();
+        expect(
+          yield* resolveAsset(tokenOf((yield* issue()).relativeUrl), "image.png"),
+        ).toMatchObject({ kind: "file", path: file });
+        yield* sink.write({
+          events: [yield* messageEvent("new:last-reference-removed", [], other.id)],
+        });
+        yield* cleanup.cleanupAttachments([attachment.id]);
+        expect(yield* fs.exists(file)).toBe(false);
+      }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "indexes unopened legacy PDFs before shells and preserves them through background transcript hydration",
+    () =>
+      Effect.gen(function* () {
+        const owner = yield* createThread();
+        const pdf = {
+          ...attachment,
+          type: "file",
+          name: "shared.pdf",
+          mimeType: "application/pdf",
+        } satisfies ChatAttachment;
+        const legacyPdf = { ...pdf, type: "document" };
+        const legacyId = ThreadId.make("a-unopened-legacy");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, is_streaming, created_at, updated_at, attachments_json)
+        VALUES ('legacy:pdf', ${legacyId}, 'user', '', 0, '2026-01-01', '2026-01-01', ${encodeJson([legacyPdf])})`;
+        const sink = yield* EventSinkV2;
+        yield* sink.write({ events: [yield* messageEvent("hydrated:pdf", [pdf])] });
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig;
+        const path = yield* Path.Path;
+        const file = path.join(config.attachmentsDir, `${pdf.id}.pdf`);
+        yield* fs.writeFileString(file, "pdf");
+        // Force a rebuild: legacy rows must be backfilled even without a V2 shell.
+        yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+        yield* initializeAttachmentReferenceIndex();
+        const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+        yield* cleanup.cleanupAttachments([pdf.id], [`${pdf.id}.pdf`]).pipe(Effect.flip);
+        yield* rebuildAttachmentReferenceIndex();
+        expect(
+          yield* sql`SELECT attachment_id FROM fork_v2_attachment_references WHERE source = 'legacy' AND row_id = 'legacy:pdf'`,
+        ).toEqual([{ attachment_id: pdf.id }]);
+        yield* cleanup.cleanupAttachments([pdf.id], [`${pdf.id}.pdf`]);
+        expect(yield* fs.exists(file)).toBe(true);
+        yield* createThread(legacyId);
+        yield* sql`INSERT INTO orchestration_v2_legacy_imports (thread_id, source_updated_at, shell_imported_at)
+        VALUES (${legacyId}, '2026-01-01', '2026-01-01')`;
+        // The document row sorts first, but must not hide the readable V2 file.
+        const minted = yield* issue();
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "shared.pdf")).toMatchObject({
+          path: file,
+        });
+        yield* deleteThread(owner);
+        yield* cleanup.cleanupAttachments([pdf.id], [`${pdf.id}.pdf`]);
+        expect(yield* fs.exists(file)).toBe(true);
+        expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
+        // Match the importer's ordering: project messages, then mark transcript complete.
+        yield* sink.write({ events: [yield* messageEvent("background:pdf", [pdf], legacyId)] });
+        yield* cleanup.cleanupAttachments([pdf.id], [`${pdf.id}.pdf`]);
+        expect(yield* fs.exists(file)).toBe(true);
+        yield* sql`UPDATE orchestration_v2_legacy_imports SET transcript_imported_at = '2026-01-01' WHERE thread_id = ${legacyId}`;
+        yield* cleanup.cleanupAttachments([pdf.id], [`${pdf.id}.pdf`]);
+        expect(yield* fs.exists(file)).toBe(true);
+        expect(
+          yield* resolveAsset(tokenOf((yield* issue()).relativeUrl), "shared.pdf"),
+        ).toMatchObject({ path: file });
+        yield* sink.write({
+          events: [yield* messageEvent("background:pdf-removed", [], legacyId)],
+        });
+        yield* cleanup.cleanupAttachments([pdf.id], [`${pdf.id}.pdf`]);
+        expect(yield* fs.exists(file)).toBe(false);
+      }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("refuses malformed references and retains bytes until metadata is repaired", () =>
     Effect.gen(function* () {
       const { file } = yield* seedAttachment();

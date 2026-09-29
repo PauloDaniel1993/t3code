@@ -12,6 +12,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { attachmentRelativePath } from "../attachmentStore.ts";
 import { normalizeAttachmentRelativePath } from "../attachmentPaths.ts";
 import { EffectOutboxV2 } from "./EffectOutbox.ts";
+import { requireCompleteAttachmentReferenceIndex } from "./AttachmentReferenceIndex.ts";
 import type { ProjectionStoreV2Shape } from "./ProjectionStore.ts";
 
 const isAttachment = Schema.is(ChatAttachment);
@@ -36,27 +37,33 @@ export const findReadableAttachment = Effect.fnUntraced(function* (
   threadId?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ thread_id: string; attachment_json: string }>`
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* requireCompleteAttachmentReferenceIndex();
+      const rows = yield* sql<{ thread_id: string; attachment_json: string }>`
     SELECT reference.thread_id, reference.attachment_json
     FROM fork_v2_attachment_references AS reference
     JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = reference.thread_id
     JOIN projection_projects AS project ON project.project_id = thread.project_id
     LEFT JOIN orchestration_v2_legacy_imports AS imported ON imported.thread_id = reference.thread_id
     WHERE reference.attachment_id = ${attachmentId}
+      AND json_extract(reference.attachment_json, '$.type') IN ('image', 'file')
       AND ${threadId === undefined ? sql`1` : sql`reference.thread_id = ${threadId}`}
       AND thread.deleted_at IS NULL AND project.deleted_at IS NULL
       AND (reference.source <> 'legacy' OR imported.transcript_imported_at IS NULL)
     ORDER BY reference.thread_id LIMIT 1
   `;
-  const row = rows[0];
-  if (row === undefined) return null;
-  const reference = attachmentReferences(decodePayload(row.attachment_json))[0];
-  return reference === undefined
-    ? null
-    : {
-        threadId: ThreadId.make(row.thread_id),
-        relativePath: reference.relativePath,
-      };
+      const row = rows[0];
+      if (row === undefined) return null;
+      const reference = attachmentReferences(decodePayload(row.attachment_json))[0];
+      return reference === undefined
+        ? null
+        : {
+            threadId: ThreadId.make(row.thread_id),
+            relativePath: reference.relativePath,
+          };
+    }),
+  );
 });
 
 /** One point-index query for an entire bounded cleanup batch. */
@@ -65,10 +72,11 @@ export const referencedAttachmentPaths = Effect.fnUntraced(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (attachmentIds.length === 0) return new Set<string>();
+  yield* requireCompleteAttachmentReferenceIndex();
   const rows = yield* sql<{ attachment_id: string; attachment_json: string }>`
     SELECT reference.attachment_id, reference.attachment_json
     FROM fork_v2_attachment_references AS reference
-    JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = reference.thread_id
+    LEFT JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = reference.thread_id
     LEFT JOIN orchestration_v2_legacy_imports AS imported ON imported.thread_id = reference.thread_id
     WHERE ${sql.in("reference.attachment_id", [...attachmentIds, "*"])} AND thread.deleted_at IS NULL
       AND (reference.source <> 'legacy' OR imported.transcript_imported_at IS NULL)

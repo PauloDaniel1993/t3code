@@ -9,7 +9,7 @@ import { runMigrations } from "../Migrations.ts";
 import { initializeV2Database } from "../initializeV2Database.ts";
 import { initializeIsolatedAttachments } from "../../attachmentIsolation.ts";
 import { ServerConfig } from "../../config.ts";
-import { initializeAttachmentReferenceIndex } from "../../orchestration-v2/AttachmentReferenceIndex.ts";
+import { startAttachmentReferenceIndex } from "../../orchestration-v2/AttachmentReferenceIndex.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
 export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -25,7 +25,7 @@ const setup = Layer.effectDiscard(
     // largest size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
     yield* runMigrations();
-    yield* initializeAttachmentReferenceIndex();
+    yield* startAttachmentReferenceIndex();
   }),
 );
 

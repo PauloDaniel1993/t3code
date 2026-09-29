@@ -1,84 +1,245 @@
+/**
+ * Derived from every projection and legacy transcript, never from filenames.
+ * Cleanup may delete only when this index is verified complete and the file is
+ * unreferenced. Missing/stale schema or an unfinished rebuild disables deletion.
+ * Triggers cover background transcript imports and writes between rebuild passes.
+ */
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 export const ATTACHMENT_REFERENCE_TABLE = "fork_v2_attachment_references";
+export const ATTACHMENT_REFERENCE_VERSION = 2;
+export const ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE = 64;
+export const ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS = 25;
+const stateTable = "fork_v2_attachment_reference_state";
 
-/** Derived from projections, including lazy legacy transcripts; never from filenames. */
-export const initializeAttachmentReferenceIndex = Effect.fnUntraced(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const exists = yield* sql`SELECT 1 FROM sqlite_master WHERE name = ${ATTACHMENT_REFERENCE_TABLE}`;
-  if (exists.length > 0) return;
-  yield* sql.withTransaction(
-    Effect.gen(function* () {
-      yield* sql.unsafe(`CREATE TABLE ${ATTACHMENT_REFERENCE_TABLE} (
+const sources = [
+  {
+    name: "message",
+    table: "orchestration_v2_projection_messages",
+    key: "message_id",
+    payload: (row: string) => `json_extract(${row}.payload_json, '$.attachments')`,
+    // Ordinary streaming updates have no attachments; don't parse growing text.
+    changed: `NOT (NEW.streaming = 1 AND NEW.thread_id IS OLD.thread_id AND NEW.message_id IS OLD.message_id AND instr(NEW.payload_json, '"attachments":[]') > 0 AND instr(OLD.payload_json, '"attachments":[]') > 0)`,
+  },
+  {
+    name: "item",
+    table: "orchestration_v2_projection_turn_items",
+    key: "turn_item_id",
+    payload: (row: string) =>
+      `json_object('attachments', json_extract(${row}.payload_json, '$.attachments'), 'answers', json_extract(${row}.payload_json, '$.questionAnswer.attachmentsByQuestionId'))`,
+    changed: `(NEW.type IN ('user_message', 'assistant_message', 'user_input_request') OR OLD.type IN ('user_message', 'assistant_message', 'user_input_request')) AND NOT (NEW.type = 'assistant_message' AND NEW.thread_id IS OLD.thread_id AND NEW.turn_item_id IS OLD.turn_item_id AND instr(NEW.payload_json, '"streaming":true') > 0 AND (instr(NEW.payload_json, '"attachments":[]') > 0 OR instr(NEW.payload_json, '"attachments":') = 0) AND (instr(OLD.payload_json, '"attachments":[]') > 0 OR instr(OLD.payload_json, '"attachments":') = 0))`,
+  },
+  {
+    name: "legacy",
+    table: "projection_thread_messages",
+    key: "message_id",
+    payload: (row: string) => `${row}.attachments_json`,
+    changed:
+      "NEW.attachments_json IS NOT OLD.attachments_json OR NEW.thread_id IS NOT OLD.thread_id OR NEW.message_id IS NOT OLD.message_id",
+  },
+];
+
+function inserts(source: (typeof sources)[number], row: string, from = "", where = "1") {
+  const column = `${row}.${source.name === "legacy" ? "attachments_json" : "payload_json"}`;
+  const safePayload = `CASE WHEN json_valid(${column}) THEN ${source.payload(row)} ELSE NULL END`;
+  // V1 documents retain all formats of their ID, but never authorize a download.
+  const types = source.name === "legacy" ? "'image', 'file', 'document'" : "'image', 'file'";
+  return [
+    `INSERT OR IGNORE INTO ${ATTACHMENT_REFERENCE_TABLE}
+      SELECT '${source.name}', ${row}.${source.key}, ${row}.thread_id,
+        json_extract(attachment.value, '$.id'), attachment.value
+      FROM ${from === "" ? "" : `${from}, `}json_tree(${safePayload}) AS attachment
+      WHERE ${where} AND attachment.type = 'object'
+        AND json_extract(attachment.value, '$.type') IN (${types})
+        AND json_extract(attachment.value, '$.id') IS NOT NULL`,
+    `INSERT OR IGNORE INTO ${ATTACHMENT_REFERENCE_TABLE}
+      SELECT '${source.name}', ${row}.${source.key}, ${row}.thread_id, '*', 'null'
+      ${from === "" ? "" : `FROM ${from}`}
+      WHERE ${where} AND ${column} IS NOT NULL AND NOT json_valid(${column})`,
+  ];
+}
+
+const definitions = [
+  {
+    type: "table",
+    name: ATTACHMENT_REFERENCE_TABLE,
+    ddl: `CREATE TABLE ${ATTACHMENT_REFERENCE_TABLE} (
       source TEXT NOT NULL, row_id TEXT NOT NULL, thread_id TEXT NOT NULL,
       attachment_id TEXT NOT NULL, attachment_json TEXT NOT NULL,
       PRIMARY KEY (source, row_id, attachment_id, attachment_json)
-    )`);
-      yield* sql.unsafe(
-        `CREATE INDEX fork_v2_attachment_id_idx ON ${ATTACHMENT_REFERENCE_TABLE}(attachment_id, thread_id)`,
-      );
-      yield* sql.unsafe(
-        `CREATE INDEX fork_v2_attachment_thread_idx ON ${ATTACHMENT_REFERENCE_TABLE}(thread_id)`,
-      );
-      for (const source of [
-        {
-          name: "message",
-          table: "orchestration_v2_projection_messages",
-          key: "message_id",
-          payload: (row: string) => `json_extract(${row}.payload_json, '$.attachments')`,
-          // The common streaming update has no attachments. Avoid parsing its growing text.
-          changed: `NOT (NEW.streaming = 1 AND instr(NEW.payload_json, '"attachments":[]') > 0 AND instr(OLD.payload_json, '"attachments":[]') > 0)`,
-        },
-        {
-          name: "item",
-          table: "orchestration_v2_projection_turn_items",
-          key: "turn_item_id",
-          payload: (row: string) =>
-            `json_object('attachments', json_extract(${row}.payload_json, '$.attachments'), 'answers', json_extract(${row}.payload_json, '$.questionAnswer.attachmentsByQuestionId'))`,
-          changed: `(NEW.type IN ('user_message', 'assistant_message', 'user_input_request') OR OLD.type IN ('user_message', 'assistant_message', 'user_input_request')) AND NOT (NEW.type = 'assistant_message' AND instr(NEW.payload_json, '"streaming":true') > 0 AND (instr(NEW.payload_json, '"attachments":[]') > 0 OR instr(NEW.payload_json, '"attachments":') = 0) AND (instr(OLD.payload_json, '"attachments":[]') > 0 OR instr(OLD.payload_json, '"attachments":') = 0))`,
-        },
-        {
-          name: "legacy",
-          table: "projection_thread_messages",
-          key: "message_id",
-          payload: (row: string) => `${row}.attachments_json`,
-          changed:
-            "NEW.attachments_json IS NOT OLD.attachments_json OR NEW.thread_id IS NOT OLD.thread_id",
-        },
-      ]) {
-        const rawPayload = source.payload;
-        const jsonColumn = (row: string) =>
-          `${row}.${source.name === "legacy" ? "attachments_json" : "payload_json"}`;
-        const safePayload = (row: string) =>
-          `CASE WHEN json_valid(${jsonColumn(row)}) THEN ${rawPayload(row)} ELSE NULL END`;
-        const invalidRow = (row: string) =>
-          `${jsonColumn(row)} IS NOT NULL AND NOT json_valid(${jsonColumn(row)})`;
-        const invalid = (row: string) => `INSERT OR IGNORE INTO ${ATTACHMENT_REFERENCE_TABLE}
-        SELECT '${source.name}', ${row}.${source.key}, ${row}.thread_id, '*', 'null' WHERE ${invalidRow(row)}`;
-        const insert = (row: string) => `INSERT OR IGNORE INTO ${ATTACHMENT_REFERENCE_TABLE}
-        SELECT '${source.name}', ${row}.${source.key}, ${row}.thread_id,
-          json_extract(attachment.value, '$.id'), attachment.value
-        FROM json_tree(${safePayload(row)}) AS attachment
-        WHERE attachment.type = 'object' AND json_extract(attachment.value, '$.type') IN ('image', 'file')
-          AND json_extract(attachment.value, '$.id') IS NOT NULL`;
-        yield* sql.unsafe(`INSERT OR IGNORE INTO ${ATTACHMENT_REFERENCE_TABLE}
-        SELECT '${source.name}', row.${source.key}, row.thread_id,
-          json_extract(attachment.value, '$.id'), attachment.value
-        FROM ${source.table} AS row, json_tree(${safePayload("row")}) AS attachment
-        WHERE attachment.type = 'object' AND json_extract(attachment.value, '$.type') IN ('image', 'file')
-          AND json_extract(attachment.value, '$.id') IS NOT NULL`);
-        yield* sql.unsafe(`INSERT OR IGNORE INTO ${ATTACHMENT_REFERENCE_TABLE}
-        SELECT '${source.name}', row.${source.key}, row.thread_id, '*', 'null' FROM ${source.table} AS row WHERE ${invalidRow("row")}`);
-        yield* sql.unsafe(`CREATE TRIGGER fork_v2_attachment_${source.name}_insert AFTER INSERT ON ${source.table}
-        BEGIN ${insert("NEW")}; ${invalid("NEW")}; END`);
-        yield* sql.unsafe(`CREATE TRIGGER fork_v2_attachment_${source.name}_update AFTER UPDATE ON ${source.table}
-        WHEN ${source.changed}
-        BEGIN DELETE FROM ${ATTACHMENT_REFERENCE_TABLE} WHERE source = '${source.name}' AND row_id = OLD.${source.key};
-          ${insert("NEW")}; ${invalid("NEW")}; END`);
-        yield* sql.unsafe(`CREATE TRIGGER fork_v2_attachment_${source.name}_delete AFTER DELETE ON ${source.table}
-        BEGIN DELETE FROM ${ATTACHMENT_REFERENCE_TABLE} WHERE source = '${source.name}' AND row_id = OLD.${source.key}; END`);
+    )`,
+  },
+  {
+    type: "table",
+    name: stateTable,
+    ddl: `CREATE TABLE ${stateTable} (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL,
+      complete INTEGER NOT NULL, source_index INTEGER NOT NULL, cursor TEXT
+    )`,
+  },
+  {
+    type: "index",
+    name: "fork_v2_attachment_id_idx",
+    ddl: `CREATE INDEX fork_v2_attachment_id_idx ON ${ATTACHMENT_REFERENCE_TABLE}(attachment_id, thread_id)`,
+  },
+  {
+    type: "index",
+    name: "fork_v2_attachment_thread_idx",
+    ddl: `CREATE INDEX fork_v2_attachment_thread_idx ON ${ATTACHMENT_REFERENCE_TABLE}(thread_id)`,
+  },
+  ...sources.flatMap((source) => {
+    const remove = `DELETE FROM ${ATTACHMENT_REFERENCE_TABLE} WHERE source = '${source.name}' AND row_id = OLD.${source.key}`;
+    return [
+      {
+        type: "trigger",
+        name: `fork_v2_attachment_${source.name}_insert`,
+        ddl: `CREATE TRIGGER fork_v2_attachment_${source.name}_insert AFTER INSERT ON ${source.table}
+          BEGIN ${inserts(source, "NEW").join("; ")}; END`,
+      },
+      {
+        type: "trigger",
+        name: `fork_v2_attachment_${source.name}_update`,
+        ddl: `CREATE TRIGGER fork_v2_attachment_${source.name}_update AFTER UPDATE ON ${source.table}
+          WHEN ${source.changed}
+          BEGIN ${remove}; ${inserts(source, "NEW").join("; ")}; END`,
+      },
+      {
+        type: "trigger",
+        name: `fork_v2_attachment_${source.name}_delete`,
+        ddl: `CREATE TRIGGER fork_v2_attachment_${source.name}_delete AFTER DELETE ON ${source.table}
+          BEGIN ${remove}; END`,
+      },
+    ];
+  }),
+];
+const normalizeDdl = (ddl: string) => ddl.replace(/\s+/g, " ").trim();
+
+const hasExpectedSchema = Effect.fnUntraced(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const actual = yield* sql<{ type: string; name: string; sql: string }>`
+    SELECT type, name, sql FROM sqlite_master WHERE name LIKE 'fork_v2_attachment_%' AND sql IS NOT NULL
+  `;
+  return (
+    actual.length === definitions.length &&
+    definitions.every((expected) =>
+      actual.some(
+        (row) =>
+          row.type === expected.type &&
+          row.name === expected.name &&
+          normalizeDdl(row.sql) === normalizeDdl(expected.ddl),
+      ),
+    )
+  );
+});
+
+interface RebuildState {
+  version: number;
+  complete: number;
+  source_index: number;
+  cursor: string | null;
+}
+
+const readState = Effect.fnUntraced(function* () {
+  if (!(yield* hasExpectedSchema())) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const rows =
+    yield* sql<RebuildState>`SELECT version, complete, source_index, cursor FROM ${sql(stateTable)} WHERE singleton = 1`;
+  const state = rows[0];
+  return state?.version === ATTACHMENT_REFERENCE_VERSION &&
+    (state.complete === 0 || (state.complete === 1 && state.source_index === sources.length)) &&
+    state.source_index >= 0 &&
+    state.source_index <= sources.length
+    ? state
+    : undefined;
+});
+
+export class AttachmentReferenceIndexUnavailable extends Schema.TaggedError<AttachmentReferenceIndexUnavailable>()(
+  "AttachmentReferenceIndexUnavailable",
+  {},
+) {}
+
+/** Call in the same SQL transaction as the reference lookup and unlink. */
+export const requireCompleteAttachmentReferenceIndex = Effect.fnUntraced(function* () {
+  if ((yield* readState())?.complete !== 1) return yield* new AttachmentReferenceIndexUnavailable();
+});
+
+/** Idempotent migration/fallback: only DDL and indexed existence checks, no backfill. */
+export const initializeAttachmentReferenceIndex = Effect.fnUntraced(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const state = yield* readState();
+      if (state !== undefined) return state.complete === 1;
+      // A missing trigger may have missed both inserts and deletes. Trust no old rows.
+      for (const definition of definitions.toReversed())
+        yield* sql.unsafe(`DROP ${definition.type.toUpperCase()} IF EXISTS ${definition.name}`);
+      for (const definition of definitions) yield* sql.unsafe(definition.ddl);
+      let empty = true;
+      for (const source of sources) {
+        const rows = yield* sql.unsafe(`SELECT ${source.key} FROM ${source.table} LIMIT 1`);
+        if (rows.length > 0) empty = false;
       }
+      yield* sql`INSERT INTO ${sql(stateTable)} (singleton, version, complete, source_index, cursor)
+      VALUES (1, ${ATTACHMENT_REFERENCE_VERSION}, ${empty ? 1 : 0}, ${empty ? sources.length : 0}, NULL)`;
+      return empty;
     }),
+  );
+});
+
+/** Release the connection after <=64 rows or 25ms, checked between individual rows. */
+export const rebuildAttachmentReferenceIndexPass = Effect.fnUntraced(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* initializeAttachmentReferenceIndex();
+      const state = yield* readState();
+      if (state === undefined) return yield* new AttachmentReferenceIndexUnavailable();
+      if (state.complete === 1) return true;
+      const source = sources[state.source_index];
+      if (source === undefined) {
+        yield* sql`UPDATE ${sql(stateTable)} SET complete = 1 WHERE singleton = 1`;
+        return true;
+      }
+      const rows = yield* sql.unsafe<{ id: string }>(
+        `SELECT ${source.key} AS id FROM ${source.table} ${state.cursor === null ? "" : `WHERE ${source.key} > ?`}
+        ORDER BY ${source.key} LIMIT ${ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE}`,
+        state.cursor === null ? [] : [state.cursor],
+      );
+      if (rows.length === 0) {
+        yield* sql`UPDATE ${sql(stateTable)} SET source_index = ${state.source_index + 1}, cursor = NULL WHERE singleton = 1`;
+        return false;
+      }
+      const started = performance.now();
+      for (const row of rows) {
+        for (const insert of inserts(
+          source,
+          "row",
+          `${source.table} AS row`,
+          `row.${source.key} = ?`,
+        ))
+          yield* sql.unsafe(insert, [row.id]);
+        yield* sql`UPDATE ${sql(stateTable)} SET cursor = ${row.id} WHERE singleton = 1`;
+        if (performance.now() - started >= ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS) break;
+      }
+      return false;
+    }),
+  );
+});
+
+/** Drainable by tests; production runs it in the persistence layer's scope. */
+export const rebuildAttachmentReferenceIndex = Effect.fnUntraced(function* () {
+  while (!(yield* rebuildAttachmentReferenceIndexPass())) yield* Effect.yieldNow;
+});
+
+/** Run after base and fork migrations. Rebuilding existing data never holds startup. */
+export const startAttachmentReferenceIndex = Effect.fnUntraced(function* () {
+  if (yield* initializeAttachmentReferenceIndex()) return;
+  return yield* rebuildAttachmentReferenceIndex().pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("Attachment reference rebuild incomplete; cleanup disabled", { error }),
+    ),
+    Effect.forkScoped,
   );
 });
