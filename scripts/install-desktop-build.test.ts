@@ -241,10 +241,19 @@ it("refuses UNC and junction aliases of another install or its home before repla
           unc(protectedDir),
           `${unc(protectedDir)}\\missing`,
           unc(NodePath.dirname(protectedDir)),
+          `${protectedDir}.`,
+          `${protectedDir} `,
+          `${protectedDir}.\\userdata`,
+          NodePath.join(root, "T3LOCA~1"),
+          `\\\\?\\${protectedDir}`,
+          `\\\\.\\${protectedDir}`,
+          `${protectedDir}:stream`,
+          `${protectedDir}::$DATA`,
+          protectedDir.replaceAll("\\", "/"),
         ]) {
           await expect(
             assertInstallDesktopBuildPaths({ ...safe, [key]: candidate }, home, [otherInstall]),
-          ).rejects.toThrow(/overlap|home directory|not a T3 v2.local install/);
+          ).rejects.toThrow(/overlap|home directory|not a T3 v2.local install|Refusing|trailing/);
         }
       }
       await expect(
@@ -260,6 +269,49 @@ it("refuses UNC and junction aliases of another install or its home before repla
   } finally {
     await NodeFSP.rmdir(NodePath.join(root, "junction"));
     await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("refuses folded Windows CLI and environment spellings before normalization", () => {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Windows installer argument fixture.
+  if (NodeOS.platform() !== "win32") return;
+  const root = NodeOS.tmpdir();
+  const live = NodePath.join(root, "fixture-user", ".t3.local");
+  for (const candidate of [
+    `${live}.`,
+    `${live} `,
+    `${live}.\\userdata`,
+    NodePath.join(root, "fixture-user", ".t3."),
+    NodePath.join(root, "T3LOCA~1"),
+    `\\\\?\\${live}`,
+    `\\\\.\\${live}`,
+    `${live}:stream`,
+    live.replaceAll("\\", "/"),
+  ]) {
+    for (const flag of ["--install-dir", "--state-dir", "--output-dir"]) {
+      assert.throws(
+        () =>
+          parseInstallDesktopBuildArgs(
+            ["--install-dir", "install", flag, candidate],
+            {},
+            root,
+            "win32",
+            NodePath.join(root, "fixture-user"),
+          ),
+        /Refusing|trailing/,
+      );
+    }
+    assert.throws(
+      () =>
+        parseInstallDesktopBuildArgs(
+          ["--install-dir", "install"],
+          { T3CODE_DESKTOP_LOCAL_STATE_DIR: candidate },
+          root,
+          "win32",
+          NodePath.join(root, "fixture-user"),
+        ),
+      /Refusing|trailing/,
+    );
   }
 });
 

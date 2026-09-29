@@ -40,7 +40,21 @@ describe("installed local identity", () => {
       const unc = `\\\\localhost\\${drive[0]}$\\${liveHome.slice(drive.length)}`;
       const junction = NodePath.join(root, "junction");
       await NodeFSP.symlink(liveHome, junction, "junction");
-      for (const t3Home of [unc, `${unc}\\userdata`, NodePath.join(junction, "missing")]) {
+      for (const t3Home of [
+        unc,
+        `${unc}\\userdata`,
+        NodePath.join(junction, "missing"),
+        `${liveHome}.`,
+        `${liveHome} `,
+        `${liveHome}.\\userdata`,
+        NodePath.join(homeDirectory, ".t3."),
+        NodePath.join(homeDirectory, "T3LOCA~1"),
+        `\\\\?\\${liveHome}`,
+        `\\\\.\\${liveHome}`,
+        `${liveHome}:stream`,
+        `${liveHome}::$DATA`,
+        liveHome.replaceAll("\\", "/"),
+      ]) {
         const env: NodeJS.ProcessEnv = {};
         assert.throws(
           () =>
@@ -53,7 +67,7 @@ describe("installed local identity", () => {
                   ? read(path)
                   : JSON.stringify({ ...localMetadata, t3Home }),
             }),
-          /overlaps/,
+          /overlaps|Refusing|trailing/,
         );
         assert.deepEqual(env, {});
       }

@@ -141,7 +141,7 @@ function consumesNextValue(argv: ReadonlyArray<string>, index: number, flag: str
 }
 
 function resolveInputPath(value: string, cwd: string): string {
-  return NodePath.resolve(cwd, value);
+  return resolveRealLocalPath(value, [], readCliHostPlatform(), cwd);
 }
 
 function defaultStateDir(homeDir: string): string {
@@ -233,18 +233,18 @@ export function parseInstallDesktopBuildArgs(
     throw new InstallDesktopBuildError(`Unknown argument: ${arg}\n\n${usage()}`);
   }
 
-  const envInstallDir = env.T3CODE_DESKTOP_INSTALL_DIR?.trim();
+  const envInstallDir = env.T3CODE_DESKTOP_INSTALL_DIR;
   const installDir =
     state.installDir ?? (envInstallDir && envInstallDir.length > 0 ? envInstallDir : undefined);
   if (!installDir) {
     throw new InstallDesktopBuildError(`Missing required --install-dir.\n\n${usage()}`);
   }
 
-  const envOutputDir = env.T3CODE_DESKTOP_INSTALL_OUTPUT_DIR?.trim();
+  const envOutputDir = env.T3CODE_DESKTOP_INSTALL_OUTPUT_DIR;
   const outputDir =
     state.outputDir ??
     (envOutputDir && envOutputDir.length > 0 ? envOutputDir : DEFAULT_OUTPUT_DIR);
-  const envStateDir = env.T3CODE_DESKTOP_LOCAL_STATE_DIR?.trim();
+  const envStateDir = env.T3CODE_DESKTOP_LOCAL_STATE_DIR;
   const stateDir =
     state.stateDir ??
     (envStateDir && envStateDir.length > 0 ? envStateDir : defaultStateDir(homeDir));
