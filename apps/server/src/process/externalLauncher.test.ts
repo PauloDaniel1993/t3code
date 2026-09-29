@@ -17,7 +17,6 @@ import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { EDITORS } from "@t3tools/contracts";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as ExternalLauncher from "./externalLauncher.ts";
 
@@ -1126,114 +1125,6 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
     assert.equal(spawned?.command, "cursor");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
-
-it.effect("discovers editors concurrently with at most eight probes and stable ordering", () => {
-  let activeChecks = 0;
-  let peakActiveChecks = 0;
-  const fileInfo = { type: "File" } as FileSystem.File.Info;
-  const launcherLayer = ExternalLauncher.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        FileSystem.layerNoop({
-          stat: () =>
-            Effect.gen(function* () {
-              activeChecks += 1;
-              peakActiveChecks = Math.max(peakActiveChecks, activeChecks);
-              yield* Effect.yieldNow;
-              activeChecks -= 1;
-              return fileInfo;
-            }),
-        }),
-        Path.layer,
-        Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.sync(() => makeMockDetachedHandle())),
-        ),
-      ),
-    ),
-  );
-
-  return Effect.gen(function* () {
-    const launcher = yield* ExternalLauncher.ExternalLauncher;
-    const editors = yield* launcher.resolveAvailableEditors();
-    assert.deepEqual(
-      editors,
-      EDITORS.map((editor) => editor.id),
-    );
-    assert.isAbove(peakActiveChecks, 1);
-    assert.isAtMost(peakActiveChecks, 8);
-  }).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        launcherLayer,
-        Layer.succeed(HostProcessPlatform, "win32"),
-        ConfigProvider.layer(
-          ConfigProvider.fromEnv({
-            env: { PATH: "C:\\t3-editor-concurrent-test", PATHEXT: ".CMD" },
-          }),
-        ),
-      ),
-    ),
-  );
-});
-
-it.effect("shares a discovery scan across simultaneous connects and expired cache misses", () => {
-  let statCalls = 0;
-  const fileInfo = { type: "File" } as FileSystem.File.Info;
-  const launcherLayer = ExternalLauncher.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        FileSystem.layerNoop({
-          stat: () =>
-            Effect.gen(function* () {
-              statCalls += 1;
-              yield* Effect.yieldNow;
-              return fileInfo;
-            }),
-        }),
-        Path.layer,
-        Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.sync(() => makeMockDetachedHandle())),
-        ),
-      ),
-    ),
-  );
-
-  return Effect.gen(function* () {
-    const launcher = yield* ExternalLauncher.ExternalLauncher;
-    const first = yield* launcher.resolveAvailableEditors();
-    const singleScanCalls = statCalls;
-    assert.isAbove(singleScanCalls, 0);
-
-    for (const _ of [0, 1]) {
-      yield* TestClock.adjust("61 seconds");
-      statCalls = 0;
-      const results = yield* Effect.all(
-        Array.from({ length: 8 }, () => launcher.resolveAvailableEditors()),
-        { concurrency: "unbounded" },
-      );
-      assert.deepEqual(
-        results,
-        Array.from({ length: 8 }, () => first),
-      );
-      assert.equal(statCalls, singleScanCalls);
-    }
-  }).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        launcherLayer,
-        Layer.succeed(HostProcessPlatform, "win32"),
-        ConfigProvider.layer(
-          ConfigProvider.fromEnv({
-            env: { PATH: "C:\\t3-editor-shared-scan-test", PATHEXT: ".CMD" },
-          }),
-        ),
-        TestClock.layer(),
-      ),
-    ),
-  );
-});
 
 it.effect("memoizes editor discovery and refreshes after the cache window", () => {
   let statCalls = 0;

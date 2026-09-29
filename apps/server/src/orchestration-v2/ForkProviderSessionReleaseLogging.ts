@@ -1,64 +1,67 @@
 import type { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 
 import type { ProviderAdapterV2SessionRuntime } from "./ProviderAdapter.ts";
 
 export interface IdleSessionReleaseCandidate {
-  readonly runtime: Pick<
-    ProviderAdapterV2SessionRuntime,
-    "instanceId" | "driver" | "hasPendingBackgroundWork"
-  > & {
+  readonly runtime: Pick<ProviderAdapterV2SessionRuntime, "instanceId" | "driver"> & {
     readonly providerSession: Pick<ProviderAdapterV2SessionRuntime["providerSession"], "status">;
   };
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly busyCount: number;
   readonly idleGeneration: number;
   readonly lastActivityAtMs: number;
-  readonly pinnedSinceMs: number | null;
 }
 
-interface IdleReleaseInput {
-  readonly providerSessionId: ProviderSessionId;
-  readonly generation: number;
+export interface IdleReleaseTrace {
+  /** The pin outlived its cap; the stop decision that follows names it. */
+  readonly pinExpired: (pinnedForMs: number) => Effect.Effect<void>;
+  readonly changedDuringBackgroundProbe: () => Effect.Effect<void>;
+  readonly deferredForBackgroundWork: (pinnedForMs: number) => Effect.Effect<void>;
+  readonly stopRequested: () => Effect.Effect<void>;
+  readonly stopFinished: () => Effect.Effect<void>;
 }
 
-const logDecision = (message: string, context: Record<string, unknown>) =>
-  Effect.logInfo(message).pipe(Effect.annotateLogs(context));
+const inertTrace: IdleReleaseTrace = {
+  pinExpired: () => Effect.void,
+  changedDuringBackgroundProbe: () => Effect.void,
+  deferredForBackgroundWork: () => Effect.void,
+  stopRequested: () => Effect.void,
+  stopFinished: () => Effect.void,
+};
 
 /**
- * Owns the fork's idle-release trace and V2's idle decision loop. The manager
- * still owns atomic removal, subscriber shutdown, scope close and persistence.
- * Create spans only after finding a live candidate, and end them before a pin
- * waits for its next idle window.
+ * Explains V2's idle session release: which sessions the idle timer considered,
+ * why each was kept or stopped, and what the stop did. It only observes.
+ * ProviderSessionManager keeps the decisions, and calls in here at each point
+ * of decision, so a merge that drops a call costs a log line and never changes
+ * behavior. Calls before the first decision take the manager's own session key
+ * and entry lookup instead of rebuilding them here.
+ *
+ * Nothing is read, written or allocated when the timer finds no session: `begin`
+ * returns a shared no-op trace. Each decision is a `root` span, because the idle
+ * timer is forked from whichever request last touched the session and would
+ * otherwise attach to a trace that ended long ago.
  */
-export function makeLoggedIdleSessionRelease<
-  Entry extends IdleSessionReleaseCandidate,
-  E,
->(options: {
+export function makeIdleReleaseTracer<Entry extends IdleSessionReleaseCandidate>(options: {
   readonly sessions: Ref.Ref<Map<string, Entry>>;
   readonly idleTimeoutMs: number;
   readonly maxIdlePinMs: number;
-  readonly releaseEntry: (input: {
-    readonly providerSessionId: ProviderSessionId;
-    readonly reason: "idle_timeout";
-    readonly cancelIdleFiber: false;
-    readonly onlyIfIdleGeneration: number;
-  }) => Effect.Effect<void, E>;
 }) {
-  const releaseIfStillIdle = (input: IdleReleaseInput): Effect.Effect<void> =>
+  // Not Effect.fn: a named function would open a span even when there is no entry.
+  const begin = (
+    sessionKey: string,
+    input: { readonly providerSessionId: ProviderSessionId; readonly generation: number },
+    entry: Entry | undefined,
+  ): Effect.Effect<IdleReleaseTrace> =>
     Effect.gen(function* () {
-      const current = yield* Ref.get(options.sessions);
-      const key = String(input.providerSessionId);
-      const entry = current.get(key);
-      // Keep the empty path as cheap as upstream: no clock, log, span or probe.
-      if (entry === undefined) return;
+      if (entry === undefined) return inertTrace;
 
       const now = yield* Clock.currentTimeMillis;
-      const context = {
+      const context: Record<string, unknown> = {
         decisionId: `${input.providerSessionId}:${input.generation}:${now}`,
         providerSessionId: input.providerSessionId,
         providerInstanceId: entry.runtime.instanceId,
@@ -73,118 +76,66 @@ export function makeLoggedIdleSessionRelease<
         generation: entry.idleGeneration,
         busyCount: entry.busyCount,
       };
-      const repeat = yield* Effect.gen(function* () {
-        yield* logDecision("provider.session.release.candidate", context);
-        if (entry.busyCount > 0 || entry.idleGeneration !== input.generation) {
-          yield* logDecision("provider.session.release.decision", {
-            ...context,
-            decision: entry.busyCount > 0 ? "skip_active_turn" : "skip_stale_generation",
-          });
-          return false;
-        }
+      const probedRuntime = entry.runtime;
+      let stopDecision = "stop_inactive_session";
+      let stopContext = context;
 
-        // Capture identity before yielding, as in V2: a replacement runtime
-        // can reuse this session id while the pending-work probe is parked.
-        const probedRuntime = entry.runtime;
-        const hasPendingWork =
-          probedRuntime.hasPendingBackgroundWork === undefined
-            ? false
-            : yield* probedRuntime.hasPendingBackgroundWork.pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("provider.session.release.pending-work-check-failed").pipe(
-                    Effect.annotateLogs({ ...context, cause }),
-                    Effect.as(false),
-                  ),
-                ),
-              );
-        let decision = "stop_inactive_session";
-        if (hasPendingWork) {
-          const checkedAt = yield* Clock.currentTimeMillis;
-          const pinnedSinceMs = entry.pinnedSinceMs ?? checkedAt;
-          if (checkedAt - pinnedSinceMs < options.maxIdlePinMs) {
-            const shouldContinuePin = yield* Ref.modify(options.sessions, (latest) => {
-              const latestEntry = latest.get(key);
-              if (
-                latestEntry === undefined ||
-                latestEntry.busyCount > 0 ||
-                latestEntry.idleGeneration !== input.generation ||
-                latestEntry.runtime !== probedRuntime
-              ) {
-                return [false, latest] as const;
-              }
-              const updated = new Map(latest);
-              updated.set(key, { ...latestEntry, pinnedSinceMs });
-              return [true, updated] as const;
-            });
-            if (!shouldContinuePin) {
-              yield* logDecision("provider.session.release.decision", {
-                ...context,
-                decision: "skip_changed_during_background_probe",
-              });
-              return false;
-            }
-            yield* logDecision("provider.session.release.decision", {
-              ...context,
-              decision: "skip_background_work",
-              pinnedForMs: checkedAt - pinnedSinceMs,
-            });
-            yield* Effect.logInfo("orchestration-v2.driver-session.idle-release-deferred", {
-              providerSessionId: input.providerSessionId,
-              pinnedForMs: checkedAt - pinnedSinceMs,
-            });
-            return true;
-          }
-          decision = "stop_expired_background_pin";
-          yield* Effect.logWarning("orchestration-v2.driver-session.idle-release-pin-expired", {
-            providerSessionId: input.providerSessionId,
-            pinnedForMs: checkedAt - pinnedSinceMs,
-          });
-        }
+      const decide = (decision: string, extra: Record<string, unknown> = {}) => {
+        const decided = { ...context, ...extra, decision };
+        return Effect.logInfo("provider.session.release.decision").pipe(
+          Effect.annotateLogs(decided),
+          Effect.withSpan("provider.session.release.idle-decision", {
+            root: true,
+            attributes: decided,
+          }),
+        );
+      };
 
-        const stopContext = { ...context, decision, reason: "idle_timeout" };
-        yield* logDecision("provider.session.release.decision", stopContext);
-        yield* logDecision("provider.session.release.stop-requested", stopContext);
-        // releaseEntry revalidates busyCount and generation atomically. A
-        // successful call can be a guarded no-op, so inspect residency before
-        // claiming this runtime was released.
-        yield* options
-          .releaseEntry({
-            providerSessionId: input.providerSessionId,
-            reason: "idle_timeout",
-            cancelIdleFiber: false,
-            onlyIfIdleGeneration: input.generation,
-          })
-          .pipe(
-            Effect.tap(() =>
-              Ref.get(options.sessions).pipe(
-                Effect.flatMap((latest) => {
-                  const remaining = latest.get(key);
-                  return logDecision("provider.session.release.stop-completed", {
-                    ...stopContext,
-                    result:
-                      remaining?.runtime === probedRuntime ? "skipped_changed_session" : "released",
-                    currentGeneration: remaining?.idleGeneration ?? null,
-                    currentBusyCount: remaining?.busyCount ?? null,
-                  });
-                }),
+      yield* Effect.logInfo("provider.session.release.candidate").pipe(
+        Effect.annotateLogs(context),
+      );
+      if (entry.busyCount > 0 || entry.idleGeneration !== input.generation) {
+        yield* decide(entry.busyCount > 0 ? "skip_active_turn" : "skip_stale_generation");
+        return inertTrace;
+      }
+
+      const trace: IdleReleaseTrace = {
+        pinExpired: (pinnedForMs) =>
+          Effect.sync(() => {
+            stopDecision = "stop_expired_background_pin";
+            stopContext = { ...context, pinnedForMs };
+          }),
+        changedDuringBackgroundProbe: () => decide("skip_changed_during_background_probe"),
+        deferredForBackgroundWork: (pinnedForMs) => decide("skip_background_work", { pinnedForMs }),
+        stopRequested: () =>
+          decide(stopDecision, { ...stopContext, reason: "idle_timeout" }).pipe(
+            Effect.andThen(
+              Effect.logInfo("provider.session.release.stop-requested").pipe(
+                Effect.annotateLogs({ ...stopContext, decision: stopDecision }),
               ),
             ),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("orchestration-v2.driver-session.idle-release-failed", {
-                providerSessionId: input.providerSessionId,
-                cause,
-              }).pipe(Effect.annotateLogs({ ...stopContext, result: "failed" })),
-            ),
-          );
-        return false;
-      }).pipe(Effect.withSpan("provider.session.release.idle-decision", { attributes: context }));
-
-      if (repeat) {
-        // Re-arm on this fiber; scheduleIdleReleaseInternal would cancel itself.
-        yield* Effect.sleep(Duration.millis(options.idleTimeoutMs));
-        return yield* releaseIfStillIdle(input);
-      }
+          ),
+        // The manager's release can be a guarded no-op or fail (it logs its own
+        // warning), so report what the entry looks like afterwards, not "success".
+        stopFinished: () =>
+          Ref.get(options.sessions).pipe(
+            Effect.flatMap((latest) => {
+              const remaining = latest.get(sessionKey);
+              return Effect.logInfo("provider.session.release.stop-completed").pipe(
+                Effect.annotateLogs({
+                  ...stopContext,
+                  decision: stopDecision,
+                  result:
+                    remaining?.runtime === probedRuntime ? "entry_still_resident" : "entry_removed",
+                  currentGeneration: remaining?.idleGeneration ?? null,
+                  currentBusyCount: remaining?.busyCount ?? null,
+                }),
+              );
+            }),
+          ),
+      };
+      return trace;
     });
 
-  return releaseIfStillIdle;
+  return { begin };
 }
