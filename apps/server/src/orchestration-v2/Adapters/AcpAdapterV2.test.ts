@@ -605,6 +605,121 @@ function makeTurnInput(input: {
 }
 
 describe("AcpAdapterV2", () => {
+  it.effect("coalesces ACP tool floods before projection and retains secret-safe completion", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("acp-hardening-flood");
+      const threadId = ThreadId.make("thread-acp-hardening-flood");
+      const path = yield* Path.Path;
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let handler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+      const adapter = makeAcpAdapterV2({
+        crypto: yield* Crypto.Crypto,
+        instanceId,
+        fileSystem: yield* FileSystem.FileSystem,
+        idAllocator: yield* IdAllocatorV2,
+        serverConfig: yield* ServerConfig,
+        selfInvocation: yield* resolveSelfInvocation(),
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              handleSessionUpdate: (next) =>
+                Effect.sync(() => {
+                  handler = next;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(next))),
+              prompt: () =>
+                Effect.gen(function* () {
+                  if (handler === undefined) return yield* Effect.die("Missing session handler");
+                  yield* handler({
+                    sessionId: "mock-session-1",
+                    update: {
+                      sessionUpdate: "tool_call",
+                      toolCallId: "flood",
+                      title: "custom tool",
+                      kind: "other",
+                      status: "inProgress",
+                      rawInput: { apiKey: "private-input-key", command: "identity" },
+                    },
+                  });
+                  for (let update = 0; update < 5_000; update++) {
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "tool_call_update",
+                        toolCallId: "flood",
+                        status: "inProgress",
+                        rawOutput: { result: String(update), token: "private-output-token" },
+                      },
+                    });
+                  }
+                  yield* handler({
+                    sessionId: "mock-session-1",
+                    update: {
+                      sessionUpdate: "tool_call_update",
+                      toolCallId: "flood",
+                      status: "completed",
+                      rawOutput: { result: "final result", token: "private-output-token" },
+                    },
+                  });
+                  return { stopReason: "end_turn" } as const;
+                }),
+            }),
+          }),
+        },
+      });
+      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-acp-hardening-flood"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+        }),
+      );
+      const events = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      );
+      const tools = events.flatMap((event) =>
+        event.type === "turn_item.updated" && event.turnItem.type === "dynamic_tool"
+          ? [event.turnItem]
+          : [],
+      );
+      assert.equal(tools.length, 2);
+      assert.equal(tools[0]!.status, "running");
+      assert.deepEqual(tools[0]!.input, {});
+      assert.notProperty(tools[0]!, "output");
+      assert.deepEqual(tools[1]!.output, { result: "final result", token: "[REDACTED]" });
+      assert.equal(tools[1]!.status, "completed");
+      const serializedEvents = yield* encodeUnknownJson(events);
+      assert.notInclude(serializedEvents, "private-input-key");
+      assert.notInclude(serializedEvents, "private-output-token");
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
   for (const outcome of ["failed", "recovered", "completed", "cancelled"] as const) {
     it.live(`projects Mistral retry notices and their ${outcome} outcome`, () =>
       Effect.gen(function* () {

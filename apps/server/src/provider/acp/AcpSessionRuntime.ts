@@ -29,14 +29,13 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
+import { makeAcpToolProgressCoalescer } from "./AcpToolProgressCoalescer.ts";
 import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./AcpStderr.ts";
 import {
   collectSessionConfigOptionValues,
-  decideToolCallUpdateEmission,
   extractModelConfigId,
   findSessionConfigOption,
   mergeToolCallState,
-  toolCallProgressLength,
   parseSessionModeState,
   parseSessionUpdateEvent,
   sessionUpdateCountsAsLoadReplayActivity,
@@ -52,8 +51,6 @@ const MAX_SHOWN_TOOL_CALL_IDS = 256;
 
 interface AcpToolCallTrackedState {
   readonly state: AcpToolCallState;
-  readonly lastEmittedDetailLength: number | undefined;
-  readonly skippedSinceEmit: number;
 }
 
 function formatConfigOptionValue(value: string | boolean): string {
@@ -1387,6 +1384,22 @@ export const make = (
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const eventQueue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
+    const toolProgress =
+      makeAcpToolProgressCoalescer<
+        Extract<AcpParsedSessionEvent, { readonly _tag: "ToolCallUpdated" }>
+      >();
+    const toolProgressWake = yield* Queue.dropping<void>(1);
+    const flushToolProgress = Effect.fnUntraced(function* (all = false) {
+      for (const event of toolProgress.flush(yield* Clock.currentTimeMillis, all)) {
+        yield* Queue.offer(eventQueue, event);
+      }
+    });
+    yield* Effect.forever(
+      Queue.take(toolProgressWake).pipe(
+        Effect.andThen(Effect.sleep("100 millis")),
+        Effect.andThen(flushToolProgress()),
+      ),
+    ).pipe(Effect.forkIn(runtimeScope));
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallTrackedState>());
     // Recently shown tool calls. A late update to a finished call is not a new
@@ -1802,6 +1815,8 @@ export const make = (
         modeStateRef,
         configOptionsRef,
         toolCallsRef,
+        toolProgress,
+        toolProgressWake,
         shownToolCallIds,
         assistantSegmentRef,
         assistantItemRuntimeId,
@@ -2409,6 +2424,7 @@ export const make = (
       const acknowledge = yield* Deferred.make<void>();
       yield* notificationSemaphore.withPermit(
         Effect.gen(function* () {
+          yield* flushToolProgress(true);
           // Keep a provider's final flushed chunks together until the adapter settles the turn.
           if (Option.isNone(yield* Ref.get(activePromptRef))) {
             yield* Ref.set(assistantUpdatesOpenRef, false);
@@ -2851,6 +2867,8 @@ const handleSessionUpdate = ({
   modeStateRef,
   configOptionsRef,
   toolCallsRef,
+  toolProgress,
+  toolProgressWake,
   shownToolCallIds,
   assistantSegmentRef,
   assistantItemRuntimeId,
@@ -2860,6 +2878,12 @@ const handleSessionUpdate = ({
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly configOptionsRef: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallTrackedState>>;
+  readonly toolProgressWake: Queue.Queue<void>;
+  readonly toolProgress: ReturnType<
+    typeof makeAcpToolProgressCoalescer<
+      Extract<AcpParsedSessionEvent, { readonly _tag: "ToolCallUpdated" }>
+    >
+  >;
   readonly shownToolCallIds: Set<string>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly assistantItemRuntimeId: string;
@@ -2882,31 +2906,34 @@ const handleSessionUpdate = ({
     }
     for (const event of parsed.events) {
       if (event._tag === "ToolCallUpdated") {
-        const { merged, decision, active } = yield* Ref.modify(toolCallsRef, (current) => {
+        const { merged, active } = yield* Ref.modify(toolCallsRef, (current) => {
           const tracked = current.get(event.toolCall.toolCallId);
           const previous = tracked?.state;
           const nextToolCall = mergeToolCallState(previous, event.toolCall);
-          const decision = decideToolCallUpdateEmission({
-            previous,
-            next: nextToolCall,
-            lastEmittedDetailLength: tracked?.lastEmittedDetailLength,
-            skippedSinceEmit: tracked?.skippedSinceEmit ?? 0,
-          });
           const next = new Map(current);
           if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
             next.delete(nextToolCall.toolCallId);
           } else {
             next.set(nextToolCall.toolCallId, {
               state: nextToolCall,
-              lastEmittedDetailLength: decision.emit
-                ? toolCallProgressLength(nextToolCall)
-                : tracked?.lastEmittedDetailLength,
-              skippedSinceEmit: decision.skippedSinceEmit,
             });
           }
-          return [{ merged: nextToolCall, decision, active: tracked !== undefined }, next] as const;
+          return [{ merged: nextToolCall, active: tracked !== undefined }, next] as const;
         });
-        if (!decision.emit) {
+        const progressEvent = {
+          _tag: "ToolCallUpdated",
+          toolCall: merged,
+          rawPayload: undefined,
+        } as const;
+        if (
+          !toolProgress.offer(
+            merged.toolCallId,
+            progressEvent,
+            merged.status,
+            yield* Clock.currentTimeMillis,
+          )
+        ) {
+          yield* Queue.offer(toolProgressWake, undefined);
           continue;
         }
         // A new tool call is a boundary in the prose. Progress on a call that
@@ -2923,7 +2950,7 @@ const handleSessionUpdate = ({
         yield* Queue.offer(queue, {
           _tag: "ToolCallUpdated",
           toolCall: merged,
-          rawPayload: event.rawPayload,
+          rawPayload: undefined,
         });
         continue;
       }
