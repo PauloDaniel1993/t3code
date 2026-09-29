@@ -21,6 +21,22 @@ describe("T3 orchestration provider instructions", () => {
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "bindToCurrentThread=false");
   });
 
+  it("routes task requests through T3 and describes recovery after compaction", () => {
+    const prompt = t3OrchestrationSystemPrompt(true)!;
+    assert.include(
+      prompt,
+      "prefer T3 tasks over native provider agents, including for same-provider work",
+    );
+    assert.include(prompt, "Use native agents when the user explicitly asks");
+    assert.include(prompt, "Call `task_models`");
+    assert.include(prompt, "reasoning level through `target.options`");
+    assert.include(
+      prompt,
+      "use `task_list` to recover this thread's direct tasks and finished results",
+    );
+    assert.notInclude(prompt, "Prefer native subagent tools for same-provider work");
+  });
+
   it("injects prompt fallback only for an MCP-enabled first run", () => {
     const prompt = "Inspect the repository.";
     const injected = t3OrchestrationPromptForFirstRun({

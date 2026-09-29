@@ -98,6 +98,9 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "capabilities",
   ),
   delegate_task: tool(["Delegate", "Delegating", "Delegated", "a child task"], "delegate"),
+  task_models: tool(["Get", "Getting", "Got", "task models"], "capabilities"),
+  task_create: tool(["Delegate", "Delegating", "Delegated", "a child task"], "delegate"),
+  task_list: tool(["List", "Listing", "Listed", "delegated tasks"], "task-status"),
   task_status: tool(["Get", "Getting", "Got", "delegated task status"], "task-status"),
   task_cancel: tool(
     ["Cancel", "Canceling", "Requested cancellation of", "delegated task"],

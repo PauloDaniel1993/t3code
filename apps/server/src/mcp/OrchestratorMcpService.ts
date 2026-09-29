@@ -28,6 +28,8 @@ import {
   type OrchestratorMcpTarget,
   type OrchestratorMcpTaskCancelInput,
   type OrchestratorMcpTaskCancelResult,
+  type OrchestratorMcpTaskListInput,
+  type OrchestratorMcpTaskListResult,
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadInterruptInput,
@@ -77,6 +79,7 @@ import {
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import { listOwnedTasks, type TaskParentProjection } from "./OrchestratorTaskList.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -107,6 +110,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     taskId: NodeId,
   ) => Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure>;
+  readonly listTasks: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpTaskListInput,
+  ) => Effect.Effect<OrchestratorMcpTaskListResult, OrchestratorMcpFailure>;
   readonly cancelTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpTaskCancelInput,
@@ -1018,10 +1025,11 @@ const make = Effect.gen(function* () {
     waitTimedOut = false,
     acknowledgeTerminal = false,
     acknowledgementOperation = "task-status-acknowledge",
+    parentSnapshot?: TaskParentProjection,
   ): Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       yield* requireCapability(scope);
-      const parentProjection = yield* loadProjection(scope.threadId);
+      const parentProjection = parentSnapshot ?? (yield* loadProjection(scope.threadId));
       const task = parentProjection.subagents.find(
         (candidate) =>
           candidate.id === taskId &&
@@ -1486,6 +1494,16 @@ const make = Effect.gen(function* () {
         return yield* readTask(scope, taskId, true, true);
       }),
     taskStatus: (scope, taskId) => readTask(scope, taskId, false, true),
+    listTasks: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const parent = yield* threadManagement
+          .getThreadRecords(scope.threadId, ["runs", "subagents", "contextTransfers"])
+          .pipe(Effect.mapError(threadManagementFailure));
+        return yield* listOwnedTasks(scope.threadId, input, parent, (taskId, snapshot) =>
+          readTask(scope, taskId, false, false, "task-status-acknowledge", snapshot),
+        );
+      }),
     cancelTask: (scope, input) =>
       Effect.gen(function* () {
         const current = yield* readTask(scope, input.taskId);
