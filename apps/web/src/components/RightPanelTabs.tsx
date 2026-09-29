@@ -21,7 +21,6 @@ import {
   FileDiff,
   Files,
   Globe2,
-  Map as MapIcon,
   Plus,
   TerminalSquare,
   Volume2,
@@ -77,6 +76,7 @@ import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanel
 import { FaviconImage } from "./preview/PreviewFaviconIcon";
 import { previewBridge } from "./preview/previewBridge";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
+import { MAP_SURFACE } from "./map/mapSurface";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 
@@ -160,7 +160,6 @@ const SURFACE_DISABLED_REASONS = {
   diff: "Diff is only available for server threads in Git repositories.",
   pullRequest: "This thread's branch has no pull request yet.",
   pullRequests: "No linked pull requests are available for this thread.",
-  map: "Maps are only available when a project is open.",
   device: "Devices are only available from a thread.",
 } as const;
 
@@ -184,7 +183,6 @@ const SURFACE_UNAVAILABLE_HINTS = {
   diff: "Available for Git repositories.",
   pullRequest: "No pull request on this branch yet.",
   pullRequests: "No linked pull requests available.",
-  map: "Available when a project is open.",
   device: "Available from a thread.",
 } as const;
 
@@ -387,15 +385,7 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.pullRequests,
       onClick: props.onAddPullRequests,
     },
-    {
-      label: "Map",
-      description: "See this project's tickets and blockers as a star map.",
-      icon: MapIcon,
-      shortcut: "S",
-      available: props.mapAvailable,
-      disabledReason: SURFACE_UNAVAILABLE_HINTS.map,
-      onClick: props.onAddMap,
-    },
+    { ...MAP_SURFACE.emptyState, available: props.mapAvailable, onClick: props.onAddMap },
     {
       label: "Device",
       description: "Watch an iOS Simulator or Android Emulator.",
@@ -613,7 +603,7 @@ function surfaceTitle(
     case "pull-requests":
       return "Pull requests";
     case "map":
-      return "Map";
+      return MAP_SURFACE.title;
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -698,7 +688,7 @@ function SurfaceIcon({
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "map":
-      return <MapIcon className="size-3 shrink-0" />;
+      return <MAP_SURFACE.icon className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -901,14 +891,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       disabledReason: SURFACE_DISABLED_REASONS.pullRequests,
       onClick: props.onAddPullRequests,
     },
-    {
-      label: "Map",
-      icon: MapIcon,
-      shortcut: "S",
-      available: props.mapAvailable,
-      disabledReason: SURFACE_DISABLED_REASONS.map,
-      onClick: props.onAddMap,
-    },
+    { ...MAP_SURFACE.menu, available: props.mapAvailable, onClick: props.onAddMap },
     {
       label: "Device",
       icon: Smartphone,
