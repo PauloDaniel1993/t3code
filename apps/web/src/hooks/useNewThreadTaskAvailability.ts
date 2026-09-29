@@ -9,6 +9,21 @@ import { environmentPresentations } from "../state/presentation";
 import { environmentThreadDetails } from "../state/threads";
 import { EMPTY_SERVER_PROVIDERS } from "../state/server";
 
+/** Mounts only the requested parent stream and ignores updates to its conversation entities. */
+export function useNewThreadTaskParent(threadRef: ScopedThreadRef) {
+  const { environmentId, threadId } = threadRef;
+  const parentAtom = useMemo(
+    () =>
+      Atom.make(
+        (get) =>
+          get(environmentThreadDetails.threadAtom(scopeThreadRef(environmentId, threadId)))
+            ?.projection.thread ?? null,
+      ),
+    [environmentId, threadId],
+  );
+  return useAtomValue(parentAtom);
+}
+
 /** All entry points share the same writable-parent and environment checks. */
 export function useNewThreadTaskAvailability(threadRef: ScopedThreadRef | null) {
   const environmentId = threadRef?.environmentId ?? null;

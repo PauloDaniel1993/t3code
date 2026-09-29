@@ -5,6 +5,8 @@ import {
   NodeId,
   OrchestratorMcpDelegateTaskInput,
   ProviderInstanceId,
+  ProviderDriverKind,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   RuntimeRequestId,
   ThreadId,
   type ModelSelection,
@@ -17,9 +19,11 @@ import {
   buildDelegationTurnInput,
   deriveTaskTitle,
   getNewThreadTaskUnavailableReason,
+  getNewThreadTaskModeNotice,
   TASK_PROMPT_MAX_LENGTH,
   TASK_TITLE_MAX_LENGTH,
   validateNewThreadTaskDraft,
+  validateNewThreadTaskRequest,
 } from "./NewThreadTaskDialog.logic";
 
 const childModel: ModelSelection = {
@@ -49,7 +53,7 @@ function buildInput(model = childModel) {
 const decodeDelegationArguments = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 
 function readDelegationArguments(text: string) {
-  return decodeDelegationArguments(JSON.parse(text.slice(text.indexOf("{\n"))));
+  return decodeDelegationArguments(JSON.parse(text.split("```json\n")[1]!.split("\n```")[0]!));
 }
 
 describe("delegation request turn", () => {
@@ -80,6 +84,8 @@ describe("delegation request turn", () => {
     expect(input.message.attachments).toEqual([]);
     expect(input.message.text).toContain("Do not append this thread's conversation history");
     expect(input.message.text).toContain("Do not silently substitute");
+    expect(input.message.text).toContain("single delegate_task tool call");
+    expect(input.message.text).not.toContain("orchestrator_capabilities");
   });
 
   it("clears inherited child traits when a different model has no overrides", () => {
@@ -103,6 +109,58 @@ describe("delegation request turn", () => {
 });
 
 describe("task draft bounds", () => {
+  it("fits the largest allowed draft even when every character needs JSON escaping", () => {
+    const input = buildDelegationTurnInput({
+      thread: makeThreadProjectionFixture().thread,
+      draft: {
+        title: "\u0001".repeat(TASK_TITLE_MAX_LENGTH),
+        prompt: "\u0001".repeat(TASK_PROMPT_MAX_LENGTH),
+      },
+      childModelSelection: childModel,
+      commandId: CommandId.make("00000000-0000-0000-0000-000000000000"),
+      messageId: MessageId.make("message"),
+      createdAt: "2026-09-29T12:00:00.000Z",
+    });
+    expect(input.message.text.length).toBeLessThanOrEqual(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+    expect(
+      JSON.parse(input.message.text.split("```json\n")[1]!.split("\n```")[0]!).task,
+    ).toHaveLength(TASK_PROMPT_MAX_LENGTH);
+  });
+
+  it("checks the built message, including model options, against the composer limit", () => {
+    const draft = { title: "", prompt: "Review this" };
+    const model = {
+      ...childModel,
+      options: [{ id: "context", value: "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS) }],
+    };
+    expect(validateNewThreadTaskRequest(draft, model)).toContain("120,000-character limit");
+    expect(() =>
+      buildDelegationTurnInput({
+        thread: makeThreadProjectionFixture().thread,
+        draft,
+        childModelSelection: model,
+        commandId: CommandId.make("request"),
+        messageId: MessageId.make("message"),
+        createdAt: "2026-09-29T12:00:00.000Z",
+      }),
+    ).toThrow("120,000-character limit");
+  });
+
+  it("explains the copying cost and rejects an oversized prefilled draft without truncation", () => {
+    const prompt = "x".repeat(TASK_PROMPT_MAX_LENGTH + 1);
+    expect(validateNewThreadTaskDraft({ title: "", prompt })).toContain("parent must repeat");
+    expect(() =>
+      buildDelegationTurnInput({
+        thread: makeThreadProjectionFixture().thread,
+        draft: { title: "", prompt },
+        childModelSelection: childModel,
+        commandId: CommandId.make("request"),
+        messageId: MessageId.make("message"),
+        createdAt: "2026-09-29T12:00:00.000Z",
+      }),
+    ).toThrow("12,000 characters");
+  });
+
   it("rejects empty prompts and oversized arguments instead of truncating work", () => {
     expect(validateNewThreadTaskDraft({ title: "", prompt: " \n " })).not.toBeNull();
     expect(
@@ -125,6 +183,32 @@ describe("task draft bounds", () => {
     expect(deriveTaskTitle({ title: "  Custom title  ", prompt: "Check paths" })).toBe(
       "Custom title",
     );
+  });
+});
+
+describe("inherited modes", () => {
+  it("explains that plan parents may refuse and cannot create an implementing child", () => {
+    const notice = getNewThreadTaskModeNotice(
+      { runtimeMode: "full-access", interactionMode: "plan" },
+      ProviderDriverKind.make("codex"),
+    );
+    expect(notice).toContain("may refuse delegation");
+    expect(notice).toContain("only plans");
+  });
+
+  it("explains required approval and Claude read-only denial without escalating permissions", () => {
+    const notice = getNewThreadTaskModeNotice(
+      { runtimeMode: "approval-required", interactionMode: "default" },
+      ProviderDriverKind.make("claudeAgent"),
+    );
+    expect(notice).toContain("parent will ask for approval");
+    expect(notice).toContain("denied if approvals are disabled");
+    expect(
+      getNewThreadTaskModeNotice(
+        { runtimeMode: "full-access", interactionMode: "default" },
+        ProviderDriverKind.make("codex"),
+      ),
+    ).toBeNull();
   });
 });
 

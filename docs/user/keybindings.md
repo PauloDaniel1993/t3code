@@ -44,8 +44,17 @@ model and reasoning level, then describe the work. The parent agent receives a
 request to delegate, queued behind any active turn. Creating the child depends
 on the agent following that request.
 
+The request uses one turn on the parent's model. When the task finishes, its
+result wakes the parent for a second turn. The child inherits the parent's
+permissions and interaction mode: a Plan parent can refuse delegation, and any
+child it creates also only plans. The parent will ask for approval when its
+runtime requires it; a Claude read-only sandbox may deny delegation when approvals
+are disabled.
+
 The child receives the task prompt; parent conversation history is not copied.
-Include the context it needs in the prompt. Change the shortcut under
+Prompts are limited to 12,000 characters because the parent must repeat them in
+a tool call. Include necessary context and put longer material in files the child
+can read. Change the shortcut under
 **Settings → Keybindings → Thread: New Task**.
 
 ## Copy pull request references

@@ -10,7 +10,10 @@ import {
   isProviderInstancePickerReady,
   sortProviderInstanceEntries,
 } from "../providerInstances";
-import { useNewThreadTaskAvailability } from "../hooks/useNewThreadTaskAvailability";
+import {
+  useNewThreadTaskAvailability,
+  useNewThreadTaskParent,
+} from "../hooks/useNewThreadTaskAvailability";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { TraitsPicker } from "./chat/TraitsPicker";
 import { Button } from "./ui/button";
@@ -25,11 +28,14 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
+import { Label } from "./ui/label";
 import {
   deriveTaskTitle,
+  getNewThreadTaskModeNotice,
   TASK_PROMPT_MAX_LENGTH,
   TASK_TITLE_MAX_LENGTH,
   validateNewThreadTaskDraft,
+  validateNewThreadTaskRequest,
   type NewThreadTaskDraft,
 } from "./NewThreadTaskDialog.logic";
 
@@ -41,6 +47,7 @@ export function NewThreadTaskDialog(props: {
 }) {
   const { parentThreadRef, initialModelSelection, onClose, onRequest } = props;
   const { providers, problem: parentProblem } = useNewThreadTaskAvailability(parentThreadRef);
+  const parent = useNewThreadTaskParent(parentThreadRef);
   const settings = useEnvironmentSettings(parentThreadRef.environmentId);
   const [draft, setDraft] = useState<NewThreadTaskDraft>({ title: "", prompt: "" });
   const [model, setModel] = useState(initialModelSelection);
@@ -76,9 +83,13 @@ export function NewThreadTaskDialog(props: {
     .get(model.instanceId)
     ?.find((option) => option.slug === model.model);
   const draftProblem = validateNewThreadTaskDraft(draft);
+  const parentProvider = providers.find(
+    (provider) => provider.instanceId === parent?.modelSelection.instanceId,
+  );
+  const modeNotice = parent ? getNewThreadTaskModeNotice(parent, parentProvider?.driver) : null;
   const problem =
     parentProblem ??
-    draftProblem ??
+    validateNewThreadTaskRequest(draft, model) ??
     (!selectedEntry ||
     !isProviderInstancePickerReady(selectedEntry) ||
     !selectedModel ||
@@ -114,8 +125,9 @@ export function NewThreadTaskDialog(props: {
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>
-            Ask this thread's agent to delegate a task. This uses a parent turn and queues behind
-            any active work.
+            Ask this thread's agent to delegate a task. This uses one parent turn and queues behind
+            any active work. The finished task's result wakes the parent for a second turn on its
+            model.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -130,7 +142,7 @@ export function NewThreadTaskDialog(props: {
             <fieldset disabled={submitting} className="flex min-w-0 flex-col gap-4">
               <legend className="sr-only">Task details</legend>
               <Field.Root className="flex flex-col gap-1.5">
-                <Field.Label className="text-sm font-medium">Title (optional)</Field.Label>
+                <Field.Label render={<Label />}>Title (optional)</Field.Label>
                 <Input
                   value={draft.title}
                   maxLength={TASK_TITLE_MAX_LENGTH}
@@ -144,11 +156,10 @@ export function NewThreadTaskDialog(props: {
                 className="flex flex-col gap-1.5"
                 invalid={draftProblem !== null && draft.prompt.length > 0}
               >
-                <Field.Label className="text-sm font-medium">What should this task do?</Field.Label>
+                <Field.Label render={<Label />}>What should this task do?</Field.Label>
                 <Textarea
                   autoFocus
                   value={draft.prompt}
-                  maxLength={TASK_PROMPT_MAX_LENGTH}
                   aria-invalid={draftProblem !== null && draft.prompt.length > 0}
                   placeholder="Inventory every provider handler and report the ones without tests."
                   onChange={(event) =>
@@ -156,8 +167,10 @@ export function NewThreadTaskDialog(props: {
                   }
                 />
                 <Field.Description className="text-xs text-muted-foreground">
-                  Prompt only. Parent history is not copied; include any context the task needs
-                  here.
+                  {draft.prompt.length.toLocaleString("en-US")} /{" "}
+                  {TASK_PROMPT_MAX_LENGTH.toLocaleString("en-US")} characters. The parent must
+                  repeat this prompt in a tool call. Put longer context in files the task can read.
+                  Parent history is not copied; include any context the task needs here.
                 </Field.Description>
               </Field.Root>
               <div className="flex flex-wrap items-center gap-2">
@@ -200,6 +213,11 @@ export function NewThreadTaskDialog(props: {
                 </Button>
               </div>
             </fieldset>
+            {modeNotice ? (
+              <p role="status" className="text-sm text-muted-foreground">
+                {modeNotice}
+              </p>
+            ) : null}
             {(failure ?? problem) ? (
               <p
                 role={failure ? "alert" : "status"}
