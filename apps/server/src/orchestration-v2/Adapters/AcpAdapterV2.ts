@@ -93,6 +93,7 @@ import {
   resolveEmbeddedTerminalContent,
   type AcpClientTerminals,
 } from "../../provider/acp/AcpClientTerminals.ts";
+import { normalizeAcpToolActivity } from "../../provider/acp/AcpToolActivityNormalizer.ts";
 import { ACP_SESSION_MODE_OPTION_ID } from "../../provider/acp/AcpSessionConfig.ts";
 import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
 import {
@@ -3270,7 +3271,11 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 {},
               ...(rawOutput === undefined ? {} : { output: acpMcpToolCallOutput(rawOutput) }),
             };
-            yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver,
+              turnItem: normalizeAcpToolActivity(turnItem, toolCall),
+            });
             yield* rearmDeferredFinalize(context);
             return;
           } else if (changes.length > 0) {
@@ -3391,7 +3396,11 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 }
             }
           }
-          yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
+          yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver,
+            turnItem: normalizeAcpToolActivity(turnItem, toolCall),
+          });
           yield* rearmDeferredFinalize(context);
         });
 
@@ -4293,26 +4302,29 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 yield* emitProviderEvent({
                   type: "turn_item.updated",
                   driver,
-                  turnItem: {
-                    id: providerTurnItemId(key),
-                    threadId: subagent.childThreadId,
-                    runId: null,
-                    nodeId: subagent.childRootNodeId,
-                    providerThreadId: subagent.task.providerThreadId,
-                    providerTurnId: null,
-                    nativeItemRef: { driver, nativeId: key, strength: "strong" },
-                    parentItemId: null,
-                    ordinal,
-                    status,
-                    title: merged.title ?? merged.kind ?? "Tool",
-                    startedAt,
-                    completedAt: completedAtForStatus(status, now),
-                    updatedAt: now,
-                    type: "dynamic_tool",
-                    toolName: merged.title ?? merged.kind ?? "Tool",
-                    input: merged.data.rawInput ?? null,
-                    output: merged.data.rawOutput ?? merged.data.content ?? null,
-                  },
+                  turnItem: normalizeAcpToolActivity(
+                    {
+                      id: providerTurnItemId(key),
+                      threadId: subagent.childThreadId,
+                      runId: null,
+                      nodeId: subagent.childRootNodeId,
+                      providerThreadId: subagent.task.providerThreadId,
+                      providerTurnId: null,
+                      nativeItemRef: { driver, nativeId: key, strength: "strong" },
+                      parentItemId: null,
+                      ordinal,
+                      status,
+                      title: merged.title ?? merged.kind ?? "Tool",
+                      startedAt,
+                      completedAt: completedAtForStatus(status, now),
+                      updatedAt: now,
+                      type: "dynamic_tool",
+                      toolName: merged.title ?? merged.kind ?? "Tool",
+                      input: merged.data.rawInput ?? null,
+                      output: merged.data.rawOutput ?? merged.data.content ?? null,
+                    },
+                    merged,
+                  ),
                 });
               }
               return;

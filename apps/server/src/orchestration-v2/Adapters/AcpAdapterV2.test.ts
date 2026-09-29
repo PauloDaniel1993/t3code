@@ -107,6 +107,7 @@ const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
 const testLayer = Layer.mergeAll(NodeServices.layer, idAllocatorLayer, serverConfigLayer);
 const ACP_TEST_DRIVER = ProviderDriverKind.make("acp-test");
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 describe("acpProjectedCommandExitCode", () => {
   const successOutput = { type: "Bash", exit_code: 0 };
@@ -1069,7 +1070,7 @@ describe("AcpAdapterV2", () => {
                       title: "Tool",
                       kind: "execute",
                       status: "in_progress",
-                      rawInput: { command: "pwd" },
+                      rawInput: { command: "pwd", apiKey: "child-private-key" },
                       _meta: {
                         "cognition.ai/inferenceToolName": "exec",
                         "cognition.ai/subagent_context": { parentAgentId: "child-a" },
@@ -1191,6 +1192,15 @@ describe("AcpAdapterV2", () => {
         ),
       );
       assert.deepEqual([...childMessages.values()], ["Checking the code.", "ONE"]);
+      const childTools = items.filter(
+        (item) => item.threadId === task?.childThreadId && item.type === "dynamic_tool",
+      );
+      assert.isAtLeast(childTools.length, 2);
+      for (const item of childTools) {
+        if (item.type === "dynamic_tool") assert.deepEqual(item.input, {});
+      }
+      const serializedItems = yield* encodeUnknownJson(childTools);
+      assert.notInclude(serializedItems, "child-private-key");
       assert.equal(task?.prompt, "Run pwd, then reply ONE.");
       assert.isTrue(
         items.some(
@@ -1338,7 +1348,7 @@ describe("AcpAdapterV2", () => {
       const read = items.find((item) => item.type === "dynamic_tool" && item.toolName === "Read");
       assert.deepEqual(
         read?.type === "dynamic_tool" ? { title: read.title, input: read.input } : null,
-        { title: "Read src/env.ts", input: { path: "src/env.ts" } },
+        { title: "Read src/env.ts", input: {} },
       );
       const search = items.find((item) => item.type === "file_search");
       assert.deepEqual(
