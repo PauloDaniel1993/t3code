@@ -29,12 +29,12 @@ describe("T3 orchestration provider instructions", () => {
     );
     assert.include(prompt, "Use native agents when the user explicitly asks");
     assert.include(prompt, "Call `task_models`");
-    assert.include(
-      prompt,
-      'task_create({title,prompt,context:"none",model:{instanceId,model},reasoning})',
-    );
-    assert.include(prompt, "Fetch results with `task_list`");
+    assert.include(prompt, "Use `task_list` to recover task IDs and results after compaction");
+    assert.include(prompt, "V2 accepts only context='none', allows nested tasks");
+    assert.include(prompt, "shares the parent's workspace with children");
+    assert.include(prompt, "Async completion wakes the parent with task IDs, not results");
     assert.include(prompt, "later completions from that turn no longer wake it");
+    assert.include(prompt, "A server restart cancels running tasks");
     assert.notInclude(prompt, "Prefer native subagent tools for same-provider work");
   });
 
