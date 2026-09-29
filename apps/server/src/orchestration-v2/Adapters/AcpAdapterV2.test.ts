@@ -7353,10 +7353,15 @@ describe("AcpAdapterV2", () => {
         const instanceId = ProviderInstanceId.make("acp-test");
         const childSessionId = "mock-child-session-pending-continuation";
         const bufferedAssistantText = "POST_SETTLE_BUFFERED_ASSISTANT_TEXT";
+        const promptSettled = yield* Deferred.make<void>();
         let subagentPhase: "spawn" | "complete" = "spawn";
         type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
         let sessionUpdateHandler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
         const adapter = makeAcpAdapterV2({
+          testHooks: {
+            afterPromptSettledWithBackgroundWork: () =>
+              Deferred.succeed(promptSettled, undefined).pipe(Effect.asVoid),
+          },
           crypto: yield* Crypto.Crypto,
           instanceId,
           flavor: {
@@ -7456,13 +7461,12 @@ describe("AcpAdapterV2", () => {
           ),
           Stream.runHead,
         );
-        yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
 
         const firstProviderTurnId = idAllocator.derive.providerTurn({
           driver: ACP_TEST_DRIVER,
           nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:1"),
         });
+        yield* Deferred.await(promptSettled);
         const interruptFiber = yield* runtime
           .interruptTurn({ providerThread, providerTurnId: firstProviderTurnId })
           .pipe(Effect.forkScoped);

@@ -29,6 +29,7 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
+import { makeAcpEventQueue, acpRuntimeEventDelivery, type AcpEventQueue } from "./AcpEventQueue.ts";
 import { makeAcpToolProgressCoalescer } from "./AcpToolProgressCoalescer.ts";
 import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./AcpStderr.ts";
 import {
@@ -1383,7 +1384,17 @@ export const make = (
     const crypto = yield* Crypto.Crypto;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
-    const eventQueue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
+    const eventQueue = yield* makeAcpEventQueue<AcpSessionRuntimeEvent>({
+      classify: acpRuntimeEventDelivery,
+      routeCapacity: 512,
+      onOverflow: (error): Effect.Effect<void> =>
+        retireRuntime(
+          new EffectAcpErrors.AcpTransportError({
+            detail: error.detail,
+            cause: undefined,
+          }),
+        ).pipe(Effect.forkIn(runtimeScope), Effect.asVoid),
+    });
     const toolProgress =
       makeAcpToolProgressCoalescer<
         Extract<AcpParsedSessionEvent, { readonly _tag: "ToolCallUpdated" }>
@@ -1391,7 +1402,7 @@ export const make = (
     const toolProgressWake = yield* Queue.dropping<void>(1);
     const flushToolProgress = Effect.fnUntraced(function* (all = false) {
       for (const event of toolProgress.flush(yield* Clock.currentTimeMillis, all)) {
-        yield* Queue.offer(eventQueue, event);
+        yield* eventQueue.offer(event);
       }
     });
     yield* Effect.forever(
@@ -1488,7 +1499,7 @@ export const make = (
         return;
       }
       yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
-      yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error: enriched });
+      yield* eventQueue.offer({ _tag: "ConnectionTerminated", error: enriched });
     });
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
@@ -1987,7 +1998,7 @@ export const make = (
     ) {
       const configOptions = sessionConfigOptionsFromSetup(response);
       yield* Ref.set(configOptionsRef, configOptions);
-      yield* Queue.offer(eventQueue, {
+      yield* eventQueue.offer({
         _tag: "ConfigOptionsUpdated",
         configOptions,
         rawPayload: response,
@@ -2430,7 +2441,7 @@ export const make = (
             yield* Ref.set(assistantUpdatesOpenRef, false);
             yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
           }
-          yield* Queue.offer(eventQueue, { _tag: "EventStreamBarrier", acknowledge });
+          yield* eventQueue.offer({ _tag: "EventStreamBarrier", acknowledge });
         }),
       );
       yield* Effect.raceFirst(Deferred.await(acknowledge), Deferred.await(runtimeClosed));
@@ -2526,7 +2537,18 @@ export const make = (
           Effect.asVoid,
         ),
       start: () => start,
-      getEvents: () => Stream.fromQueue(eventQueue),
+      getEvents: () =>
+        eventQueue.stream.pipe(
+          Stream.catch((error) =>
+            Stream.make({
+              _tag: "ConnectionTerminated" as const,
+              error: new EffectAcpErrors.AcpTransportError({
+                detail: error.detail,
+                cause: undefined,
+              }),
+            }),
+          ),
+        ),
       drainEvents,
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
@@ -2874,7 +2896,7 @@ const handleSessionUpdate = ({
   assistantItemRuntimeId,
   params,
 }: {
-  readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
+  readonly queue: AcpEventQueue<AcpSessionRuntimeEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly configOptionsRef: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallTrackedState>>;
@@ -2947,7 +2969,7 @@ const handleSessionUpdate = ({
           // A call still running is already on screen, even if it aged out.
           if (!active) yield* closeActiveAssistantSegment({ queue, assistantSegmentRef });
         }
-        yield* Queue.offer(queue, {
+        yield* queue.offer({
           _tag: "ToolCallUpdated",
           toolCall: merged,
           rawPayload: undefined,
@@ -2967,13 +2989,13 @@ const handleSessionUpdate = ({
           sessionId: params.sessionId,
           assistantItemRuntimeId,
         });
-        yield* Queue.offer(queue, {
+        yield* queue.offer({
           ...event,
           itemId,
         });
         continue;
       }
-      yield* Queue.offer(queue, event);
+      yield* queue.offer(event);
     }
   });
 
@@ -2999,7 +3021,7 @@ const ensureActiveAssistantSegment = ({
   sessionId,
   assistantItemRuntimeId,
 }: {
-  readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
+  readonly queue: AcpEventQueue<AcpSessionRuntimeEvent>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly sessionId: string;
   readonly assistantItemRuntimeId: string;
@@ -3028,7 +3050,7 @@ const ensureActiveAssistantSegment = ({
   ).pipe(
     Effect.flatMap((result) =>
       result.startedEvent
-        ? Queue.offer(queue, result.startedEvent).pipe(Effect.as(result.itemId))
+        ? queue.offer(result.startedEvent).pipe(Effect.as(result.itemId))
         : Effect.succeed(result.itemId),
     ),
   );
@@ -3037,7 +3059,7 @@ const closeActiveAssistantSegment = ({
   queue,
   assistantSegmentRef,
 }: {
-  readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
+  readonly queue: AcpEventQueue<AcpSessionRuntimeEvent>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
 }) =>
   Ref.modify(assistantSegmentRef, (current) => {
@@ -3053,4 +3075,4 @@ const closeActiveAssistantSegment = ({
         nextSegmentIndex: current.nextSegmentIndex,
       } satisfies AcpAssistantSegmentState,
     ] as const;
-  }).pipe(Effect.flatMap((event) => (event ? Queue.offer(queue, event) : Effect.void)));
+  }).pipe(Effect.flatMap((event) => (event ? queue.offer(event) : Effect.void)));

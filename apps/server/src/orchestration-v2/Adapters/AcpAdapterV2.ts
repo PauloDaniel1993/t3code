@@ -94,6 +94,10 @@ import {
   resolveEmbeddedTerminalContent,
   type AcpClientTerminals,
 } from "../../provider/acp/AcpClientTerminals.ts";
+import {
+  makeAcpEventQueue,
+  makeAcpProviderEventDelivery,
+} from "../../provider/acp/AcpEventQueue.ts";
 import { makeAcpToolProgressCoalescer } from "../../provider/acp/AcpToolProgressCoalescer.ts";
 import { normalizeAcpToolActivity } from "../../provider/acp/AcpToolActivityNormalizer.ts";
 import { ACP_SESSION_MODE_OPTION_ID } from "../../provider/acp/AcpSessionConfig.ts";
@@ -1598,7 +1602,9 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
         // already approved satisfies an "ask" disposition.
         const clientPolicyGrants = makeAcpClientPolicyGrants();
         let latestRuntimePolicy: ProviderAdapterV2RuntimePolicy = input.runtimePolicy;
-        const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
+        const events = yield* makeAcpEventQueue<ProviderAdapterV2Event>({
+          classify: makeAcpProviderEventDelivery(input.threadId),
+        });
         const activeTurn = yield* Ref.make<ActiveAcpTurn | null>(null);
         const activeSessionId = yield* Ref.make<string | null>(null);
         const contextUsageBySessionId = yield* Ref.make(
@@ -1996,8 +2002,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             }
           });
 
-        const emitProviderEvent = (event: ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        const emitProviderEvent = (event: ProviderAdapterV2Event) => events.offer(event);
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 
@@ -7208,7 +7213,15 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           driver,
           providerSessionId: input.providerSessionId,
           providerSession,
-          events: Stream.fromEffectRepeat(Queue.take(events)),
+          events: events.stream.pipe(
+            Stream.mapError(
+              (error) =>
+                new ProviderAdapterProtocolError({
+                  driver,
+                  detail: error.detail,
+                }),
+            ),
+          ),
           ...(postSettleContinuationEnabled
             ? {
                 hasPendingBackgroundWork: Effect.gen(function* () {
