@@ -15,7 +15,8 @@ over from V1. You may need to sign in again to websites opened inside the app.
 The migrated thread keeps its title, project, provider and model selection, permission and
 interaction modes, branch or worktree, archive state, settlement state, snooze and pin state, and
 linked pull request. T3 Code also brings over user and assistant messages, reasoning traces, their
-timestamps, and supported attachments. Task threads retain their parent relationships. Large histories
+timestamps, and supported attachments. Task threads retain their parent relationships, results and completion
+status. Tasks that were queued or running become cancelled. Large histories
 may appear in stages while the server imports transcripts.
 
 The migration does not recreate the old provider's live session. It also does not convert old run
@@ -36,6 +37,16 @@ requirements the agent still needs in your next message. Starting a new thread a
 handoff is also a good choice when the old conversation contains conflicting instructions.
 
 ## Keeping a recovery copy
+
+If startup reports an incompatible V1 import, stop the server. Preserve and move `statev2.sqlite` and its
+`statev2.sqlite-wal` and `statev2.sqlite-shm` siblings (if present) out of the data directory, then start
+again. T3 Code will make a fresh copy from the untouched `state.sqlite`. Keep the moved files: work you
+did in V2 after the earlier import remains there and will not appear in the fresh import. Preserve the
+attachment files too; copying a database cannot restore files that were deleted.
+
+An invalid task parent link leaves that task accessible as a top-level thread. Import warnings in the
+server log identify the affected record; their original values remain in `fork_v1_import_warnings` in
+`statev2.sqlite` for inspection from a stopped recovery copy.
 
 T3 Code does not currently have a whole-thread export command. Before a major server update, stop
 the server and copy its `userdata` directory to a safe location. The default is

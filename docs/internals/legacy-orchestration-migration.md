@@ -4,8 +4,9 @@ Orchestration v2 snapshots `state.sqlite` into `statev2.sqlite` before opening w
 on its first launch. Only the copy receives v2 migrations; the original remains available to v1.
 Subsequent launches reuse the copy without refreshing it from v1. It creates v2 thread shell events first and imports
 the complete user, assistant, and reasoning transcript lazily when a client reads or continues the thread. The
-v1 projection tables remain the import source and provide a read-only recovery source if an import
-needs investigation.
+v1 projection tables remain the import source. Invalid project JSON is normalized only in the V2
+copy; its original value is kept in `fork_v1_import_warnings`. The untouched V1 file remains the
+recovery source if an import needs investigation.
 
 ## Imported data
 
@@ -16,17 +17,26 @@ pull request. The metadata repair path fills snooze, pin order, `unsettledAt`, a
 fields for threads imported before those fields were covered.
 
 Transcript import reads user, assistant, and reasoning rows from `projection_thread_messages`.
-Reasoning becomes V2 reasoning turn items retaining the original message identifiers. Fork message
+Reasoning becomes V2 reasoning turn items whose `migration:v1:turn-item:<message-id>` identity retains the original message identifier. Fork message
 source tags survive in the event payloads; task-result messages keep their user role for provider
 compatibility but have system authorship. A message that was still streaming becomes an interrupted
 turn item.
 
 Fork startup reconciles the old fork ledger entries before upstream migrations, then runs the separate
 fork migration chain. After shell import, [ForkTaskLinkRepair](../../apps/server/src/orchestration-v2/legacy/ForkTaskLinkRepair.ts)
-commits task ancestry through the event sink before recovery or command admission. Its versioned command
-receipts also gate event compaction. Do not create replacement task shells before the importer: doing so
-prevents transcript hydration. Do not first seed a real fork home with an importer lacking the source-tag
-and reasoning patches: completed imports are not refreshed by a later build.
+commits task ancestry and native subagent records through the event sink before recovery or command admission.
+Its versioned command receipts also gate event compaction. Invalid edges are explicitly accounted for in
+`fork_v1_import_warnings`; an orphan stays top-level and a cycle loses the edge from its smallest thread ID.
+Do not create replacement task shells before the importer: doing so prevents transcript hydration.
+
+The named `fork(ticket-28:...)` hooks must survive upstream importer rewrites. The compatibility check
+inspects stored import events and position reservations, including unfinished imports, before hydration.
+An earlier importer can omit reasoning/provenance or reserve incompatible ordinals even without completing
+a transcript. Such a destination is refused; a new migration-ledger marker alone cannot establish compatibility.
+Stop the server and preserve/move `statev2.sqlite`, `statev2.sqlite-wal`, and `statev2.sqlite-shm` aside
+(siblings may be absent), then restart to seed from untouched `state.sqlite`. Keep the moved files for any
+V2-native work; that work will not appear in the fresh import. Never delete or reset individual import markers.
+Attachment bytes need their own preserved copy; database reseeding cannot restore deleted files.
 
 The importer does not translate provider session identity, native provider runs, checkpoints and
 diffs, activities and tool calls, approvals, or proposed plans. V2 therefore must not present those
@@ -66,3 +76,7 @@ There is no supported whole-thread export API. Recovery uses an untouched copy o
 `userdata` directory and opens that copy with SQLite's read-only mode. The user guide documents the
 queries against `projection_threads` and `projection_thread_messages`. Never start a server against
 the recovery copy because startup can run migrations and write new state.
+
+Import warnings identify the row and field in the server log and retain the rejected value and reason in
+`statev2.sqlite`'s `fork_v1_import_warnings` table. Inspect a stopped recovery copy with
+`SELECT entity_id, field, reason, original_value FROM fork_v1_import_warnings`.
