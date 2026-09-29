@@ -14,11 +14,13 @@ import { getComposerPromptLengthValidationMessage } from "./chat/composerSubmiss
 
 // The parent must repeat this text in tool arguments. Leave room in its output for the wrapper.
 export const TASK_PROMPT_MAX_LENGTH = 12_000;
+export const TASK_CONTEXT_SUMMARY_MAX_LENGTH = 4_000;
 export const TASK_TITLE_MAX_LENGTH = 512;
 
 export interface NewThreadTaskDraft {
   readonly title: string;
   readonly prompt: string;
+  readonly includeThreadContext?: boolean;
 }
 
 export function deriveTaskTitle(draft: NewThreadTaskDraft): string {
@@ -118,7 +120,9 @@ function buildDelegationMessage(input: {
   return [
     "Please delegate one T3 Code task with a single delegate_task tool call using the JSON arguments below.",
     "Do not silently substitute another instance, model or reasoning level; report any unavailable selection or tool error.",
-    "Use the task field verbatim as the child's self-contained prompt. Do not append this thread's conversation history. Delegate the work rather than performing it yourself or using a provider-native agent.",
+    input.draft.includeThreadContext
+      ? `Keep the supplied task text verbatim. Append your own concise summary of the relevant context this task needs from this thread, at most ${TASK_CONTEXT_SUMMARY_MAX_LENGTH} additional characters. The final task field must be at most ${TASK_PROMPT_MAX_LENGTH + TASK_CONTEXT_SUMMARY_MAX_LENGTH} characters. Do not copy the conversation transcript. Preserve every other JSON argument exactly. Delegate the work rather than performing it yourself or using a provider-native agent.`
+      : "Use the task field verbatim as the child's self-contained prompt. Do not append this thread's conversation history. Delegate the work rather than performing it yourself or using a provider-native agent.",
     "```json\n" + JSON.stringify(request, null, 2) + "\n```",
   ].join("\n\n");
 }

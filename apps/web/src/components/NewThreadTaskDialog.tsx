@@ -29,6 +29,7 @@ import {
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { Label } from "./ui/label";
+import { Checkbox } from "./ui/checkbox";
 import {
   deriveTaskTitle,
   getNewThreadTaskModeNotice,
@@ -173,7 +174,23 @@ export function NewThreadTaskDialog(props: {
                   {draft.prompt.length.toLocaleString("en-US")} /{" "}
                   {TASK_PROMPT_MAX_LENGTH.toLocaleString("en-US")} characters. The parent must
                   repeat this prompt in a tool call. Put longer context in files the task can read.
-                  Parent history is not copied; include any context the task needs here.
+                  Include any context the task needs or let the parent summarize it below.
+                </Field.Description>
+              </Field.Root>
+              <Field.Root className="flex flex-col gap-1.5">
+                <Field.Label render={<Label />}>
+                  <Checkbox
+                    checked={draft.includeThreadContext === true}
+                    disabled={submitting}
+                    onCheckedChange={(includeThreadContext) =>
+                      setDraft((current) => ({ ...current, includeThreadContext }))
+                    }
+                  />
+                  Let the parent add relevant thread context
+                </Field.Label>
+                <Field.Description className="text-xs text-muted-foreground">
+                  The parent's agent writes a summary of the context the task needs. The
+                  conversation itself is not copied. This is off by default.
                 </Field.Description>
               </Field.Root>
               <div className="flex flex-wrap items-center gap-2">

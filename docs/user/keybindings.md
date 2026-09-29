@@ -52,6 +52,9 @@ runtime requires it; a Claude read-only sandbox may deny delegation when approva
 are disabled.
 
 The child receives the task prompt; parent conversation history is not copied.
+Optionally enable **Let the parent add relevant thread context** to ask the
+parent's agent to append a summary of the context the child needs. This is off
+by default; the child receives the agent's summary, rather than a conversation copy.
 Prompts are limited to 12,000 characters because the parent must repeat them in
 a tool call. Include necessary context and put longer material in files the child
 can read. Change the shortcut under
