@@ -41,6 +41,7 @@ import {
   decodeThreadHistoryCursor,
   selectHistoryPageFromCursor,
   THREAD_HISTORY_PAGE_POLICY,
+  THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
 } from "./threadHistoryPaging.ts";
 
 const TestLayer = Layer.mergeAll(
@@ -493,7 +494,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect("pages complete user turns through SQL regardless of tool count or payload size", () =>
+  it.effect("pages bounded user-turn cohorts through SQL without losing rows", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStoreV2;
       const sql = yield* SqlClient.SqlClient;
@@ -595,7 +596,10 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         Effect.sync(() => vi.spyOn(JSON, "parse")),
         (parse) =>
           projectionStore
-            .getThreadSnapshotWindow(threadId, { rowLimit: 77, userTurnLimit: 10 })
+            .getThreadSnapshotWindow(threadId, {
+              rowLimit: THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
+              userTurnLimit: 10,
+            })
             .pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
@@ -609,21 +613,23 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
             ),
         (parse) => Effect.sync(() => parse.mockRestore()),
       );
-      // Only the selected turn cohort and two lookahead anchors are decoded.
-      assert.lengthOf(initial.projection.turnItems, 12 * 102);
+      assert.isAtMost(initial.projection.turnItems.length, THREAD_HISTORY_SNAPSHOT_ROW_LIMIT + 1);
       const bounded = buildBoundedThreadProjection({
         projection: initial.projection,
         snapshotSequence: 0,
       });
-      assert.lengthOf(bounded.projection.visibleTurnItems, 10 * 102);
-      assert.strictEqual(bounded.projection.visibleTurnItems[0]?.sourceItemId, allIds[35 * 102]);
+      assert.lengthOf(bounded.projection.visibleTurnItems, 200);
+      assert.strictEqual(
+        bounded.projection.visibleTurnItems[0]?.sourceItemId,
+        allIds[allIds.length - 200],
+      );
       const loaded = bounded.projection.visibleTurnItems.map((row) => String(row.sourceItemId));
       let cursor = bounded.historyCursor;
-      for (const turns of [20, 15]) {
+      while (cursor !== null) {
         assert.isNotNull(cursor);
         const anchor = decodeThreadHistoryCursor(cursor!);
         const snapshot = yield* projectionStore.getThreadSnapshotWindow(threadId, {
-          rowLimit: 77,
+          rowLimit: THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
           userTurnLimit: 20,
           anchorItemId: TurnItemId.make(anchor.si),
           anchorThreadId: ThreadId.make(anchor.st),
@@ -633,7 +639,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           cursor: cursor!,
           snapshotSequence: 0,
         });
-        assert.lengthOf(page.items, turns * 102);
+        assert.lengthOf(page.items, Math.min(200, allIds.length - loaded.length));
         loaded.unshift(...page.items.map((row) => String(row.sourceItemId)));
         cursor = page.nextCursor;
       }
@@ -3952,7 +3958,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
       assert.deepEqual(nestedIds, expectedNestedIds);
 
       const nestedTurnWindow = yield* projectionStore.getThreadSnapshotWindow(nestedThreadId, {
-        rowLimit: 77,
+        rowLimit: THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
         userTurnLimit: 10,
       });
       const nestedTurnPage = buildBoundedThreadProjection({
@@ -3966,7 +3972,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
       while (turnCursor !== null) {
         const anchor = decodeThreadHistoryCursor(turnCursor);
         const snapshot = yield* projectionStore.getThreadSnapshotWindow(nestedThreadId, {
-          rowLimit: 77,
+          rowLimit: THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
           userTurnLimit: 20,
           anchorItemId: TurnItemId.make(anchor.si),
           anchorThreadId: ThreadId.make(anchor.st),

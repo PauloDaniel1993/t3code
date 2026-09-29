@@ -2646,7 +2646,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       )
                     )
                 ), turn_anchors AS (
-                  SELECT ordinal, payload_json
+                  SELECT ordinal, payload_json, turn_item_id
                   FROM eligible
                   WHERE type = 'user_message'
                     AND json_extract(payload_json, '$.inputIntent') IN ('turn_start', 'queued_turn')
@@ -2674,11 +2674,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ORDER BY ordinal DESC, turn_item_id DESC
                   LIMIT CASE
                     WHEN ${window.rowLimit} = 0 THEN 0
-                    WHEN (SELECT anchors FROM boundary) > 0 THEN -1
+                    WHEN (SELECT anchors FROM boundary) > 0 THEN ${window.rowLimit}
                     ELSE ${window.rowLimit}
                   END
                 ), retained AS (
                   SELECT payload_json, ordinal, turn_item_id FROM selected
+                  UNION
+                  SELECT payload_json, ordinal, turn_item_id FROM (
+                    SELECT payload_json, ordinal, turn_item_id FROM turn_anchors
+                    WHERE ${window.rowLimit} > 0
+                    ORDER BY ordinal DESC, turn_item_id DESC LIMIT 1
+                  )
                   UNION
                   SELECT request.payload_json, request.ordinal, request.turn_item_id
                   FROM orchestration_v2_projection_turn_items AS request
@@ -2926,6 +2932,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT payload_json FROM orchestration_v2_projection_runtime_requests
             WHERE thread_id = ${threadId}
               AND (status IN ('pending','waiting')
+                OR runtime_request_id IN (SELECT value FROM json_each(${cohortJson("requestId")}))
                 OR node_id IN (SELECT value FROM json_each(${cohortNodeIds}))
                 OR provider_turn_id IN (SELECT value FROM json_each(${cohortProviderTurnIds})))
             ORDER BY created_at ASC, runtime_request_id ASC
@@ -2952,6 +2959,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       SELECT run_id FROM orchestration_v2_projection_runs
                       WHERE thread_id = ${threadId}
                         AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+                    )
+                    OR message.message_id = (
+                      SELECT message_id FROM orchestration_v2_projection_messages
+                      WHERE thread_id = ${threadId} AND role = 'assistant'
+                        AND run_id = COALESCE(${window.requiredRunId ?? null}, (
+                          SELECT run_id FROM orchestration_v2_projection_runs
+                          WHERE thread_id = ${threadId} ORDER BY ordinal DESC LIMIT 1
+                        ))
+                      ORDER BY created_at DESC, message_id DESC LIMIT 1
                     )
                   )
                 ORDER BY created_at ASC, message_id ASC
@@ -3154,7 +3170,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           localWindow !== undefined &&
           localWindow.rowLimit > 0 &&
           projection.turnItems.length >= localWindow.rowLimit &&
-          !projection.turnItems.some(isThreadHistoryTurnStart)
+          !projection.turnItems.slice(-localWindow.rowLimit).some(isThreadHistoryTurnStart)
         ) {
           return withLocalVisibleTurnItems(projection);
         }
