@@ -535,7 +535,7 @@ it.effect("returns readable siblings when one child cannot be loaded", () => {
 });
 
 it.effect(
-  "keeps creation order through updates and includes tasks inserted between pages, even timestamp ties",
+  "keeps creation order through updates and continues strictly after timestamp ties",
   () => {
     const firstTask = task("z-old", { startedAt: DateTime.makeUnsafe("2026-09-29T11:00:00Z") });
     const secondTask = task("m-second");
@@ -562,13 +562,49 @@ it.effect(
         ],
       });
       const second = yield* service.listTasks(scope, { cursor: first.nextCursor! });
-      expect(second.tasks.map((entry) => entry.taskId)).toEqual([
+      expect(second.tasks.map((entry) => entry.taskId)).toEqual([firstTask.id]);
+      const fresh = yield* service.listTasks(scope, {});
+      expect(fresh.tasks.map((entry) => entry.taskId)).toEqual([
         newer.id,
         tiedNewest.id,
+        lastTask.id,
         tied.id,
+        secondTask.id,
         firstTask.id,
       ]);
       expect(second.nextCursor).toBeNull();
+    }).pipe(Effect.provide(makeLayer(records)));
+  },
+);
+
+it.effect(
+  "continues the limit-one verification trace without skipping or repeating original tasks",
+  () => {
+    const at = (hour: number) =>
+      DateTime.makeUnsafe(`2026-09-29T${String(hour).padStart(2, "0")}:00:00Z`);
+    const [a, b, c] = [
+      task("A", { startedAt: at(1) }),
+      task("B", { startedAt: at(2) }),
+      task("C", { startedAt: at(3) }),
+    ];
+    const records = recordsFor([a!, b!, c!]);
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService;
+      const first = yield* service.listTasks(scope, { limit: 1 });
+      expect(first.tasks.map((entry) => entry.taskId)).toEqual([c!.id]);
+      const d = task("D", { startedAt: at(5) });
+      const e = task("E", { startedAt: at(4) });
+      for (const [id, record] of recordsFor([d, e]))
+        if (id !== parentId && id !== otherId) records.set(id, record);
+      records.set(parentId, { ...records.get(parentId)!, subagents: [a!, b!, c!, d, e] });
+      const second = yield* service.listTasks(scope, { limit: 1, cursor: first.nextCursor! });
+      const third = yield* service.listTasks(scope, { limit: 1, cursor: second.nextCursor! });
+      expect(
+        [...first.tasks, ...second.tasks, ...third.tasks].map((entry) => entry.taskId),
+      ).toEqual([c!.id, b!.id, a!.id]);
+      expect(third.nextCursor).toBeNull();
+      const fresh = yield* service.listTasks(scope, {});
+      expect(fresh.tasks.map((entry) => entry.taskId)).toEqual([d.id, e.id, c!.id, b!.id, a!.id]);
     }).pipe(Effect.provide(makeLayer(records)));
   },
 );

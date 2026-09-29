@@ -102,34 +102,13 @@ export function summarizeForkTask(
   };
 }
 
-const CursorBoundary = Schema.Struct({
-  createdAt: Schema.Number,
-  seen: Schema.Array(NodeId),
-});
-const Cursor = Schema.Struct({ oldest: CursorBoundary, newest: CursorBoundary });
+const Cursor = Schema.Struct({ createdAt: Schema.Number, taskId: NodeId });
 const decodeCursor = Schema.decodeUnknownEffect(Schema.fromJsonString(Cursor));
 const encodeCursor = Schema.encodeSync(Schema.fromJsonString(Cursor));
 
-function advanceCursor(
-  cursor: typeof Cursor.Type | undefined,
-  entries: readonly { createdAt: number; task: OrchestrationV2Subagent }[],
-) {
-  const boundaries = [
-    ...(cursor === undefined ? [] : [cursor.oldest, cursor.newest]),
-    ...entries.map((entry) => ({ createdAt: entry.createdAt, seen: [entry.task.id] })),
-  ];
-  const boundary = (createdAt: number) => ({
-    createdAt,
-    seen: [
-      ...new Set(
-        boundaries.filter((entry) => entry.createdAt === createdAt).flatMap((entry) => entry.seen),
-      ),
-    ],
-  });
-  return {
-    oldest: boundary(Math.min(...boundaries.map((entry) => entry.createdAt))),
-    newest: boundary(Math.max(...boundaries.map((entry) => entry.createdAt))),
-  };
+function advanceCursor(entries: readonly { createdAt: number; task: OrchestrationV2Subagent }[]) {
+  const last = entries[entries.length - 1]!;
+  return { createdAt: last.createdAt, taskId: last.task.id };
 }
 
 export function taskListResponseBytes(result: OrchestratorMcpTaskListResult) {
@@ -143,8 +122,8 @@ export function taskListResponseBytes(result: OrchestratorMcpTaskListResult) {
   );
 }
 
-/** Newest creation first, then ID. Cursor boundaries retain timestamp ties and
- * revisit newer creations between pages without repeating the scanned interval.
+/** Newest creation first, then ID. A cursor continues strictly after the last
+ * shown entry, including timestamp ties. Refresh without a cursor for newer tasks.
  * Status changes never reorder a task; refresh without a cursor to revisit them.
  * Reads never acknowledge delivery. */
 export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(function* (
@@ -188,27 +167,14 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
       : yield* decodeCursor(input.cursor).pipe(Effect.mapError(invalidCursor));
   if (
     cursor !== undefined &&
-    (cursor.oldest.createdAt > cursor.newest.createdAt ||
-      [cursor.oldest, cursor.newest].some(
-        (boundary) =>
-          boundary.seen.length === 0 ||
-          boundary.seen.some(
-            (id) =>
-              !owned.some(
-                (entry) => entry.task.id === id && entry.createdAt === boundary.createdAt,
-              ),
-          ),
-      ))
+    !owned.some((entry) => entry.task.id === cursor.taskId && entry.createdAt === cursor.createdAt)
   )
     return yield* invalidCursor();
   const remaining = owned.filter(
     (entry) =>
       cursor === undefined ||
-      entry.createdAt < cursor.oldest.createdAt ||
-      entry.createdAt > cursor.newest.createdAt ||
-      (entry.createdAt === cursor.oldest.createdAt &&
-        !cursor.oldest.seen.includes(entry.task.id)) ||
-      (entry.createdAt === cursor.newest.createdAt && !cursor.newest.seen.includes(entry.task.id)),
+      entry.createdAt < cursor.createdAt ||
+      (entry.createdAt === cursor.createdAt && entry.task.id.localeCompare(cursor.taskId) > 0),
   );
   const matching: {
     entry: (typeof owned)[number];
@@ -273,12 +239,7 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
       nextCursor:
         count === matching.length
           ? null
-          : encodeCursor(
-              advanceCursor(
-                cursor,
-                selected.map(({ entry }) => entry),
-              ),
-            ),
+          : encodeCursor(advanceCursor(selected.map(({ entry }) => entry))),
     };
   };
   const fits = (result: OrchestratorMcpTaskListResult) =>
