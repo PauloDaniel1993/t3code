@@ -11,7 +11,7 @@ import type { StarMapLayoutResult } from "./starMapLayout";
 
 /**
  * Panel width (px) at which the ticket detail splits next to the map instead
- * of replacing it. Mirrored by the `@container` rule in `index.css` — keep
+ * of replacing it. Mirrored by the `@container` rule in `starMap.css` — keep
  * the two in sync. A container query, not a viewport media query, because
  * `PreviewPanelShell` sizes the panel in explicit pixels.
  */

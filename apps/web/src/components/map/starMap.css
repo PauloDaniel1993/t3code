@@ -1,0 +1,66 @@
+/* Star map theme and layout. Imported by StarMapPanel, so it loads with the lazily
+   loaded panel and touches nothing global.
+
+   Theme: the engine's canvas carries [data-star-map] and reads these tokens once per
+   theme change (resolveStarMapTheme in starMapTheme.ts). The engine parses hex, rgb()
+   and oklch() only, so every value here is a plain var() of an appearance token; a
+   color-mix() would fail to parse and silently fall back to the built-in palette.
+   The sky is dark in both appearances: in the light appearance it is the foreground
+   color with the background color as stars, and in the dark appearance it is the
+   background itself. Status hues bind to the semantic tokens the rest of the interface
+   uses. Completion gold is not a ticket status, so it takes the warning hue. */
+[data-star-map] {
+  --star-map-background: var(--foreground);
+  --star-map-completion: var(--warning);
+  --star-map-star: var(--background);
+  --star-map-starfield-far: var(--muted-foreground);
+  --star-map-starfield-near: var(--muted);
+  --star-map-edge: var(--muted-foreground);
+  --star-map-label: var(--background);
+  --star-map-selection: var(--ring);
+  --star-map-status-open: var(--info);
+  --star-map-status-claimed: var(--warning);
+  --star-map-status-resolved: var(--success);
+  --star-map-status-out-of-scope: var(--destructive);
+  background-color: var(--star-map-background);
+}
+
+.dark [data-star-map] {
+  --star-map-background: var(--background);
+  --star-map-star: var(--foreground);
+  --star-map-starfield-far: var(--border);
+  --star-map-starfield-near: var(--muted-foreground);
+  --star-map-label: var(--foreground);
+}
+
+/* Split: below the breakpoint the ticket detail replaces the map; above it the map stays
+   and the ticket opens beneath it. This MUST be a container query, not a viewport media
+   query: the panel is sized in explicit pixels independent of the viewport. The 720px
+   value mirrors STAR_MAP_SPLIT_BREAKPOINT_PX in starMapInteraction.ts. A query cannot
+   style its own container, so [data-star-map-container] only establishes containment
+   and the rules target the split inside it. */
+[data-star-map-container] {
+  container-type: inline-size;
+}
+
+[data-star-map-split][data-level="ticket"] > [data-star-map-mapside] {
+  display: none;
+}
+
+@container (min-width: 720px) {
+  [data-star-map-split][data-level="ticket"] {
+    flex-direction: column;
+  }
+
+  [data-star-map-split][data-level="ticket"] > [data-star-map-mapside] {
+    display: flex;
+    flex: 1 1 55%;
+    min-height: 0;
+  }
+
+  [data-star-map-split][data-level="ticket"] > [data-star-map-detail] {
+    flex: 1 1 45%;
+    min-height: 0;
+    border-block-start: 1px solid var(--border);
+  }
+}

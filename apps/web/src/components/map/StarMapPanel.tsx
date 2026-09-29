@@ -41,6 +41,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { wayfinderEnvironment } from "~/state/wayfinder";
 import { resolveThreadRouteTarget } from "~/threadRoutes";
 
+import "./starMap.css";
 import { StarMapTicketDetail } from "./StarMapTicketDetail";
 import {
   boundsFromPoints,
