@@ -4,6 +4,7 @@ import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-r
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import { useNewThreadTaskAvailability } from "../hooks/useNewThreadTaskAvailability";
 import { openNewThreadTaskDialog } from "../newThreadTaskBus";
+import { NewThreadTaskHost } from "./NewThreadTaskHost";
 
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -594,6 +595,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
 
   return (
     <ComposerHandleContext value={composerHandleRef}>
+      <NewThreadTaskHost />
       <CommandDialog
         open={state.open}
         onOpenChange={(open, eventDetails) => {
@@ -1788,7 +1790,9 @@ function OpenCommandPaletteDialog(props: {
       shortcutCommand: "thread.newTask",
       disabled: newTaskProblem !== null,
       run: async () => {
-        openNewThreadTaskDialog(scopeThreadRef(activeThread.environmentId, activeThread.id));
+        openNewThreadTaskDialog({
+          threadRef: scopeThreadRef(activeThread.environmentId, activeThread.id),
+        });
       },
     });
   }

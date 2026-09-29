@@ -1,0 +1,263 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { makeThreadProjectionFixture } from "../test-fixtures";
+import { openNewThreadTaskDialog } from "../newThreadTaskBus";
+import { NewThreadTaskHost } from "./NewThreadTaskHost";
+import { NewThreadTaskAction } from "./NewThreadTaskAction";
+
+const state = vi.hoisted(() => ({
+  route: null as ScopedThreadRef | null,
+  parents: new Map<string, OrchestrationV2ThreadProjection>(),
+  parentListeners: new Set<() => void>(),
+  connected: true,
+  startTurn: vi.fn(),
+  toast: vi.fn(),
+}));
+const key = (ref: ScopedThreadRef) => `${ref.environmentId}:${ref.threadId}`;
+
+vi.mock("@effect/atom-react", async () => {
+  const { DEFAULT_RESOLVED_KEYBINDINGS } = await import("@t3tools/shared/keybindings");
+  return { useAtomValue: () => DEFAULT_RESOLVED_KEYBINDINGS };
+});
+vi.mock("@tanstack/react-router", () => ({
+  useParams: () => (state.route ? { kind: "server", threadRef: state.route } : null),
+}));
+vi.mock("../state/server", () => ({
+  primaryServerKeybindingsAtom: {},
+  serverEnvironment: {
+    configValueAtom: (environmentId: string) => ({ kind: "config", environmentId }),
+  },
+}));
+vi.mock("../state/threads", () => ({
+  threadEnvironment: { startTurn: {} },
+  environmentThreadDetails: {
+    threadAtom: (ref: ScopedThreadRef) => ({ kind: "thread", ref }),
+    statusAtom: (ref: ScopedThreadRef) => ({ kind: "status", ref }),
+  },
+}));
+vi.mock("../state/presentation", () => ({
+  environmentPresentations: {
+    presentationAtom: (environmentId: string) => ({ kind: "presentation", environmentId }),
+  },
+}));
+vi.mock("../rpc/atomRegistry", () => ({
+  appAtomRegistry: {
+    get: (atom: { kind: string; ref?: ScopedThreadRef; environmentId?: string }) => {
+      if (atom.kind === "thread" && atom.ref) {
+        const projection = state.parents.get(`${atom.ref.environmentId}:${atom.ref.threadId}`);
+        return projection ? { projection } : null;
+      }
+      if (atom.kind === "status") return "live";
+      if (atom.kind === "presentation")
+        return { connection: { phase: state.connected ? "connected" : "disconnected" } };
+      if (atom.kind === "config")
+        return { providers: [{ instanceId: "codex", enabled: true, status: "ready" }] };
+    },
+  },
+}));
+vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => state.startTurn }));
+vi.mock("../hooks/useNewThreadTaskAvailability", async () => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    useNewThreadTaskParent: (ref: ScopedThreadRef) =>
+      useSyncExternalStore(
+        (listener) => {
+          state.parentListeners.add(listener);
+          return () => {
+            state.parentListeners.delete(listener);
+          };
+        },
+        () => state.parents.get(`${ref.environmentId}:${ref.threadId}`)?.thread ?? null,
+      ),
+    useNewThreadTaskAvailability: () => ({
+      problem: state.connected ? null : "Connect to this thread's environment to request a task.",
+      providers: [],
+    }),
+  };
+});
+// The host's command/parent lifecycle is tested independently of model picker rendering.
+vi.mock("./NewThreadTaskDialog", () => ({
+  NewThreadTaskDialog: (
+    props: Parameters<typeof import("./NewThreadTaskDialog").NewThreadTaskDialog>[0],
+  ) => (
+    <form
+      role="dialog"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void props
+          .onRequest(
+            props.initialDraft ?? { title: "", prompt: "Review paths" },
+            props.initialModelSelection,
+          )
+          .then((problem) => {
+            if (problem === null) props.onClose();
+          });
+      }}
+    >
+      <p>{props.initialDraft?.title}</p>
+      <p>{props.initialDraft?.prompt}</p>
+      <button type="submit">Request task</button>
+      <button type="button" onClick={props.onClose}>
+        Cancel
+      </button>
+    </form>
+  ),
+}));
+vi.mock("./ui/toast", () => ({ toastManager: { add: state.toast } }));
+
+let root: Root;
+let container: HTMLDivElement;
+const routeRef = scopeThreadRef(EnvironmentId.make("local"), ThreadId.make("open-parent"));
+
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  state.parents.clear();
+  state.parentListeners.clear();
+  state.parents.set(key(routeRef), {
+    ...makeThreadProjectionFixture(),
+    thread: { ...makeThreadProjectionFixture().thread, id: routeRef.threadId },
+  });
+  state.route = routeRef;
+  state.connected = true;
+  state.startTurn.mockReset().mockResolvedValue({ _tag: "Success" });
+  state.toast.mockReset();
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  vi.unstubAllGlobals();
+});
+async function shortcut(options: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent("keydown", {
+    key: "n",
+    code: "KeyN",
+    ctrlKey: true,
+    altKey: true,
+    bubbles: true,
+    cancelable: true,
+    ...options,
+  });
+  await act(async () => document.body.dispatchEvent(event));
+  return event;
+}
+
+describe("shared task host", () => {
+  it("keeps the first draft when two open requests arrive together", async () => {
+    await act(async () => root.render(<NewThreadTaskHost />));
+    await act(async () => {
+      openNewThreadTaskDialog({
+        threadRef: routeRef,
+        initialDraft: { title: "First draft", prompt: "First work" },
+      });
+      openNewThreadTaskDialog({
+        threadRef: routeRef,
+        initialDraft: { title: "Second draft", prompt: "Other work" },
+      });
+    });
+    expect(container.textContent).toContain("First draft");
+    expect(container.textContent).not.toContain("Second draft");
+    expect(state.toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "A task draft is already open" }),
+    );
+  });
+  it("submits a prefilled task to an unopened remote parent even after route navigation", async () => {
+    const ref = scopeThreadRef(EnvironmentId.make("remote"), ThreadId.make("unopened-parent"));
+    const projection = makeThreadProjectionFixture();
+    state.parents.set(key(ref), {
+      ...projection,
+      thread: { ...projection.thread, id: ref.threadId },
+    });
+    await act(async () => root.render(<NewThreadTaskHost />));
+    await act(async () =>
+      openNewThreadTaskDialog({
+        threadRef: ref,
+        initialDraft: { title: "Map ticket", prompt: "Read the map\nImplement the ticket." },
+      }),
+    );
+    expect(container.textContent).toContain("Read the map");
+    state.route = null;
+    await act(async () => root.render(<NewThreadTaskHost />));
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(),
+    );
+    const [command] = state.startTurn.mock.calls[0]!;
+    expect(command.environmentId).toBe("remote");
+    expect(command.input.threadId).toBe("unopened-parent");
+    expect(command.input.message.text).toContain('"title": "Map ticket"');
+    expect(command.input.message.text).toContain("Read the map\\nImplement the ticket.");
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("opens before an unopened parent loads, then keeps the draft when it arrives", async () => {
+    const ref = scopeThreadRef(EnvironmentId.make("remote"), ThreadId.make("loading-parent"));
+    await act(async () => root.render(<NewThreadTaskHost />));
+    await act(async () =>
+      openNewThreadTaskDialog({
+        threadRef: ref,
+        initialDraft: { title: "Loading draft", prompt: "Check the files" },
+      }),
+    );
+    expect(document.body.textContent).toContain("Loading the parent thread");
+    const projection = makeThreadProjectionFixture();
+    state.parents.set(key(ref), {
+      ...projection,
+      thread: { ...projection.thread, id: ref.threadId },
+    });
+    await act(async () => {
+      for (const listener of state.parentListeners) listener();
+    });
+    expect(container.textContent).toContain("Loading draft");
+    expect(container.textContent).toContain("Check the files");
+  });
+
+  it("shows the unavailable reason when the shortcut is pressed", async () => {
+    state.connected = false;
+    await act(async () => root.render(<NewThreadTaskHost />));
+    const event = await shortcut();
+    expect(event.defaultPrevented).toBe(true);
+    expect(state.toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "New task unavailable",
+        description: "Connect to this thread's environment to request a task.",
+      }),
+    );
+    expect(state.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("leaves terminal input, repeated keys and composition alone", async () => {
+    await act(async () => root.render(<NewThreadTaskHost />));
+    const terminal = document.createElement("textarea");
+    terminal.dataset.terminalOwner = "drawer";
+    container.append(terminal);
+    terminal.focus();
+    expect((await shortcut()).defaultPrevented).toBe(false);
+    terminal.remove();
+    expect((await shortcut({ repeat: true })).defaultPrevented).toBe(false);
+    expect((await shortcut({ isComposing: true })).defaultPrevented).toBe(false);
+    expect(state.toast).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("keeps a disabled header action and its tooltip wrapper out of keyboard focus", async () => {
+    state.connected = false;
+    await act(async () => root.render(<NewThreadTaskAction threadRef={routeRef} />));
+    const button = container.querySelector<HTMLButtonElement>("button")!;
+    button.focus();
+    button.click();
+    expect(document.activeElement).not.toBe(button);
+    const wrapper = button.parentElement!;
+    wrapper.focus();
+    expect(wrapper.tabIndex).toBe(-1);
+    expect(wrapper.getAttribute("role")).not.toBe("button");
+    expect(container.textContent).toContain("Connect to this thread's environment");
+    expect(state.startTurn).not.toHaveBeenCalled();
+  });
+});

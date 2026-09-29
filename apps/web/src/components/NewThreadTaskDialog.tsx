@@ -42,6 +42,7 @@ import {
 export function NewThreadTaskDialog(props: {
   readonly parentThreadRef: ScopedThreadRef;
   readonly initialModelSelection: ModelSelection;
+  readonly initialDraft?: NewThreadTaskDraft;
   readonly onClose: () => void;
   readonly onRequest: (draft: NewThreadTaskDraft, model: ModelSelection) => Promise<string | null>;
 }) {
@@ -49,7 +50,9 @@ export function NewThreadTaskDialog(props: {
   const { providers, problem: parentProblem } = useNewThreadTaskAvailability(parentThreadRef);
   const parent = useNewThreadTaskParent(parentThreadRef);
   const settings = useEnvironmentSettings(parentThreadRef.environmentId);
-  const [draft, setDraft] = useState<NewThreadTaskDraft>({ title: "", prompt: "" });
+  const [draft, setDraft] = useState<NewThreadTaskDraft>(
+    () => props.initialDraft ?? { title: "", prompt: "" },
+  );
   const [model, setModel] = useState(initialModelSelection);
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
