@@ -26,9 +26,9 @@ it("accepts only the current orchestration protocol before websocket RPC setup",
   );
 });
 
-it("keeps full thread snapshot fallback unless the client opts into bounded history", () => {
-  assert.isFalse(shouldUseBoundedThreadSnapshot({}));
-  assert.isFalse(shouldUseBoundedThreadSnapshot({ acceptBoundedSnapshot: false }));
+it("protects every protocol 2 client with bounded resumable history", () => {
+  assert.isTrue(shouldUseBoundedThreadSnapshot({}));
+  assert.isTrue(shouldUseBoundedThreadSnapshot({ acceptBoundedSnapshot: false }));
   assert.isTrue(shouldUseBoundedThreadSnapshot({ acceptBoundedSnapshot: true }));
 });
 

@@ -160,6 +160,61 @@ function makeProjection(visibleTurnItems: OrchestrationV2ProjectedTurnItem[]) {
 }
 
 describe("threadHistoryPaging", () => {
+  it("bounds node-bearing history and preserves active control ancestors", () => {
+    const rows = Array.from({ length: 10_001 }, (_, i) => makeRow(i));
+    const first = rows[0]!;
+    if (first.item.type !== "command_execution") throw new Error("Expected command fixture");
+    rows[0] = {
+      ...first,
+      item: {
+        ...first.item,
+        type: "user_message",
+        messageId: MessageId.make("prompt"),
+        text: "go",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        inputIntent: "turn_start",
+      },
+    };
+    const nodes = rows.slice(1).map((row, i) => ({
+      id: NodeId.make(`node-${i}`),
+      threadId: THREAD,
+      runId: null,
+      parentNodeId: NODE,
+      rootNodeId: NODE,
+      kind: "tool_call" as const,
+      status: "completed" as const,
+      countsForRun: true,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: null,
+      startedAt: NOW,
+      completedAt: NOW,
+    }));
+    for (let i = 1; i < rows.length; i++)
+      rows[i] = { ...rows[i]!, item: { ...rows[i]!.item, nodeId: nodes[i - 1]!.id } };
+    const root = { ...nodes[0]!, id: NODE, kind: "root_turn" as const, parentNodeId: null };
+    const live = {
+      ...nodes[0]!,
+      id: NodeId.make("off-page-live"),
+      status: "waiting" as const,
+      completedAt: null,
+    };
+    const snapshot = buildBoundedThreadStreamSnapshot({
+      snapshotSequence: 1,
+      projection: { ...makeProjection(rows), nodes: [root, live, ...nodes] },
+    });
+    expect(snapshot.projection.visibleTurnItems).toHaveLength(200);
+    expect(snapshot.projection.nodes).toHaveLength(202);
+    expect(snapshot.projection.nodes).toContainEqual(root);
+    expect(snapshot.projection.nodes).toContainEqual(live);
+    expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThanOrEqual(1_048_576);
+    expect(snapshot.payloadBudgetExceeded).toBe(false);
+  });
+
   it("builds a resumable bounded socket snapshot frame", () => {
     const projection = makeProjection(Array.from({ length: 90 }, (_, index) => makeRow(index)));
     const item = buildBoundedThreadStreamSnapshot({
@@ -260,7 +315,7 @@ describe("threadHistoryPaging", () => {
     );
   });
 
-  it("applies the byte budget within a turn and omits hidden messages from the latest run", () => {
+  it("keeps the latest assistant identity beyond the page while omitting earlier hidden messages", () => {
     const rows = Array.from({ length: 500 }, (_, index) => makeRow(index, { outputBytes: 20_000 }));
     const first = rows[0]!;
     if (first.item.type !== "command_execution") throw new Error("Expected command fixture");
@@ -310,8 +365,53 @@ describe("threadHistoryPaging", () => {
       })),
     };
     const bounded = buildBoundedThreadProjection({ projection: full, snapshotSequence: 1 });
-    expect(bounded.projection.messages).toEqual([]);
+    expect(bounded.projection.messages.map((message) => message.id)).toEqual(["hidden-1999"]);
     expect(bounded.payloadBudgetExceeded).toBe(false);
+  });
+
+  it("counts duplicated assistant messages in the final snapshot and keeps a recoverable cursor", () => {
+    const rows = Array.from({ length: 200 }, (_, i) => {
+      const row = makeRow(i);
+      if (row.item.type !== "command_execution") throw new Error("Expected command fixture");
+      return {
+        ...row,
+        item: {
+          ...row.item,
+          type: "assistant_message" as const,
+          messageId: MessageId.make(`assistant-${i}`),
+          text: "x".repeat(10_000),
+          streaming: false,
+        },
+      };
+    });
+    const projection = makeProjection(rows);
+    const messages = rows.map(({ item }) => ({
+      id: item.messageId,
+      threadId: THREAD,
+      runId: null,
+      nodeId: null,
+      role: "assistant" as const,
+      text: item.text,
+      attachments: [],
+      streaming: false,
+      createdBy: "agent" as const,
+      creationSource: "provider" as const,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }));
+    const full = { ...projection, messages };
+    const snapshot = buildBoundedThreadStreamSnapshot({ projection: full, snapshotSequence: 1 });
+    expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThanOrEqual(1_048_576);
+    expect(snapshot.payloadBudgetExceeded).toBe(false);
+    const earlier = selectHistoryPageFromCursor({
+      items: full.visibleTurnItems,
+      cursor: snapshot.historyCursor!,
+      snapshotSequence: 1,
+    });
+    expect(earlier.items.at(-1)?.sourceItemId).toBe(
+      `item-${200 - snapshot.projection.visibleTurnItems.length - 1}`,
+    );
+    expect(snapshot.projection.messages).toHaveLength(snapshot.projection.visibleTurnItems.length);
   });
 
   it("encodes opaque cursors with stable source identity", () => {

@@ -117,7 +117,10 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
       return yield* threadManagement.getThreadSnapshot(threadId).pipe(
         Effect.map((snapshot) => ({
           ...snapshot,
-          projection: projectThreadProjectionForWire(snapshot.projection),
+          ...buildBoundedThreadProjection({
+            projection: projectThreadProjectionForWire(snapshot.projection),
+            snapshotSequence: snapshot.snapshotSequence,
+          }),
         })),
         Effect.catch(
           Effect.fnUntraced(function* (error) {
@@ -189,10 +192,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             args.params.threadId,
             "orchestration_thread_snapshot_failed",
           );
-          return {
-            snapshotSequence: snapshot.snapshotSequence,
-            projection: snapshot.projection,
-          };
+          return snapshot;
         }),
       )
       .handle(

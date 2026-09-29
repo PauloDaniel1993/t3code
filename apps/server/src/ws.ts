@@ -514,10 +514,11 @@ export function hasCompatibleOrchestrationProtocol(url: URL): boolean {
   );
 }
 
-export function shouldUseBoundedThreadSnapshot(input: {
+export function shouldUseBoundedThreadSnapshot(_input: {
   readonly acceptBoundedSnapshot?: boolean;
 }): boolean {
-  return input.acceptBoundedSnapshot === true;
+  // Protocol 2 already carries history cursors; the budget applies to every client.
+  return true;
 }
 
 // Optional client identity announced on the /ws upgrade URL next to wsTicket.

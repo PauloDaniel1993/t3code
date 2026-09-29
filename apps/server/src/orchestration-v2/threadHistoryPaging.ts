@@ -6,6 +6,9 @@ import type {
   TurnItemId,
 } from "@t3tools/contracts";
 
+import { retainProviderHistoryGraph } from "./ProviderHistoryRetention.ts";
+import { providerHistoryIndex } from "./ProviderHistoryIndex.ts";
+
 /**
  * Prefer complete user turns, but split oversized turns with the same resumable
  * cursor used for histories without turn starts.
@@ -186,9 +189,8 @@ function selectOlderTimelinePage(input: {
   let encodedBytes = 0;
   let userTurns = 0;
   let rawTurns = 0;
-  const turnLimit = input.items.slice(0, end).some((row) => isThreadHistoryTurnStart(row.item))
-    ? policy.maxUserTurns
-    : undefined;
+  const turnLimit =
+    providerHistoryIndex(input.items).firstTurn < end ? policy.maxUserTurns : undefined;
   const maxItems =
     turnLimit === undefined
       ? policy.maxItems
@@ -213,12 +215,7 @@ function selectOlderTimelinePage(input: {
   selected.reverse();
 
   const oldest = selected[0];
-  const oldestIndex = oldest
-    ? input.items.findIndex(
-        (row) =>
-          row.sourceThreadId === oldest.sourceThreadId && row.sourceItemId === oldest.sourceItemId,
-      )
-    : -1;
+  const oldestIndex = end - selected.length;
   const hasMoreHistory = oldestIndex > 0;
   const nextCursor =
     hasMoreHistory && oldest
@@ -256,10 +253,10 @@ function findCursorIndex(
   items: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
   cursor: ThreadHistoryCursorPayload,
 ): number {
-  const byIdentity = items.findIndex(
-    (row) => String(row.sourceThreadId) === cursor.st && String(row.sourceItemId) === cursor.si,
+  const byIdentity = providerHistoryIndex(items).identities.get(
+    JSON.stringify([cursor.st, cursor.si]),
   );
-  if (byIdentity !== -1) {
+  if (byIdentity !== undefined) {
     return byIdentity;
   }
   // Identity miss can happen if the cursor item was deleted; fall back to the
@@ -369,6 +366,10 @@ function messagesForBoundedProjection(
       run.status === "queued"
     ) {
       retainedMessageIds.add(String(run.userMessageId));
+      const assistant = projection.messages.findLast(
+        (message) => message.runId === run.id && message.role === "assistant",
+      );
+      if (assistant !== undefined) retainedMessageIds.add(String(assistant.id));
     }
   }
 
@@ -424,8 +425,13 @@ export function buildBoundedThreadProjection(input: {
 }): BoundedProjectionResult {
   const policy = input.policy ?? THREAD_HISTORY_PAGE_POLICY;
   const threadId = input.projection.thread.id;
+  const candidateWindow = selectRecentTimelineWindow({
+    items: input.projection.visibleTurnItems,
+    snapshotSequence: input.snapshotSequence,
+    policy,
+  });
   const controlProjection = {
-    ...input.projection,
+    ...retainProviderHistoryGraph(input.projection, candidateWindow.items),
     plans: input.projection.plans.filter((plan) => plan.status === "active"),
     contextHandoffs: input.projection.contextHandoffs.filter(
       (handoff) => handoff.status === "pending" || handoff.status === "ready",
@@ -448,7 +454,7 @@ export function buildBoundedThreadProjection(input: {
   })();
   const controlBytes = bytesOfJson({
     ...controlProjection,
-    messages: [],
+    messages: messagesForBoundedProjection(controlProjection, []),
     turnItems: [],
     visibleTurnItems: [],
   });
@@ -469,63 +475,95 @@ export function buildBoundedThreadProjection(input: {
     policy: windowPolicy,
     rowEncodedBytes: (row) => projectedRowBoundedSnapshotEncodedBytes(row, threadId),
   });
-  const visibleTurnItems = renumberPositions(window.items);
-  const windowTurnItems = localTurnItemsForVisibleWindow(controlProjection, visibleTurnItems);
-  const dependencyTurnItems = retainedInterruptRequestTurnItems(
-    controlProjection,
-    visibleTurnItems,
-  );
-  const turnItemById = new Map<string, OrchestrationV2TurnItem>();
-  for (const item of windowTurnItems) {
-    turnItemById.set(String(item.id), item);
-  }
-  for (const item of dependencyTurnItems) {
-    turnItemById.set(String(item.id), item);
-  }
-  const turnItems = [...turnItemById.values()];
-
-  const visiblePlanIds = new Set(
-    turnItems.flatMap((item) =>
-      item.type === "proposed_plan" || item.type === "todo_list" ? [String(item.planId)] : [],
-    ),
-  );
-  const visibleHandoffIds = new Set(
-    turnItems.flatMap((item) => (item.type === "handoff" ? [String(item.contextHandoffId)] : [])),
-  );
-  const plans = input.projection.plans
-    .filter((plan) => plan.status === "active" || visiblePlanIds.has(String(plan.id)))
-    .map((plan) =>
-      plan.status === "active"
-        ? plan
-        : plan.kind === "proposed_plan"
-          ? { ...plan, markdown: "", detailInTurnItem: true as const }
-          : { ...plan, explanation: undefined, detailInTurnItem: true as const },
+  const assemble = (visibleTurnItems: OrchestrationV2ProjectedTurnItem[]) => {
+    const windowTurnItems = localTurnItemsForVisibleWindow(controlProjection, visibleTurnItems);
+    const dependencyTurnItems = retainedInterruptRequestTurnItems(
+      controlProjection,
+      visibleTurnItems,
     );
-  const contextHandoffs = input.projection.contextHandoffs
-    .filter(
-      (handoff) =>
-        handoff.status === "pending" ||
-        handoff.status === "ready" ||
-        visibleHandoffIds.has(String(handoff.id)),
-    )
-    .map((handoff) =>
-      handoff.status === "pending" || handoff.status === "ready"
-        ? handoff
-        : { ...handoff, summaryText: "", detailInTurnItem: true as const },
-    );
+    const turnItemById = new Map<string, OrchestrationV2TurnItem>();
+    for (const item of windowTurnItems) {
+      turnItemById.set(String(item.id), item);
+    }
+    for (const item of dependencyTurnItems) {
+      turnItemById.set(String(item.id), item);
+    }
+    const turnItems = [...turnItemById.values()];
 
-  const projection = {
-    ...controlProjection,
-    plans,
-    contextHandoffs,
-    messages: messagesForBoundedProjection(controlProjection, turnItems),
-    turnItems,
-    visibleTurnItems,
+    const visiblePlanIds = new Set(
+      turnItems.flatMap((item) =>
+        item.type === "proposed_plan" || item.type === "todo_list" ? [String(item.planId)] : [],
+      ),
+    );
+    const visibleHandoffIds = new Set(
+      turnItems.flatMap((item) => (item.type === "handoff" ? [String(item.contextHandoffId)] : [])),
+    );
+    const plans = input.projection.plans
+      .filter((plan) => plan.status === "active" || visiblePlanIds.has(String(plan.id)))
+      .map((plan) =>
+        plan.status === "active"
+          ? plan
+          : plan.kind === "proposed_plan"
+            ? { ...plan, markdown: "", detailInTurnItem: true as const }
+            : { ...plan, explanation: undefined, detailInTurnItem: true as const },
+      );
+    const contextHandoffs = input.projection.contextHandoffs
+      .filter(
+        (handoff) =>
+          handoff.status === "pending" ||
+          handoff.status === "ready" ||
+          visibleHandoffIds.has(String(handoff.id)),
+      )
+      .map((handoff) =>
+        handoff.status === "pending" || handoff.status === "ready"
+          ? handoff
+          : { ...handoff, summaryText: "", detailInTurnItem: true as const },
+      );
+
+    return {
+      ...retainProviderHistoryGraph(controlProjection, visibleTurnItems),
+      plans,
+      contextHandoffs,
+      messages: messagesForBoundedProjection(controlProjection, turnItems),
+      turnItems,
+      visibleTurnItems,
+    };
   };
+  let visibleTurnItems = renumberPositions(window.items);
+  let projection = assemble(visibleTurnItems);
+  let historyCursor = window.nextCursor;
+  let hasMoreHistory = window.hasMoreHistory;
+  // Charge the actual complete response, including duplicated messages and
+  // on-page graph/plan metadata. Required controls and a single oversized row
+  // remain explicit exceptions; never cut an assistant message or request.
+  if (bytesOfJson(projection) > policy.maxEncodedBytes && visibleTurnItems.length > 1) {
+    let low = 1;
+    let high = visibleTurnItems.length - 1;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      const candidate = assemble(renumberPositions(window.items.slice(-middle)));
+      if (bytesOfJson(candidate) <= policy.maxEncodedBytes) low = middle;
+      else high = middle - 1;
+    }
+    visibleTurnItems = renumberPositions(window.items.slice(-low));
+    projection = assemble(visibleTurnItems);
+    const oldest = visibleTurnItems[0]!;
+    const originalIndex = providerHistoryIndex(controlProjection.visibleTurnItems).identities.get(
+      JSON.stringify([oldest.sourceThreadId, oldest.sourceItemId]),
+    )!;
+    historyCursor = encodeThreadHistoryCursor({
+      snapshotSequence: input.snapshotSequence,
+      sourceThreadId: oldest.sourceThreadId,
+      sourceItemId: oldest.sourceItemId,
+      position: controlProjection.visibleTurnItems[originalIndex]!.position,
+    });
+    hasMoreHistory = true;
+  }
+
   return {
     projection,
-    historyCursor: window.nextCursor,
-    hasMoreHistory: window.hasMoreHistory,
+    historyCursor,
+    hasMoreHistory,
     // Always from the full projection so inherited-only windows still carry a
     // watermark for partial live reducers.
     latestLocalTurnOrdinal,
