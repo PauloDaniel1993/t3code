@@ -2163,9 +2163,8 @@ export default function ChatView(props: ChatViewProps) {
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const timelineThreadError =
     serverRuntime?.status === "failed" &&
-    serverRuntime.lastErrorClass === "usage_limit" &&
     activeThreadShell?.latestRun &&
-    visibleThreadError === serverRuntime.lastError
+    presentedThreadError.errorClass === "usage_limit"
       ? null
       : visibleThreadError;
 

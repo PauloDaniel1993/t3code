@@ -240,6 +240,10 @@ describe("dismissing a thread error", () => {
       old,
     );
     expect(deriveThreadRuntime(limited)?.lastError).toBe("Provider crashed");
+    expect(deriveThreadRuntime(limited)?.lastErrorClass).toBeNull();
+    // The chat view hides the banner for a usage limit on a failed thread, in
+    // favour of the timeline row; it reads the class shown, not the runtime's.
+    expect(deriveThreadRuntime(limited)?.status).toBe("failed");
     const shown = banner(key, limited);
     expect(shown.message).toBe("Usage limit reached");
     expect(shown.errorClass).toBe("usage_limit");
