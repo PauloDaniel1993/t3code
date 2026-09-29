@@ -12,14 +12,14 @@ const decode = Schema.decodeUnknownSync(OrchestratorMcpTaskListInput);
 describe("delegated task list input", () => {
   it("accepts discovery without a remembered task ID and continuation pages", () => {
     expect(decode({})).toEqual({});
-    expect(decode({ limit: 20, cursor: "opaque-cursor", status: "finished" })).toEqual({
-      limit: 20,
+    expect(decode({ limit: 65, cursor: "opaque-cursor", status: "finished" })).toEqual({
+      limit: 65,
       cursor: "opaque-cursor",
       status: "finished",
     });
   });
 
-  it.each([0, -1, 1.5, 21, "20"])("rejects an invalid page size %s", (limit) => {
+  it.each([0, -1, 1.5, "20"])("rejects an invalid page size %s", (limit) => {
     expect(() => decode({ limit })).toThrow();
   });
 

@@ -107,14 +107,14 @@ export type ForkTaskSummary = typeof ForkTaskSummary.Type;
 
 export const OrchestratorMcpTaskListInput = Schema.Struct({
   status: Schema.optional(ForkTaskStatus),
-  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(20))).annotate({
+  limit: Schema.optional(PositiveInt).annotate({
     description:
-      "Tasks examined per page; defaults to 20. Pages can be shorter to fit the response budget.",
+      "Maximum matching tasks to return; omitted means as many as the response budget allows.",
   }),
   cursor: Schema.optional(
     Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(8_000)),
   ).annotate({
-    description: "Opaque nextCursor from task_list; continue even when a filtered page is empty.",
+    description: "Opaque nextCursor from task_list; continue until null.",
   }),
 });
 export type OrchestratorMcpTaskListInput = typeof OrchestratorMcpTaskListInput.Type;
@@ -125,12 +125,12 @@ export const OrchestratorMcpTaskListResult = Schema.Struct({
     Schema.Struct({
       ...ForkTaskSummary.fields,
       status: Schema.NullOr(ForkTaskStatus),
-      workState: Schema.NullOr(
+      workState: Schema.optional(
         Schema.Literals(["working", "waiting_for_children", "result_available"]),
       ),
-      hasPendingChildRuns: Schema.Boolean,
-      latestTerminalRunId: Schema.NullOr(RunId),
-      latestTerminalResult: Schema.NullOr(
+      hasPendingChildRuns: Schema.optional(Schema.Boolean),
+      latestTerminalRunId: Schema.optional(RunId),
+      latestTerminalResult: Schema.optional(
         Schema.Struct({
           outcome: ForkTaskResult.fields.outcome,
           summary: ForkTaskResult.fields.summary,

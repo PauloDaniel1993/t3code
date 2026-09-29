@@ -38,6 +38,7 @@ import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import {
   TASK_LIST_RESPONSE_MAX_BYTES,
   TASK_LIST_SUMMARY_MAX_CHARS,
+  TASK_LIST_SUMMARY_MIN_CHARS,
   taskListResponseBytes,
 } from "./OrchestratorTaskList.ts";
 
@@ -265,6 +266,17 @@ function recordsFor(tasks: readonly OrchestrationV2Subagent[]) {
   return records;
 }
 
+function listFixture(
+  records: Map<ThreadId, OrchestrationV2ThreadProjection>,
+  input: Parameters<OrchestratorMcpService["Service"]["listTasks"]>[1],
+  options: Parameters<typeof makeLayer>[1] = {},
+) {
+  return OrchestratorMcpService.pipe(
+    Effect.flatMap((service) => service.listTasks(scope, input)),
+    Effect.provide(Layer.fresh(makeLayer(records, options))),
+  );
+}
+
 describe("task restorations on orchestration v2", () => {
   it.effect(
     "recovers direct tasks across turns and finished results without acknowledging delivery",
@@ -286,17 +298,17 @@ describe("task restorations on orchestration v2", () => {
         expect(result.tasks[0]).toMatchObject({
           status: "running",
           result: null,
-          workState: "working",
         });
         expect(result.tasks[1]).toMatchObject({
           title: finished.title,
           status: "finished",
           result: { summaryTruncated: true, summaryChars: finished.result!.length },
-          latestTerminalResult: null,
         });
         expect(result.nextCursor).toBeNull();
         expect(result.tasks[1]!.result!.summary).toHaveLength(TASK_LIST_SUMMARY_MAX_CHARS);
-        expect(result.tasks[1]!.result!.summary).toContain("[truncated; call task_status");
+        expect(result.tasks[1]!.result!.summary).toContain(
+          "[shortened; task_status returns full text]",
+        );
         expect(reads.filter((id) => id === parentId)).toHaveLength(1);
         expect(reads).not.toContain(native.childThreadId);
         expect(reads).not.toContain(foreign.childThreadId);
@@ -357,18 +369,17 @@ describe("task restorations on orchestration v2", () => {
     }).pipe(Effect.provide(makeLayer(records)));
   });
 
-  it.effect("paginates dozens of tasks without fetching children outside the page", () => {
+  it.effect("paginates dozens of tasks with an explicit matching-task limit", () => {
     const tasks = Array.from({ length: 55 }, (_, index) => task(String(index).padStart(3, "0")));
     const reads: ThreadId[] = [];
     return Effect.gen(function* () {
       const service = yield* OrchestratorMcpService;
-      const first = yield* service.listTasks(scope, {});
+      const first = yield* service.listTasks(scope, { limit: 20 });
       expect(first.tasks).toHaveLength(20);
       expect(first.nextCursor).not.toBeNull();
-      expect(reads).not.toContain(tasks[20]!.childThreadId);
-      const second = yield* service.listTasks(scope, { cursor: first.nextCursor! });
+      const second = yield* service.listTasks(scope, { limit: 20, cursor: first.nextCursor! });
       expect(second.tasks).toHaveLength(20);
-      const third = yield* service.listTasks(scope, { cursor: second.nextCursor! });
+      const third = yield* service.listTasks(scope, { limit: 20, cursor: second.nextCursor! });
       expect(third.tasks).toHaveLength(15);
       expect(third.nextCursor).toBeNull();
       expect([...first.tasks, ...second.tasks, ...third.tasks].map((item) => item.taskId)).toEqual(
@@ -395,7 +406,6 @@ describe("task restorations on orchestration v2", () => {
                   ? "cancelled"
                   : expected.status,
             result: { summary: expected.result },
-            workState: "result_available",
           });
         }
       }).pipe(Effect.provide(makeLayer(recordsFor(tasks))));
@@ -477,15 +487,15 @@ it.effect(
           TASK_LIST_RESPONSE_MAX_BYTES,
         );
         expect(result.tasks.length).toBeGreaterThan(0);
-        expect(result.tasks.length).toBeLessThanOrEqual(20);
         for (const entry of result.tasks) {
           expect(entry.result?.summary.length).toBeLessThanOrEqual(TASK_LIST_SUMMARY_MAX_CHARS);
           expect(entry.result).toMatchObject({
             summaryTruncated: true,
             summaryChars: tasks.find((task) => task.id === entry.taskId)!.result!.length,
           });
-          expect(entry.result?.summary).toContain("[truncated; call task_status");
-          expect(entry.latestTerminalResult).toBeNull();
+          expect(entry.result?.summary.length).toBeGreaterThanOrEqual(TASK_LIST_SUMMARY_MIN_CHARS);
+          expect(entry.result?.summary).toContain("[shortened; task_status returns full text]");
+          expect(entry.latestTerminalResult).toBeUndefined();
           seen.push(entry.taskId);
         }
         cursor = result.nextCursor ?? undefined;
@@ -531,57 +541,166 @@ it.effect(
     return Effect.gen(function* () {
       const service = yield* OrchestratorMcpService;
       const first = yield* service.listTasks(scope, { limit: 2 });
-      expect(first.tasks.map((entry) => entry.taskId)).toEqual([firstTask.id, secondTask.id]);
+      expect(first.tasks.map((entry) => entry.taskId)).toEqual([lastTask.id, secondTask.id]);
       const tied = task("a-new-tied");
+      const tiedNewest = task("a-new-tied-newest", { startedAt: lastTask.startedAt });
       const newer = task("a-newer", { startedAt: DateTime.makeUnsafe("2026-09-29T14:00:00Z") });
-      for (const [id, record] of recordsFor([tied, newer]))
+      for (const [id, record] of recordsFor([tied, tiedNewest, newer]))
         if (id !== parentId && id !== otherId) records.set(id, record);
       records.set(parentId, {
         ...records.get(parentId)!,
         subagents: [
           newer,
           tied,
+          tiedNewest,
           lastTask,
           { ...secondTask, updatedAt: DateTime.makeUnsafe("2026-09-30T00:00:00Z") },
           firstTask,
         ],
       });
       const second = yield* service.listTasks(scope, { cursor: first.nextCursor! });
-      expect(second.tasks.map((entry) => entry.taskId)).toEqual([tied.id, lastTask.id, newer.id]);
+      expect(second.tasks.map((entry) => entry.taskId)).toEqual([
+        newer.id,
+        tiedNewest.id,
+        tied.id,
+        firstTask.id,
+      ]);
       expect(second.nextCursor).toBeNull();
     }).pipe(Effect.provide(makeLayer(records)));
   },
 );
 
-it.effect("maps every fork status filter and advances empty filtered pages", () => {
-  const tasks = [
-    task("a-running", { status: "running", result: null }),
-    task("b-queued", { status: "pending", result: null }),
-    task("c-completed"),
-    task("d-failed", { status: "failed" }),
-    task("e-cancelled", { status: "cancelled" }),
-    task("f-interrupted", { status: "interrupted" }),
-  ];
-  return Effect.gen(function* () {
-    const service = yield* OrchestratorMcpService;
-    for (const [status, count] of [
-      ["queued", 1],
-      ["running", 1],
-      ["finished", 1],
-      ["failed", 1],
-      ["cancelled", 2],
-    ] as const) {
-      const page = yield* service.listTasks(scope, { status });
-      expect(page.tasks).toHaveLength(count);
-      expect(page.tasks.every((entry) => entry.status === status)).toBe(true);
-    }
-    const empty = yield* service.listTasks(scope, { status: "finished", limit: 2 });
-    expect(empty.tasks).toEqual([]);
-    expect(empty.nextCursor).not.toBeNull();
-    const next = yield* service.listTasks(scope, { status: "finished", cursor: empty.nextCursor! });
-    expect(next.tasks.map((entry) => entry.taskId)).toEqual([tasks[2]!.id]);
-  }).pipe(Effect.provide(makeLayer(recordsFor(tasks))));
-});
+it.effect(
+  "filters every fork status before counting limits and never returns an empty continuation",
+  () => {
+    const tasks = [
+      task("a-running", { status: "running", result: null }),
+      task("b-queued", { status: "pending", result: null }),
+      task("c-completed"),
+      task("d-failed", { status: "failed" }),
+      task("e-cancelled", { status: "cancelled" }),
+      task("f-interrupted", { status: "interrupted" }),
+    ];
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService;
+      for (const [status, count] of [
+        ["queued", 1],
+        ["running", 1],
+        ["finished", 1],
+        ["failed", 1],
+        ["cancelled", 2],
+      ] as const) {
+        const page = yield* service.listTasks(scope, { status });
+        expect(page.tasks).toHaveLength(count);
+        expect(page.tasks.every((entry) => entry.status === status)).toBe(true);
+      }
+      const finished = yield* service.listTasks(scope, { status: "finished", limit: 2 });
+      expect(finished.tasks.map((entry) => entry.taskId)).toEqual([tasks[2]!.id]);
+      expect(finished.nextCursor).toBeNull();
+      const absent = yield* service.listTasks(scope, { status: "queued" });
+      expect(absent.nextCursor).toBeNull();
+      const unreadable = yield* listFixture(
+        recordsFor([tasks[2]!]),
+        { status: "finished" },
+        { unreadable: tasks[2]!.childThreadId! },
+      );
+      expect(unreadable).toMatchObject({ tasks: [], nextCursor: null });
+    }).pipe(Effect.provide(makeLayer(recordsFor(tasks))));
+  },
+);
+
+it.effect(
+  "discovers 60 finished long results and 5 running tasks in compact bounded MCP pages",
+  () => {
+    const tasks = Array.from({ length: 65 }, (_, index) =>
+      task(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, {
+        title: `Review component ${index}`,
+        startedAt: DateTime.makeUnsafe(DateTime.toEpochMillis(now) + index),
+        ...(index < 60
+          ? { result: `Report ${index}: ` + "Long completed task result. ".repeat(1_000) }
+          : { result: null, status: "running" }),
+        completionDelivery: { state: "disposed", observedByRunId: null },
+      }),
+    );
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const calls: number[] = [];
+      for (const filter of [undefined, "running", "finished"] as const) {
+        const expected = tasks
+          .filter(
+            (_, index) => filter === undefined || (filter === "running" ? index >= 60 : index < 60),
+          )
+          .toReversed();
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        let count = 0;
+        do {
+          const response = yield* server
+            .callTool({
+              name: "task_list",
+              arguments: {
+                ...(filter === undefined ? {} : { status: filter }),
+                ...(cursor === undefined ? {} : { cursor }),
+              },
+            })
+            .pipe(
+              Effect.provideService(McpInvocationContext, scope),
+              Effect.provideService(McpSchema.McpServerClient, client),
+            );
+          const result = yield* decodeListedTasks(response.structuredContent);
+          const encoded = yield* encodeMcpResponse(response);
+          expect(Buffer.byteLength(encoded, "utf8")).toBeLessThanOrEqual(
+            TASK_LIST_RESPONSE_MAX_BYTES,
+          );
+          expect(result.tasks.length).toBeGreaterThan(0);
+          const previewLengths = new Set<number>();
+          for (const item of result.tasks) {
+            const original = tasks.find((task) => task.id === item.taskId)!;
+            expect(item).toMatchObject({
+              threadId: original.childThreadId,
+              title: original.title,
+              status: original.status === "completed" ? "finished" : "running",
+              createdBy: "agent",
+              context: { kind: "none" },
+              createdAt: DateTime.formatIso(original.startedAt!),
+            });
+            if (item.status === "finished") {
+              expect(item.result).toMatchObject({
+                summaryTruncated: true,
+                summaryChars: original.result!.length,
+              });
+              expect(item.result!.summary).toContain("[shortened; task_status returns full text]");
+              expect(item.result!.summary.length).toBeGreaterThanOrEqual(
+                TASK_LIST_SUMMARY_MIN_CHARS,
+              );
+              previewLengths.add(item.result!.summary.length);
+            } else expect(item.result).toBeNull();
+            seen.push(item.taskId);
+          }
+          expect(previewLengths.size).toBeLessThanOrEqual(1);
+          cursor = result.nextCursor ?? undefined;
+          count++;
+          expect(count).toBeLessThanOrEqual(3);
+        } while (cursor !== undefined);
+        expect(seen).toEqual(expected.map((task) => task.id));
+        calls.push(count);
+      }
+      expect(calls).toEqual([3, 1, 3]);
+      const filtered = yield* listFixture(recordsFor(tasks), { status: "running", limit: 2 });
+      expect(filtered.tasks).toHaveLength(2);
+      const none = yield* listFixture(recordsFor(tasks), { status: "failed" });
+      expect(none).toMatchObject({ tasks: [], nextCursor: null });
+      // Small threads keep long previews; larger ones shrink before paging.
+      const few = yield* listFixture(recordsFor(tasks.slice(0, 3)), {});
+      expect(few.tasks).toHaveLength(3);
+      expect(few.tasks[0]!.result!.summary).toHaveLength(TASK_LIST_SUMMARY_MAX_CHARS);
+      const some = yield* listFixture(recordsFor(tasks.slice(0, 12)), {});
+      expect(some.tasks).toHaveLength(12);
+      expect(some.nextCursor).toBeNull();
+      expect(some.tasks[0]!.result!.summary.length).toBeLessThan(TASK_LIST_SUMMARY_MAX_CHARS);
+    }).pipe(Effect.provide(makeMcpLayer(recordsFor(tasks))));
+  },
+);
 
 for (const driver of ["codex", "claudeCode"] as const) {
   it.effect(
