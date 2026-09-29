@@ -31,6 +31,7 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { cn } from "~/lib/utils";
+import { NewThreadTaskAction } from "../NewThreadTaskAction";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -332,6 +333,12 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      {isServerThread ? (
+        <NewThreadTaskAction
+          key={`${activeThreadEnvironmentId}:${activeThreadId}`}
+          threadRef={activeThreadRef}
+        />
+      ) : null}
     </div>
   );
 });

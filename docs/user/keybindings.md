@@ -36,6 +36,18 @@ on macOS and Ctrl on Windows and Linux, including GNOME, KDE Plasma, Niri, and
 Hyprland. If a custom desktop shortcut takes the same keys, choose another binding
 in Settings.
 
+## Delegate a task
+
+In an existing thread on web or desktop, choose **New task** in the chat header
+or command palette, or press `mod+alt+n`. Choose the task's provider instance,
+model and reasoning level, then describe the work. The parent agent receives a
+request to delegate, queued behind any active turn. Creating the child depends
+on the agent following that request.
+
+The child receives the task prompt; parent conversation history is not copied.
+Include the context it needs in the prompt. Change the shortcut under
+**Settings → Keybindings → Thread: New Task**.
+
 ## Copy pull request references
 
 With a PR open in the right panel or on the Pull Requests page, use `mod+shift+c`

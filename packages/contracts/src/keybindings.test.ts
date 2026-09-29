@@ -22,6 +22,17 @@ const decode = <S extends Schema.Top>(
 const decodeResolvedRule = Schema.decodeUnknownEffect(ResolvedKeybindingRule as never);
 const encodeResolvedKeybindings = Schema.encodeEffect(ResolvedKeybindingsConfig);
 
+it.effect("accepts the delegated task shortcut command", () =>
+  Effect.gen(function* () {
+    const rule = yield* decode(KeybindingRule, {
+      key: "mod+alt+n",
+      command: "thread.newTask",
+      when: "!terminalFocus",
+    });
+    assert.strictEqual(rule.command, "thread.newTask");
+  }),
+);
+
 it.effect("parses keybinding rules", () =>
   Effect.gen(function* () {
     const parsed = yield* decode(KeybindingRule, {

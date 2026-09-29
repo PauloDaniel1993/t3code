@@ -220,6 +220,7 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
+import { openNewThreadTaskDialog } from "../newThreadTaskBus";
 import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
@@ -7342,6 +7343,14 @@ export default function ChatView(props: ChatViewProps) {
         context: shortcutContext,
       });
       if (!command) return;
+
+      if (command === "thread.newTask") {
+        if (event.repeat || event.isComposing || document.querySelector('[role="dialog"]')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (isServerThread && activeThreadRef) openNewThreadTaskDialog(activeThreadRef);
+        return;
+      }
 
       if (command === "thread.copyReference") {
         event.preventDefault();
