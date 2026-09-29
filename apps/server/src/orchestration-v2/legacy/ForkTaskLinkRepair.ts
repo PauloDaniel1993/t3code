@@ -8,9 +8,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { EventSinkV2 } from "../EventSink.ts";
 import { ProjectionStoreV2 } from "../ProjectionStore.ts";
+import { recordForkImportWarning } from "../../persistence/ForkImportDiagnostics.ts";
+import { forkLegacyTaskEvents } from "./ForkLegacyTasks.ts";
 
-const REPAIR_PREFIX = "migration:fork:task-links:v1:";
-const REPAIR_COMMAND = "fork.legacy-task-links.repair-v1";
+const REPAIR_PREFIX = "migration:fork:task-links:v2:";
+const REPAIR_COMMAND = "fork.legacy-task-links.repair-v2";
 
 export class ForkTaskLinkRepairError extends Schema.TaggedError<ForkTaskLinkRepairError>()(
   "ForkTaskLinkRepairError",
@@ -42,30 +44,58 @@ export const repairForkTaskLinks = Effect.fn("repairForkTaskLinks")(
     const rows = yield* sql<{
       readonly thread_id: string;
       readonly parent_thread_id: string | null;
+      readonly task_json: string | null;
+      readonly provider_name: string | null;
     }>`
-    SELECT thread_id, parent_thread_id FROM projection_threads
+    SELECT thread.thread_id, thread.parent_thread_id, thread.task_json, session.provider_name
+    FROM projection_threads AS thread
+    LEFT JOIN projection_thread_sessions AS session ON session.thread_id = thread.thread_id
+    ORDER BY thread.thread_id
   `;
     const parents = new Map(rows.map((row) => [row.thread_id, row.parent_thread_id]));
+    const skipped = new Map<string, string>();
+    for (const row of rows) {
+      if (row.parent_thread_id !== null && !parents.has(row.parent_thread_id)) {
+        parents.set(row.thread_id, null);
+        skipped.set(
+          row.thread_id,
+          `missing parent ${row.parent_thread_id}; kept as a top-level thread.`,
+        );
+      }
+    }
+    const visited = new Set<string>();
+    for (const row of rows) {
+      const path: string[] = [];
+      const offsets = new Map<string, number>();
+      let cursor: string | null = row.thread_id;
+      while (cursor !== null && !visited.has(cursor)) {
+        const offset = offsets.get(cursor);
+        if (offset !== undefined) {
+          const cycle = path.slice(offset).sort();
+          const cut = cycle[0]!;
+          parents.set(cut, null);
+          skipped.set(
+            cut,
+            `parent cycle (${cycle.join(", ")}); deterministically removed the smallest thread id's edge and kept it top-level.`,
+          );
+          break;
+        }
+        offsets.set(cursor, path.length);
+        path.push(cursor);
+        cursor = parents.get(cursor) ?? null;
+      }
+      for (const id of path) visited.add(id);
+    }
     const roots = new Map<string, string>();
-    // Validate the complete graph before committing any repair. Deleted and
-    // archived parents still own their descendants and must not be filtered out.
+    // Compute roots after dropping only invalid edges. Archived/deleted parents
+    // remain valid owners; descendants of a cut edge inherit its new root.
     for (const row of rows) {
       const path = new Set<string>();
       let cursor = row.thread_id;
       while (!roots.has(cursor)) {
-        if (path.has(cursor)) {
-          return yield* new ForkTaskLinkRepairError({
-            message: `Legacy task ancestry contains a cycle at ${cursor}.`,
-          });
-        }
         path.add(cursor);
         const parent = parents.get(cursor);
-        if (parent === undefined) {
-          return yield* new ForkTaskLinkRepairError({
-            message: `Legacy task parent ${cursor} is missing.`,
-          });
-        }
-        if (parent === null) {
+        if (parent === null || parent === undefined) {
           roots.set(cursor, cursor);
           break;
         }
@@ -78,6 +108,13 @@ export const repairForkTaskLinks = Effect.fn("repairForkTaskLinks")(
     let repairedThreadCount = 0;
     for (const row of rows) {
       if (row.parent_thread_id === null) continue;
+      const skip = (reason: string) =>
+        recordForkImportWarning(row.thread_id, "parent_thread_id", reason, row.parent_thread_id);
+      const invalid = skipped.get(row.thread_id);
+      if (invalid !== undefined) {
+        yield* skip(invalid);
+        continue;
+      }
       const threadId = ThreadId.make(row.thread_id);
       const commandId = CommandId.make(`${REPAIR_PREFIX}${threadId}`);
       const completed = yield* sql`
@@ -90,17 +127,25 @@ export const repairForkTaskLinks = Effect.fn("repairForkTaskLinks")(
       SELECT 1 FROM orchestration_v2_legacy_imports WHERE thread_id = ${threadId}
     `;
       if (imports.length === 0) {
-        return yield* new ForkTaskLinkRepairError({
-          message: `Legacy task ${threadId} has not been imported.`,
-        });
+        yield* skip(`Legacy task ${threadId} has no import marker; no V2 record was changed.`);
+        continue;
       }
-      const current = yield* projections.getThread(threadId);
-      const parent = yield* projections.getThread(ThreadId.make(row.parent_thread_id));
+      const current = yield* projections
+        .getThread(threadId)
+        .pipe(Effect.catch(() => Effect.succeed(undefined)));
+      const parent = yield* projections
+        .getThread(ThreadId.make(row.parent_thread_id))
+        .pipe(Effect.catch(() => Effect.succeed(undefined)));
+      if (current === undefined || parent === undefined) {
+        yield* skip("Missing or unreadable imported shell; kept available threads top-level.");
+        continue;
+      }
       const rootThreadId = ThreadId.make(roots.get(row.thread_id)!);
       if (current.historyOrigin !== "v1_import" || parent.historyOrigin !== "v1_import") {
-        return yield* new ForkTaskLinkRepairError({
-          message: `Legacy task ${threadId} collides with a native V2 thread.`,
-        });
+        yield* skip(
+          `Legacy task ${threadId} collides with a native V2 thread; no V2 record was changed.`,
+        );
+        continue;
       }
       if (
         current.lineage.parentThreadId !== null &&
@@ -108,11 +153,18 @@ export const repairForkTaskLinks = Effect.fn("repairForkTaskLinks")(
           current.lineage.rootThreadId !== rootThreadId ||
           current.lineage.relationshipToParent !== "subagent")
       ) {
-        return yield* new ForkTaskLinkRepairError({
-          message: `Legacy task ${threadId} has conflicting V2 lineage.`,
-        });
+        yield* skip(
+          `Legacy task ${threadId} has conflicting V2 lineage; no V2 record was changed.`,
+        );
+        continue;
       }
       const now = yield* DateTime.now;
+      const taskEvents = yield* forkLegacyTaskEvents(
+        current,
+        parent,
+        row.task_json,
+        row.provider_name,
+      );
       const result = yield* sink.commitCommand({
         commandId,
         commandType: REPAIR_COMMAND,
@@ -136,6 +188,7 @@ export const repairForkTaskLinks = Effect.fn("repairForkTaskLinks")(
               },
             },
           },
+          ...taskEvents,
         ],
         effects: [],
       });
@@ -177,6 +230,9 @@ export const assertForkTaskLinksRepaired = Effect.fn("assertForkTaskLinksRepaire
         AND receipt.command_type = ${REPAIR_COMMAND}
         AND receipt.aggregate_id = legacy.thread_id
         AND receipt.status = 'accepted' AND receipt.result_sequence > 0
+    ) AND NOT EXISTS (
+      SELECT 1 FROM fork_v1_import_warnings AS warning
+      WHERE warning.entity_id = legacy.thread_id AND warning.field = 'parent_thread_id'
     ) LIMIT 1
   `;
   if (pending.length > 0) {

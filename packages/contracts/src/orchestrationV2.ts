@@ -1,7 +1,8 @@
 import { OrchestrationMessageContext } from "./composerContext.ts";
-import { LegacyMessageSource } from "./legacyMessageSource.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+// fork(ticket-28:source): retain exact legacy provenance once, on the timeline item.
+import { LegacyMessageSource } from "./legacyMessageSource.ts";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaGetter from "effect/SchemaGetter";
 
@@ -1009,7 +1010,6 @@ export const OrchestrationV2Notification = Schema.Struct({
 export type OrchestrationV2Notification = typeof OrchestrationV2Notification.Type;
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
-  source: Schema.optional(LegacyMessageSource),
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
@@ -1211,6 +1211,7 @@ export type OrchestrationV2UserMessageInputIntent =
   typeof OrchestrationV2UserMessageInputIntent.Type;
 
 const OrchestrationV2TurnItemBaseFields = {
+  // fork(ticket-28:source): shared by runtime and JSON schemas, including reasoning.
   legacyMessageSource: Schema.optional(LegacyMessageSource),
   toolSurface: Schema.optional(ToolActivitySurface),
   toolIcon: Schema.optional(ToolActivityIcon),
@@ -1275,7 +1276,6 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("reasoning"),
-    messageId: Schema.optional(MessageId),
     text: Schema.String,
     streaming: Schema.Boolean,
   }),
@@ -1999,7 +1999,6 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("reasoning"),
-    messageId: Schema.optional(MessageId),
     text: Schema.String,
     streaming: Schema.Boolean,
   }),

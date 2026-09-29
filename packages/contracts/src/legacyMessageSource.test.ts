@@ -1,10 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import {
-  OrchestrationV2ConversationMessageJson,
-  OrchestrationV2TurnItemJson,
-} from "./orchestrationV2.ts";
+import { OrchestrationV2TurnItemJson } from "./orchestrationV2.ts";
 
 const stamp = "2026-01-01T00:00:00.000Z";
 const message = {
@@ -40,19 +37,32 @@ const item = {
 
 describe("legacy message provenance", () => {
   it("round-trips exact source tags without changing old messages", () => {
-    const decode = Schema.decodeUnknownSync(OrchestrationV2ConversationMessageJson);
-    const encode = Schema.encodeSync(OrchestrationV2ConversationMessageJson);
+    const decode = Schema.decodeUnknownSync(OrchestrationV2TurnItemJson);
+    const encode = Schema.encodeSync(OrchestrationV2TurnItemJson);
+    const userItem = {
+      ...item,
+      type: "user_message",
+      createdBy: message.createdBy,
+      creationSource: message.creationSource,
+      messageId: message.id,
+      inputIntent: "turn_start",
+      text: message.text,
+      attachments: [],
+    };
     for (const source of ["user", "provider", "system", "task-result"]) {
-      expect(encode(decode({ ...message, source }))).toEqual({ ...message, source });
+      expect(encode(decode({ ...userItem, legacyMessageSource: source }))).toEqual({
+        ...userItem,
+        legacyMessageSource: source,
+      });
     }
-    expect(encode(decode(message))).toEqual(message);
+    expect(encode(decode(userItem))).toEqual(userItem);
   });
 
   it("round-trips reasoning identity and provenance in the existing timeline variant", () => {
     const legacy = {
       ...item,
       type: "reasoning",
-      messageId: "reasoning-message",
+      id: "migration:v1:turn-item:reasoning-message",
       legacyMessageSource: "provider",
       text: "Thinking",
       streaming: false,

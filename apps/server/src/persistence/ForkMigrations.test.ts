@@ -20,7 +20,7 @@ it.effect("keeps upstream and fork histories separate on fresh startup and resta
     const base = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     const fork = yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`;
     assert.lengthOf(base, 56);
-    assert.lengthOf(fork, 8);
+    assert.lengthOf(fork, 9);
     yield* migrate;
     assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, base);
     assert.deepEqual(yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`, fork);

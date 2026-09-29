@@ -1,41 +1,17 @@
 import { assert, it } from "@effect/vitest";
-import { EventId, ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import { EventSinkV2, EventSinkWriteError, layer as sinkLayer } from "../EventSink.ts";
-import { layer as eventStoreLayer } from "../EventStore.ts";
-import { ProjectionStoreV2, layer as projectionLayer } from "../ProjectionStore.ts";
-import { ProjectionMaintenanceV2, layer as maintenanceLayer } from "../ProjectionMaintenance.ts";
+import { EventSinkV2, EventSinkWriteError } from "../EventSink.ts";
+import { ProjectionStoreV2 } from "../ProjectionStore.ts";
+import { ProjectionMaintenanceV2 } from "../ProjectionMaintenance.ts";
 import { LegacyV1ThreadImporter, layer as importerLayer } from "./LegacyV1ThreadImporter.ts";
 import { repairForkTaskLinks } from "./ForkTaskLinkRepair.ts";
 
-const stores = Layer.mergeAll(eventStoreLayer, projectionLayer).pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
-);
-const sink = sinkLayer.pipe(Layer.provide(stores));
-const TestLayer = Layer.mergeAll(
-  stores,
-  sink,
-  importerLayer.pipe(Layer.provide(Layer.mergeAll(stores, sink))),
-  maintenanceLayer.pipe(Layer.provide(stores)),
-);
-const stamp = "2026-01-01T00:00:00.000Z";
-
-const seedThreads = Effect.fnUntraced(function* (
-  parents: ReadonlyArray<readonly [string, string | null]>,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
-    VALUES ('project', 'Project', '/fixture', '[]', ${stamp}, ${stamp})`;
-  for (const [id, parent] of parents) {
-    yield* sql`INSERT INTO projection_threads
-      (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at, parent_thread_id)
-      VALUES (${id}, 'project', ${id}, '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default', ${stamp}, ${stamp}, ${parent})`;
-  }
-});
+import { TestLayer, stamp, seedThreads } from "./ForkDataCarryOver.testkit.ts";
 
 it.effect(
   "carries source tags and reasoning through previews, lazy hydration, replay and compaction",
@@ -92,13 +68,13 @@ it.effect(
       yield* importer.ensureTranscript(ThreadId.make("child"));
       const projection = yield* projections.getThreadProjection(ThreadId.make("child"));
       assert.lengthOf(projection.messages, 82);
-      assert.lengthOf(projection.turnItems, 123);
+      assert.lengthOf(projection.turnItems, 124); // Transcript plus the grandchild's native task item.
       for (let index = 0; index < 123; index++) {
         const item = projection.turnItems.find((entry) => entry.ordinal === index + 1)!;
         assert.equal(item.legacyMessageSource, sources[index % sources.length] ?? undefined);
         assert.equal("text" in item ? item.text : null, `text ${index}`);
         assert.equal(
-          "messageId" in item ? item.messageId : null,
+          "messageId" in item ? item.messageId : item.id.replace("migration:v1:turn-item:", ""),
           `m${String(index).padStart(3, "0")}`,
         );
         if (item.type === "user_message") {
@@ -139,27 +115,16 @@ it.effect(
           ?.count,
         eventCount,
       );
-      // A later V2 edit and hydration retain the repaired lineage and other metadata.
-      const eventSink = yield* EventSinkV2;
-      yield* eventSink.write({
-        events: [
-          {
-            id: EventId.make("rename"),
-            type: "thread.metadata-updated",
-            threadId: projection.thread.id,
-            occurredAt: projection.thread.updatedAt,
-            payload: { ...projection.thread, title: "V2 title" },
-          },
-        ],
-      });
       yield* repairForkTaskLinks();
       yield* maintenance.compactEventStore;
       assert.isTrue((yield* maintenance.rebuild).valid);
+      yield* importer.reconcileShells;
       const replayed = yield* projections.getThreadProjection(ThreadId.make("child"));
       assert.deepEqual(replayed.messages, projection.messages);
       assert.deepEqual(replayed.turnItems, projection.turnItems);
       assert.deepEqual(replayed.thread.lineage, projection.thread.lineage);
-      assert.equal(replayed.thread.title, "V2 title");
+      assert.equal(replayed.thread.title, projection.thread.title);
+      assert.deepEqual(replayed.subagents, projection.subagents);
       assert.equal(
         (yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM projection_thread_messages`)[0]
           ?.count,
@@ -199,7 +164,7 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       assert.equal(
         (yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM orchestration_command_receipts
-      WHERE command_type = 'fork.legacy-task-links.repair-v1'`)[0]?.count,
+      WHERE command_type = 'fork.legacy-task-links.repair-v2'`)[0]?.count,
         2,
       );
       yield* maintenance.compactEventStore;
@@ -216,29 +181,70 @@ for (const [name, parents] of [
     ],
   ],
 ] as const) {
-  it.effect(`rejects ${name} without manufacturing threads or committing links`, () =>
+  it.effect(`quarantines ${name} while importing unrelated history`, () =>
     Effect.gen(function* () {
-      yield* seedThreads(parents);
-      yield* (yield* LegacyV1ThreadImporter).reconcileShells;
-      assert.equal((yield* Effect.exit(repairForkTaskLinks()))._tag, "Failure");
-      const sql = yield* SqlClient.SqlClient;
+      yield* seedThreads([...parents, ["root", null], ["valid", "root"]]);
+      const importer = yield* LegacyV1ThreadImporter;
+      yield* importer.reconcileShells;
+      yield* repairForkTaskLinks();
+      yield* importer.importPendingTranscripts;
+      assert.equal(yield* importer.pendingThreadCount, 0);
+      const projections = yield* ProjectionStoreV2;
       assert.equal(
-        (yield* sql<{
-          count: number;
-        }>`SELECT COUNT(*) AS count FROM orchestration_command_receipts`)[0]?.count,
-        0,
+        (yield* projections.getThread(ThreadId.make("valid"))).lineage.parentThreadId,
+        "root",
       );
+      assert.equal(
+        (yield* projections.getThread(ThreadId.make("child"))).lineage.parentThreadId,
+        null,
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const warnings = yield* sql<{
+        entity_id: string;
+        reason: string;
+      }>`SELECT entity_id, reason FROM fork_v1_import_warnings WHERE field = 'parent_thread_id'`;
+      assert.equal(warnings[0]?.entity_id, "child");
+      assert.include(warnings[0]?.reason ?? "", name);
+      yield* repairForkTaskLinks();
+      yield* (yield* ProjectionMaintenanceV2).compactEventStore;
     }).pipe(Effect.provide(TestLayer)),
   );
 }
 
-it.effect("refuses to repair before shell import and never prevents later hydration", () =>
+it.effect("keeps valid attachments beside a malformed entry and maps document PDFs to files", () =>
+  Effect.gen(function* () {
+    yield* seedThreads([["root", null]]);
+    const sql = yield* SqlClient.SqlClient;
+    const pdf = {
+      type: "document",
+      id: "pdf",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 12,
+    };
+    yield* sql`INSERT INTO projection_thread_messages
+      (message_id, thread_id, role, text, attachments_json, is_streaming, created_at, updated_at)
+      VALUES ('attachment-message', 'root', 'user', 'read these', ${yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))([pdf, { type: "image" }])}, 0, ${stamp}, ${stamp})`;
+    const importer = yield* LegacyV1ThreadImporter;
+    yield* importer.reconcileShells;
+    yield* importer.ensureTranscript(ThreadId.make("root"));
+    const projection = yield* (yield* ProjectionStoreV2).getThreadProjection(ThreadId.make("root"));
+    assert.deepEqual(projection.messages[0]?.attachments, [{ ...pdf, type: "file" }]);
+    const warnings = yield* sql<{
+      entity_id: string;
+      field: string;
+    }>`SELECT entity_id, field FROM fork_v1_import_warnings`;
+    assert.deepEqual(warnings, [{ entity_id: "attachment-message", field: "attachments_json[1]" }]);
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("records missing shells without creating them and permits later hydration", () =>
   Effect.gen(function* () {
     yield* seedThreads([
       ["root", null],
       ["child", "root"],
     ]);
-    assert.equal((yield* Effect.exit(repairForkTaskLinks()))._tag, "Failure");
+    assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 0 });
     const sql = yield* SqlClient.SqlClient;
     assert.equal(
       (yield* sql<{

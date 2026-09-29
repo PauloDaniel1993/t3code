@@ -11,7 +11,7 @@ import {
   ModelSelection,
   type OrchestrationV2AppThread,
   OrchestrationV2AppThreadJson,
-  OrchestrationV2ConversationMessage,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
   ProjectId,
@@ -32,6 +32,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { EventSinkV2 } from "../EventSink.ts";
 import { makeKeyedSerialExecutor } from "../KeyedSerialExecutor.ts";
 import { randomUuidV4 } from "../RandomUuid.ts";
+
+// fork(ticket-28:messages): source/reasoning/attachment mapping stays in a fork-owned wrapper.
+import { makeForkLegacyMessageEvents, forkLegacyMessageRoles } from "./ForkLegacyMessages.ts";
+// fork(ticket-28:compatibility): refuse incompatible prior imports before shell/hydration work.
+import { assertForkImportCompatible } from "./ForkImportCompatibility.ts";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
 const TRANSCRIPT_EVENT_BATCH_SIZE = 100;
@@ -70,6 +75,7 @@ interface LegacyRepairRow extends LegacyThreadRow {
 interface LegacyMessageRow {
   readonly message_id: string;
   readonly thread_id: string;
+  // fork(ticket-28:source,reasoning): read provenance and thinking from the copied V1 rows.
   readonly role: "user" | "assistant" | "reasoning";
   readonly source: string | null;
   readonly text: string;
@@ -122,10 +128,6 @@ export class LegacyV1ThreadImporter extends Context.Service<
 
 const decodeModelSelection = Schema.decodeUnknownOption(ModelSelection);
 const decodeAttachments = Schema.decodeUnknownOption(Schema.Array(ChatAttachment));
-const decodeMessageSource = Schema.decodeUnknownSync(
-  OrchestrationV2ConversationMessage.fields.source,
-);
-const decodeMessageContext = Schema.decodeUnknownSync(OrchestrationMessageContext);
 const decodePullRequests = Schema.decodeUnknownOption(Schema.Array(ThreadPullRequestLink));
 const decodeLinkedPullRequest = Schema.decodeUnknownOption(ThreadLinkedPullRequest);
 const decodeStoredThread = Schema.decodeUnknownOption(
@@ -247,24 +249,37 @@ function importedThread(row: LegacyThreadRow): OrchestrationV2AppThread {
   };
 }
 
-function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2DomainEvent> {
+// fork(ticket-28:messages): the wrapper handles reasoning; keep upstream conversation mapping intact.
+function messageEvents(
+  row: LegacyMessageRow & { readonly role: "user" | "assistant" },
+): ReadonlyArray<OrchestrationV2DomainEvent> {
   const threadId = ThreadId.make(row.thread_id);
   const messageId = MessageId.make(row.message_id);
   const createdAt = dateTime(row.created_at);
   const updatedAt = dateTime(row.updated_at);
   const attachments = attachmentsFor(row);
-  const source = decodeMessageSource(row.source ?? undefined);
-  const createdBy =
-    source === "task-result" || source === "system"
-      ? "system"
-      : source === "provider"
-        ? "agent"
-        : source === "user" || row.role === "user"
-          ? "user"
-          : "agent";
-  const creationSource = source === "provider" ? "provider" : "server";
+  const message: OrchestrationV2ConversationMessage = {
+    createdBy: row.role === "user" ? "user" : "agent",
+    creationSource: "server",
+    id: messageId,
+    threadId,
+    runId: null,
+    nodeId: null,
+    role: row.role,
+    text: row.text,
+    ...(row.context_json
+      ? {
+          context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
+            parseJson(row.context_json),
+          ),
+        }
+      : {}),
+    attachments,
+    streaming: false,
+    createdAt,
+    updatedAt,
+  };
   const baseTurnItem = {
-    ...(source === undefined ? {} : { legacyMessageSource: source }),
     id: TurnItemId.make(`${IMPORT_EVENT_PREFIX}:turn-item:${row.message_id}`),
     threadId,
     runId: null,
@@ -280,58 +295,21 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
     completedAt: updatedAt,
     updatedAt,
   };
-  // V2 represents thinking as a timeline item, not an assistant reply. Keep
-  // the legacy message id so the imported trace remains independently auditable.
-  if (row.role === "reasoning") {
-    return [
-      {
-        id: EventId.make(`${IMPORT_EVENT_PREFIX}:turn-item:${row.message_id}`),
-        type: "turn-item.updated",
-        threadId,
-        occurredAt: updatedAt,
-        payload: {
-          ...baseTurnItem,
-          type: "reasoning",
-          messageId,
-          text: row.text,
-          streaming: false,
-        },
-      },
-    ];
-  }
-  const message: OrchestrationV2ConversationMessage = {
-    createdBy,
-    creationSource,
-    ...(source === undefined ? {} : { source }),
-    id: messageId,
-    threadId,
-    runId: null,
-    nodeId: null,
-    role: row.role,
-    text: row.text,
-    ...(row.context_json
-      ? {
-          context: decodeMessageContext(parseJson(row.context_json)),
-        }
-      : {}),
-    attachments,
-    streaming: false,
-    createdAt,
-    updatedAt,
-  };
   const turnItem: OrchestrationV2TurnItem =
     row.role === "user"
       ? {
           ...baseTurnItem,
-          createdBy,
-          creationSource,
+          createdBy: "user",
+          creationSource: "server",
           type: "user_message",
           messageId,
           inputIntent: "turn_start",
           text: row.text,
           ...(row.context_json
             ? {
-                context: decodeMessageContext(parseJson(row.context_json)),
+                context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
+                  parseJson(row.context_json),
+                ),
               }
             : {}),
           attachments,
@@ -343,7 +321,9 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
           text: row.text,
           ...(row.context_json
             ? {
-                context: decodeMessageContext(parseJson(row.context_json)),
+                context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
+                  parseJson(row.context_json),
+                ),
               }
             : {}),
           streaming: false,
@@ -378,6 +358,8 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const eventSink = yield* EventSinkV2;
   const transcriptImports = yield* makeKeyedSerialExecutor<ThreadId>();
+  // fork(ticket-28:messages): capture persistence for per-entry import diagnostics.
+  const forkMessageEvents = yield* makeForkLegacyMessageEvents<LegacyMessageRow>(messageEvents);
 
   const listMessages = (threadId: ThreadId) =>
     sql<LegacyMessageRow>`
@@ -385,6 +367,7 @@ const make = Effect.gen(function* () {
         message_id,
         thread_id,
         role,
+        -- fork(ticket-28:source): read exact legacy provenance.
         source,
         text,
         attachments_json,
@@ -398,7 +381,8 @@ const make = Effect.gen(function* () {
         ) AS ordinal
       FROM projection_thread_messages
       WHERE thread_id = ${threadId}
-        AND role IN ('user', 'assistant', 'reasoning')
+        -- fork(ticket-28:reasoning): previews and hydration share the same ordinal space.
+        AND ${sql.in("role", forkLegacyMessageRoles)}
       ORDER BY created_at ASC, message_id ASC
     `;
 
@@ -409,6 +393,7 @@ const make = Effect.gen(function* () {
           message.message_id,
           message.thread_id,
           message.role,
+          -- fork(ticket-28:source): read exact legacy provenance.
           message.source,
           message.text,
           message.attachments_json,
@@ -420,7 +405,8 @@ const make = Effect.gen(function* () {
             SELECT COUNT(*)
             FROM projection_thread_messages AS earlier
             WHERE earlier.thread_id = message.thread_id
-              AND earlier.role IN ('user', 'assistant', 'reasoning')
+              -- fork(ticket-28:reasoning): previews and hydration share the same ordinal space.
+              AND ${sql.in("earlier.role", forkLegacyMessageRoles)}
               AND (
                 earlier.created_at < message.created_at
                 OR (
@@ -431,7 +417,8 @@ const make = Effect.gen(function* () {
           ) AS ordinal
         FROM projection_thread_messages AS message
         WHERE message.thread_id = ${threadId}
-          AND message.role IN ('user', 'assistant', 'reasoning')
+          -- fork(ticket-28:reasoning): previews and hydration share the same ordinal space.
+          AND ${sql.in("message.role", forkLegacyMessageRoles)}
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
       `;
@@ -440,6 +427,7 @@ const make = Effect.gen(function* () {
           message.message_id,
           message.thread_id,
           message.role,
+          -- fork(ticket-28:source): read exact legacy provenance.
           message.source,
           message.text,
           message.attachments_json,
@@ -451,7 +439,8 @@ const make = Effect.gen(function* () {
             SELECT COUNT(*)
             FROM projection_thread_messages AS earlier
             WHERE earlier.thread_id = message.thread_id
-              AND earlier.role IN ('user', 'assistant', 'reasoning')
+              -- fork(ticket-28:reasoning): previews and hydration share the same ordinal space.
+              AND ${sql.in("earlier.role", forkLegacyMessageRoles)}
               AND (
                 earlier.created_at < message.created_at
                 OR (
@@ -474,6 +463,8 @@ const make = Effect.gen(function* () {
     });
 
   const reconcileShellsBase = Effect.gen(function* () {
+    // fork(ticket-28:compatibility): completed omissions and partial ordinal collisions need a fresh seed.
+    yield* assertForkImportCompatible().pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const now = DateTime.formatIso(yield* DateTime.now);
     const repairRows = yield* sql<LegacyRepairRow>`
       SELECT
@@ -621,6 +612,8 @@ const make = Effect.gen(function* () {
     for (const row of rows) {
       const thread = importedThread(row);
       const previews = yield* listShellMessages(thread.id);
+      // fork(ticket-28:messages): map source/reasoning and salvage attachments with durable warnings.
+      const previewEvents = yield* Effect.forEach(previews, forkMessageEvents);
       const events: Array<OrchestrationV2DomainEvent> = [
         {
           id: EventId.make(`${IMPORT_EVENT_PREFIX}:thread:${row.thread_id}:created`),
@@ -630,7 +623,8 @@ const make = Effect.gen(function* () {
           occurredAt: thread.createdAt,
           payload: thread,
         },
-        ...previews.flatMap(messageEvents),
+        // fork(ticket-28:messages): append the fork-mapped preview events.
+        ...previewEvents.flat(),
         {
           id: EventId.make(`${IMPORT_EVENT_PREFIX}:thread:${row.thread_id}:shell`),
           type: "thread.metadata-updated",
@@ -748,10 +742,12 @@ const make = Effect.gen(function* () {
           WHERE application_event_version = 2
             AND aggregate_kind = 'thread'
             AND stream_id = ${threadId}
+            -- fork(ticket-28:reasoning): reasoning has only its turn-item event.
             AND event_id LIKE ${`${IMPORT_EVENT_PREFIX}:turn-item:%`}
         `;
         const existing = new Set(existingRows.map((row) => row.event_id));
         const missing = messages.filter(
+          // fork(ticket-28:reasoning): retry by the paired timeline identity for every role.
           (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:turn-item:${message.message_id}`),
         );
         for (const batch of chunks(missing, TRANSCRIPT_EVENT_BATCH_SIZE / 2)) {
@@ -773,7 +769,9 @@ const make = Effect.gen(function* () {
               `,
             { discard: true },
           );
-          yield* eventSink.write({ events: batch.flatMap(messageEvents) });
+          // fork(ticket-28:messages): use the same fork mapping as shell previews.
+          const events = yield* Effect.forEach(batch, forkMessageEvents);
+          yield* eventSink.write({ events: events.flat() });
           yield* Effect.yieldNow;
         }
         const now = DateTime.formatIso(yield* DateTime.now);

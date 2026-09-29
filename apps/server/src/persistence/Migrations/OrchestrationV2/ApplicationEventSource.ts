@@ -1,6 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+// fork(ticket-28:project-json): validate copied projects before creating their baseline.
+import { prepareForkLegacyProjects } from "../../ForkLegacyProjects.ts";
 
 interface LegacyV2EventRow {
   readonly event_id: string;
@@ -126,6 +128,8 @@ export default Effect.gen(function* () {
   // ProjectService wrote this projection directly before the application event
   // boundary was restored. Re-baseline every current row into the shared log so
   // projection rebuilds preserve the exact pre-migration project state.
+  // fork(ticket-28:project-json): retain invalid values in the warning ledger, use safe defaults.
+  yield* prepareForkLegacyProjects();
   const projectRows = yield* sql<ProjectProjectionRow>`
     SELECT
       project_id,
