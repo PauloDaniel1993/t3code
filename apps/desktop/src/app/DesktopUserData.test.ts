@@ -7,6 +7,25 @@ import * as PlatformError from "effect/PlatformError";
 
 import { resolveUserDataPath } from "./DesktopUserData.ts";
 
+it.effect("selects a local profile without reading or migrating any official profile", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const profile = yield* resolveUserDataPath({
+      appDataDirectory: "local-appdata",
+      isDevelopment: false,
+      platform: "win32",
+      isLocalIdentity: true,
+    });
+    assert.equal(profile, path.join("local-appdata", "t3code-v2-local"));
+  }).pipe(
+    Effect.provideService(
+      FileSystem.FileSystem,
+      FileSystem.makeNoop({ exists: () => Effect.die("must not inspect another profile") }),
+    ),
+    Effect.provide(NodeServices.layer),
+  ),
+);
+
 it.effect("identifies a failed source read and preserves its cause", () => {
   const sourceState = "/profiles/t3code/Local State";
   const cause = PlatformError.systemError({

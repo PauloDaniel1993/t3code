@@ -34,6 +34,7 @@ import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
 import * as DesktopAppActivation from "./app/DesktopAppActivation.ts";
 import * as DesktopAppIdentity from "./app/DesktopAppIdentity.ts";
+import { applyInstalledDesktopBootstrap } from "./app/DesktopInstallBootstrap.ts";
 import * as DesktopConnectionCatalogStore from "./app/DesktopConnectionCatalogStore.ts";
 import * as DesktopClerk from "./app/DesktopClerk.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
@@ -68,6 +69,16 @@ import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
+
+applyInstalledDesktopBootstrap({
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Synchronous installed identity boundary before desktop layers.
+  platform: process.platform,
+  isPackaged: Electron.app.isPackaged,
+  appPath: Electron.app.getAppPath(),
+  executablePath: process.execPath,
+  homeDirectory: NodeOS.homedir(),
+  env: process.env,
+});
 
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {

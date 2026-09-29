@@ -14,6 +14,7 @@ import {
   resolveDesktopStateDir,
   type JoinPath,
 } from "./DesktopStatePaths.ts";
+import { LOCAL_DESKTOP_IDENTITY } from "../../../../scripts/lib/local-desktop-identity.ts";
 
 interface EarlyDesktopSettingsInput {
   readonly env: NodeJS.ProcessEnv;
@@ -31,8 +32,15 @@ export interface EarlyLinuxElectronOptions {
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
 }
 
-export const resolveLinuxDesktopEntryName = (isDevelopment: boolean): string =>
-  isDevelopment ? "com.t3tools.T3Code.Development.desktop" : "com.t3tools.T3Code.desktop";
+export const resolveLinuxDesktopEntryName = (
+  isDevelopment: boolean,
+  localIdentity = false,
+): string =>
+  localIdentity
+    ? `${LOCAL_DESKTOP_IDENTITY.appId}.desktop`
+    : isDevelopment
+      ? "com.t3tools.T3Code.Development.desktop"
+      : "com.t3tools.T3Code.desktop";
 
 const trimNonEmpty = (value: string | undefined): string | null => {
   const trimmed = value?.trim();
@@ -86,10 +94,15 @@ export function resolveEarlyLinuxElectronOptions(
 ): EarlyLinuxElectronOptions {
   const preference = resolveEarlyLinuxPasswordStorePreference(input);
   const isDevelopment = isDevelopmentEnvironment(input.env);
+  const localIdentity = input.env.T3CODE_DESKTOP_LOCAL_IDENTITY === "true";
   return {
     isDevelopment,
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
+    linuxWmClass: localIdentity
+      ? LOCAL_DESKTOP_IDENTITY.packageName
+      : isDevelopment
+        ? "t3code-dev"
+        : "t3code",
+    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, localIdentity),
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,
       env: input.env,

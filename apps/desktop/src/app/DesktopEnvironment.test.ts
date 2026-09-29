@@ -40,6 +40,24 @@ const makeEnvironment = (
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("gives the local build its own home, profile parent and app identity", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        { platform: "win32", isPackaged: true },
+        {
+          T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
+          APPDATA: "/official/profiles",
+          T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code",
+        },
+      );
+      assert.equal(environment.baseDir, "/Users/alice/.t3.v2");
+      assert.equal(environment.stateDir, "/Users/alice/.t3.v2/userdata");
+      assert.equal(environment.appDataDirectory, "/Users/alice/.t3.v2/appdata");
+      assert.equal(environment.appUserModelId, "com.t3tools.t3code.v2.local");
+      assert.equal(environment.branding.displayName, "T3 v2.local");
+      assert.equal(environment.linuxWmClass, "t3code-v2-local");
+    }),
+  );
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(

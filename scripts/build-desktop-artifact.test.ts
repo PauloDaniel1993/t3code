@@ -268,6 +268,40 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
   });
 
+  it.effect("packages local builds with a distinct identity and no official update feed", () =>
+    Effect.gen(function* () {
+      for (const version of [
+        "0.0.43",
+        "0.0.43-nightly.20260929.1",
+        "0.0.43-preview.20260928.2413",
+      ]) {
+        const config = yield* createBuildConfig(
+          "win",
+          "dir",
+          version,
+          false,
+          true,
+          3000,
+          undefined,
+          false,
+          "x64",
+          true,
+        );
+        assert.equal(config.appId, "com.t3tools.t3code.v2.local");
+        assert.equal(config.productName, "T3 v2.local");
+        assert.equal(config.executableName, "T3 v2.local");
+        assert.equal(config.artifactName, "T3-Code-v2-local-${version}-${arch}.${ext}");
+        assert.notProperty(config, "publish");
+      }
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
+        ),
+      ),
+    ),
+  );
+
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17"), {
       macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,

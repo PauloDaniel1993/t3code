@@ -702,6 +702,9 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
   // changes between probing and spawning the backend.
   const runningDistro = preflight._tag === "Ready" ? preflight.runningDistro : null;
   const distroForConfig = runningDistro ?? input.distro;
+  const localWslHome = environment.isLocalIdentity
+    ? yield* wslEnvironment.getUserHome(distroForConfig)
+    : Option.none<string>();
 
   // Resolve the selected distro's IPv4 address. In mirrored mode the distro
   // reports a host interface, so use loopback instead; a failed probe also
@@ -753,7 +756,9 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     // env is already a complete process.env minus T3CODE_HOME; pass it
     // verbatim instead of letting the spawner re-merge process.env on top.
     extendEnv: false,
-    bootstrap,
+    bootstrap: Option.isSome(localWslHome)
+      ? { ...bootstrap, t3Home: `${localWslHome.value}/.t3.v2` }
+      : bootstrap,
     bootstrapDelivery: "stdin" as const,
     httpBaseUrl,
     captureOutput: true,
@@ -767,6 +772,17 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     onNone: () => [] as ReadonlyArray<string>,
     onSome: (url) => ["--dev-url", url.href],
   });
+
+  if (environment.isLocalIdentity && Option.isNone(localWslHome)) {
+    return {
+      ...baseConfig,
+      args: [...distroArgs, "--", "node", "--version"],
+      preflightFailure: Option.some({
+        reason: "Could not resolve an isolated T3 v2.local home in WSL.",
+        fatal: true,
+      }),
+    };
+  }
 
   if (preflight._tag === "Failed") {
     const retryLimit =

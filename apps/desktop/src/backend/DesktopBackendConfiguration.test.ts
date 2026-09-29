@@ -61,6 +61,7 @@ function makeEnvironmentLayer(
     readonly resourcesPath?: string;
     readonly appVersion?: string;
     readonly processArch?: NodeJS.Architecture;
+    readonly localIdentity?: boolean;
     readonly otlpTracesUrl?: string;
     readonly otlpMetricsUrl?: string;
     readonly otlpLogsUrl?: string;
@@ -84,6 +85,7 @@ function makeEnvironmentLayer(
           T3CODE_HOME: baseDir,
           T3CODE_PORT: "9999",
           T3CODE_MODE: "desktop",
+          T3CODE_DESKTOP_LOCAL_IDENTITY: options?.localIdentity ? "true" : "false",
           T3CODE_DESKTOP_LAN_HOST: "192.168.1.50",
           VITE_DEV_SERVER_URL: options?.devServerUrl,
           T3CODE_OTLP_TRACES_URL: options?.otlpTracesUrl,
@@ -150,6 +152,7 @@ const withPackagedWslHarness = <A, E, R>(
     readonly forbidFallback?: string;
     readonly cleanupLegacy?: Effect.Effect<void>;
     readonly forbidCleanup?: string;
+    readonly localIdentity?: boolean;
   },
   effect: (
     context: PackagedWslHarnessContext,
@@ -217,6 +220,7 @@ const withPackagedWslHarness = <A, E, R>(
               appPath: baseDir,
               platform: "win32",
               resourcesPath: baseDir,
+              localIdentity: input.localIdentity ?? false,
             }),
           ),
         ),
@@ -225,6 +229,38 @@ const withPackagedWslHarness = <A, E, R>(
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 describe("DesktopBackendConfiguration", () => {
+  it.effect("local WSL uses the selected distro's V2 home and refuses an unknown home", () =>
+    Effect.gen(function* () {
+      for (const home of [Option.some("/home/alice"), Option.none<string>()]) {
+        yield* withPackagedWslHarness(
+          {
+            archiveHash: "b".repeat(64),
+            localIdentity: true,
+            wsl: () => ({
+              prepareRuntime: () => ({
+                ok: true,
+                linuxAppRoot: "/home/alice/.t3.v2/wsl-runtime/fixture",
+              }),
+              getUserHome: () => home,
+            }),
+          },
+          () =>
+            Effect.gen(function* () {
+              const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+              const config = yield* configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
+              if (Option.isSome(home)) {
+                assert.equal(config.bootstrap.t3Home, "/home/alice/.t3.v2");
+                assert.isTrue(Option.isNone(config.preflightFailure));
+              } else {
+                const failure = Option.getOrThrow(config.preflightFailure);
+                assert.isTrue(failure.fatal);
+                assert.include(failure.reason, "isolated T3 v2.local home");
+              }
+            }),
+        );
+      }
+    }),
+  );
   it.effect("resolvePrimary produces a stable scoped bootstrap token", () =>
     withHarness(
       Effect.gen(function* () {

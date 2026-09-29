@@ -28,6 +28,18 @@ import {
 
 const encoder = new TextEncoder();
 
+it("keeps local WSL runtime install, prune and invalidation inside the V2 home", () => {
+  const scripts = [
+    buildWslRuntimeInstallScript("/fixture/runtime.tar.gz", "fixture", "fixture", ".t3.v2"),
+    buildWslRuntimePruneScript("fixture", ".t3.v2"),
+    buildWslRuntimeInvalidateScript("fixture", ".t3.v2"),
+  ];
+  for (const script of scripts) {
+    expect(script).toContain("$HOME/.t3.v2/wsl-runtime");
+    expect(script).not.toContain("$HOME/.t3/wsl-runtime");
+  }
+});
+
 // The install script only fails the way this file cares about when a real shell
 // runs it, so find one that has the tools it needs: bash directly on Linux, and
 // the WSL distro on a Windows dev box, where Git Bash ships no flock. Anywhere
