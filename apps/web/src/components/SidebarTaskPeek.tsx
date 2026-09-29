@@ -2,6 +2,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 import {
   formatSidebarTaskStatus,
   resolveSidebarTaskState,
+  sidebarTaskWasReturned,
 } from "@t3tools/client-runtime/state/sidebar-task-subthreads";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { type OrchestrationV2Subagent, type ScopedThreadRef } from "@t3tools/contracts";
@@ -353,7 +354,7 @@ function TaskPeek({
       ) : null}
       {task?.completionDelivery ? (
         <p className="mt-3 text-xs text-muted-foreground">
-          {task.completionDelivery.state === "delivered"
+          {sidebarTaskWasReturned(task)
             ? "↩ Returned results to the parent thread"
             : task.completionDelivery.state === "disposed"
               ? "Result delivery stopped"

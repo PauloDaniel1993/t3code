@@ -1,13 +1,19 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useEffect } from "react";
-import { useThreadProjection, useThreadShell } from "../state/entities";
+import { useThreadShell } from "../state/entities";
 import { useUiStateStore } from "../uiStateStore";
+import {
+  useSidebarTaskProjection,
+  useRememberSidebarTaskPresentation,
+} from "./sidebarTaskPresentation";
 
 /** Task delivery unread state stays local even when V2 syncs ordinary thread visits. */
 export function SidebarTaskVisits({ threadRef }: { threadRef: ScopedThreadRef | null }) {
   const thread = useThreadShell(threadRef);
-  const subagents = useThreadProjection(threadRef)?.projection.subagents;
+  const presentation = useSidebarTaskProjection(threadRef);
+  useRememberSidebarTaskPresentation(threadRef, presentation);
+  const subagents = presentation?.subagents;
   const visit = useUiStateStore((state) => state.markThreadVisited);
   const environmentId = thread?.environmentId;
   const threadId = thread?.id;

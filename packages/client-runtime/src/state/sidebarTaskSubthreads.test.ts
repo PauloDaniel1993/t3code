@@ -18,7 +18,7 @@ import {
   formatSidebarTaskStatus,
   isSidebarTaskThread,
   resolveSidebarTaskState,
-  sidebarNativeAgents,
+  sidebarTaskWasReturned,
   sidebarTaskCountLabel,
   sidebarHasUnreadTaskResults,
 } from "./sidebarTaskSubthreads.ts";
@@ -112,11 +112,19 @@ describe("sidebar delegated task grouping", () => {
     });
     const group = createSidebarTaskGrouper();
     const all = group({
-      threads: [thread("parent"), local, remote, crossProject, orphan],
+      threads: [
+        thread("parent"),
+        thread("parent", { environmentId: EnvironmentId.make("remote") }),
+        thread("hidden"),
+        local,
+        remote,
+        crossProject,
+        orphan,
+      ],
       scopedProjectKeys: null,
       supportsTasks: () => true,
     });
-    expect(all.topLevel.map((row) => row.id)).toEqual(["parent"]);
+    expect(all.topLevel.map((row) => row.id)).toEqual(["parent", "parent", "hidden"]);
     expect(all.tasksByParent.get("local:parent")?.map((row) => row.id)).toEqual(["child", "cross"]);
     expect(all.tasksByParent.get("remote:parent")?.map((row) => row.id)).toEqual(["remote-child"]);
     expect(all.tasksByParent.get("local:hidden")?.map((row) => row.id)).toEqual(["orphan"]);
@@ -132,23 +140,30 @@ describe("sidebar delegated task grouping", () => {
       child(`task-${index}`, { createdAt: `2026-09-29T00:00:${String(index).padStart(2, "0")}Z` }),
     );
     const group = createSidebarTaskGrouper();
-    const first = group({ threads: rows, scopedProjectKeys: null, supportsTasks: () => true });
+    const first = group({
+      threads: [thread("parent"), ...rows],
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+    });
     expect(first.tasksByParent.get("local:parent")).toHaveLength(45);
     expect(first.tasksByParent.get("local:parent")?.[0]?.id).toBe("task-44");
     const second = group({
-      threads: [...rows, thread("unrelated")],
+      threads: [thread("parent"), ...rows, thread("unrelated")],
       scopedProjectKeys: null,
       supportsTasks: () => true,
     });
     expect(second.tasksByParent.get("local:parent")).toBe(first.tasksByParent.get("local:parent"));
     const removed = group({
-      threads: rows.map((row, index) =>
-        index === 0
-          ? { ...row, archivedAt: epoch }
-          : index === 1
-            ? { ...row, deletedAt: epoch }
-            : row,
-      ),
+      threads: [
+        thread("parent"),
+        ...rows.map((row, index) =>
+          index === 0
+            ? { ...row, archivedAt: epoch }
+            : index === 1
+              ? { ...row, deletedAt: epoch }
+              : row,
+        ),
+      ],
       scopedProjectKeys: null,
       supportsTasks: () => true,
     });
@@ -263,36 +278,59 @@ describe("task status and run duration", () => {
     expect(sidebarTaskCountLabel(1, 1)).toBe("1 task · 1 agent");
     expect(sidebarTaskCountLabel(45, 3)).toBe("45 tasks · 3 agents");
   });
-  it("limits native history to the latest spawning run and live work, independently of durable tasks", () => {
-    const old = agent({ origin: "provider_native", runId: RunId.make("old") });
-    const latest = agent({
-      origin: "provider_native",
-      id: NodeId.make("latest"),
-      runId: RunId.make("new"),
-      startedAt: at("2026-09-29T01:00:00Z"),
-    });
-    const active = agent({
-      origin: "provider_native",
-      id: NodeId.make("active"),
-      runId: RunId.make("old"),
-      status: "running",
-    });
-    const idle = agent({
-      origin: "provider_native",
-      id: NodeId.make("idle"),
-      runId: RunId.make("old"),
-      status: "idle",
-    });
-    expect(sidebarNativeAgents([old, idle, latest, active, agent()]).map((row) => row.id)).toEqual([
-      "active",
-      "latest",
-    ]);
+  it("keeps return evidence through acknowledgement and disposal without inventing a delivery", () => {
+    const delivered = agent({ completionDelivery: { state: "delivered", observedByRunId: null } });
+    expect(sidebarTaskWasReturned(delivered)).toBe(true);
     expect(
-      sidebarNativeAgents([
-        { ...old, runId: null },
-        { ...latest, runId: null },
-        { ...active, runId: null },
-      ]).map((row) => row.id),
-    ).toEqual(["active", "latest"]);
+      sidebarTaskWasReturned(
+        agent({ completionDelivery: { state: "acknowledged", observedByRunId: null } }),
+      ),
+    ).toBe(false);
+    for (const state of ["acknowledged", "disposed"] as const)
+      expect(
+        sidebarTaskWasReturned(
+          agent({ completionDelivery: { state, observedByRunId: null, deliveredAt: epoch } }),
+        ),
+      ).toBe(true);
   });
+});
+
+it("keeps surviving tasks reachable after parent archive or deletion, and nests again on restoration", () => {
+  const parent = thread("parent");
+  const task = child("child");
+  const group = createSidebarTaskGrouper();
+  for (const missing of [
+    [],
+    [{ ...parent, archivedAt: epoch }],
+    [{ ...parent, deletedAt: epoch }],
+  ]) {
+    expect(
+      group({ threads: [...missing, task], scopedProjectKeys: null, supportsTasks: () => true })
+        .topLevel,
+    ).toEqual([task]);
+  }
+  expect(
+    group({
+      threads: [parent, task],
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+    }).tasksByParent.get("local:parent"),
+  ).toEqual([task]);
+});
+it("preserves the top-level list identity when only one child shell changes", () => {
+  const parent = thread("parent");
+  const task = child("child");
+  const group = createSidebarTaskGrouper();
+  const first = group({
+    threads: [parent, task],
+    scopedProjectKeys: null,
+    supportsTasks: () => true,
+  });
+  const next = group({
+    threads: [parent, { ...task, title: "Updated" }],
+    scopedProjectKeys: null,
+    supportsTasks: () => true,
+  });
+  expect(next.topLevel).toBe(first.topLevel);
+  expect(next.tasksByParent.get("local:parent")?.[0]?.title).toBe("Updated");
 });

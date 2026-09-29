@@ -1,7 +1,12 @@
 import {
   EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  NodeId,
+  type OrchestrationV2Subagent,
   EventId,
   MessageId,
+  RunId,
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
   TurnItemId,
@@ -1916,3 +1921,87 @@ describe("EnvironmentThreads", () => {
     }),
   );
 });
+
+it.effect(
+  "retains known task delivery across bounded reconnect snapshots, but respects an authoritative full snapshot",
+  () =>
+    Effect.gen(function* () {
+      const task: OrchestrationV2Subagent = {
+        id: NodeId.make("old-task"),
+        threadId: THREAD_ID,
+        runId: null,
+        parentNodeId: NodeId.make("root"),
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerThreadId: null,
+        childThreadId: ThreadId.make("child"),
+        nativeTaskRef: null,
+        prompt: "Work",
+        title: "Old task",
+        model: null,
+        status: "completed",
+        result: "Done",
+        startedAt: DateTime.makeUnsafe("2026-09-29T00:00:00Z"),
+        completedAt: DateTime.makeUnsafe("2026-09-29T00:08:00Z"),
+        updatedAt: DateTime.makeUnsafe("2026-09-29T00:08:00Z"),
+        completionDelivery: {
+          state: "delivered",
+          observedByRunId: null,
+          deliveredAt: "2026-09-29T00:08:00Z",
+        },
+      };
+      const rolledBack: OrchestrationV2ThreadProjection["runs"][number] = {
+        id: RunId.make("removed-turn"),
+        threadId: THREAD_ID,
+        ordinal: 1,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        modelSelection: BASE_PROJECTION.thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("removed-message"),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "rolled_back",
+        requestedAt: DateTime.makeUnsafe("2026-09-29T00:00:00Z"),
+        startedAt: null,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      const harness = yield* makeHarness({
+        cached: { ...BASE_PROJECTION, runs: [rolledBack], subagents: [task] },
+        cachedHistory: { historyCursor: "older", hasMoreHistory: true },
+      });
+      yield* Queue.offer(harness.inputs, {
+        ...snapshot(
+          {
+            ...BASE_PROJECTION,
+            runs: [],
+            thread: { ...BASE_PROJECTION.thread, title: "Bounded reconnect" },
+          },
+          CACHED_SNAPSHOT_SEQUENCE + 1,
+        ),
+        historyCursor: "newer",
+        hasMoreHistory: true,
+      });
+      const bounded = yield* awaitThreadState(
+        harness.observed,
+        (state) => Option.getOrNull(state.data)?.thread.title === "Bounded reconnect",
+      );
+      expect(Option.getOrNull(bounded.data)?.subagents).toEqual([task]);
+      expect(Option.getOrNull(bounded.data)?.runs).toEqual([rolledBack]);
+      yield* Queue.offer(
+        harness.inputs,
+        snapshot(
+          { ...BASE_PROJECTION, thread: { ...BASE_PROJECTION.thread, title: "Full replacement" } },
+          CACHED_SNAPSHOT_SEQUENCE + 2,
+        ),
+      );
+      const full = yield* awaitThreadState(
+        harness.observed,
+        (state) => Option.getOrNull(state.data)?.thread.title === "Full replacement",
+      );
+      expect(Option.getOrNull(full.data)?.subagents).toEqual([]);
+    }),
+);

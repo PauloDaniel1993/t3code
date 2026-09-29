@@ -21,8 +21,14 @@ const subscribe = (listener: () => void) => {
   };
 };
 const snapshot = () => now;
+const noSubscription = () => () => {};
+const stoppedSnapshot = () => 0;
 
 /** Only rollups subscribe, so ordinary parent rows never receive the five-second tick. */
-export function useSidebarTaskClock() {
-  return useSyncExternalStore(subscribe, snapshot, snapshot);
+export function useSidebarTaskClock(enabled = true) {
+  return useSyncExternalStore(
+    enabled ? subscribe : noSubscription,
+    enabled ? snapshot : stoppedSnapshot,
+    stoppedSnapshot,
+  );
 }

@@ -426,6 +426,17 @@ type LogicalSidebarProject = SidebarProject & {
 
 export type ThreadTraversalDirection = "previous" | "next";
 
+/** Bulk actions resolve only rows in the collection the user currently sees. */
+export function selectRenderedSidebarThreads<T>(
+  selectedKeys: ReadonlyArray<string>,
+  rendered: ReadonlyMap<string, T>,
+) {
+  return selectedKeys.flatMap((threadKey) => {
+    const thread = rendered.get(threadKey);
+    return thread === undefined ? [] : [{ threadKey, thread }];
+  });
+}
+
 /**
  * Shared-worktree checks must exclude only successful deletions, never the
  * whole batch. A null result skips an entry that the caller can no longer find.

@@ -9,6 +9,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type OrchestrationV2Subagent,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -17,7 +18,9 @@ import { useUiStateStore } from "../uiStateStore";
 
 const hooks = vi.hoisted(() => ({
   projection:
-    vi.fn<() => { projection: { subagents: ReadonlyArray<OrchestrationV2Subagent> } } | null>(),
+    vi.fn<
+      () => { projection: Pick<OrchestrationV2ThreadProjection, "subagents" | "runs"> } | null
+    >(),
   shell: vi.fn<() => EnvironmentThreadShell | null>(),
 }));
 vi.mock("../state/entities", () => ({
@@ -29,6 +32,26 @@ vi.mock("./SidebarTaskPeek", () => ({
   leaveSidebarTaskPeek: () => {},
   openSidebarTaskPeek: () => {},
 }));
+vi.mock("./ui/tooltip", async () => {
+  const { cloneElement } = await import("react");
+  return {
+    Tooltip: ({ children }: { children: React.ReactNode }) => children,
+    TooltipTrigger: ({
+      children,
+      render,
+    }: {
+      children: React.ReactNode;
+      render: React.ReactElement;
+    }) => cloneElement(render, {}, children),
+    TooltipPopup: ({ children }: { children: React.ReactNode }) => children,
+  };
+});
+vi.mock("../state/threads", () => ({ environmentThreadDetails: {} }));
+vi.mock("./sidebarTaskPresentation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./sidebarTaskPresentation")>()),
+  useSidebarTaskProjection: (ref: unknown) =>
+    ref === null ? null : (hooks.projection()?.projection ?? null),
+}));
 const marks = vi.hoisted(() => vi.fn());
 vi.mock("./SidebarTaskMark", () => ({
   SidebarTaskMark: ({ state }: { state: string }) => {
@@ -38,6 +61,7 @@ vi.mock("./SidebarTaskMark", () => ({
 }));
 import { SidebarTaskDisclosure, SidebarTaskGroup } from "./SidebarTaskGroup";
 import { SidebarTaskVisits } from "./SidebarTaskVisits";
+import { sidebarTaskPresentationStore } from "./sidebarTaskPresentation";
 
 const env = EnvironmentId.make("local");
 const parent = makeThreadFixture({ environmentId: env, id: ThreadId.make("parent") });
@@ -92,6 +116,7 @@ beforeEach(() => {
   hooks.projection.mockReturnValue(null);
   hooks.shell.mockReturnValue(null);
   marks.mockClear();
+  sidebarTaskPresentationStore.setState({ byParent: new Map() });
 });
 afterEach(() => {
   act(() => renderer?.unmount());
@@ -130,7 +155,10 @@ describe("sidebar task disclosure", () => {
       updatedAt: DateTime.makeUnsafe(deliveredAt),
       completionDelivery: { state: "delivered", observedByRunId: null, deliveredAt },
     };
-    hooks.projection.mockReturnValue({ projection: { subagents: [delivered] } });
+    hooks.projection.mockReturnValue({ projection: { subagents: [delivered], runs: [] } });
+    sidebarTaskPresentationStore
+      .getState()
+      .remember("local:parent", { subagents: [delivered], runs: [] });
     const view = (threadId = finished.id) => (
       <>
         <SidebarTaskDisclosure parent={parent} tasks={[finished]} />
@@ -213,7 +241,179 @@ describe("sidebar task disclosure", () => {
     expect(intervals.mock.calls.filter((call) => call[1] === 5000)).toHaveLength(1);
     marks.mockClear();
     act(() => vi.advanceTimersByTime(5000));
+    expect(marks).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(55000));
     expect(marks).toHaveBeenCalledTimes(2);
     intervals.mockRestore();
   });
+});
+
+function completedTaskRecord(
+  child: EnvironmentThreadShell,
+  state: "delivered" | "acknowledged" = "delivered",
+): OrchestrationV2Subagent {
+  return {
+    id: NodeId.make(`agent-${child.id}`),
+    threadId: parent.id,
+    runId: RunId.make("run"),
+    parentNodeId: NodeId.make("root"),
+    origin: "app_owned",
+    createdBy: "agent",
+    driver: ProviderDriverKind.make("codex"),
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerThreadId: null,
+    childThreadId: child.id,
+    nativeTaskRef: null,
+    prompt: "Work",
+    title: child.title,
+    model: null,
+    status: "completed",
+    result: "Done",
+    startedAt: DateTime.makeUnsafe("2026-09-29T00:00:00Z"),
+    completedAt: DateTime.makeUnsafe("2026-09-29T00:08:00Z"),
+    updatedAt: DateTime.makeUnsafe("2026-09-29T00:08:00Z"),
+    completionDelivery: { state, observedByRunId: null, deliveredAt: "2026-09-29T00:08:00Z" },
+  };
+}
+
+it("keeps the return mark and unread dot after acknowledgement and a bounded replacement", () => {
+  const child = { ...task("returned"), latestRun: null };
+  const record = completedTaskRecord(child);
+  hooks.projection.mockReturnValue({ projection: { subagents: [record], runs: [] } });
+  useUiStateStore.setState({ sidebarTaskGroupsExpandedById: { "local:parent": true } });
+  act(() => {
+    renderer = create(render([child]));
+  });
+  expect(
+    renderer!.root.findAllByProps({ "aria-label": "Returned results to the parent thread" }),
+  ).toHaveLength(1);
+  hooks.projection.mockReturnValue({
+    projection: {
+      subagents: [
+        { ...record, completionDelivery: { ...record.completionDelivery!, state: "acknowledged" } },
+      ],
+      runs: [],
+    },
+  });
+  act(() => renderer!.update(render([child])));
+  expect(
+    renderer!.root.findAllByProps({ "aria-label": "Returned results to the parent thread" }),
+  ).toHaveLength(1);
+  hooks.projection.mockReturnValue({ projection: { subagents: [], runs: [] } });
+  act(() => renderer!.update(render([child])));
+  expect(
+    renderer!.root.findAllByProps({ "aria-label": "Returned results to the parent thread" }),
+  ).toHaveLength(1);
+  expect(
+    renderer!.root.findAllByProps({ "aria-label": "Hide 1 task, New task results" }),
+  ).toHaveLength(1);
+  expect(renderer!.root.findAllByType("span").some((span) => span.children.includes("8m"))).toBe(
+    true,
+  );
+});
+
+it("opens no detail streams or clocks for 54 collapsed groups", () => {
+  const rows = Array.from({ length: 54 }, (_, index) => ({
+    ...parent,
+    id: ThreadId.make(`parent-${index}`),
+  }));
+  useUiStateStore.setState({
+    sidebarTaskGroupsExpandedById: Object.fromEntries(
+      rows.map((row) => [`local:${row.id}`, false]),
+    ),
+  });
+  const interval = vi.spyOn(globalThis, "setInterval");
+  hooks.projection.mockClear();
+  act(() => {
+    renderer = create(
+      <>
+        {rows.map((row) => (
+          <SidebarTaskGroup
+            key={row.id}
+            parent={row}
+            tasks={[task(`task-${row.id}`)]}
+            {...callbacks}
+            renamingThreadKey={null}
+            renamingTitle=""
+          />
+        ))}
+      </>,
+    );
+  });
+  expect(hooks.projection).not.toHaveBeenCalled();
+  expect(interval.mock.calls.filter((call) => call[1] === 5000)).toHaveLength(0);
+  interval.mockRestore();
+});
+
+it("releases the detail lease and clock when an expanded group leaves the screen", () => {
+  const tasks = [task("visible")];
+  const view = (visible: boolean) => (
+    <SidebarTaskGroup
+      parent={parent}
+      tasks={tasks}
+      visible={visible}
+      {...callbacks}
+      renamingThreadKey={null}
+      renamingTitle=""
+    />
+  );
+  act(() => {
+    renderer = create(view(false));
+  });
+  expect(hooks.projection).not.toHaveBeenCalled();
+  act(() => renderer!.update(view(true)));
+  expect(hooks.projection).toHaveBeenCalled();
+  hooks.projection.mockClear();
+  act(() => renderer!.update(view(false)));
+  act(() => vi.advanceTimersByTime(5000));
+  expect(hooks.projection).not.toHaveBeenCalled();
+});
+
+it("ignores file drops on child rows so they cannot attach to the parent", () => {
+  act(() => {
+    renderer = create(render([task("one")]));
+  });
+  const stopPropagation = vi.fn();
+  const preventDefault = vi.fn();
+  renderer!.root
+    .findByProps({ className: "group/sidebar-task-group relative ml-3 pl-3" })
+    .props.onDrop({ stopPropagation, preventDefault });
+  expect(stopPropagation).toHaveBeenCalledOnce();
+  expect(preventDefault).toHaveBeenCalledOnce();
+});
+
+it("keeps IME Enter in the rename editor, commits once, and cancels without a blur commit", () => {
+  const child = task("rename");
+  const view = () => (
+    <SidebarTaskGroup
+      parent={parent}
+      tasks={[child]}
+      {...callbacks}
+      renamingThreadKey="local:rename"
+      renamingTitle="New title"
+    />
+  );
+  act(() => {
+    renderer = create(view());
+  });
+  let input = renderer!.root.findByType("input");
+  const preventDefault = vi.fn();
+  input.props.onKeyDown({ key: "Enter", nativeEvent: { isComposing: true }, preventDefault });
+  expect(callbacks.onCommitRename).not.toHaveBeenCalled();
+  input.props.onKeyDown({ key: "Enter", nativeEvent: { isComposing: false }, preventDefault });
+  input.props.onBlur();
+  expect(callbacks.onCommitRename).toHaveBeenCalledExactlyOnceWith(
+    { environmentId: env, threadId: child.id },
+    "New title",
+    child.title,
+  );
+  act(() => {
+    renderer!.unmount();
+    renderer = create(view());
+  });
+  input = renderer!.root.findByType("input");
+  input.props.onKeyDown({ key: "Escape", nativeEvent: { isComposing: false }, preventDefault });
+  input.props.onBlur();
+  expect(callbacks.onCancelRename).toHaveBeenCalledOnce();
+  expect(callbacks.onCommitRename).toHaveBeenCalledTimes(1);
 });

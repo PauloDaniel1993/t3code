@@ -1,4 +1,4 @@
-import type { OrchestrationV2Subagent } from "@t3tools/contracts";
+import { isProviderNativeSubagentThread, type OrchestrationV2Subagent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import type { EnvironmentThreadShell } from "./models.ts";
@@ -19,13 +19,18 @@ export function isSidebarTaskThread(thread: Pick<Thread, "lineage" | "source">):
   return (
     thread.lineage.parentThreadId !== null &&
     thread.lineage.relationshipToParent !== "fork" &&
-    thread.source.creationSource !== "provider"
+    !isProviderNativeSubagentThread({
+      lineage: thread.lineage,
+      creationSource: thread.source.creationSource,
+    })
   );
 }
 
 /** Filter first, then join within one environment. Reuse unchanged child arrays on shell updates. */
 export function createSidebarTaskGrouper() {
   let previous = new Map<string, ReadonlyArray<Thread>>();
+  let previousNative = new Map<string, ReadonlyArray<Thread>>();
+  let previousTopLevel: ReadonlyArray<Thread> = [];
   return (input: {
     threads: ReadonlyArray<Thread>;
     scopedProjectKeys: ReadonlySet<string> | null;
@@ -34,6 +39,16 @@ export function createSidebarTaskGrouper() {
     const topLevel: Thread[] = [];
     const grouped = new Map<string, Thread[]>();
     const nativeParentKeys = new Set<string>();
+    const nativeGrouped = new Map<string, Thread[]>();
+    const eligible = input.threads.filter(
+      (thread) => thread.archivedAt === null && thread.deletedAt === null,
+    );
+    const eligibleByKey = new Map(
+      eligible.map((thread) => [
+        scopedThreadKey({ environmentId: thread.environmentId, threadId: thread.id }),
+        thread,
+      ]),
+    );
     for (const thread of input.threads) {
       if (
         thread.archivedAt !== null ||
@@ -44,17 +59,33 @@ export function createSidebarTaskGrouper() {
         continue;
       const parentId = thread.lineage.parentThreadId;
       if (
-        thread.lineage.relationshipToParent === "subagent" &&
-        thread.source.creationSource === "provider"
+        isProviderNativeSubagentThread({
+          lineage: thread.lineage,
+          creationSource: thread.source.creationSource,
+        })
       ) {
-        if (parentId !== null)
-          nativeParentKeys.add(
-            scopedThreadKey({ environmentId: thread.environmentId, threadId: parentId }),
-          );
+        if (parentId !== null) {
+          const key = scopedThreadKey({ environmentId: thread.environmentId, threadId: parentId });
+          nativeParentKeys.add(key);
+          const group = nativeGrouped.get(key);
+          if (group === undefined) nativeGrouped.set(key, [thread]);
+          else group.push(thread);
+        }
         continue;
       }
       if (isSidebarTaskThread(thread) && input.supportsTasks(thread) && parentId !== null) {
         const key = scopedThreadKey({ environmentId: thread.environmentId, threadId: parentId });
+        const parent = eligibleByKey.get(key);
+        // V2 leaves delegated children alive. Keep missing/archived/deleted
+        // parents' surviving work reachable, without bypassing project filters.
+        if (parent === undefined) {
+          topLevel.push(thread);
+          continue;
+        }
+        if (isSidebarTaskThread(parent)) {
+          topLevel.push(thread);
+          continue;
+        }
         const group = grouped.get(key);
         if (group === undefined) grouped.set(key, [thread]);
         else group.push(thread);
@@ -67,7 +98,17 @@ export function createSidebarTaskGrouper() {
       tasksByParent.set(key, old !== undefined && arrayElementsEqual(old, tasks) ? old : tasks);
     }
     previous = tasksByParent;
-    return { topLevel, tasksByParent, nativeParentKeys };
+    const nativeThreadsByParent = new Map<string, ReadonlyArray<Thread>>();
+    for (const [key, rows] of nativeGrouped) {
+      const old = previousNative.get(key);
+      nativeThreadsByParent.set(
+        key,
+        old !== undefined && arrayElementsEqual(old, rows) ? old : rows,
+      );
+    }
+    previousNative = nativeThreadsByParent;
+    if (!arrayElementsEqual(previousTopLevel, topLevel)) previousTopLevel = topLevel;
+    return { topLevel: previousTopLevel, tasksByParent, nativeParentKeys, nativeThreadsByParent };
   };
 }
 
@@ -194,31 +235,10 @@ export function sidebarHasUnreadTaskResults(
   });
 }
 
-/** Native work stays separate, limited to the latest spawning run plus still-live work. */
-export function sidebarNativeAgents(
-  subagents: ReadonlyArray<OrchestrationV2Subagent>,
-): ReadonlyArray<OrchestrationV2Subagent> {
-  const native = subagents.filter((agent) => agent.origin === "provider_native");
-  const latest = native.reduce<OrchestrationV2Subagent | undefined>(
-    (previousAgent, agent) =>
-      previousAgent === undefined ||
-      DateTime.toEpochMillis(agent.startedAt ?? agent.updatedAt) >
-        DateTime.toEpochMillis(previousAgent.startedAt ?? previousAgent.updatedAt)
-        ? agent
-        : previousAgent,
-    undefined,
+/** Acknowledgement/disposal cannot undo a delivery that actually happened. */
+export function sidebarTaskWasReturned(task: OrchestrationV2Subagent | undefined): boolean {
+  return (
+    task?.completionDelivery?.state === "delivered" ||
+    task?.completionDelivery?.deliveredAt !== undefined
   );
-  return native
-    .filter(
-      (agent) =>
-        (latest?.runId == null ? agent.id === latest?.id : agent.runId === latest.runId) ||
-        agent.status === "running" ||
-        agent.status === "pending" ||
-        agent.status === "waiting",
-    )
-    .sort(
-      (left, right) =>
-        DateTime.toEpochMillis(left.startedAt ?? left.updatedAt) -
-        DateTime.toEpochMillis(right.startedAt ?? right.updatedAt),
-    );
 }

@@ -4,15 +4,23 @@ import {
   formatSidebarTaskElapsed,
   formatSidebarTaskDuration,
   resolveSidebarTaskState,
-  sidebarNativeAgents,
+  sidebarTaskWasReturned,
   sidebarTaskCountLabel,
   sidebarHasUnreadTaskResults,
 } from "@t3tools/client-runtime/state/sidebar-task-subthreads";
+import * as DateTime from "effect/DateTime";
 import type { OrchestrationV2Subagent, ScopedThreadRef } from "@t3tools/contracts";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import * as DateTime from "effect/DateTime";
-import { useThreadProjection } from "../state/entities";
+import {
+  deriveNativeAgentRollup,
+  NATIVE_AGENT_SETTLED_WINDOW,
+} from "@t3tools/client-runtime/state/native-agent-rollup";
+import {
+  useKnownSidebarTaskPresentation,
+  useSidebarTaskProjection,
+  useRememberSidebarTaskPresentation,
+} from "./sidebarTaskPresentation";
 import { useUiStateStore } from "../uiStateStore";
 import { cn } from "../lib/utils";
 import { useSidebarTaskClock } from "./sidebarTaskClock";
@@ -20,20 +28,21 @@ import { SidebarTaskMark } from "./SidebarTaskMark";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { closeSidebarTaskPeek, leaveSidebarTaskPeek, openSidebarTaskPeek } from "./SidebarTaskPeek";
 
-const EMPTY_AGENTS: ReadonlyArray<OrchestrationV2Subagent> = Object.freeze([]);
 export const EMPTY_SIDEBAR_TASKS: ReadonlyArray<EnvironmentThreadShell> = Object.freeze([]);
 type GroupProps = {
   parent: EnvironmentThreadShell;
   tasks: ReadonlyArray<EnvironmentThreadShell>;
+  nativeThreads?: ReadonlyArray<EnvironmentThreadShell>;
 };
 
-function useTaskGroup({ parent, tasks }: GroupProps) {
+function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: GroupProps) {
   const parentRef = useMemo(
     () => scopeThreadRef(parent.environmentId, parent.id),
     [parent.environmentId, parent.id],
   );
-  const subagents = useThreadProjection(parentRef)?.projection.subagents ?? EMPTY_AGENTS;
-  const agents = useMemo(() => sidebarNativeAgents(subagents), [subagents]);
+  const presentation = useKnownSidebarTaskPresentation(parentRef);
+  const { subagents } = presentation;
+  const rollup = useMemo(() => deriveNativeAgentRollup(presentation), [presentation]);
   const key = scopedThreadKey(parentRef);
   const override = useUiStateStore((state) => state.sidebarTaskGroupsExpandedById[key]);
   const setExpanded = useUiStateStore((state) => state.setSidebarTaskGroupExpanded);
@@ -45,17 +54,33 @@ function useTaskGroup({ parent, tasks }: GroupProps) {
       const state = resolveSidebarTaskState(thread);
       return state === "queued" || state === "running";
     }) ||
-    agents.some(
-      (agent) =>
-        agent.status === "running" || agent.status === "pending" || agent.status === "waiting",
-    );
-  return { key, subagents, agents, unread, expanded: override ?? defaultOpen, setExpanded };
+    rollup.groups.some((group) => group.summary.runningCount > 0) ||
+    nativeThreads.some((thread) => resolveSidebarTaskState(thread) === "running");
+  // Shells supply discovery/counts before this parent has ever been opened.
+  const liveNativeCount = nativeThreads.filter((thread) => {
+    const state = resolveSidebarTaskState(thread);
+    return state === "queued" || state === "running";
+  }).length;
+  const agentCount = subagents.some((agent) => agent.origin === "provider_native")
+    ? rollup.agentCount
+    : liveNativeCount +
+      Math.min(NATIVE_AGENT_SETTLED_WINDOW, nativeThreads.length - liveNativeCount);
+  return {
+    parentRef,
+    key,
+    subagents,
+    rollup,
+    agentCount,
+    unread,
+    expanded: override ?? defaultOpen,
+    setExpanded,
+  };
 }
 
 export const SidebarTaskDisclosure = memo(
   function SidebarTaskDisclosure(props: GroupProps) {
-    const { agents, expanded, key, setExpanded, unread } = useTaskGroup(props);
-    const label = sidebarTaskCountLabel(props.tasks.length, agents.length);
+    const { agentCount, expanded, key, setExpanded, unread } = useTaskGroup(props);
+    const label = sidebarTaskCountLabel(props.tasks.length, agentCount);
     if (label === "") return null;
     return (
       <button
@@ -83,10 +108,14 @@ export const SidebarTaskDisclosure = memo(
       </button>
     );
   },
-  (before, after) => before.parent === after.parent && before.tasks === after.tasks,
+  (before, after) =>
+    before.parent === after.parent &&
+    before.tasks === after.tasks &&
+    before.nativeThreads === after.nativeThreads,
 );
 
-type TaskGroupProps = GroupProps & {
+export type TaskGroupProps = GroupProps & {
+  visible?: boolean;
   onOpenThread: (ref: ScopedThreadRef) => void;
   onContextMenu: (ref: ScopedThreadRef, position: { x: number; y: number }) => void;
   onCommitRename: (ref: ScopedThreadRef, title: string, originalTitle: string) => void;
@@ -99,19 +128,12 @@ type TaskGroupProps = GroupProps & {
 
 export const SidebarTaskGroup = memo(
   function SidebarTaskGroup(props: TaskGroupProps) {
-    const { subagents, agents, expanded } = useTaskGroup(props);
-    const now = useSidebarTaskClock();
+    const { parentRef, subagents, rollup, expanded, agentCount } = useTaskGroup(props);
+    const visible = props.visible ?? true;
+    const projection = useSidebarTaskProjection(expanded && visible ? parentRef : null);
+    useRememberSidebarTaskPresentation(parentRef, projection);
     const [turnOverrides, setTurnOverrides] = useState<Record<string, boolean>>({});
-    const turns = useMemo(() => {
-      const groups = new Map<string, OrchestrationV2Subagent[]>();
-      for (const agent of agents) {
-        const key = agent.runId ?? `untracked:${agent.id}`;
-        const group = groups.get(key);
-        if (group === undefined) groups.set(key, [agent]);
-        else group.push(agent);
-      }
-      return [...groups.entries()];
-    }, [agents]);
+    const [openedAt] = useState(() => Date.now());
     const tasksByThreadId = useMemo(
       () =>
         new Map(
@@ -121,12 +143,27 @@ export const SidebarTaskGroup = memo(
         ),
       [subagents],
     );
+    const ticking =
+      expanded &&
+      visible &&
+      (rollup.groups.some((group) => group.label.startsWith("Earlier turn")) ||
+        props.tasks.some((thread) => {
+          const state = resolveSidebarTaskState(thread, tasksByThreadId.get(thread.id));
+          return state === "queued" || state === "running";
+        }));
+    const clock = useSidebarTaskClock(ticking);
+    const now = ticking ? clock : openedAt;
     // Keep the component mounted when collapsed so turn overrides survive.
-    if (!expanded || (props.tasks.length === 0 && agents.length === 0)) return null;
+    if (!expanded || (props.tasks.length === 0 && agentCount === 0)) return null;
     return (
       <div
         className="group/sidebar-task-group relative ml-3 pl-3"
         onPointerDown={(event) => event.stopPropagation()}
+        onDragOver={(event) => event.stopPropagation()}
+        onDrop={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
       >
         <span
           aria-hidden
@@ -143,7 +180,7 @@ export const SidebarTaskGroup = memo(
                 key={key}
                 thread={thread}
                 task={tasksByThreadId.get(thread.id)}
-                now={now}
+                elapsed={formatSidebarTaskElapsed(thread, tasksByThreadId.get(thread.id), now)}
                 onOpenThread={props.onOpenThread}
                 onContextMenu={props.onContextMenu}
                 onCommitRename={props.onCommitRename}
@@ -154,20 +191,10 @@ export const SidebarTaskGroup = memo(
               />
             );
           })}
-          {turns.map(([runId, turnAgents], index) => {
-            const latest = index === turns.length - 1;
-            const running = turnAgents.filter(
-              (agent) =>
-                agent.status === "pending" ||
-                agent.status === "running" ||
-                agent.status === "waiting",
-            ).length;
-            const done = turnAgents.filter((agent) => agent.status === "completed").length;
-            const failed = turnAgents.filter((agent) => agent.status === "failed").length;
-            const open = turnOverrides[runId] ?? (latest || running > 0);
-            const age = formatSidebarTaskDuration(
-              now - DateTime.toEpochMillis(turnAgents[0]!.startedAt ?? turnAgents[0]!.updatedAt),
-            );
+          {rollup.groups.map((group) => {
+            const runId = group.key;
+            const turnAgents = group.agents;
+            const open = turnOverrides[runId] ?? group.expandedByDefault;
             return (
               <li key={runId} className="list-none">
                 <button
@@ -177,11 +204,11 @@ export const SidebarTaskGroup = memo(
                   className="flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <ChevronDownIcon aria-hidden className={cn("size-3", !open && "-rotate-90")} />
-                  {latest ? "Latest turn" : `${age} ago`} ·{" "}
-                  {sidebarTaskCountLabel(0, turnAgents.length)}
-                  <span className="ml-auto text-3xs">
-                    {running} running · {done} done · {failed} failed
-                  </span>
+                  {group.label.replace(
+                    "Earlier turn",
+                    `${formatSidebarTaskDuration(now - DateTime.toEpochMillis(group.agents[0]!.startedAt ?? group.agents[0]!.updatedAt))} ago`,
+                  )}
+                  <span className="ml-auto text-3xs">{group.summary.label}</span>
                 </button>
                 {open ? (
                   <ul aria-label="Provider-owned agents">
@@ -237,6 +264,11 @@ export const SidebarTaskGroup = memo(
               </li>
             );
           })}
+          {rollup.hiddenSettledCount > 0 ? (
+            <li className="px-2 py-1 text-xs text-muted-foreground">
+              {rollup.hiddenSettledCount} older inactive agents remain in the transcript
+            </li>
+          ) : null}
         </ul>
         <button
           type="button"
@@ -260,7 +292,7 @@ export const SidebarTaskGroup = memo(
 const SidebarTaskRow = memo(function SidebarTaskRow(props: {
   thread: EnvironmentThreadShell;
   task: OrchestrationV2Subagent | undefined;
-  now: number;
+  elapsed: string;
   onOpenThread: TaskGroupProps["onOpenThread"];
   onContextMenu: TaskGroupProps["onContextMenu"];
   onCommitRename: TaskGroupProps["onCommitRename"];
@@ -278,8 +310,8 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
     }
   }, [props.isRenaming]);
   const ref = scopeThreadRef(thread.environmentId, thread.id);
-  const elapsed = formatSidebarTaskElapsed(thread, task, props.now);
-  const returned = task?.completionDelivery?.state === "delivered";
+  const elapsed = props.elapsed;
+  const returned = sidebarTaskWasReturned(task);
   const commit = () => {
     if (committed.current) return;
     committed.current = true;

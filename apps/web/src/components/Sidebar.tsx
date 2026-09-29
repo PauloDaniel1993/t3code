@@ -143,6 +143,8 @@ import {
 import { EMPTY_SIDEBAR_TASKS, SidebarTaskDisclosure, SidebarTaskGroup } from "./SidebarTaskGroup";
 import { closeSidebarTaskPeek, SidebarTaskPeek } from "./SidebarTaskPeek";
 import { SidebarTaskVisits } from "./SidebarTaskVisits";
+import { openNewThreadTaskDialog } from "../newThreadTaskBus";
+import { useSidebarTaskVisibility } from "./sidebarTaskVisibility";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -182,6 +184,7 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
+  selectRenderedSidebarThreads,
   filterSidebarProjectScopeItems,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
@@ -1050,7 +1053,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   thread: SidebarThreadSummary;
   taskThreads: ReadonlyArray<EnvironmentThreadShell>;
   hasTaskGroup: boolean;
-  taskGroup: ReactNode;
+  nativeThreads: ReadonlyArray<EnvironmentThreadShell>;
+  taskRenamingThreadKey: string | null;
+  taskRenamingTitle: string;
+  onNewTask: (ref: ScopedThreadRef) => void;
   variant: "card" | "slim";
   // Slim rows are either settled (action: un-settle) or merely quiet
   // (seen Ready threads — action: settle).
@@ -1145,6 +1151,32 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   );
   const threadKey = scopedThreadKey(threadRef);
   const { leaseLiveStatus, rowRef } = useSidebarRowSubscriptionLease(props.isActive);
+  const { visible: taskGroupVisible, rowRef: taskRowRef } = useSidebarTaskVisibility(
+    props.hasTaskGroup,
+  );
+  const attachRow = useCallback(
+    (row: HTMLElement | null) => {
+      rowRef(row);
+      taskRowRef(row);
+    },
+    [rowRef, taskRowRef],
+  );
+  const taskGroup = props.hasTaskGroup ? (
+    <SidebarTaskGroup
+      parent={thread}
+      tasks={props.taskThreads}
+      nativeThreads={props.nativeThreads}
+      visible={taskGroupVisible}
+      onOpenThread={props.onThreadActivate}
+      onContextMenu={props.onContextMenu}
+      onCommitRename={props.onCommitRename}
+      onCancelRename={props.onCancelRename}
+      onRenameTitleChange={props.onRenameTitleChange}
+      renamingThreadKey={props.taskRenamingThreadKey}
+      renamingTitle={props.taskRenamingTitle}
+      onNewTask={props.onNewTask}
+    />
+  ) : null;
   const isRegeneratingTitle = thread.titleRegeneration != null;
   const localLastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
   const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
@@ -1619,7 +1651,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     </button>
   );
   const taskDisclosure = props.hasTaskGroup ? (
-    <SidebarTaskDisclosure parent={thread} tasks={props.taskThreads} />
+    <SidebarTaskDisclosure
+      parent={thread}
+      tasks={props.taskThreads}
+      nativeThreads={props.nativeThreads}
+    />
   ) : null;
 
   // Stacks show their layer count; multiple unrelated links show their total count.
@@ -1712,7 +1748,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         {...(fileDropHandlers ?? {})}
         className={cn(
           // Matches the h-9 row so unrendered rows never shift the list when they paint.
-          "list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]",
+          "list-none",
+          !props.hasTaskGroup && "[content-visibility:auto] [contain-intrinsic-size:auto_36px]",
           sortable?.isDragging && "relative z-20",
         )}
       >
@@ -1720,7 +1757,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           <TooltipTrigger
             render={
               <div
-                ref={rowRef}
+                ref={attachRow}
                 data-testid="sidebar-row-slim"
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
@@ -1852,7 +1889,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           </TooltipTrigger>
           {detailsTooltip}
         </Tooltip>
-        {props.taskGroup}
+        {taskGroup}
       </li>
     );
   }
@@ -1866,7 +1903,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       {...(fileDropHandlers ?? {})}
       className={cn(
         // Matches the h-[4.875rem] content box; the py-0.5 padding is added on top.
-        "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
+        "list-none py-0.5",
+        !props.hasTaskGroup && "[content-visibility:auto] [contain-intrinsic-size:auto_78px]",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -1874,7 +1912,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         <TooltipTrigger
           render={
             <div
-              ref={rowRef}
+              ref={attachRow}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
@@ -2094,7 +2132,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>
-      {props.taskGroup}
+      {taskGroup}
     </li>
   );
 });
@@ -2642,6 +2680,7 @@ export default function Sidebar() {
     topLevel: sidebarTopLevelThreads,
     tasksByParent,
     nativeParentKeys,
+    nativeThreadsByParent,
   } = useMemo(
     () =>
       taskGrouper({
@@ -2916,13 +2955,41 @@ export default function Sidebar() {
   const threadByKey = useMemo(
     () =>
       new Map(
-        threads.map(
+        orderedThreads.map(
           (thread) =>
             [scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)), thread] as const,
         ),
       ),
-    [threads],
+    [orderedThreads],
   );
+  const taskThreadByKey = useMemo(
+    () =>
+      new Map(
+        [...tasksByParent.values()]
+          .flat()
+          .map((thread) => [
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+            thread,
+          ]),
+      ),
+    [tasksByParent],
+  );
+  const taskThreadByKeyRef = useRef(taskThreadByKey);
+  taskThreadByKeyRef.current = taskThreadByKey;
+  const bulkThreadByKey = useMemo(
+    () =>
+      isSearchingThreads
+        ? new Map(
+            threadSearchResults.map((thread) => [
+              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+              thread,
+            ]),
+          )
+        : threadByKey,
+    [isSearchingThreads, threadSearchResults, threadByKey],
+  );
+  const bulkThreadByKeyRef = useRef(bulkThreadByKey);
+  bulkThreadByKeyRef.current = bulkThreadByKey;
   // Handlers read these through refs: depending on per-update Map/Set
   // identities would give every row a fresh callback prop on each shell
   // event and defeat row memoization during streaming.
@@ -2988,17 +3055,9 @@ export default function Sidebar() {
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
-  const handleNewSidebarTask = useCallback(
-    (threadRef: ScopedThreadRef) => {
-      void navigateToThread(threadRef).then(() => {
-        // Ticket 31 owns the dialog listener in the mounted parent chat header.
-        requestAnimationFrame(() =>
-          window.dispatchEvent(new CustomEvent("t3code:new-thread-task", { detail: threadRef })),
-        );
-      });
-    },
-    [navigateToThread],
-  );
+  const handleNewSidebarTask = useCallback((threadRef: ScopedThreadRef) => {
+    openNewThreadTaskDialog({ threadRef });
+  }, []);
 
   const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
   const clearPendingFileDrop = useSidebarPendingFileDropStore((s) => s.clearPendingFileDrop);
@@ -3961,18 +4020,17 @@ export default function Sidebar() {
       // thread deletion elsewhere) and the menu labels must count only what
       // the actions will touch.
       const selectedThreadKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
-      const threadKeys = selectedThreadKeys.filter((threadKey) =>
-        threadByKeyRef.current.has(threadKey),
+      const selection = selectRenderedSidebarThreads(
+        selectedThreadKeys,
+        bulkThreadByKeyRef.current,
       );
+      const threadKeys = selection.map((entry) => entry.threadKey);
       if (threadKeys.length === 0) return;
       const count = threadKeys.length;
       // Snooze (N) is offered when every selected thread can actually take
       // it — a mixed selection with blocked-on-you work would half-apply.
       const selectionNow = new Date();
-      const selectedThreads = threadKeys.flatMap((threadKey) => {
-        const thread = threadByKeyRef.current.get(threadKey);
-        return thread ? [thread] : [];
-      });
+      const selectedThreads = selection.map((entry) => entry.thread);
       const canSnoozeSelection = selectedThreads.every(
         (thread) =>
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true &&
@@ -4109,7 +4167,7 @@ export default function Sidebar() {
         // clears the pin as part of settling, so they park like the rest.
         const coSettlingKeys = new Set(threadKeys);
         for (const threadKey of threadKeys) {
-          const thread = threadByKeyRef.current.get(threadKey);
+          const thread = bulkThreadByKeyRef.current.get(threadKey);
           if (!thread || thread.settledOverride === "settled") continue;
           attemptSettle(scopeThreadRef(thread.environmentId, thread.id), { coSettlingKeys });
         }
@@ -4118,7 +4176,7 @@ export default function Sidebar() {
       }
       if (clicked.value === "mark-unread") {
         for (const threadKey of threadKeys) {
-          const thread = threadByKeyRef.current.get(threadKey);
+          const thread = bulkThreadByKeyRef.current.get(threadKey);
           if (thread) markThreadUnread(scopeThreadRef(thread.environmentId, thread.id));
         }
         clearSelection();
@@ -4140,7 +4198,7 @@ export default function Sidebar() {
       const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
         entries: threadKeys.map((threadKey) => ({ threadKey })),
         delete: async ({ threadKey }, deletedThreadKeys) => {
-          const thread = threadByKeyRef.current.get(threadKey);
+          const thread = bulkThreadByKeyRef.current.get(threadKey);
           if (!thread) return null;
           return deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
             deletedThreadKeys,
@@ -4190,7 +4248,10 @@ export default function Sidebar() {
           await handleMultiSelectContextMenu(position);
           return;
         }
-        const thread = threadByKeyRef.current.get(threadKey);
+        const thread =
+          readThreadShell(threadRef) ??
+          taskThreadByKeyRef.current.get(threadKey) ??
+          threadByKeyRef.current.get(threadKey);
         if (!thread) return;
         const threadWorkspacePath =
           thread.worktreePath ??
@@ -4897,25 +4958,34 @@ export default function Sidebar() {
                                 .threadTasks === true &&
                               (tasksByParent.has(threadKey) || nativeParentKeys.has(threadKey))
                             }
-                            taskGroup={
-                              threadTasksEnabled &&
-                              serverConfigs.get(thread.environmentId)?.environment.capabilities
-                                .threadTasks === true &&
-                              (tasksByParent.has(threadKey) || nativeParentKeys.has(threadKey)) ? (
-                                <SidebarTaskGroup
-                                  parent={thread}
-                                  tasks={tasksByParent.get(threadKey) ?? EMPTY_SIDEBAR_TASKS}
-                                  onOpenThread={navigateToThread}
-                                  onContextMenu={handleThreadContextMenu}
-                                  onCommitRename={commitThreadRename}
-                                  onCancelRename={cancelThreadRename}
-                                  onRenameTitleChange={setRenamingTitle}
-                                  renamingThreadKey={renamingThreadKey}
-                                  renamingTitle={renamingTitle}
-                                  onNewTask={handleNewSidebarTask}
-                                />
-                              ) : null
+                            nativeThreads={
+                              nativeThreadsByParent.get(threadKey) ?? EMPTY_SIDEBAR_TASKS
                             }
+                            taskRenamingThreadKey={
+                              tasksByParent
+                                .get(threadKey)
+                                ?.some(
+                                  (child) =>
+                                    scopedThreadKey(
+                                      scopeThreadRef(child.environmentId, child.id),
+                                    ) === renamingThreadKey,
+                                )
+                                ? renamingThreadKey
+                                : null
+                            }
+                            taskRenamingTitle={
+                              tasksByParent
+                                .get(threadKey)
+                                ?.some(
+                                  (child) =>
+                                    scopedThreadKey(
+                                      scopeThreadRef(child.environmentId, child.id),
+                                    ) === renamingThreadKey,
+                                )
+                                ? renamingTitle
+                                : ""
+                            }
+                            onNewTask={handleNewSidebarTask}
                             variant={rowVariant}
                             // Snoozed rows wake, settled rows un-settle, and cards settle.
                             variantAction={

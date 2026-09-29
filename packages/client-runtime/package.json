@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/subagent-retention": {
+      "types": "./src/state/subagentRetention.ts",
+      "default": "./src/state/subagentRetention.ts"
+    },
     "./state/sidebar-task-subthreads": {
       "types": "./src/state/sidebarTaskSubthreads.ts",
       "default": "./src/state/sidebarTaskSubthreads.ts"
