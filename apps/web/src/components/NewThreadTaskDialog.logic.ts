@@ -122,7 +122,9 @@ function buildDelegationMessage(input: {
   } satisfies OrchestratorMcpDelegateTaskInput;
   return [
     "Please delegate one T3 Code task with a single delegate_task tool call using the JSON arguments below.",
-    "Do not silently substitute another instance, model or reasoning level; report any unavailable selection or tool error.",
+    `The chosen provider instance ${JSON.stringify(request.target.providerInstanceId)}, model ${JSON.stringify(request.target.model)}, and selected reasoning level in target.options are requirements whichever tool you call: delegate_task or task_create. Use the selected reasoning option's value exactly; if none is selected, do not invent a reasoning override.`,
+    "Do not silently substitute your own instance, model or reasoning level; report any unavailable selection, unsupported arguments or tool error. Preserve all selected options; if a tool cannot preserve the requested settings, report that instead of creating a different task.",
+    'If you use task_create, map title to title, task to prompt, set context to "none", set model to {instanceId: target.providerInstanceId, model: target.model}, and set reasoning to the selected reasoning option\'s value in target.options (omit only if none is selected); preserve clientRequestId.',
     input.draft.includeThreadContext
       ? `Keep the supplied task text verbatim. Append your own concise summary of the relevant context this task needs from this thread, at most ${TASK_CONTEXT_SUMMARY_MAX_LENGTH} additional characters. The final task field must be at most ${TASK_PROMPT_MAX_LENGTH + TASK_CONTEXT_SUMMARY_MAX_LENGTH} characters. Do not copy the conversation transcript. Preserve every other JSON argument exactly. Delegate the work rather than performing it yourself or using a provider-native agent.`
       : "Use the task field verbatim as the child's self-contained prompt. Do not append this thread's conversation history. Delegate the work rather than performing it yourself or using a provider-native agent.",

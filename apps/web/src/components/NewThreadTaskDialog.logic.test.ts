@@ -88,6 +88,42 @@ describe("delegation request turn", () => {
     expect(input.message.text).not.toContain("orchestrator_capabilities");
   });
 
+  it("requires the chosen settings for either task tool and describes the task_create mapping", () => {
+    const text = buildInput().message.text;
+    expect(text).toContain("single delegate_task tool call using the JSON arguments below");
+    expect(text).toContain('chosen provider instance "codex_secondary", model "gpt-6.1-sol"');
+    expect(text).toContain(
+      "selected reasoning level in target.options are requirements whichever tool you call: delegate_task or task_create",
+    );
+    expect(text).toContain("Use the selected reasoning option's value exactly");
+    expect(text).toContain(
+      "Do not silently substitute your own instance, model or reasoning level",
+    );
+    expect(text).toContain("if a tool cannot preserve the requested settings, report that");
+    expect(text).toContain(
+      'If you use task_create, map title to title, task to prompt, set context to "none", set model to {instanceId: target.providerInstanceId, model: target.model}, and set reasoning to the selected reasoning option\'s value in target.options (omit only if none is selected); preserve clientRequestId.',
+    );
+    expect(readDelegationArguments(text).target?.options).toContainEqual({
+      id: "reasoningEffort",
+      value: "xhigh",
+    });
+  });
+
+  it("keeps Claude reasoning values explicit and does not invent a missing reasoning override", () => {
+    const text = buildInput({
+      instanceId: ProviderInstanceId.make("claude_secondary"),
+      model: "claude-opus-4-6",
+      options: [{ id: "effort", value: "max" }],
+    }).message.text;
+    expect(text).toContain('chosen provider instance "claude_secondary", model "claude-opus-4-6"');
+    expect(readDelegationArguments(text).target?.options).toEqual([{ id: "effort", value: "max" }]);
+    const noReasoning = buildInput({ instanceId: childModel.instanceId, model: "other-model" });
+    expect(noReasoning.message.text).toContain(
+      "if none is selected, do not invent a reasoning override",
+    );
+    expect(readDelegationArguments(noReasoning.message.text).target?.options).toEqual([]);
+  });
+
   it("clears inherited child traits when a different model has no overrides", () => {
     expect(
       readDelegationArguments(
