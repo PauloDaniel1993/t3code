@@ -8,6 +8,7 @@ afterEach(() => vi.unstubAllGlobals());
 it("uses the scroll viewport without overscan and invalidates a renewed lease", () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const scrollRoot = {};
+  const parentWithTasks = {};
   const observe = vi.fn();
   const disconnect = vi.fn();
   const callbacks: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
@@ -29,10 +30,15 @@ it("uses the scroll viewport without overscan and invalidates a renewed lease", 
   }
   let tree: ReturnType<typeof create>;
   act(() => {
-    tree = create(<View enabled />, { createNodeMock: () => ({ closest: () => scrollRoot }) });
+    tree = create(<View enabled />, {
+      createNodeMock: () => ({
+        closest: (selector: string) => (selector === "li" ? parentWithTasks : scrollRoot),
+      }),
+    });
   });
   expect(options[0]?.root).toBe(scrollRoot);
   expect(options[0]?.rootMargin).toBeUndefined();
+  expect(observe).toHaveBeenCalledWith(parentWithTasks);
   expect(tree!.root.findByType("div").children).toEqual(["released"]);
   act(() => callbacks[0]!([{ isIntersecting: true }]));
   expect(tree!.root.findByType("div").children).toEqual(["leased"]);

@@ -16,7 +16,8 @@ export function useSidebarTaskVisibility(enabled: boolean) {
         root: row.closest<HTMLElement>('[data-slot="scroll-area-viewport"]'),
       },
     );
-    observer.observe(row);
+    // Children can still be on screen after the parent header scrolls away.
+    observer.observe(row.closest<HTMLElement>("li") ?? row);
     return () => observer.disconnect();
   }, [enabled, row, lease]);
   return {
