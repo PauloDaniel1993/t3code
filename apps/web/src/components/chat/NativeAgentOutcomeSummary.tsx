@@ -10,11 +10,7 @@ export function NativeAgentOutcomeSummary(props: {
 }) {
   const summary = nativeAgentOutcomeSummary(props.agents);
   return (
-    <span
-      className="flex flex-nowrap items-center gap-1 overflow-hidden"
-      role="group"
-      aria-label={summary.label}
-    >
+    <span className="flex flex-wrap items-center gap-1" role="group" aria-label={summary.label}>
       {summary.runningCount > 0 ? (
         <Badge size="sm" variant="info">
           {summary.runningCount} running

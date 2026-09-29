@@ -12,7 +12,7 @@ export function NativeAgentOutcomeSummary(props: {
     <View
       accessible
       accessibilityLabel={summary.label}
-      className="flex-row flex-nowrap items-center gap-2 overflow-hidden"
+      className="flex-row flex-wrap items-center gap-x-2 gap-y-1"
     >
       {summary.runningCount > 0 ? (
         <Text numberOfLines={1} className="shrink-0 text-2xs text-adaptive-sky-600-400">
