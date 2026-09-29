@@ -5,6 +5,7 @@ import {
   legacyProjectCwdPreferenceKey,
   markThreadUnread,
   markThreadVisited,
+  mergeUiStateRecords,
   parsePersistedState,
   PERSISTED_STATE_KEY,
   type PersistedUiState,
@@ -21,6 +22,9 @@ import {
 function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
     sidebarTaskGroupsExpandedById: {},
+    sidebarTaskGroupsExpandedAtById: {},
+    threadVisitEditsAtById: {},
+    threadVisitIsUnreadById: {},
     projectExpandedById: {},
     projectOrder: [],
     sidebarProjectScopeKey: null,
@@ -195,6 +199,9 @@ describe("parsePersistedState", () => {
 
     expect(parsed).toEqual({
       sidebarTaskGroupsExpandedById: {},
+      sidebarTaskGroupsExpandedAtById: {},
+      threadVisitEditsAtById: {},
+      threadVisitIsUnreadById: {},
       projectExpandedById: {
         logical: false,
       },
@@ -318,6 +325,9 @@ describe("uiStateStore persistence", () => {
     ) as PersistedUiState;
     expect(persisted).toEqual({
       sidebarTaskGroupsExpandedById: {},
+      sidebarTaskGroupsExpandedAtById: {},
+      threadVisitEditsAtById: {},
+      threadVisitIsUnreadById: {},
       projectExpandedById: {
         logical: false,
       },
@@ -377,5 +387,79 @@ describe("uiStateStore persistence", () => {
     ) as PersistedUiState;
     expect(resolveProjectExpanded(persisted.projectExpandedById ?? {}, ["unknown"])).toBe(true);
     expect(persisted).not.toHaveProperty("threadPanelOpen");
+  });
+});
+
+describe("browser window reconciliation", () => {
+  it("preserves interleaved visits and expansion choices in shared storage", () => {
+    let saved = "";
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => (key === PERSISTED_STATE_KEY ? saved || null : null),
+        setItem: (_key: string, value: string) => {
+          saved = value;
+        },
+        removeItem() {},
+      },
+    });
+    const first = markThreadVisited(
+      makeUiState({
+        sidebarTaskGroupsExpandedById: { "local:parent": false },
+        sidebarTaskGroupsExpandedAtById: { "local:parent": "2026-09-29T00:09:00Z" },
+      }),
+      "local:parent",
+      "2026-09-29T00:09:00Z",
+    );
+    const second = markThreadVisited(
+      makeUiState({
+        sidebarTaskGroupsExpandedById: { "local:parent": true, "remote:parent": true },
+        sidebarTaskGroupsExpandedAtById: {
+          "local:parent": "2026-09-29T00:08:00Z",
+          "remote:parent": "2026-09-29T00:09:00Z",
+        },
+      }),
+      "local:child",
+      "2026-09-29T00:08:00Z",
+    );
+    persistState(first);
+    persistState(second);
+    const reloaded = parsePersistedState(JSON.parse(saved));
+    expect(reloaded.threadLastVisitedAtById).toEqual({
+      "local:parent": "2026-09-29T00:09:00Z",
+      "local:child": "2026-09-29T00:08:00Z",
+    });
+    expect(reloaded.sidebarTaskGroupsExpandedById).toEqual({
+      "local:parent": false,
+      "remote:parent": true,
+    });
+    const later = {
+      ...second,
+      sidebarTaskGroupsExpandedAtById: { "local:parent": "2026-09-29T00:10:00Z" },
+    };
+    persistState(later);
+    expect(
+      parsePersistedState(JSON.parse(saved)).sidebarTaskGroupsExpandedById["local:parent"],
+    ).toBe(true);
+    vi.unstubAllGlobals();
+  });
+  it("never moves a visit backwards when the stale window writes later", () => {
+    const first = markThreadVisited(makeUiState(), "local:parent", "2026-09-29T00:09:00Z");
+    const stale = markThreadVisited(makeUiState(), "local:parent", "2026-09-29T00:08:00Z");
+    expect(mergeUiStateRecords(first, stale).threadLastVisitedAtById["local:parent"]).toBe(
+      "2026-09-29T00:09:00Z",
+    );
+  });
+  it("keeps the explicit Mark unread action, and a later visit clears it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T01:00:00Z"));
+    const read = markThreadVisited(makeUiState(), "local:parent", "2026-09-29T00:09:00Z");
+    const unread = markThreadUnread(read, "local:parent", "2026-09-29T00:08:00Z");
+    const reconciled = mergeUiStateRecords(read, unread);
+    expect(reconciled.threadLastVisitedAtById["local:parent"]).toBe("2026-09-29T00:07:59.999Z");
+    const visited = markThreadVisited(unread, "local:parent", "2026-09-29T00:10:00Z");
+    expect(mergeUiStateRecords(reconciled, visited).threadLastVisitedAtById["local:parent"]).toBe(
+      "2026-09-29T00:10:00Z",
+    );
+    vi.useRealTimers();
   });
 });
