@@ -5,13 +5,8 @@ import { Button } from "../ui/button";
 import { CircleAlertIcon, XIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-/** `occurrence` tells apart two failures on one thread that carry the same text. */
-export function getThreadErrorBannerKey(
-  threadKey: string,
-  error: string | null,
-  occurrence = "",
-): string | null {
-  return error === null ? null : `${threadKey}\u0000${occurrence}\u0000${error}`;
+export function getThreadErrorBannerKey(threadKey: string, error: string | null): string | null {
+  return error === null ? null : `${threadKey}\u0000${error}`;
 }
 
 export function shouldShowThreadErrorBanner(
@@ -24,21 +19,14 @@ export function shouldShowThreadErrorBanner(
 
 // Session-scoped (module-level so it survives ChatView remounts, e.g. route
 // changes between threads). Mirrors the branch-mismatch banner: a dismissal
-// is remembered per thread key, occurrence and message, so navigating away to
-// a thread with no error cannot resurrect the banner, while a different error,
-// or the same text failing again, on the same thread still appears. Each new
-// occurrence adds a key, so the set keeps only the newest
-// MAX_DISMISSED_THREAD_ERROR_KEYS and forgets the oldest dismissal first.
-export const MAX_DISMISSED_THREAD_ERROR_KEYS = 200;
+// is remembered per thread key plus message, so navigating away to a thread
+// with no error cannot resurrect the banner, while a different error message
+// on the same thread still appears.
 const sessionDismissedThreadErrorBannerKeys = new Set<string>();
 
 export function dismissThreadErrorBannerForSession(bannerKey: string | null): void {
-  if (bannerKey === null) return;
-  sessionDismissedThreadErrorBannerKeys.delete(bannerKey);
-  sessionDismissedThreadErrorBannerKeys.add(bannerKey);
-  for (const oldest of sessionDismissedThreadErrorBannerKeys) {
-    if (sessionDismissedThreadErrorBannerKeys.size <= MAX_DISMISSED_THREAD_ERROR_KEYS) break;
-    sessionDismissedThreadErrorBannerKeys.delete(oldest);
+  if (bannerKey !== null) {
+    sessionDismissedThreadErrorBannerKeys.add(bannerKey);
   }
 }
 
