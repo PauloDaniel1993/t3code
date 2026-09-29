@@ -12,24 +12,32 @@ export function NativeAgentOutcomeSummary(props: {
     <View
       accessible
       accessibilityLabel={summary.label}
-      className="flex-row flex-wrap items-center gap-2"
+      className="flex-row flex-nowrap items-center gap-2 overflow-hidden"
     >
       {summary.runningCount > 0 ? (
-        <Text className="text-2xs text-adaptive-sky-600-400">{summary.runningCount} running</Text>
+        <Text numberOfLines={1} className="shrink-0 text-2xs text-adaptive-sky-600-400">
+          {summary.runningCount} running
+        </Text>
       ) : null}
       {summary.finishedCount > 0 ? (
-        <Text className="text-2xs text-adaptive-emerald-600-400">
+        <Text numberOfLines={1} className="shrink-0 text-2xs text-adaptive-emerald-600-400">
           ✓ {summary.finishedCount} finished
         </Text>
       ) : null}
       {summary.failedCount > 0 ? (
-        <Text className="text-2xs text-adaptive-rose-600-400">× {summary.failedCount} failed</Text>
+        <Text numberOfLines={1} className="shrink-0 text-2xs text-adaptive-rose-600-400">
+          × {summary.failedCount} failed
+        </Text>
       ) : null}
       {summary.stoppedCount > 0 ? (
-        <Text className="text-2xs text-foreground-muted">{summary.stoppedCount} stopped</Text>
+        <Text numberOfLines={1} className="shrink-0 text-2xs text-foreground-muted">
+          {summary.stoppedCount} stopped
+        </Text>
       ) : null}
       {summary.idleCount > 0 ? (
-        <Text className="text-2xs text-foreground-muted">{summary.idleCount} idle · resumable</Text>
+        <Text numberOfLines={1} className="shrink-0 text-2xs text-foreground-muted">
+          {summary.idleCount} idle · resumable
+        </Text>
       ) : null}
     </View>
   );

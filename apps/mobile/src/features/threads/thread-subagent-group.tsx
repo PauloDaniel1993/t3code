@@ -22,7 +22,6 @@ import type { ThreadFeedActivity } from "../../lib/threadActivity";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadDetails } from "../../state/threads";
 import { SubagentStatusDot } from "./SubagentStatusDot";
-import { NativeAgentOutcomeSummary } from "./NativeAgentOutcomeSummary";
 import { subagentCardDetail, subagentCardElapsed } from "./subagent-card-presentation";
 import { resolveSubagentRowPresentation } from "./threadAgentsPresentation";
 import { WorkLogBlock } from "./work-log-layout";
@@ -100,13 +99,11 @@ export function ThreadSubagentGroup(props: {
       completedAt: live?.completedAt ?? item.completedAt,
       result: live?.result ?? item.result,
       progress: live?.progress ?? item.progress,
-      childThreadId: live ? live.childThreadId : item.childThreadId,
     };
   });
   const grouped = agents.length > 1;
   const label = `${agents.length} subagents`;
   const summary = summarizeSubagentStatuses(agents.map((agent) => agent.status));
-  const nativeAgents = agents.filter(({ item }) => item.origin === "provider_native");
   const expanded = props.expandedRows[props.anchorKey] ?? false;
   const iconUrl = (item: SubagentItem) =>
     config?.providers.find((provider) => provider.instanceId === item.providerInstanceId)?.iconUrl;
@@ -136,28 +133,18 @@ export function ThreadSubagentGroup(props: {
             <Text numberOfLines={1} className="font-t3-medium text-sm text-foreground">
               {label}
             </Text>
-            {nativeAgents.length === agents.length ? (
-              <NativeAgentOutcomeSummary agents={nativeAgents} />
-            ) : (
-              <Text
-                numberOfLines={1}
-                className={cn(
-                  "text-2xs text-foreground-muted",
-                  agents.some((agent) => isActiveSubagentStatus(agent.status))
-                    ? "text-adaptive-sky-600-400"
-                    : agents.some((agent) => agent.status === "failed") &&
-                        "text-adaptive-rose-600-400",
-                )}
-              >
-                {summary}
-              </Text>
-            )}
-            {nativeAgents.length > 0 && nativeAgents.length < agents.length ? (
-              <View className="flex-row flex-wrap items-center gap-2">
-                <Text className="text-2xs text-foreground-muted">Native agents</Text>
-                <NativeAgentOutcomeSummary agents={nativeAgents} />
-              </View>
-            ) : null}
+            <Text
+              numberOfLines={1}
+              className={cn(
+                "text-2xs text-foreground-muted",
+                agents.some((agent) => isActiveSubagentStatus(agent.status))
+                  ? "text-adaptive-sky-600-400"
+                  : agents.some((agent) => agent.status === "failed") &&
+                      "text-adaptive-rose-600-400",
+              )}
+            >
+              {summary}
+            </Text>
           </View>
           <SubagentElapsed agents={agents} />
           <SymbolView
