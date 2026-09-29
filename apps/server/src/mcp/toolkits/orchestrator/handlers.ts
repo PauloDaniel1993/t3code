@@ -1,30 +1,24 @@
 import { OrchestratorToolkit } from "./tools.ts";
-import type { OrchestratorMcpDelegateTaskInput } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
 import { ThreadMetadataMcpService } from "../../ThreadMetadataMcpService.ts";
-
-const capabilitiesHandler = Effect.fn("OrchestratorToolkit.capabilities")(function* () {
-  const scope = yield* McpInvocationContext;
-  const service = yield* OrchestratorMcpService;
-  return yield* service.capabilities(scope);
-});
-
-const delegateTaskHandler = Effect.fn("OrchestratorToolkit.delegateTask")(function* (
-  input: OrchestratorMcpDelegateTaskInput,
-) {
-  const scope = yield* McpInvocationContext;
-  const service = yield* OrchestratorMcpService;
-  return yield* service.delegateTask(scope, input);
-});
+import { forkTaskCancel, forkTaskCreate, forkTaskModels } from "../../ForkTaskAliases.ts";
 
 const handlers = {
-  orchestrator_capabilities: capabilitiesHandler,
-  task_models: capabilitiesHandler,
-  delegate_task: delegateTaskHandler,
-  task_create: delegateTaskHandler,
+  orchestrator_capabilities: () =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const service = yield* OrchestratorMcpService;
+      return yield* service.capabilities(scope);
+    }),
+  delegate_task: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const service = yield* OrchestratorMcpService;
+      return yield* service.delegateTask(scope, input);
+    }),
   task_status: ({ taskId }) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext;
@@ -35,7 +29,7 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext;
       const service = yield* OrchestratorMcpService;
-      return yield* service.cancelTask(scope, input);
+      return yield* forkTaskCancel(scope, input, service);
     }),
   schedule_task: (input) =>
     Effect.gen(function* () {
@@ -108,6 +102,18 @@ const handlers = {
       const scope = yield* McpInvocationContext;
       const service = yield* OrchestratorMcpService;
       return yield* service.listTasks(scope, input);
+    }),
+  task_models: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const service = yield* OrchestratorMcpService;
+      return yield* forkTaskModels(scope, input, service);
+    }),
+  task_create: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const service = yield* OrchestratorMcpService;
+      return yield* forkTaskCreate(scope, input, service);
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];
 

@@ -9,7 +9,7 @@ import {
 
 describe("T3 orchestration provider instructions", () => {
   it("distinguishes delegated subagents from ordinary top-level threads", () => {
-    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Use `delegate_task`");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Native `delegate_task` remains available");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "ordinary top-level T3 conversations");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Never use them merely");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "cross-provider");
@@ -29,11 +29,12 @@ describe("T3 orchestration provider instructions", () => {
     );
     assert.include(prompt, "Use native agents when the user explicitly asks");
     assert.include(prompt, "Call `task_models`");
-    assert.include(prompt, "reasoning level through `target.options`");
     assert.include(
       prompt,
-      "use `task_list` to recover this thread's direct tasks and finished results",
+      'task_create({title,prompt,context:"none",model:{instanceId,model},reasoning})',
     );
+    assert.include(prompt, "Fetch results with `task_list`");
+    assert.include(prompt, "later completions from that turn no longer wake it");
     assert.notInclude(prompt, "Prefer native subagent tools for same-provider work");
   });
 

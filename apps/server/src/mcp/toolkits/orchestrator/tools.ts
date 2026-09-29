@@ -10,8 +10,12 @@ import {
   OrchestratorMcpListScheduledTasksResult,
   OrchestratorMcpScheduleTaskInput,
   OrchestratorMcpScheduleTaskResult,
-  OrchestratorMcpTaskCancelInput,
   OrchestratorMcpTaskCancelResult,
+  ForkTaskCancelInput,
+  ForkTaskCreateInput,
+  ForkTaskModelsInput,
+  ForkTaskModelsResult,
+  ForkTaskSummary,
   OrchestratorMcpTaskListInput,
   OrchestratorMcpTaskListResult,
   OrchestratorMcpUpdateScheduledTaskInput,
@@ -30,12 +34,16 @@ import {
   ThreadMetadataMcpUpdateResult,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/unstable/ai";
+import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
 import { ThreadMetadataMcpService } from "../../ThreadMetadataMcpService.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext, OrchestratorMcpService];
+const forkTaskDependencies = [...dependencies, ThreadManagementService, ProviderRegistry];
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadMetadataMcpService,
@@ -56,7 +64,7 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 export const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Delegate one task to a T3-owned child agent/subagent of THIS thread and run it with only the supplied task prompt, without copying parent conversation history. Prefer this tool for task, delegation, and parallel-work requests, including same-provider work. Native provider agents are for explicit agent/sub-agent requests or when T3 task tools are unavailable. Choose providers, models, and reasoning option IDs from task_models (alias of orchestrator_capabilities), which uses the same live catalog as the composer. The childThreadId is backing storage, not an ordinary top-level thread. Provider and model inherit unless target overrides them. Model options inherit only for the parent's exact provider and model when target.options is omitted; supplied options replace inherited options. Runtime and interaction modes inherit and can only be narrowed. Prefer mode='async' for long work; mode='wait' blocks until completion or timeout. timeoutMs on mode=wait is only the parent's wait budget and does not cancel the child. waitTimedOut on that wait call means the timeout fired; keep that taskId and read status on later task_status. An async child's completion wakes this thread through a notification, steered into active turns where supported or queued otherwise, so end the turn instead of polling or spawning watchers; use task_status only when the result is needed mid-turn. Recover lost task IDs with task_list.",
+    "Delegate one task to a T3-owned child agent/subagent of THIS thread and run it with only the supplied task prompt, without copying parent conversation history. Prefer this tool for task, delegation, and parallel-work requests, including same-provider work. Native provider agents are for explicit agent/sub-agent requests or when T3 task tools are unavailable. Choose providers, models, and reasoning option IDs from orchestrator_capabilities, which uses the same live catalog as the composer. The childThreadId is backing storage, not an ordinary top-level thread. Provider and model inherit unless target overrides them. Model options inherit only for the parent's exact provider and model when target.options is omitted; supplied options replace inherited options. Runtime and interaction modes inherit and can only be narrowed. Prefer mode='async' for long work; mode='wait' blocks until completion or timeout. timeoutMs on mode=wait is only the parent's wait budget and does not cancel the child. waitTimedOut on that wait call means the timeout fired; keep that taskId and read status on later task_status. An async child's completion wakes this thread through a notification, steered into active turns where supported or queued otherwise, so end the turn instead of polling or spawning watchers; use task_status only when the result is needed mid-turn. Recover lost task IDs with task_list.",
   parameters: OrchestratorMcpDelegateTaskInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
@@ -68,11 +76,13 @@ export const DelegateTaskTool = Tool.make("delegate_task", {
   .annotate(Tool.OpenWorld, true);
 
 const TaskModelsTool = Tool.make("task_models", {
-  description: `Alias of orchestrator_capabilities. Call before task_create or delegate_task when selecting a provider, model, or reasoning level; pass reasoning using the advertised target.options IDs. ${OrchestratorCapabilitiesTool.description}`,
-  success: OrchestratorCapabilitiesTool.successSchema,
+  description:
+    "Fork-shaped catalog (current, instances, reasoningLevels); see orchestrator_capabilities for delegation capabilities.",
+  parameters: ForkTaskModelsInput,
+  success: ForkTaskModelsResult,
   failure: OrchestratorCapabilitiesTool.failureSchema,
   failureMode: "return",
-  dependencies,
+  dependencies: forkTaskDependencies,
 })
   .annotate(Tool.Title, "Get task models")
   .annotate(Tool.Readonly, true)
@@ -80,12 +90,13 @@ const TaskModelsTool = Tool.make("task_models", {
   .annotate(Tool.Idempotent, true);
 
 const TaskCreateTool = Tool.make("task_create", {
-  description: `Alias of delegate_task with the same V2 parameters: task, target.providerInstanceId, target.model, and target.options. ${DelegateTaskTool.description}`,
-  parameters: DelegateTaskTool.parametersSchema,
-  success: DelegateTaskTool.successSchema,
+  description:
+    "Fork-shaped delegate_task: title, prompt, context='none', model={instanceId,model}, reasoning. See delegate_task for lifecycle and guards.",
+  parameters: ForkTaskCreateInput,
+  success: ForkTaskSummary,
   failure: DelegateTaskTool.failureSchema,
   failureMode: "return",
-  dependencies,
+  dependencies: forkTaskDependencies,
 })
   .annotate(Tool.Title, "Delegate a child task")
   .annotate(Tool.Destructive, true)
@@ -93,7 +104,7 @@ const TaskCreateTool = Tool.make("task_create", {
 
 const TaskListTool = Tool.make("task_list", {
   description:
-    "Recover tasks owned directly by THIS thread across all turns, in stable task-ID order. Returns task IDs, child thread IDs, titles, provider/model, nested-work-aware status, and finished results in summary/latestTerminalSummary, using the same semantics as task_status. Excludes native provider agents and other threads' tasks. Defaults to 50 tasks per page; continue with nextCursor until null. Listing does not acknowledge automatic result delivery; call task_status to acknowledge a finished result. This is a read-only discovery tool, not a polling loop.",
+    "Recover this thread's direct tasks, oldest creation first then ID (timestamp ties retain newly added tasks). Fork statuses: queued, running (includes waiting), finished, failed, cancelled (includes interrupted). Examines 20 tasks per page; follow nextCursor until null, including empty filtered pages. Results appear once, with previews of at most 2,000 characters and a truncation marker pointing to task_status. Complete MCP responses stay within 24,000 UTF-8 bytes, so pages may be shorter. Unreadable children have status=null and an error. Listing does not acknowledge delivery; task_status fetches full results and acknowledges them.",
   parameters: OrchestratorMcpTaskListInput,
   success: OrchestratorMcpTaskListResult,
   failure: OrchestratorMcpFailure,
@@ -122,11 +133,11 @@ const TaskStatusTool = Tool.make("task_status", {
 const TaskCancelTool = Tool.make("task_cancel", {
   description:
     "Request interruption of an active T3-owned delegated task and dispose its automatic parent delivery. Completed task results remain available.",
-  parameters: OrchestratorMcpTaskCancelInput,
-  success: OrchestratorMcpTaskCancelResult,
+  parameters: ForkTaskCancelInput,
+  success: Schema.Union([ForkTaskSummary, OrchestratorMcpTaskCancelResult]),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forkTaskDependencies,
 })
   .annotate(Tool.Title, "Cancel delegated task")
   .annotate(Tool.Destructive, true);
