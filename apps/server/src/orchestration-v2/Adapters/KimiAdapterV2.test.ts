@@ -43,8 +43,21 @@ const testLayer = Layer.mergeAll(
 const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
   environment: NodeJS.ProcessEnv = {},
   runtimeMode: RuntimeMode = "approval-required",
+  initialNativeThreadId?: string,
 ) {
   const h = yield* makeKimiTestHarness(environment);
+  if (initialNativeThreadId) {
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* h.makeRuntime({
+          cwd: h.root,
+          clientInfo: { name: "kimi-before-restart", version: "0.0.0" },
+        });
+        expect((yield* runtime.start()).sessionId).toBe(initialNativeThreadId);
+        yield* runtime.setModel("kimi-saved");
+      }),
+    );
+  }
   const instanceId = ProviderInstanceId.make("kimi-test");
   const threadId = ThreadId.make("kimi-thread");
   const modelSelection = {
@@ -75,6 +88,7 @@ const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
     providerSessionId: ProviderSessionId.make("kimi-session"),
     modelSelection,
     runtimePolicy: policy,
+    ...(initialNativeThreadId ? { initialNativeThreadId } : {}),
   });
   const providerThread = yield* session.ensureThread({
     threadId,
@@ -174,6 +188,49 @@ it.layer(testLayer, { excludeTestServices: true })("Kimi V2 adapter", (it) => {
       ).toEqual(["plan", "default"]);
     }).pipe(Effect.scoped),
   );
+
+  for (const resumed of [false, true]) {
+    it.effect(
+      `fails a plan turn before prompting when native plan mode is unavailable (${resumed ? "resume" : "new"})`,
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeSession(
+            {
+              ...(resumed ? { T3_KIMI_RESUME_NO_CONFIG: "1" } : { T3_KIMI_NO_PLAN: "1" }),
+              T3_KIMI_WRITE_FILE: "1",
+            },
+            "full-access",
+            resumed ? "mock-kimi-session" : undefined,
+          );
+          const policy = ProviderAdapterV2RuntimePolicy.make({
+            ...h.policy,
+            interactionMode: "plan",
+          });
+          yield* h.session.startTurn(h.turn(h.providerThread, yield* DateTime.now, policy));
+          const events = yield* h.session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          );
+          expect(events.at(-1)).toMatchObject({
+            type: "turn.terminal",
+            status: "failed",
+            failure: {
+              message: expect.stringContaining("cannot run a plan turn"),
+              code: "plan_mode_unavailable",
+            },
+          });
+          const requests = yield* h.requests;
+          expect(requests.some((request) => request.method === "session/prompt")).toBe(false);
+          expect(
+            yield* (yield* FileSystem.FileSystem).exists(
+              (yield* Path.Path).join(h.root, "unexpected.txt"),
+            ),
+          ).toBe(false);
+          if (resumed)
+            expect(requests.some((request) => request.method === "session/resume")).toBe(true);
+        }).pipe(Effect.scoped),
+    );
+  }
 
   for (const question of [false, true]) {
     it.effect(

@@ -26,16 +26,22 @@ const statePath = (sessionId) =>
   NodePath.join(process.env.KIMI_CODE_HOME, "sessions", sessionId, "model.json");
 const saveSelection = () =>
   NodeFS.writeFileSync(statePath(activeSessionId), JSON.stringify({ model, mode }));
+const modelChoices = () => {
+  const catalogPath = NodePath.join(process.env.KIMI_CODE_HOME, "models.json");
+  return NodeFS.existsSync(catalogPath)
+    ? JSON.parse(NodeFS.readFileSync(catalogPath, "utf8"))
+    : [
+        { value: "kimi-live", name: "Live model" },
+        { value: "kimi-saved", name: "Saved model" },
+      ];
+};
 const configOptions = () => [
   {
     id: "llm",
     name: "Models",
     type: "select",
     currentValue: model,
-    options: [
-      { value: "kimi-live", name: "Live model" },
-      { value: "kimi-saved", name: "Saved model" },
-    ],
+    options: modelChoices(),
   },
   ...(process.env.T3_KIMI_NO_MODE
     ? []
@@ -49,7 +55,7 @@ const configOptions = () => [
             { value: "auto", name: "Auto", description: "Fully autonomous agent" },
             { value: "yolo", name: "Yolo" },
             { value: "default", name: "Default" },
-            { value: "plan", name: "Plan" },
+            ...(process.env.T3_KIMI_NO_PLAN ? [] : [{ value: "plan", name: "Plan" }]),
           ],
         },
       ]),

@@ -16,6 +16,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Stream from "effect/Stream";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
@@ -48,6 +49,10 @@ const maintenanceContext = (
   platform: "linux",
   ...overrides,
 });
+
+const encodeModelChoices = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ value: Schema.String, name: Schema.String }))),
+);
 
 const driverTestLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-kimi-driver-" }).pipe(
   Layer.provideMerge(NodeServices.layer),
@@ -177,7 +182,7 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
           providerThreads: [],
           turnItems: [],
         } as unknown as OrchestrationV2ThreadProjection;
-        const delegate = () =>
+        const delegate = (model = "kimi-saved") =>
           Effect.gen(function* () {
             const mcp = yield* OrchestratorMcpService;
             const result = yield* mcp.delegateTask(
@@ -191,13 +196,13 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
               },
               {
                 task: "Summarize the diff",
-                target: { driverKind: ProviderDriverKind.make("kimi"), model: "kimi-saved" },
+                target: { driverKind: ProviderDriverKind.make("kimi"), model },
                 mode: "async",
               },
             );
             expect(result.status).toBe("running");
             expect(result.providerInstanceId).toBe(restarted.instanceId);
-            expect(dispatchedModel).toBe("kimi-saved");
+            expect(dispatchedModel).toBe(model);
           }).pipe(
             Effect.provide(
               mcpLayer.pipe(
@@ -316,6 +321,43 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
           restoredModels,
         );
         yield* delegate();
+        const promptCount = (yield* h.requests).filter(
+          (request) => request.method === "session/prompt",
+        ).length;
+        yield* (yield* FileSystem.FileSystem).writeFileString(
+          (yield* Path.Path).join(h.home, "models.json"),
+          encodeModelChoices([
+            { value: "kimi-live", name: "Live model" },
+            { value: "kimi-added", name: "Added model" },
+          ]),
+        );
+        const removedModel = yield* restarted.orchestrationAdapter
+          .openSession({
+            threadId: ThreadId.make("removed-model-thread"),
+            providerSessionId: ProviderSessionId.make("removed-model-session"),
+            modelSelection,
+            runtimePolicy,
+          })
+          .pipe(Effect.flip);
+        expect(removedModel).toMatchObject({
+          cause: {
+            errorMessage: expect.stringContaining('Kimi model "kimi-saved" is not available'),
+          },
+        });
+        const refreshedModels = (yield* restarted.snapshot.refresh).models.map(
+          (model) => model.slug,
+        );
+        expect(refreshedModels).not.toContain("kimi-saved");
+        expect(refreshedModels).toContain("kimi-added");
+        expect(yield* delegate().pipe(Effect.flip)).toMatchObject({ code: "model_unavailable" });
+        yield* delegate("kimi-added");
+        expect(
+          (yield* h.requests).filter((request) => request.method === "session/prompt"),
+        ).toHaveLength(promptCount);
+        const restored = yield* h.recreate();
+        expect((yield* restored.snapshot.getSnapshot).models.map((model) => model.slug)).toEqual(
+          refreshedModels,
+        );
       }).pipe(Effect.scoped),
   );
   it.effect("checks existing login without creating a native session", () =>
