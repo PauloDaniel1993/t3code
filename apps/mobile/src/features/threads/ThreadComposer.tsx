@@ -680,12 +680,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       },
       runtimeMode: currentRuntimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      onOpenTurnAgents: () =>
+        navigation.dispatch(
+          StackActions.replace("ThreadAgents", {
+            environmentId: props.environmentId,
+            threadId: props.selectedThread.id,
+          }),
+        ),
     }),
     [
       currentModelSelection,
       currentRuntimeMode,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
+      props.environmentId,
+      props.selectedThread.id,
+      navigation,
       providerOptionDescriptors,
       settingsOwnerId,
       threadProviderGroups,

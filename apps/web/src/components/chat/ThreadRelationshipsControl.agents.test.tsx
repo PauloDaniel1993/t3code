@@ -32,6 +32,7 @@ vi.mock("../ui/tooltip", () => ({
 }));
 
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { nativeAgentOutcomeSummary } from "@t3tools/client-runtime/state/native-agent-rollup";
 
 let renderer: ReactTestRenderer;
 
@@ -42,6 +43,30 @@ afterEach(async () => {
   state.projects = [];
   state.configs.clear();
   state.showTooltips = false;
+});
+
+it("counts pending and waiting agents as running just like the turn-agent card", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const statuses = ["pending", "running", "waiting", "idle", "completed", "failed"] as const;
+  const agents = statuses.map((status) => ({ status, childThreadId: null }));
+  state.projection = {
+    thread: { id: "parent", lineage: {}, activeProviderThreadId: null },
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    contextTransfers: [],
+    subagents: agents,
+  };
+  await act(async () => {
+    renderer = create(
+      <ThreadRelationshipsPanel
+        environmentId={EnvironmentId.make("test")}
+        threadId={ThreadId.make("parent")}
+      />,
+    );
+  });
+  expect(nativeAgentOutcomeSummary(agents).runningCount).toBe(3);
+  expect(renderer.root.findByType("h3").children).toEqual(["Lineage · 3 running"]);
 });
 
 it("shows the matching child agent details and refreshes them when the agent settles", async () => {

@@ -326,7 +326,7 @@ export function SubagentAvatar({
   );
 }
 
-function SubagentTimelineLink(props: {
+export function SubagentTimelineLink(props: {
   readonly parentRef: ScopedThreadRef;
   readonly subagentId: NodeId;
   readonly driver: ProviderDriverKind;

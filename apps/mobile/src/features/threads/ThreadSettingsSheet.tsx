@@ -249,6 +249,7 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly onOpenTurnAgents?: () => void;
 };
 
 export type ExistingThreadSettingsRouteSession = ThreadSettingsSessionProps & {
@@ -302,6 +303,7 @@ type ThreadSettingsSessionValue = {
   readonly runtimeMode: RuntimeMode;
   readonly runtimeModeChoices: ReturnType<typeof runtimeModeChoicesForSupportedModes>;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly onOpenTurnAgents: (() => void) | undefined;
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly providerExpansionOverrides: ReadonlySet<string>;
   readonly hasLegacyModels: boolean;
@@ -474,6 +476,7 @@ function ThreadSettingsSessionProvider(
       runtimeMode: compatibleRuntimeMode,
       runtimeModeChoices,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      onOpenTurnAgents: props.onOpenTurnAgents,
       displayedDescriptors,
       favoriteKeys,
       favoritesLoaded,
@@ -511,6 +514,7 @@ function ThreadSettingsSessionProvider(
       pressModel,
       providerFilter,
       props.onUpdateRuntimeMode,
+      props.onOpenTurnAgents,
       props.providerGroups,
       runtimeModeChoices,
       searchQuery,
@@ -900,6 +904,16 @@ function ThreadSettingsMainContent(props: {
       maintainVisibleContentPosition={THREAD_SETTINGS_MAINTAIN_VISIBLE_CONTENT_POSITION}
       ListHeaderComponent={
         <>
+          {session.onOpenTurnAgents ? (
+            <View className="mx-4 mb-3 overflow-hidden rounded-2xl bg-card">
+              <DisclosureRow
+                isLast
+                label="Turn agents"
+                value={undefined}
+                onPress={session.onOpenTurnAgents}
+              />
+            </View>
+          ) : null}
           {Platform.OS === "android" ? (
             <View className="px-4 pb-2 pt-3">
               <View

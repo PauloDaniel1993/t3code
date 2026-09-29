@@ -5,7 +5,10 @@ import { CollapsibleSectionHeader, SectionHeaderStatus } from "../ui/collapsible
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  isActiveSubagentStatus,
+  projectedSubagentsToRuntime,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import {
   deriveThreadRelationshipGraph,
@@ -239,8 +242,9 @@ export function ThreadRelationshipsPanel(props: {
     { id: "previous", label: "Previous agents", rows: previous, expanded: false },
   ];
   const runningCount =
-    projection?.subagents.filter((agent) => agent.status === "running").length ??
-    active.filter(({ edge }) => edge.status === "running").length;
+    projection?.subagents.filter((agent) => isActiveSubagentStatus(agent.status)).length ??
+    active.filter(({ edge }) => ["pending", "running", "waiting"].includes(edge.status ?? ""))
+      .length;
 
   if (relationshipRows.length === 0 && runningCount === 0) {
     return null;
