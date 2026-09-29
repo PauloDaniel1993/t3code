@@ -6,6 +6,12 @@ import { deriveThreadRuntime } from "@t3tools/client-runtime/state/thread-execut
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
+import {
+  dismissThreadErrorBannerForSession,
+  getThreadErrorBannerKey,
+  isThreadErrorBannerDismissedForSession,
+  shouldShowThreadErrorBanner,
+} from "./ThreadErrorBanner";
 import { dismissThreadError, presentThreadError } from "./threadErrorDismissal";
 
 const at = (minute: number) => DateTime.makeUnsafe(Date.UTC(2026, 2, 29, 0, minute));
@@ -83,17 +89,26 @@ function thread(...parts: ReadonlyArray<ThreadParts | ThreadParts[]>) {
   } as unknown as OrchestrationV2ThreadProjection;
 }
 
-/** What the chat view presents for this thread, from the real runtime derivation. */
+/**
+ * What the chat view presents for this thread: the real runtime derivation,
+ * upstream's text mask, then the presenter, wired as in `ChatView`.
+ */
 function banner(
   threadKey: string,
   projection: OrchestrationV2ThreadProjection,
   localError: string | null = null,
 ) {
   const runtime = deriveThreadRuntime(projection);
+  const serverError = runtime?.lastError ?? null;
+  const threadError = localError ?? serverError;
+  const masked = isThreadErrorBannerDismissedForSession(
+    getThreadErrorBannerKey(threadKey, threadError),
+  );
   return presentThreadError({
     threadKey,
+    maskedError: shouldShowThreadErrorBanner(threadKey, threadError, masked) ? threadError : null,
     localError,
-    serverError: runtime?.lastError ?? null,
+    serverError,
     serverErrorClass: runtime?.lastErrorClass ?? null,
     projection,
   });
@@ -105,13 +120,16 @@ const onScreen = (
   localError?: string,
 ) => banner(threadKey, projection, localError).message;
 
-/** Clicks Dismiss on whatever the banner shows. */
+/** Clicks Dismiss on whatever the banner shows, as the chat view's handler does. */
 function dismiss(
   threadKey: string,
   projection: OrchestrationV2ThreadProjection,
   localError?: string,
 ) {
-  dismissThreadError(banner(threadKey, projection, localError).dismissal);
+  const threadError = localError ?? deriveThreadRuntime(projection)?.lastError ?? null;
+  const shown = banner(threadKey, projection, localError);
+  dismissThreadErrorBannerForSession(getThreadErrorBannerKey(threadKey, threadError));
+  dismissThreadError(shown.dismissal);
 }
 
 describe("dismissing a thread error", () => {

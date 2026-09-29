@@ -9,18 +9,22 @@ import {
   latestRootProviderFailure,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 
+import { dismissThreadErrorBannerForSession, getThreadErrorBannerKey } from "./ThreadErrorBanner";
+
 /*
  * Dismissing a thread's error banner, and deciding when it comes back.
  *
  * Rule: a dismissed error on a thread stays hidden until a run fails that
  * comes after the latest run the thread had at dismissal, in V2's run order
  * (`ordinal`), or a run fails that had not finished then; or until the
- * thread's error text becomes one it did not have at dismissal.
+ * thread's error text is one never dismissed on it.
  *
- * The run half is a watermark by order rather than by membership: the client
- * may hold only a window of the thread's runs, and a fuller history can bring
- * older failed runs it never saw. Those are below the watermark, so they never
- * bring the banner back.
+ * The text half is upstream's mask in `ThreadErrorBanner`: the chat view
+ * passes its result in as `maskedError`, and a dismissal adds the texts on
+ * screen to it. This module adds the run half, a watermark by order rather
+ * than by membership: the client may hold only a window of the thread's runs,
+ * and a fuller history can bring older failed runs it never saw. Those are
+ * below the watermark, so they never bring the banner back.
  *
  * The run that was executing at dismissal is not new when it later fails with
  * a text dismissed then: a provider publishes a failure on the session first
@@ -117,11 +121,13 @@ function failureSinceDismissal(
 
 /**
  * The thread error to show in the banner, or null once the user dismissed it.
+ * `maskedError` is upstream's text mask applied to the thread error;
  * `serverError` and `serverErrorClass` are the thread runtime's `lastError`
  * and `lastErrorClass`. A local error takes precedence, as in the chat view.
  */
 export function presentThreadError(input: {
   threadKey: string;
+  maskedError: string | null;
   localError: string | null;
   serverError: string | null;
   serverErrorClass: FailureClass;
@@ -141,19 +147,16 @@ export function presentThreadError(input: {
       runs: projection?.runs ?? [],
     },
   });
+  if (input.maskedError !== null) return show(serverError, input.serverErrorClass);
   const dismissal = dismissalsByThreadKey.get(input.threadKey);
-  if (dismissal === undefined) return show(serverError, input.serverErrorClass);
   const failure =
-    projection === null
+    dismissal === undefined || projection === null
       ? null
       : failureSinceDismissal(projection, dismissal, serverError, input.serverErrorClass);
-  if (failure !== null) return show(failure.message, failure.errorClass);
-  return dismissal.texts.includes(serverError)
-    ? NOTHING_SHOWN
-    : show(serverError, input.serverErrorClass);
+  return failure === null ? NOTHING_SHOWN : show(failure.message, failure.errorClass);
 }
 
-/** Records the watermark for the error the user just dismissed. */
+/** Records the watermark for the error the user just dismissed, and masks its texts. */
 export function dismissThreadError(pending: PendingThreadErrorDismissal | null): void {
   if (pending === null) return;
   let latestOrdinal = 0;
@@ -169,4 +172,7 @@ export function dismissThreadError(pending: PendingThreadErrorDismissal | null):
     unfinishedRunIds,
     executingRunId: executing !== null && unfinishedRunIds.has(executing.id) ? executing.id : null,
   });
+  for (const text of pending.texts) {
+    dismissThreadErrorBannerForSession(getThreadErrorBannerKey(pending.threadKey, text));
+  }
 }

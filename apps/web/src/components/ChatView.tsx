@@ -402,6 +402,7 @@ import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
+import { dismissThreadError, presentThreadError } from "./chat/threadErrorDismissal";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -439,8 +440,13 @@ import {
   ProviderStatusBanner,
   shouldShowProviderStatusBanner,
 } from "./chat/ProviderStatusBanner";
-import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
-import { dismissThreadError, presentThreadError } from "./chat/threadErrorDismissal";
+import {
+  dismissThreadErrorBannerForSession,
+  getThreadErrorBannerKey,
+  isThreadErrorBannerDismissedForSession,
+  shouldShowThreadErrorBanner,
+  ThreadErrorBanner,
+} from "./chat/ThreadErrorBanner";
 import {
   QueuedRunsControl,
   type QueuedRunsControlHandle,
@@ -2086,15 +2092,15 @@ export default function ChatView(props: ChatViewProps) {
   // Dismissals can only mask the shown error, never clear it: a server thread
   // keeps its error in session.lastError, so clearing the local shadow would
   // just fall through to the persisted one. Mask the current error until a
-  // new run fails or a different error arrives (see threadErrorDismissal).
-  const presentedThreadError = presentThreadError({
-    threadKey: routeThreadKey,
-    localError: isServerThread ? localServerError : localDraftError,
-    serverError: isServerThread ? (serverRuntime?.lastError ?? null) : null,
-    serverErrorClass: serverRuntime?.lastErrorClass ?? null,
-    projection: serverProjection,
-  });
-  const visibleThreadError = presentedThreadError.message;
+  // different error arrives, mirroring the provider status banner.
+  const threadErrorBannerKey = getThreadErrorBannerKey(routeThreadKey, threadError);
+  const visibleThreadError = shouldShowThreadErrorBanner(
+    routeThreadKey,
+    threadError,
+    isThreadErrorBannerDismissedForSession(threadErrorBannerKey),
+  )
+    ? threadError
+    : null;
   // Dismissing only mutates the session-scoped mask set, which does not
   // trigger a render on its own; setThreadError(null) can also bail when the
   // local shadow is already empty and the banner is driven purely by
@@ -2161,12 +2167,22 @@ export default function ChatView(props: ChatViewProps) {
     widthStorageKey: `t3code:preview-panel-width:${activeThreadKey}`,
   });
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
+  // A run that fails after a dismissal shows again with its own message, even
+  // when the mask above hides its text (see threadErrorDismissal).
+  const presentedThreadError = presentThreadError({
+    threadKey: routeThreadKey,
+    maskedError: visibleThreadError,
+    localError: isServerThread ? localServerError : localDraftError,
+    serverError: isServerThread ? (serverRuntime?.lastError ?? null) : null,
+    serverErrorClass: serverRuntime?.lastErrorClass ?? null,
+    projection: serverProjection,
+  });
   const timelineThreadError =
     serverRuntime?.status === "failed" &&
     activeThreadShell?.latestRun &&
     presentedThreadError.errorClass === "usage_limit"
       ? null
-      : visibleThreadError;
+      : presentedThreadError.message;
 
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
@@ -10591,9 +10607,14 @@ export default function ChatView(props: ChatViewProps) {
               />
               <ThreadErrorBanner
                 error={timelineThreadError}
-                errorClass={presentedThreadError.errorClass}
+                errorClass={
+                  localServerError === null && visibleThreadError === serverRuntime?.lastError
+                    ? (serverRuntime?.lastErrorClass ?? null)
+                    : presentedThreadError.errorClass
+                }
                 onDismiss={() => {
                   setThreadError(activeThread.id, null);
+                  dismissThreadErrorBannerForSession(threadErrorBannerKey);
                   dismissThreadError(presentedThreadError.dismissal);
                   setThreadErrorBannerDismissTick((tick) => tick + 1);
                 }}
