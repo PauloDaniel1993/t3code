@@ -697,10 +697,11 @@ function ThreadListV2RowComponent(props: {
     ],
   );
   // A submenu with the current option checked, matching web. This is a
-  // per-thread setting, not a lifecycle verb.
+  // per-thread setting, not a lifecycle verb. Task threads never auto-settle,
+  // so they get no switch, as on web.
   const autoSettleMenuItems = useMemo<MenuAction[]>(
     () =>
-      props.autoSettleOptOutSupported
+      props.autoSettleOptOutSupported && !taskRow
         ? [
             {
               id: "auto-settle",
@@ -721,7 +722,7 @@ function ThreadListV2RowComponent(props: {
             } satisfies MenuAction,
           ]
         : [],
-    [props.autoSettleOptOutSupported, thread.autoSettleDisabledAt],
+    [props.autoSettleOptOutSupported, taskRow, thread.autoSettleDisabledAt],
   );
   const titleMenuItems = useMemo<MenuAction[]>(
     () => [
@@ -759,8 +760,7 @@ function ThreadListV2RowComponent(props: {
     ],
     [arrangementMenuItems, autoSettleMenuItems, titleMenuItems],
   );
-  // Settled and snoozed rows keep the setting too, matching web where every
-  // row shares one menu builder.
+  // Settled and snoozed rows keep the setting too, matching web.
   const slimMenuActions = useMemo<MenuAction[]>(
     () => [
       SLIM_MENU_ACTIONS[0]!,
