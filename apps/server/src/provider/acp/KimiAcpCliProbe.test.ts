@@ -77,7 +77,7 @@ const probeEnvironment: NodeJS.ProcessEnv = {
 };
 
 describe.runIf(process.env.T3_KIMI_ACP_PROBE === "1")("Kimi ACP CLI probe", () => {
-  it.effect(
+  it.live(
     "authenticates, starts, settles a prompt, and resumes without exposing secrets",
     () =>
       Effect.gen(function* () {
@@ -150,6 +150,16 @@ describe.runIf(process.env.T3_KIMI_ACP_PROBE === "1")("Kimi ACP CLI probe", () =
                     shape: [
                       request.toolCall.title === "AskUserQuestion" ? "question" : "tool",
                       `tool-kind:${request.toolCall.kind ?? "unknown"}`,
+                      `approval-prefix:${
+                        request.toolCall.content?.some(
+                          (entry) =>
+                            entry.type === "content" &&
+                            entry.content.type === "text" &&
+                            /^Requesting approval to Running:/i.test(
+                              entry.content.text.trimStart(),
+                            ),
+                        ) === true
+                      }`,
                       ...request.options.map((option) => option.kind),
                       ...describeRawInputShape(request.toolCall.rawInput),
                     ],
