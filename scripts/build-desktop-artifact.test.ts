@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -1088,6 +1090,118 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.include(error.message, "Visual Studio Build Tools components");
       }),
     ),
+  );
+
+  it.effect(
+    "selects a Visual Studio instance with installable Spectre runtimes for each Windows architecture",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-windows-selector-" });
+          const pythonPath = path.join(tempDir, "python.exe");
+          const rustLibDir = path.join(tempDir, "rust-lib");
+          yield* fs.writeFileString(pythonPath, "python");
+          yield* fs.makeDirectory(rustLibDir);
+          yield* fs.writeFileString(path.join(rustLibDir, "libstd-test.rlib"), "rust");
+          const commands: Array<{
+            readonly command: string;
+            readonly args: ReadonlyArray<string>;
+          }> = [];
+          const spawner = Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) => {
+              const childProcess = command as unknown as {
+                readonly command: string;
+                readonly args: ReadonlyArray<string>;
+              };
+              commands.push(childProcess);
+              return Effect.succeed(
+                mockProcess(0, childProcess.command === "rustc" ? `${rustLibDir}\n` : ""),
+              );
+            }),
+          );
+          const config = ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { npm_config_python: pythonPath } }),
+          );
+          for (const arch of ["x64", "arm64"] as const) {
+            yield* preflightWindowsDesktopBuild({ arch, bundlesWslRuntime: false }).pipe(
+              Effect.provide(Layer.merge(spawner, config)),
+            );
+          }
+          const scripts = commands
+            .filter((command) => command.command === "powershell.exe")
+            .map((command) => command.args.at(-1)!);
+          assert.lengthOf(scripts, 2);
+          assert.include(
+            scripts[0],
+            "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
+          );
+          assert.include(scripts[1], "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre");
+          assert.notInclude(scripts.join("\n"), ".VC.Tools.x86.x64.Spectre");
+          assert.notInclude(scripts.join("\n"), ".VC.Tools.ARM64.Spectre");
+
+          // oxlint-disable-next-line t3code/no-global-process-runtime -- Real PowerShell selector fixture runs only on its host OS.
+          if (NodeOS.platform() !== "win32") return;
+          // Run the emitted selector against a fixture vswhere with a newer tools-only
+          // instance and an older complete instance. No machine toolchain is changed.
+          const installerDir = path.join(tempDir, "Microsoft Visual Studio", "Installer");
+          const kits = path.join(tempDir, "kits");
+          const older = path.join(tempDir, "older-complete");
+          const selection = path.join(tempDir, "selection.txt");
+          yield* fs.makeDirectory(installerDir, { recursive: true });
+          yield* fs.makeDirectory(path.join(kits, "Lib"), { recursive: true });
+          for (const arch of ["x64", "arm64"]) {
+            yield* fs.makeDirectory(
+              path.join(older, "VC", "Tools", "MSVC", "14.43.0", "lib", "spectre", arch),
+              { recursive: true },
+            );
+          }
+          const stub = path.join(installerDir, "vswhere.mjs");
+          yield* fs.writeFileString(
+            stub,
+            `import fs from 'node:fs'; import path from 'node:path';
+const root = process.env['ProgramFiles(x86)'];
+const args = process.argv.slice(2);
+const required = args.slice(args.indexOf('-requires') + 1, args.indexOf('-property'));
+const tools = ['Microsoft.VisualStudio.Component.VC.Tools.x86.x64', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64'];
+const runtimes = ['Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre', 'Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre'];
+const instances = [{ name: 'newer-tools-only', components: tools }, { name: 'older-complete', components: [...tools, ...runtimes] }];
+const selected = instances.find(instance => required.every(component => instance.components.includes(component)));
+if (selected) { fs.writeFileSync(path.join(root, 'selection.txt'), selected.name); console.log(path.join(root, selected.name)); }
+`,
+          );
+          yield* fs.writeFileString(
+            path.join(installerDir, "vswhere.cmd"),
+            `@echo off\r\n"${process.execPath}" "${stub}" %*\r\n`,
+          );
+          const psQuote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+          for (const script of scripts) {
+            NodeChildProcess.execFileSync(
+              "powershell.exe",
+              [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                `function Get-ItemPropertyValue { ${psQuote(kits)} }; ${script.replace("vswhere.exe", "vswhere.cmd")}`,
+              ],
+              {
+                env: {
+                  ...Object.fromEntries(
+                    Object.entries(process.env).filter(
+                      ([name]) => name.toUpperCase() !== "PROGRAMFILES(X86)",
+                    ),
+                  ),
+                  "ProgramFiles(x86)": tempDir,
+                },
+                windowsHide: true,
+              },
+            );
+            assert.equal(yield* fs.readFileString(selection), "older-complete");
+          }
+        }),
+      ),
   );
 
   it.effect("does not require MSVC when reusing a prebuilt Windows resource monitor", () =>
