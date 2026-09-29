@@ -4,7 +4,9 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
-import { expect } from "vite-plus/test";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Effect from "effect/Effect";
+import { expect, vi } from "vite-plus/test";
 import { createPackageWithOptions } from "@electron/asar";
 
 import {
@@ -13,6 +15,10 @@ import {
   assertLocalInstallDirectory,
   assertLocalDesktopArtifact,
   assertCanonicalInstallPaths,
+  assertSeparateFromKnownInstalls,
+  resolveWindowsStartMenuShortcut,
+  replaceInstallDir,
+  writePosixLocalLauncher,
   buildArtifactArgs,
   InstallDesktopBuildError,
   parseInstallDesktopBuildArgs,
@@ -22,6 +28,172 @@ import {
   resolveUnpackedAppRoot,
 } from "./install-desktop-build.ts";
 import { LOCAL_DESKTOP_BOOTSTRAP_VERSION } from "./lib/local-desktop-identity.ts";
+import { getWindowsUserDirectories } from "./lib/windows-user-directories.ts";
+
+it("creates a Linux launcher without overwriting the packaged executable", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-posix-launcher-"));
+  try {
+    const executable = NodePath.join(root, "t3code-v2-local");
+    await NodeFSP.writeFile(executable, "packaged executable fixture");
+    const launcher = await writePosixLocalLauncher(
+      root,
+      NodePath.join(root, "state"),
+      executable,
+      "linux",
+    );
+    assert.notEqual(launcher, executable);
+    assert.equal(await NodeFSP.readFile(executable, "utf8"), "packaged executable fixture");
+    assert.isNotEmpty(await NodeFSP.readFile(launcher, "utf8"));
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it.effect("resolves the Start Menu and default state outside an inherited alpha.local home", () =>
+  Effect.gen(function* () {
+    if ((yield* HostProcessPlatform) !== "win32") return;
+    const folders = getWindowsUserDirectories();
+    const alphaHome = NodePath.join(folders.home, ".t3.local");
+    try {
+      for (const name of ["APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOME", "TEMP", "TMP"]) {
+        vi.stubEnv(name, NodePath.join(alphaHome, name.toLowerCase()));
+      }
+      vi.stubEnv("T3CODE_HOME", alphaHome);
+      const shortcut = yield* Effect.promise(() => resolveWindowsStartMenuShortcut());
+      assert.equal(shortcut, NodePath.join(folders.programs, "T3 v2.local.lnk"));
+      const options = parseInstallDesktopBuildArgs(["--install-dir", "fixture-install"]);
+      assert.equal(options.stateDir, NodePath.join(folders.home, ".t3.v2"));
+      assert.notInclude(shortcut, alphaHome);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }),
+);
+
+it("refuses install/state/output nesting in both directions, naming the conflicting install or home", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-nesting-guard-"));
+  try {
+    const otherInstall = NodePath.join(root, "other", "app");
+    const otherHome = NodePath.join(root, "other-state", "home");
+    await NodeFSP.mkdir(otherInstall, { recursive: true });
+    await NodeFSP.writeFile(
+      NodePath.join(otherInstall, ".t3code-install.json"),
+      JSON.stringify({
+        displayName: "T3 alpha.local",
+        t3Home: otherHome,
+      }),
+    );
+    const safe = parseInstallDesktopBuildArgs(
+      ["--install-dir", "safe-install", "--state-dir", "safe-state", "--output-dir", "safe-output"],
+      {},
+      root,
+      "win32",
+      NodePath.join(root, "user"),
+    );
+    await assertSeparateFromKnownInstalls(safe, [otherInstall]);
+    for (const key of ["installDir", "stateDir", "outputDir"] as const) {
+      for (const protectedDir of [otherInstall, otherHome]) {
+        for (const candidate of [
+          NodePath.join(protectedDir, "v2"),
+          NodePath.dirname(protectedDir),
+        ]) {
+          await expect(
+            assertSeparateFromKnownInstalls({ ...safe, [key]: candidate }, [otherInstall]),
+          ).rejects.toThrow(protectedDir);
+        }
+      }
+    }
+    assert.equal(
+      JSON.parse(
+        await NodeFSP.readFile(NodePath.join(otherInstall, ".t3code-install.json"), "utf8"),
+      ).displayName,
+      "T3 alpha.local",
+    );
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("finds custom installs above and below the selected directories without a known-path hint", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-markers-"));
+  try {
+    const safe = parseInstallDesktopBuildArgs(
+      ["--install-dir", "safe-install", "--state-dir", "safe-state", "--output-dir", "safe-output"],
+      {},
+      root,
+      "win32",
+      NodePath.join(root, "user"),
+    );
+    for (const marker of [".t3code-install.json", "resources/app.asar", "Uninstall T3 Code.exe"]) {
+      const other = NodePath.join(root, marker.replaceAll(/[/. ]/g, "_"), "app");
+      const markerPath = NodePath.join(other, marker);
+      await NodeFSP.mkdir(NodePath.dirname(markerPath), { recursive: true });
+      await NodeFSP.writeFile(markerPath, marker.endsWith("json") ? "{}" : "fixture");
+      for (const key of ["installDir", "stateDir"] as const) {
+        for (const candidate of [NodePath.join(other, "nested"), NodePath.dirname(other)]) {
+          await expect(
+            assertSeparateFromKnownInstalls({ ...safe, [key]: candidate }, []),
+          ).rejects.toThrow(other);
+        }
+      }
+      await expect(
+        assertSeparateFromKnownInstalls(
+          { ...safe, outputDir: NodePath.join(other, "artifacts") },
+          [],
+        ),
+      ).rejects.toThrow(other);
+    }
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("swaps fixture updates, rolls back a failed rename, and leaves refused targets untouched", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-swap-"));
+  try {
+    const install = NodePath.join(root, "install");
+    const staged = NodePath.join(root, "stage");
+    const metadata = renderInstallMetadata({
+      installedAt: "fixture",
+      branch: "fixture",
+      commit: "fixture",
+      sourceAppRoot: "fixture",
+      stateDir: NodePath.join(root, "state"),
+    });
+    for (const [directory, version] of [
+      [install, "old"],
+      [staged, "new"],
+    ] as const) {
+      await NodeFSP.mkdir(directory);
+      await NodeFSP.writeFile(NodePath.join(directory, ".t3code-install.json"), metadata);
+      await NodeFSP.writeFile(NodePath.join(directory, "version.txt"), version);
+    }
+    await replaceInstallDir(staged, install);
+    assert.equal(await NodeFSP.readFile(NodePath.join(install, "version.txt"), "utf8"), "new");
+    await expect(NodeFSP.stat(`${install}.previous`)).rejects.toThrow();
+    await expect(replaceInstallDir(NodePath.join(root, "missing-stage"), install)).rejects.toThrow(
+      /Failed to replace/,
+    );
+    assert.equal(await NodeFSP.readFile(NodePath.join(install, "version.txt"), "utf8"), "new");
+    await NodeFSP.rm(NodePath.join(install, ".t3code-install.json"));
+    await expect(replaceInstallDir(staged, install)).rejects.toThrow(/not a T3 v2.local install/);
+    assert.equal(await NodeFSP.readFile(NodePath.join(install, "version.txt"), "utf8"), "new");
+    await NodeFSP.writeFile(NodePath.join(install, ".t3code-install.json"), metadata);
+    const backup = `${install}.previous`;
+    await NodeFSP.mkdir(backup);
+    await NodeFSP.writeFile(NodePath.join(backup, "leftover.txt"), "partial backup");
+    await expect(replaceInstallDir(staged, install)).rejects.toThrow(`Refusing backup ${backup}`);
+    await expect(replaceInstallDir(staged, install)).rejects.toThrow(
+      /remove that backup directory manually/,
+    );
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(backup, "leftover.txt"), "utf8"),
+      "partial backup",
+    );
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
 
 it("requests an unpacked artifact with the V2 local identity", () => {
   const options = parseInstallDesktopBuildArgs(

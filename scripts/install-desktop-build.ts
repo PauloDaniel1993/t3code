@@ -9,6 +9,10 @@ import * as NodeURL from "node:url";
 import { extractFile } from "@electron/asar";
 import { LOCAL_DESKTOP_IDENTITY, hasLocalDesktopBootstrap } from "./lib/local-desktop-identity.ts";
 import * as Schema from "effect/Schema";
+import {
+  getWindowsUserDirectories,
+  restoreWindowsUserDirectories,
+} from "./lib/windows-user-directories.ts";
 
 const LocalInstallMetadata = Schema.Struct({
   displayName: Schema.Literal(LOCAL_DESKTOP_IDENTITY.productName),
@@ -17,6 +21,8 @@ const LocalInstallMetadata = Schema.Struct({
 const PackagedIdentity = Schema.Struct({
   name: Schema.Literal(LOCAL_DESKTOP_IDENTITY.packageName),
 });
+const KnownInstallHome = Schema.Struct({ t3Home: Schema.optionalKey(Schema.String) });
+const decodeKnownInstallHome = Schema.decodeSync(Schema.fromJsonString(KnownInstallHome));
 const decodeLocalMetadata = Schema.decodeUnknownSync(Schema.fromJsonString(LocalInstallMetadata));
 const decodePackagedIdentity = Schema.decodeUnknownSync(Schema.fromJsonString(PackagedIdentity));
 
@@ -25,7 +31,7 @@ const DEFAULT_OUTPUT_DIR = NodePath.join(REPO_ROOT, ".t3-dev", "desktop-v2-insta
 const METADATA_FILE_NAME = LOCAL_DESKTOP_IDENTITY.metadataFileName;
 const WINDOWS_LOCAL_LAUNCHER_NAME = `${LOCAL_DESKTOP_IDENTITY.productName}.cmd`;
 const WINDOWS_LOCAL_SHORTCUT_NAME = `${LOCAL_DESKTOP_IDENTITY.productName}.lnk`;
-const POSIX_LOCAL_LAUNCHER_NAME = LOCAL_DESKTOP_IDENTITY.packageName;
+const POSIX_LOCAL_LAUNCHER_NAME = `${LOCAL_DESKTOP_IDENTITY.packageName}-launcher`;
 const LOCAL_DISPLAY_NAME = LOCAL_DESKTOP_IDENTITY.productName;
 const LOCAL_WINDOWS_APP_USER_MODEL_ID = LOCAL_DESKTOP_IDENTITY.appId;
 
@@ -141,12 +147,16 @@ function defaultStateDir(homeDir: string): string {
   return NodePath.join(homeDir, ".t3.v2");
 }
 
+export function resolveInstallerHomeDirectory(platform = readCliHostPlatform()): string {
+  return platform === "win32" ? getWindowsUserDirectories().home : NodeOS.homedir();
+}
+
 export function parseInstallDesktopBuildArgs(
   argv: ReadonlyArray<string>,
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
   hostPlatform: NodeJS.Platform = readCliHostPlatform(),
-  homeDir = NodeOS.homedir(),
+  homeDir = resolveInstallerHomeDirectory(hostPlatform),
 ): InstallDesktopBuildOptions {
   const state: ParseState = {
     skipBuild: false,
@@ -358,7 +368,7 @@ export function assertSafeStateDir(
   }
   assertSeparateFromLiveHomes(
     [resolvedStateDir, options.installDir, options.outputDir],
-    options.homeDir ?? NodeOS.homedir(),
+    options.homeDir ?? resolveInstallerHomeDirectory(),
   );
   if (
     isSameOrInsidePath(resolvedStateDir, options.installDir) ||
@@ -436,7 +446,7 @@ async function canonicalPath(path: string): Promise<string> {
 
 export async function assertCanonicalInstallPaths(
   options: InstallDesktopBuildOptions,
-  homeDir = NodeOS.homedir(),
+  homeDir = resolveInstallerHomeDirectory(),
 ): Promise<void> {
   const [installDir, outputDir, stateDir, repoRoot, canonicalHome] = await Promise.all([
     canonicalPath(options.installDir),
@@ -447,6 +457,87 @@ export async function assertCanonicalInstallPaths(
   ]);
   assertSafeInstallDir(installDir, { repoRoot, outputDir, homeDir: canonicalHome });
   assertSafeStateDir(stateDir, { installDir, outputDir, homeDir: canonicalHome });
+}
+
+/** Updates/uninstallers replace whole trees, so equality checks alone are insufficient. */
+export async function assertSeparateFromKnownInstalls(
+  options: InstallDesktopBuildOptions,
+  knownInstallDirs: ReadonlyArray<string> = readCliHostPlatform() === "win32"
+    ? [
+        NodePath.join(getWindowsUserDirectories().localAppData, "T3 Code Local"),
+        NodePath.join(getWindowsUserDirectories().localAppData, "Programs", "t3code"),
+      ]
+    : [],
+): Promise<void> {
+  const candidates = await Promise.all(
+    [options.installDir, options.stateDir, options.outputDir].map(canonicalPath),
+  );
+  const installDir = candidates[0]!;
+  const known = new Map<string, string>();
+  const seen = new Map<string, boolean>();
+  const inspect = async (directory: string, descend: boolean): Promise<void> => {
+    if (!(await isDirectory(directory))) return;
+    const canonical = await canonicalPath(directory);
+    if (seen.get(canonical) === true || (seen.has(canonical) && !descend)) return;
+    seen.set(canonical, descend);
+    const entries = await NodeFSP.readdir(directory, { withFileTypes: true });
+    const metadata = entries.some((entry) => entry.name === METADATA_FILE_NAME);
+    const isInstall =
+      metadata ||
+      entries.some((entry) => /^Uninstall .*\.exe$/i.test(entry.name)) ||
+      (await pathExists(NodePath.join(directory, "resources", "app.asar")));
+    if (isInstall && !pathEquals(canonical, installDir)) {
+      known.set(canonical, `install ${directory}`);
+      if (metadata) {
+        let home: string | undefined;
+        try {
+          home = decodeKnownInstallHome(
+            await NodeFSP.readFile(NodePath.join(directory, METADATA_FILE_NAME), "utf8"),
+          ).t3Home;
+        } catch (cause) {
+          throw new InstallDesktopBuildError(
+            `Cannot verify the home of known install ${directory}.`,
+            { cause },
+          );
+        }
+        if (home && NodePath.isAbsolute(home)) {
+          known.set(await canonicalPath(home), `home ${home} of install ${directory}`);
+        }
+      }
+    }
+    if (descend) {
+      for (const entry of entries) {
+        // Linked roots are canonicalized above; don't follow descendant junctions
+        // into unrelated trees or cycles while searching for nested installs.
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+          await inspect(NodePath.join(directory, entry.name), true);
+        }
+      }
+    }
+  };
+  for (const directory of knownInstallDirs) await inspect(directory, false);
+  // Search install/state descendants as well as their ancestors. Output's own
+  // unpacked artifact is intentional, so inspect only its ancestors here.
+  for (const [index, candidate] of candidates.entries()) {
+    await inspect(candidate, index < 2);
+    let parent = NodePath.dirname(candidate);
+    while (!pathEquals(parent, NodePath.dirname(parent))) {
+      await inspect(parent, false);
+      parent = NodePath.dirname(parent);
+    }
+  }
+  for (const candidate of candidates) {
+    for (const [protectedDir, description] of known) {
+      if (
+        isSameOrInsidePath(candidate, protectedDir) ||
+        isSameOrInsidePath(protectedDir, candidate)
+      ) {
+        throw new InstallDesktopBuildError(
+          `Refusing ${candidate}: it overlaps another known ${description}.`,
+        );
+      }
+    }
+  }
 }
 
 /** Reject official unpacked artifacts even when --reuse-artifact was requested. */
@@ -585,7 +676,11 @@ async function runCommand(
       cwd,
       stdio: "inherit",
       shell: false,
-      env: process.env,
+      env:
+        readCliHostPlatform() === "win32"
+          ? restoreWindowsUserDirectories(process.env)
+          : process.env,
+      windowsHide: true,
     });
     child.on("error", reject);
     child.on("exit", (code, signal) => {
@@ -790,7 +885,7 @@ export function renderWindowsLocalLauncher(stateDir: string, executableName: str
   return [
     "@echo off",
     "setlocal DisableDelayedExpansion",
-    'set "T3CODE_DESKTOP_LOCAL_IDENTITY=true"',
+    'set "T3CODE_DESKTOP_LOCAL_IDENTITY="',
     `set "T3CODE_HOME=${batchLiteral(stateDir)}"`,
     'set "APPDATA=%T3CODE_HOME%\\appdata"',
     `set "T3CODE_DESKTOP_DISPLAY_NAME=${batchLiteral(LOCAL_DISPLAY_NAME)}"`,
@@ -841,6 +936,7 @@ async function writeWindowsShortcut(input: {
 }
 
 async function writeWindowsShortcutFiles(installDir: string): Promise<void> {
+  if (readCliHostPlatform() !== "win32") return;
   const executablePath = await findLaunchTarget(installDir, "win");
   if (!executablePath) {
     return;
@@ -858,25 +954,25 @@ async function writeWindowsShortcutFiles(installDir: string): Promise<void> {
     shortcutPath: NodePath.join(installDir, WINDOWS_LOCAL_SHORTCUT_NAME),
   });
 
-  const appData = process.env.APPDATA;
-  if (typeof appData !== "string" || appData.trim().length === 0) {
-    return;
-  }
-
   await writeWindowsShortcut({
     ...shortcut,
-    shortcutPath: NodePath.join(
-      appData,
-      "Microsoft",
-      "Windows",
-      "Start Menu",
-      "Programs",
-      WINDOWS_LOCAL_SHORTCUT_NAME,
-    ),
+    shortcutPath: await resolveWindowsStartMenuShortcut(),
   });
 }
 
-async function writePosixLocalLauncher(
+/** Resolve and guard before any shortcut directory or COM write. */
+export async function resolveWindowsStartMenuShortcut(): Promise<string> {
+  const folders = getWindowsUserDirectories();
+  const shortcutPath = NodePath.join(folders.programs, WINDOWS_LOCAL_SHORTCUT_NAME);
+  assertSeparateFromLiveHomes([shortcutPath], folders.home);
+  assertSeparateFromLiveHomes(
+    [await canonicalPath(shortcutPath)],
+    await canonicalPath(folders.home),
+  );
+  return shortcutPath;
+}
+
+export async function writePosixLocalLauncher(
   installStageDir: string,
   stateDir: string,
   executablePath: string,
@@ -890,7 +986,7 @@ async function writePosixLocalLauncher(
           `export T3CODE_HOME=${shellSingleQuote(stateDir)}`,
           `export T3CODE_DESKTOP_DISPLAY_NAME=${shellSingleQuote(LOCAL_DISPLAY_NAME)}`,
           "export T3CODE_DISABLE_AUTO_UPDATE=true",
-          `export XDG_CONFIG_HOME=${shellSingleQuote(NodePath.join(stateDir, "config"))}`,
+          `export XDG_CONFIG_HOME=${shellSingleQuote(NodePath.join(stateDir, "appdata"))}`,
           'mkdir -p "$XDG_CONFIG_HOME"',
         ]
       : [
@@ -950,7 +1046,7 @@ async function replaceInstallDirOnce(
     if (existingMoved) {
       await NodeFSP.rm(backupDir, { recursive: true, force: true }).catch((cause: unknown) => {
         process.stderr.write(
-          `[install-desktop] Warning: installed update, but could not remove ${backupDir}: ${formatErrorCause(cause)}\n`,
+          `[install-desktop] Warning: installed update, but could not remove ${backupDir}: ${formatErrorCause(cause)}. Remove that backup directory manually before the next update.\n`,
         );
       });
     }
@@ -962,13 +1058,13 @@ async function replaceInstallDirOnce(
   }
 }
 
-async function replaceInstallDir(stagedDir: string, installDir: string): Promise<void> {
+export async function replaceInstallDir(stagedDir: string, installDir: string): Promise<void> {
   const parentDir = NodePath.dirname(installDir);
   const backupDir = `${installDir}.previous`;
   await NodeFSP.mkdir(parentDir, { recursive: true });
 
   await assertLocalInstallDirectory(installDir);
-  await assertLocalInstallDirectory(backupDir);
+  await assertLocalInstallBackup(backupDir);
   await NodeFSP.rm(backupDir, { recursive: true, force: true });
   try {
     await replaceInstallDirOnce(stagedDir, installDir, backupDir);
@@ -978,6 +1074,15 @@ async function replaceInstallDir(stagedDir: string, installDir: string): Promise
       { cause },
     );
   }
+}
+
+async function assertLocalInstallBackup(backupDir: string): Promise<void> {
+  await assertLocalInstallDirectory(backupDir).catch((cause: unknown) => {
+    throw new InstallDesktopBuildError(
+      `Refusing backup ${backupDir}. Inspect it and remove that backup directory manually before retrying. ${formatErrorCause(cause)}`,
+      { cause },
+    );
+  });
 }
 
 async function stageInstall(
@@ -1065,17 +1170,18 @@ export async function installDesktopBuild(options: InstallDesktopBuildOptions): 
   assertSafeInstallDir(options.installDir, {
     repoRoot: REPO_ROOT,
     outputDir: options.outputDir,
-    homeDir: NodeOS.homedir(),
+    homeDir: resolveInstallerHomeDirectory(),
   });
   assertSafeStateDir(options.stateDir, {
-    homeDir: NodeOS.homedir(),
+    homeDir: resolveInstallerHomeDirectory(),
     installDir: options.installDir,
     outputDir: options.outputDir,
   });
 
   await assertLocalInstallDirectory(options.installDir);
-  await assertLocalInstallDirectory(`${options.installDir}.previous`);
+  await assertLocalInstallBackup(`${options.installDir}.previous`);
   await assertCanonicalInstallPaths(options);
+  await assertSeparateFromKnownInstalls(options);
   await assertArtifactOutputDirectory(options.outputDir);
 
   if (options.reuseArtifact) {
