@@ -14,8 +14,9 @@ over from V1. You may need to sign in again to websites opened inside the app.
 
 The migrated thread keeps its title, project, provider and model selection, permission and
 interaction modes, branch or worktree, archive state, settlement state, snooze and pin state, and
-linked pull request. T3 Code also brings over user and assistant messages, their timestamps, and
-supported attachments. Large histories may appear in stages while the server imports transcripts.
+linked pull request. T3 Code also brings over user and assistant messages, reasoning traces, their
+timestamps, and supported attachments. Task threads retain their parent relationships. Large histories
+may appear in stages while the server imports transcripts.
 
 The migration does not recreate the old provider's live session. It also does not convert old run
 records, checkpoints and diffs, tool activity, approval history, or proposed plan history into the
@@ -63,7 +64,7 @@ Then print one transcript, replacing `<thread-id>` with the value from the first
 SELECT role, text, created_at
 FROM projection_thread_messages
 WHERE thread_id = '<thread-id>'
-  AND role IN ('user', 'assistant')
+  AND role IN ('user', 'assistant', 'reasoning')
 ORDER BY created_at, message_id;
 ```
 

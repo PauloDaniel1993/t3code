@@ -3,7 +3,7 @@
 Orchestration v2 snapshots `state.sqlite` into `statev2.sqlite` before opening writable persistence
 on its first launch. Only the copy receives v2 migrations; the original remains available to v1.
 Subsequent launches reuse the copy without refreshing it from v1. It creates v2 thread shell events first and imports
-the complete user and assistant transcript lazily when a client reads or continues the thread. The
+the complete user, assistant, and reasoning transcript lazily when a client reads or continues the thread. The
 v1 projection tables remain the import source and provide a read-only recovery source if an import
 needs investigation.
 
@@ -15,9 +15,18 @@ times, settlement override and timestamps, snooze timestamps, pin timestamp and 
 pull request. The metadata repair path fills snooze, pin order, `unsettledAt`, and linked pull request
 fields for threads imported before those fields were covered.
 
-Transcript import reads user and assistant rows from `projection_thread_messages`. It preserves
-message identifiers, text, supported attachments, timestamps, role, and ordering. A message that was
-still streaming becomes an interrupted turn item.
+Transcript import reads user, assistant, and reasoning rows from `projection_thread_messages`.
+Reasoning becomes V2 reasoning turn items retaining the original message identifiers. Fork message
+source tags survive in the event payloads; task-result messages keep their user role for provider
+compatibility but have system authorship. A message that was still streaming becomes an interrupted
+turn item.
+
+Fork startup reconciles the old fork ledger entries before upstream migrations, then runs the separate
+fork migration chain. After shell import, [ForkTaskLinkRepair](../../apps/server/src/orchestration-v2/legacy/ForkTaskLinkRepair.ts)
+commits task ancestry through the event sink before recovery or command admission. Its versioned command
+receipts also gate event compaction. Do not create replacement task shells before the importer: doing so
+prevents transcript hydration. Do not first seed a real fork home with an importer lacking the source-tag
+and reasoning patches: completed imports are not refreshed by a later build.
 
 The importer does not translate provider session identity, native provider runs, checkpoints and
 diffs, activities and tool calls, approvals, or proposed plans. V2 therefore must not present those

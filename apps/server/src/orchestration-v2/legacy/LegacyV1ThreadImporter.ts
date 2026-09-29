@@ -11,7 +11,7 @@ import {
   ModelSelection,
   type OrchestrationV2AppThread,
   OrchestrationV2AppThreadJson,
-  type OrchestrationV2ConversationMessage,
+  OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
   ProjectId,
@@ -70,7 +70,8 @@ interface LegacyRepairRow extends LegacyThreadRow {
 interface LegacyMessageRow {
   readonly message_id: string;
   readonly thread_id: string;
-  readonly role: "user" | "assistant";
+  readonly role: "user" | "assistant" | "reasoning";
+  readonly source: string | null;
   readonly text: string;
   readonly attachments_json: string | null;
   readonly context_json?: string | null;
@@ -121,6 +122,10 @@ export class LegacyV1ThreadImporter extends Context.Service<
 
 const decodeModelSelection = Schema.decodeUnknownOption(ModelSelection);
 const decodeAttachments = Schema.decodeUnknownOption(Schema.Array(ChatAttachment));
+const decodeMessageSource = Schema.decodeUnknownSync(
+  OrchestrationV2ConversationMessage.fields.source,
+);
+const decodeMessageContext = Schema.decodeUnknownSync(OrchestrationMessageContext);
 const decodePullRequests = Schema.decodeUnknownOption(Schema.Array(ThreadPullRequestLink));
 const decodeLinkedPullRequest = Schema.decodeUnknownOption(ThreadLinkedPullRequest);
 const decodeStoredThread = Schema.decodeUnknownOption(
@@ -248,28 +253,18 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
   const createdAt = dateTime(row.created_at);
   const updatedAt = dateTime(row.updated_at);
   const attachments = attachmentsFor(row);
-  const message: OrchestrationV2ConversationMessage = {
-    createdBy: row.role === "user" ? "user" : "agent",
-    creationSource: "server",
-    id: messageId,
-    threadId,
-    runId: null,
-    nodeId: null,
-    role: row.role,
-    text: row.text,
-    ...(row.context_json
-      ? {
-          context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
-            parseJson(row.context_json),
-          ),
-        }
-      : {}),
-    attachments,
-    streaming: false,
-    createdAt,
-    updatedAt,
-  };
+  const source = decodeMessageSource(row.source ?? undefined);
+  const createdBy =
+    source === "task-result" || source === "system"
+      ? "system"
+      : source === "provider"
+        ? "agent"
+        : source === "user" || row.role === "user"
+          ? "user"
+          : "agent";
+  const creationSource = source === "provider" ? "provider" : "server";
   const baseTurnItem = {
+    ...(source === undefined ? {} : { legacyMessageSource: source }),
     id: TurnItemId.make(`${IMPORT_EVENT_PREFIX}:turn-item:${row.message_id}`),
     threadId,
     runId: null,
@@ -285,21 +280,58 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
     completedAt: updatedAt,
     updatedAt,
   };
+  // V2 represents thinking as a timeline item, not an assistant reply. Keep
+  // the legacy message id so the imported trace remains independently auditable.
+  if (row.role === "reasoning") {
+    return [
+      {
+        id: EventId.make(`${IMPORT_EVENT_PREFIX}:turn-item:${row.message_id}`),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: updatedAt,
+        payload: {
+          ...baseTurnItem,
+          type: "reasoning",
+          messageId,
+          text: row.text,
+          streaming: false,
+        },
+      },
+    ];
+  }
+  const message: OrchestrationV2ConversationMessage = {
+    createdBy,
+    creationSource,
+    ...(source === undefined ? {} : { source }),
+    id: messageId,
+    threadId,
+    runId: null,
+    nodeId: null,
+    role: row.role,
+    text: row.text,
+    ...(row.context_json
+      ? {
+          context: decodeMessageContext(parseJson(row.context_json)),
+        }
+      : {}),
+    attachments,
+    streaming: false,
+    createdAt,
+    updatedAt,
+  };
   const turnItem: OrchestrationV2TurnItem =
     row.role === "user"
       ? {
           ...baseTurnItem,
-          createdBy: "user",
-          creationSource: "server",
+          createdBy,
+          creationSource,
           type: "user_message",
           messageId,
           inputIntent: "turn_start",
           text: row.text,
           ...(row.context_json
             ? {
-                context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
-                  parseJson(row.context_json),
-                ),
+                context: decodeMessageContext(parseJson(row.context_json)),
               }
             : {}),
           attachments,
@@ -311,9 +343,7 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
           text: row.text,
           ...(row.context_json
             ? {
-                context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
-                  parseJson(row.context_json),
-                ),
+                context: decodeMessageContext(parseJson(row.context_json)),
               }
             : {}),
           streaming: false,
@@ -355,6 +385,7 @@ const make = Effect.gen(function* () {
         message_id,
         thread_id,
         role,
+        source,
         text,
         attachments_json,
         context_json,
@@ -367,7 +398,7 @@ const make = Effect.gen(function* () {
         ) AS ordinal
       FROM projection_thread_messages
       WHERE thread_id = ${threadId}
-        AND role IN ('user', 'assistant')
+        AND role IN ('user', 'assistant', 'reasoning')
       ORDER BY created_at ASC, message_id ASC
     `;
 
@@ -378,6 +409,7 @@ const make = Effect.gen(function* () {
           message.message_id,
           message.thread_id,
           message.role,
+          message.source,
           message.text,
           message.attachments_json,
           message.context_json,
@@ -388,7 +420,7 @@ const make = Effect.gen(function* () {
             SELECT COUNT(*)
             FROM projection_thread_messages AS earlier
             WHERE earlier.thread_id = message.thread_id
-              AND earlier.role IN ('user', 'assistant')
+              AND earlier.role IN ('user', 'assistant', 'reasoning')
               AND (
                 earlier.created_at < message.created_at
                 OR (
@@ -399,7 +431,7 @@ const make = Effect.gen(function* () {
           ) AS ordinal
         FROM projection_thread_messages AS message
         WHERE message.thread_id = ${threadId}
-          AND message.role IN ('user', 'assistant')
+          AND message.role IN ('user', 'assistant', 'reasoning')
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
       `;
@@ -408,6 +440,7 @@ const make = Effect.gen(function* () {
           message.message_id,
           message.thread_id,
           message.role,
+          message.source,
           message.text,
           message.attachments_json,
           message.context_json,
@@ -418,7 +451,7 @@ const make = Effect.gen(function* () {
             SELECT COUNT(*)
             FROM projection_thread_messages AS earlier
             WHERE earlier.thread_id = message.thread_id
-              AND earlier.role IN ('user', 'assistant')
+              AND earlier.role IN ('user', 'assistant', 'reasoning')
               AND (
                 earlier.created_at < message.created_at
                 OR (
@@ -715,11 +748,11 @@ const make = Effect.gen(function* () {
           WHERE application_event_version = 2
             AND aggregate_kind = 'thread'
             AND stream_id = ${threadId}
-            AND event_id LIKE ${`${IMPORT_EVENT_PREFIX}:message:%`}
+            AND event_id LIKE ${`${IMPORT_EVENT_PREFIX}:turn-item:%`}
         `;
         const existing = new Set(existingRows.map((row) => row.event_id));
         const missing = messages.filter(
-          (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:message:${message.message_id}`),
+          (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:turn-item:${message.message_id}`),
         );
         for (const batch of chunks(missing, TRANSCRIPT_EVENT_BATCH_SIZE / 2)) {
           yield* Effect.forEach(

@@ -8,6 +8,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { EventStoreV2 } from "./EventStore.ts";
+import { assertForkTaskLinksRepaired } from "./legacy/ForkTaskLinkRepair.ts";
 import {
   ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION,
   ProjectionStoreV2,
@@ -242,6 +243,7 @@ export const layer: Layer.Layer<
      * turn-item.updated stays intact because replay assigns positions on first write.
      */
     const compactEventStore = Effect.gen(function* () {
+      yield* assertForkTaskLinksRepaired().pipe(Effect.provideService(SqlClient.SqlClient, sql));
       const bounds = yield* sql<{
         readonly event_sequence: number;
         readonly receipt_row_id: number;

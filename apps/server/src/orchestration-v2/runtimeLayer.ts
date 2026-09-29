@@ -25,6 +25,7 @@ import { layerFromStores as eventSinkLayer } from "./EventSink.ts";
 import { layerFromOrchestrationEventStore as eventStoreLayer } from "./EventStore.ts";
 import { layer as idAllocatorLayer } from "./IdAllocator.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
+import * as ForkTaskLinkRepair from "./legacy/ForkTaskLinkRepair.ts";
 import { layer as orchestratorLayer } from "./Orchestrator.ts";
 import { layer as projectionStoreLayer } from "./ProjectionStore.ts";
 import { layer as projectionMaintenanceLayer } from "./ProjectionMaintenance.ts";
@@ -291,6 +292,9 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
   providerRuntimeRecoveryProvided,
   projectionMaintenanceProvided,
   legacyV1ThreadImporterProvided,
+  ForkTaskLinkRepair.layer.pipe(
+    Layer.provide(Layer.merge(eventSinkProvided, projectionStoreLayer)),
+  ),
 );
 
 export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
