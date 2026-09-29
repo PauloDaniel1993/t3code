@@ -7,7 +7,7 @@ import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 
-it.effect("keeps a healthy runtime alive with more than 512 unread text/lifecycle events", () =>
+it.effect("keeps a healthy runtime alive while text and lifecycle events remain unread", () =>
   Effect.gen(function* () {
     const runtime = yield* AcpSessionRuntime.make({
       spawn: {
@@ -17,7 +17,7 @@ it.effect("keeps a healthy runtime alive with more than 512 unread text/lifecycl
         ],
       },
       cwd: process.cwd(),
-      clientInfo: { name: "intake-regression", version: "0.0.0" },
+      clientInfo: { name: "unread-backlog-regression", version: "0.0.0" },
       authMethodId: "test",
     });
     yield* runtime.start();

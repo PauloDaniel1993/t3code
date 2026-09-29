@@ -41,7 +41,7 @@ describe("ACP tool progress", () => {
     assert.deepEqual(progress.flush(100), []);
   });
 
-  it("keeps each tool's last held state when more than 256 tools are active", () => {
+  it("keeps each active tool's last held state", () => {
     const progress = makeAcpToolProgressCoalescer<number>();
     for (let id = 0; id < 600; id++) {
       progress.offer(String(id), id, "running", 0);
@@ -54,7 +54,7 @@ describe("ACP tool progress", () => {
     assert.isTrue(progress.offer("0", 101, "completed", 101));
   });
 
-  it("keeps terminal tombstones through saturation and settlement flushes", () => {
+  it("keeps terminal tombstones while other tools progress and settlement flushes", () => {
     const progress = makeAcpToolProgressCoalescer<number>();
     assert.isTrue(progress.offer("finished", 1, "completed", 0));
     for (let id = 0; id < 600; id++) progress.offer(String(id), id, "running", 1);
