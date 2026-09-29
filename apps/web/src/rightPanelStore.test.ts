@@ -525,6 +525,38 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("opens the map as a singleton surface that reopening activates instead of duplicating", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().open(refA, "diff");
+    useRightPanelStore.getState().open(refA, "map");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "map",
+      surfaces: [
+        { id: "map", kind: "map" },
+        { id: "diff", kind: "diff" },
+      ],
+    });
+  });
+
+  it("closes the map like any other singleton and keeps it through persistence migration", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    const persisted = JSON.parse(
+      JSON.stringify({ byThreadKey: useRightPanelStore.getState().byThreadKey }),
+    );
+    expect(
+      migratePersistedRightPanelState(persisted).byThreadKey["env-1:thread-A"]?.surfaces,
+    ).toEqual([{ id: "map", kind: "map" }]);
+
+    useRightPanelStore.getState().closeSurface(refA, "map");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
+  });
+
   it("keeps files as a singleton surface", () => {
     useRightPanelStore.getState().open(refA, "files");
     useRightPanelStore.getState().open(refA, "files");
