@@ -38,7 +38,10 @@ export const seedThreads = Effect.fnUntraced(function* (
 });
 
 /** The reviewer's u1/r1/a1/u2/r2/a2 case, persisted with upstream's old ordinals. */
-export const seedUnpatchedImport = Effect.fnUntraced(function* (complete: boolean) {
+export const seedUnpatchedImport = Effect.fnUntraced(function* (
+  complete: boolean,
+  includeReasoning = true,
+) {
   yield* seedThreads([["root", null]]);
   const sql = yield* SqlClient.SqlClient;
   for (const [id, role] of [
@@ -58,6 +61,10 @@ export const seedUnpatchedImport = Effect.fnUntraced(function* (complete: boolea
   const importer = yield* LegacyV1ThreadImporter;
   yield* importer.reconcileShells;
   if (complete) yield* importer.ensureTranscript(ThreadId.make("root"));
-  yield* sql`UPDATE projection_thread_messages SET role = 'reasoning' WHERE role = 'system'`;
-  yield* sql`UPDATE projection_thread_messages SET source = 'task-result' WHERE message_id = '4-u'`;
+  if (includeReasoning)
+    yield* sql`UPDATE projection_thread_messages SET role = 'reasoning' WHERE role = 'system'`;
+  // The partial case has no source tags: only incompatible ordinals expose it.
+  // The source-only case has no reasoning: only lost provenance exposes it.
+  if (complete)
+    yield* sql`UPDATE projection_thread_messages SET source = 'task-result' WHERE message_id = '4-u'`;
 });
