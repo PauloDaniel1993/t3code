@@ -2097,13 +2097,13 @@ export default function ChatView(props: ChatViewProps) {
     routeThreadKey,
     threadError,
     deriveThreadErrorOccurrence({
+      error: threadError,
       localError: isServerThread
         ? localServerErrorsByThreadKey[routeThreadKey]
         : draftId
           ? localDraftErrorsByDraftId[draftId]
           : undefined,
       projection: serverProjection,
-      latestRun: serverLatestRun,
     }),
   );
   const visibleThreadError = shouldShowThreadErrorBanner(

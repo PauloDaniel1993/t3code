@@ -26,12 +26,19 @@ export function shouldShowThreadErrorBanner(
 // changes between threads). Mirrors the branch-mismatch banner: a dismissal
 // is remembered per thread key, occurrence and message, so navigating away to
 // a thread with no error cannot resurrect the banner, while a different error,
-// or the same text failing again, on the same thread still appears.
+// or the same text failing again, on the same thread still appears. Each new
+// occurrence adds a key, so the set keeps only the newest
+// MAX_DISMISSED_THREAD_ERROR_KEYS and forgets the oldest dismissal first.
+export const MAX_DISMISSED_THREAD_ERROR_KEYS = 200;
 const sessionDismissedThreadErrorBannerKeys = new Set<string>();
 
 export function dismissThreadErrorBannerForSession(bannerKey: string | null): void {
-  if (bannerKey !== null) {
-    sessionDismissedThreadErrorBannerKeys.add(bannerKey);
+  if (bannerKey === null) return;
+  sessionDismissedThreadErrorBannerKeys.delete(bannerKey);
+  sessionDismissedThreadErrorBannerKeys.add(bannerKey);
+  for (const oldest of sessionDismissedThreadErrorBannerKeys) {
+    if (sessionDismissedThreadErrorBannerKeys.size <= MAX_DISMISSED_THREAD_ERROR_KEYS) break;
+    sessionDismissedThreadErrorBannerKeys.delete(oldest);
   }
 }
 
