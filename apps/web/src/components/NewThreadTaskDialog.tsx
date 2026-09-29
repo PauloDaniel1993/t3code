@@ -217,7 +217,6 @@ export function NewThreadTaskDialog(props: {
                   lockedProvider={null}
                   instanceEntries={providerInstanceEntries}
                   modelOptionsByInstance={modelOptionsByInstance}
-                  triggerVariant="outline"
                   onInstanceModelChange={(instanceId, model) =>
                     // A different model has different traits, so the previous
                     // model's options are dropped rather than carried onto it.
@@ -244,7 +243,6 @@ export function NewThreadTaskDialog(props: {
                           ),
                         )
                       }
-                      triggerVariant="outline"
                     />
                   </span>
                 )}

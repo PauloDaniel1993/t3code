@@ -401,6 +401,10 @@ function collectThreadActivityAttachmentRelativePaths(
   return relativePaths;
 }
 
+// Most events have no cleanup, so callers skip the traced call and write no span.
+const hasAttachmentCleanup = (sideEffects: AttachmentSideEffects): boolean =>
+  sideEffects.deletedThreadIds.size > 0 || sideEffects.prunedThreadRelativePaths.size > 0;
+
 const recordAttachmentCleanupIntents = Effect.fn("recordAttachmentCleanupIntents")(
   function* (input: { readonly sideEffects: AttachmentSideEffects; readonly createdAt: string }) {
     const attachmentCleanupQueue = yield* AttachmentCleanupQueueRepository;
@@ -660,6 +664,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pinnedAt: null,
             pinOrderKey: null,
             activeOrderKey: null,
+            autoSettleDisabledAt: null,
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
@@ -886,6 +891,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             pinnedAt: null,
             pinOrderKey: null,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.auto-settle-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            autoSettleDisabledAt: event.payload.autoSettleDisabledAt,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -2236,10 +2256,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       yield* sql.withTransaction(
         Effect.gen(function* () {
           yield* applyProjectorForEvent(projector, event, attachmentSideEffects);
-          yield* recordAttachmentCleanupIntents({
-            sideEffects: attachmentSideEffects,
-            createdAt: event.occurredAt,
-          });
+          if (hasAttachmentCleanup(attachmentSideEffects)) {
+            yield* recordAttachmentCleanupIntents({
+              sideEffects: attachmentSideEffects,
+              createdAt: event.occurredAt,
+            });
+          }
         }),
       );
     });
@@ -2283,10 +2305,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   updatedAt: event.occurredAt,
                 })),
               );
-              yield* recordAttachmentCleanupIntents({
-                sideEffects: attachmentSideEffects,
-                createdAt: event.occurredAt,
-              });
+              if (hasAttachmentCleanup(attachmentSideEffects)) {
+                yield* recordAttachmentCleanupIntents({
+                  sideEffects: attachmentSideEffects,
+                  createdAt: event.occurredAt,
+                });
+              }
             }),
           );
           // Cleanup is durably queued in the projection transaction. The

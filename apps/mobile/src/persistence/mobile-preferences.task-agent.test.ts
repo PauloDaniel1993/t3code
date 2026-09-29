@@ -153,23 +153,15 @@ describe("task-agent mobile preferences", () => {
     }),
   );
 
-  it.effect("keeps the legacy-list and task flags persisted and independent", () =>
+  it.effect("persists the task flag", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({
-        initialPreferences: { legacyThreadListEnabled: true },
-      });
+      const harness = yield* makeHarness({});
 
       yield* harness.store.savePatch({ threadTasksEnabled: true });
-      expect(yield* harness.store.load).toMatchObject({
-        legacyThreadListEnabled: true,
-        threadTasksEnabled: true,
-      });
+      expect(yield* harness.store.load).toMatchObject({ threadTasksEnabled: true });
 
-      yield* harness.store.savePatch({ legacyThreadListEnabled: false });
-      expect(yield* harness.store.load).toMatchObject({
-        legacyThreadListEnabled: false,
-        threadTasksEnabled: true,
-      });
+      yield* harness.store.savePatch({ threadTasksEnabled: false });
+      expect(yield* harness.store.load).toMatchObject({ threadTasksEnabled: false });
     }),
   );
 
