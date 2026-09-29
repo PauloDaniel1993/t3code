@@ -20,6 +20,7 @@ import {
 
 function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
+    sidebarTaskGroupsExpandedById: {},
     projectExpandedById: {},
     projectOrder: [],
     sidebarProjectScopeKey: null,
@@ -193,6 +194,7 @@ describe("parsePersistedState", () => {
     });
 
     expect(parsed).toEqual({
+      sidebarTaskGroupsExpandedById: {},
       projectExpandedById: {
         logical: false,
       },
@@ -315,6 +317,7 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(persisted).toEqual({
+      sidebarTaskGroupsExpandedById: {},
       projectExpandedById: {
         logical: false,
       },
@@ -335,6 +338,18 @@ describe("uiStateStore persistence", () => {
     });
     expect(parsePersistedState(persisted)).toEqual({
       ...state,
+    });
+  });
+
+  it("restores explicit task expansion independently for each environment", () => {
+    const state = makeUiState({
+      sidebarTaskGroupsExpandedById: { "local:parent": false, "remote:parent": true },
+    });
+    persistState(state);
+    const stored = JSON.parse(localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}");
+    expect(parsePersistedState(stored).sidebarTaskGroupsExpandedById).toEqual({
+      "local:parent": false,
+      "remote:parent": true,
     });
   });
 

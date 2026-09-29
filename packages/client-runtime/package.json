@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/sidebar-task-subthreads": {
+      "types": "./src/state/sidebarTaskSubthreads.ts",
+      "default": "./src/state/sidebarTaskSubthreads.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

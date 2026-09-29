@@ -35,6 +35,18 @@ function allIds(state: ThreadActionMenuState): string[] {
 }
 
 describe("buildThreadActionMenuItems", () => {
+  it("limits tasks to safe actions, with stale pin cleanup only on capable servers", () => {
+    const task = { ...baseState, isTask: true, branch: "main", isPinned: true };
+    expect(allIds(task)).toEqual(["unpin", "rename", "copy-thread-id", "delete"]);
+    expect(allIds({ ...task, supports: { ...task.supports, pinning: false } })).toEqual([
+      "rename",
+      "copy-thread-id",
+      "delete",
+    ]);
+    expect(buildThreadActionMenuItems(task).find((item) => item.id === "rename")?.label).toBe(
+      "Rename task",
+    );
+  });
   it("hides lifecycle items when the environment lacks the capabilities", () => {
     expect(
       ids({

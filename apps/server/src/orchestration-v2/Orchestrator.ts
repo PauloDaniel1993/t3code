@@ -1807,6 +1807,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...task,
         completionDelivery: {
           state,
+          ...(task.completionDelivery?.deliveredAt === undefined
+            ? {}
+            : { deliveredAt: task.completionDelivery.deliveredAt }),
           observedByRunId:
             command.type === "delegated_task.completion-delivery.acknowledge"
               ? command.observedByRunId
@@ -8587,6 +8590,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         nextTaskStates.set(task.id, {
           state: deliveryRun.status === "cancelled" ? "pending" : "delivered",
           observedByRunId: null,
+          ...(deliveryRun.status === "cancelled" ? {} : { deliveredAt: DateTime.formatIso(now) }),
         });
       }
       const pendingTaskIds = projection.subagents
@@ -8752,7 +8756,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: task.driver,
         providerInstanceId: task.providerInstanceId,
         occurredAt: now,
-        payload: { ...task, completionDelivery: { state, observedByRunId: null }, updatedAt: now },
+        payload: {
+          ...task,
+          completionDelivery: {
+            state,
+            observedByRunId: null,
+            ...(state === "delivered" ? { deliveredAt: DateTime.formatIso(now) } : {}),
+          },
+          updatedAt: now,
+        },
       });
     }
     // Provider acceptance drains this batch but does not acknowledge its results.

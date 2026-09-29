@@ -135,7 +135,14 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useClientSettings } from "../hooks/useSettings";
+import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
+import {
+  createSidebarTaskGrouper,
+  isSidebarTaskThread,
+} from "@t3tools/client-runtime/state/sidebar-task-subthreads";
+import { EMPTY_SIDEBAR_TASKS, SidebarTaskDisclosure, SidebarTaskGroup } from "./SidebarTaskGroup";
+import { closeSidebarTaskPeek, SidebarTaskPeek } from "./SidebarTaskPeek";
+import { SidebarTaskVisits } from "./SidebarTaskVisits";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -172,7 +179,6 @@ import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
-  filterSidebarV2VisibleThreads,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -1042,6 +1048,9 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 
 const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   thread: SidebarThreadSummary;
+  taskThreads: ReadonlyArray<EnvironmentThreadShell>;
+  hasTaskGroup: boolean;
+  taskGroup: ReactNode;
   variant: "card" | "slim";
   // Slim rows are either settled (action: un-settle) or merely quiet
   // (seen Ready threads — action: settle).
@@ -1594,7 +1603,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       {thread.title}
     </span>
   );
-  const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
+  const accessibleTitle = isRenaming ? null : (
+    <button
+      type="button"
+      aria-label={accessibility.label}
+      aria-current={accessibility.current}
+      onClick={(event) => {
+        event.stopPropagation();
+        handleClick(event);
+      }}
+      onKeyDown={handleKeyDown}
+      className="pointer-events-none absolute inset-0 rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+    >
+      <span className="sr-only">{thread.title}</span>
+    </button>
+  );
+  const taskDisclosure = props.hasTaskGroup ? (
+    <SidebarTaskDisclosure parent={thread} tasks={props.taskThreads} />
+  ) : null;
 
   // Stacks show their layer count; multiple unrelated links show their total count.
   // Plain clicks open T3; individual PR links also support opening the host in a new tab.
@@ -1695,10 +1721,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             render={
               <div
                 ref={rowRef}
-                role="button"
-                tabIndex={0}
-                aria-label={accessibility.label}
-                aria-current={accessibility.current}
                 data-testid="sidebar-row-slim"
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
@@ -1725,6 +1747,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {title}
             {pinIndicator}
             {terminalStatusIcon}
+            {taskDisclosure}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
                 Regenerating title
@@ -1829,6 +1852,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           </TooltipTrigger>
           {detailsTooltip}
         </Tooltip>
+        {props.taskGroup}
       </li>
     );
   }
@@ -1851,10 +1875,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           render={
             <div
               ref={rowRef}
-              role="button"
-              tabIndex={0}
-              aria-label={accessibility.label}
-              aria-current={accessibility.current}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
@@ -2042,6 +2062,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 <span className="flex-1" />
               )}
               {terminalStatusIcon}
+              {taskDisclosure}
               {prBadge}
               {diff ? (
                 <span className="shrink-0 font-mono">
@@ -2073,6 +2094,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>
+      {props.taskGroup}
     </li>
   );
 });
@@ -2252,6 +2274,8 @@ export default function Sidebar() {
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
+  const threadTasksEnabled = useClientSettings((s) => s.threadTasksEnabled);
+  const updateClientSettings = useUpdateClientSettings();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
@@ -2562,7 +2586,7 @@ export default function Sidebar() {
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [clearSelection, projectScopeKey, threadTasksEnabled]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2613,6 +2637,22 @@ export default function Sidebar() {
         override holds until all of them appear in canonical state. */
     readonly assignedKeys: ReadonlyMap<string, string>;
   } | null>(null);
+  const taskGrouper = useMemo(() => createSidebarTaskGrouper(), []);
+  const {
+    topLevel: sidebarTopLevelThreads,
+    tasksByParent,
+    nativeParentKeys,
+  } = useMemo(
+    () =>
+      taskGrouper({
+        threads,
+        scopedProjectKeys,
+        supportsTasks: (thread) =>
+          threadTasksEnabled &&
+          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true,
+      }),
+    [taskGrouper, threads, scopedProjectKeys, threadTasksEnabled, serverConfigs],
+  );
   const {
     pinnedThreads,
     draggableThreadKeys,
@@ -2628,9 +2668,7 @@ export default function Sidebar() {
     // memo exactly at the next wake boundary.
     void snoozeWakeTick;
     const preciseNow = new Date().toISOString();
-    // Subagent child threads live in the parent's Agents surface, not the
-    // sidebar roster (v2 models them as real threads with lineage).
-    const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
+    const visible = sidebarTopLevelThreads;
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
     const snoozed: EnvironmentThreadShell[] = [];
@@ -2720,7 +2758,7 @@ export default function Sidebar() {
       settledThreads: sortSettledThreads(settled),
       snoozeNow: preciseNow,
     };
-  }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
+  }, [nowMinute, optimisticDrop, serverConfigs, snoozeWakeTick, sidebarTopLevelThreads]);
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
@@ -2878,12 +2916,12 @@ export default function Sidebar() {
   const threadByKey = useMemo(
     () =>
       new Map(
-        orderedThreads.map(
+        threads.map(
           (thread) =>
             [scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)), thread] as const,
         ),
       ),
-    [orderedThreads],
+    [threads],
   );
   // Handlers read these through refs: depending on per-update Map/Set
   // identities would give every row a fresh callback prop on each shell
@@ -2935,6 +2973,7 @@ export default function Sidebar() {
   // starting a session un-settles server-side.
   const navigateToThread = useCallback(
     (threadRef: ScopedThreadRef) => {
+      closeSidebarTaskPeek();
       if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
         clearSelection();
       }
@@ -2948,6 +2987,17 @@ export default function Sidebar() {
       });
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
+  );
+  const handleNewSidebarTask = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      void navigateToThread(threadRef).then(() => {
+        // Ticket 31 owns the dialog listener in the mounted parent chat header.
+        requestAnimationFrame(() =>
+          window.dispatchEvent(new CustomEvent("t3code:new-thread-task", { detail: threadRef })),
+        );
+      });
+    },
+    [navigateToThread],
   );
 
   const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
@@ -4179,6 +4229,7 @@ export default function Sidebar() {
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
+              isTask: isSidebarTaskThread(thread),
               branch: thread.branch ?? null,
               projectFilter: threadProjectGroup
                 ? {
@@ -4538,6 +4589,8 @@ export default function Sidebar() {
   return (
     <>
       <ThreadContextDragGhost />
+      <SidebarTaskPeek onOpenThread={navigateToThread} />
+      {threadTasksEnabled ? <SidebarTaskVisits threadRef={routeThreadRef} /> : null}
       <SidebarChromeHeader isElectron={isElectron} />
       <SidebarContent
         className="min-h-full"
@@ -4698,6 +4751,19 @@ export default function Sidebar() {
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
+            <div className="flex justify-end">
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                aria-pressed={threadTasksEnabled}
+                onClick={() => {
+                  closeSidebarTaskPeek();
+                  void updateClientSettings({ threadTasksEnabled: !threadTasksEnabled });
+                }}
+              >
+                Task subthreads {threadTasksEnabled ? "on" : "off"}
+              </Button>
+            </div>
           </SidebarGroup>
         }
       >
@@ -4824,6 +4890,32 @@ export default function Sidebar() {
                             // sortable wrapper keeps its identity during a drag.
                             key={`${threadKey}:${rowVariant}`}
                             thread={thread}
+                            taskThreads={tasksByParent.get(threadKey) ?? EMPTY_SIDEBAR_TASKS}
+                            hasTaskGroup={
+                              threadTasksEnabled &&
+                              serverConfigs.get(thread.environmentId)?.environment.capabilities
+                                .threadTasks === true &&
+                              (tasksByParent.has(threadKey) || nativeParentKeys.has(threadKey))
+                            }
+                            taskGroup={
+                              threadTasksEnabled &&
+                              serverConfigs.get(thread.environmentId)?.environment.capabilities
+                                .threadTasks === true &&
+                              (tasksByParent.has(threadKey) || nativeParentKeys.has(threadKey)) ? (
+                                <SidebarTaskGroup
+                                  parent={thread}
+                                  tasks={tasksByParent.get(threadKey) ?? EMPTY_SIDEBAR_TASKS}
+                                  onOpenThread={navigateToThread}
+                                  onContextMenu={handleThreadContextMenu}
+                                  onCommitRename={commitThreadRename}
+                                  onCancelRename={cancelThreadRename}
+                                  onRenameTitleChange={setRenamingTitle}
+                                  renamingThreadKey={renamingThreadKey}
+                                  renamingTitle={renamingTitle}
+                                  onNewTask={handleNewSidebarTask}
+                                />
+                              ) : null
+                            }
                             variant={rowVariant}
                             // Snoozed rows wake, settled rows un-settle, and cards settle.
                             variantAction={

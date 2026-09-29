@@ -20,6 +20,17 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("task sidebar preference", () => {
+  it("defaults off and round-trips the local opt-in", () => {
+    expect(decodeClientSettings({}).threadTasksEnabled).toBe(false);
+    expect(
+      decodeClientSettings(encodeClientSettings(decodeClientSettings({ threadTasksEnabled: true })))
+        .threadTasksEnabled,
+    ).toBe(true);
+    expect(decodeClientSettingsPatch({ threadTasksEnabled: false }).threadTasksEnabled).toBe(false);
+  });
+});
+
 describe("ServerSettings response streaming", () => {
   it("defaults to paragraph buffering", () => {
     expect(decodeServerSettings({}).responseStreamingMode).toBe("paragraph");

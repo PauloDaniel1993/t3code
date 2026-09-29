@@ -355,6 +355,9 @@ it.layer(TestLayer)("delegated completion delivery repairs", (it) => {
         messageId,
       });
       const accepted = yield* orchestrator.getThreadProjection(threadId);
+      const deliveredAt = accepted.subagents.find((row) => row.id === taskId)?.completionDelivery
+        ?.deliveredAt;
+      assert.isTrue(Number.isFinite(Date.parse(deliveredAt ?? "")));
       assert.equal(
         accepted.subagents.find((row) => row.id === taskId)?.completionDelivery?.state,
         "delivered",
@@ -375,7 +378,23 @@ it.layer(TestLayer)("delegated completion delivery repairs", (it) => {
         messageId,
       });
       const duplicate = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(
+        duplicate.subagents.find((row) => row.id === taskId)?.completionDelivery?.deliveredAt,
+        deliveredAt,
+      );
       assert.deepEqual(duplicate.runs.find((row) => row.id === runId)?.delegatedCompletion, cohort);
+      yield* orchestrator.dispatch({
+        type: "delegated_task.completion-delivery.acknowledge",
+        commandId: CommandId.make("ack-delivery-watermark"),
+        parentThreadId: threadId,
+        taskId,
+        observedByRunId: runId,
+      });
+      const acknowledged = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        acknowledged.subagents.find((row) => row.id === taskId)?.completionDelivery,
+        { state: "acknowledged", observedByRunId: runId, deliveredAt },
+      );
     }),
   );
 

@@ -14,6 +14,15 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("keeps task nesting off for a server that does not advertise task support", () => {
+    expect(decodeDescriptor(descriptor).capabilities.threadTasks).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, threadTasks: true },
+      }).capabilities.threadTasks,
+    ).toBe(true);
+  });
   it("requires an advertised required-worktree bootstrap capability", () => {
     expect(decodeDescriptor(descriptor).capabilities.requiredWorktreeBootstrap).toBeUndefined();
     expect(
