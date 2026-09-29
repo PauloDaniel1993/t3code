@@ -13,6 +13,8 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
+  TurnItemId,
   type ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -20,6 +22,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -905,6 +908,202 @@ it.effect("ProviderSessionManagerV2 closes event subscriptions normally on serve
 
     yield* effect.pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
   }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 coalesces a buffered burst and bounds payloads before delivery",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSinkV2;
+        const idAllocator = yield* IdAllocatorV2;
+        const manager = yield* ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-event-flow-burst");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const buffered = yield* runtime.subscribeEvents!;
+        const active = yield* runtime.subscribeEvents!;
+        const consumed = yield* active.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        const providerThreadId = idAllocator.derive.providerThread({
+          driver: CODEX_DRIVER,
+          nativeThreadId: "burst-thread",
+        });
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: CODEX_DRIVER,
+          nativeTurnId: "burst-turn",
+        });
+        const base = {
+          type: "command_execution",
+          id: TurnItemId.make("burst-tool"),
+          threadId,
+          runId: RunId.make("burst-run"),
+          nodeId: null,
+          providerThreadId,
+          providerTurnId,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "running",
+          title: "Progress",
+          input: "run",
+          output: "secret=fixture-secret",
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+        } as const;
+        for (let index = 0; index < 10_000; index++) {
+          yield* Queue.offer(queue, {
+            type: "turn_item.updated",
+            driver: CODEX_DRIVER,
+            turnItem: { ...base, title: `Progress ${index}` },
+          });
+        }
+        yield* Queue.offer(queue, {
+          type: "turn_item.updated",
+          driver: CODEX_DRIVER,
+          turnItem: {
+            ...base,
+            status: "completed",
+            completedAt: now,
+            output: `password=fixture-secret\n${"界".repeat(100_000)}`,
+          },
+        });
+        yield* Queue.offer(queue, {
+          type: "turn.terminal",
+          driver: CODEX_DRIVER,
+          providerThreadId,
+          providerTurnId,
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Fiber.join(consumed);
+        const events = yield* buffered.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        assert.equal(events.length, 3);
+        assert.notInclude(testJson(events), "fixture-secret");
+        assert.equal(
+          events[0]?.type === "turn_item.updated" ? events[0].turnItem.title : null,
+          "Progress 9999",
+        );
+        const final = events[1];
+        assert.isTrue(
+          final?.type === "turn_item.updated" && final.turnItem.type === "command_execution",
+        );
+        if (final?.type === "turn_item.updated" && final.turnItem.type === "command_execution") {
+          assert.isAtMost(Buffer.byteLength(testJson(final.turnItem.output)), 64 * 1024);
+        }
+      }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 does not stall the session pump when one subscriber overflows",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSinkV2;
+        const idAllocator = yield* IdAllocatorV2;
+        const manager = yield* ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-event-flow-overflow");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const stalled = yield* runtime.subscribeEvents!;
+        const active = yield* runtime.subscribeEvents!;
+        const receipts = yield* Queue.unbounded<void>();
+        const consumed = yield* active.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runForEach(() => Queue.offer(receipts, undefined)),
+          Effect.forkScoped,
+        );
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        const providerThreadId = idAllocator.derive.providerThread({
+          driver: CODEX_DRIVER,
+          nativeThreadId: "overflow-thread",
+        });
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: CODEX_DRIVER,
+          nativeTurnId: "overflow-turn",
+        });
+        for (let index = 0; index < 1_100; index++) {
+          yield* Queue.offer(queue, {
+            type: "turn_item.updated",
+            driver: CODEX_DRIVER,
+            turnItem: {
+              type: "command_execution",
+              id: TurnItemId.make(`finished-tool-${index}`),
+              threadId,
+              runId: null,
+              nodeId: null,
+              providerThreadId,
+              providerTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: index,
+              status: "completed",
+              title: "Finished",
+              input: "run",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+          });
+          // A delivery receipt proves the pump progressed; no timing assumptions.
+          yield* Queue.take(receipts);
+        }
+        yield* Queue.offer(queue, {
+          type: "turn.terminal",
+          driver: CODEX_DRIVER,
+          providerThreadId,
+          providerTurnId,
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Fiber.join(consumed);
+        const failed = yield* stalled.events.pipe(Stream.runCollect, Effect.exit);
+        assert.isTrue(Exit.isFailure(failed));
+        if (Exit.isFailure(failed))
+          assert.instanceOf(Cause.squash(failed.cause), ProviderAdapterEventStreamError);
+        assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 drains subscribers when the provider stops", () =>
@@ -3004,3 +3203,7 @@ it.effect(
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
 );
+
+function testJson(value: unknown): string {
+  return JSON.stringify(value);
+}

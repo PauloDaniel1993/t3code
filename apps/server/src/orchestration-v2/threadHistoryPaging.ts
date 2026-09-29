@@ -7,8 +7,8 @@ import type {
 } from "@t3tools/contracts";
 
 /**
- * Match the V1 conversation windows. Item/byte budgets only apply to histories
- * without turn starts; tool activity must not split an ordinary conversation turn.
+ * Prefer complete user turns, but split oversized turns with the same resumable
+ * cursor used for histories without turn starts.
  */
 export const THREAD_HISTORY_PAGE_POLICY = {
   maxUserTurns: 10,
@@ -18,6 +18,7 @@ export const THREAD_HISTORY_PAGE_POLICY = {
 
 export const OLDER_THREAD_USER_TURN_LIMIT = 20;
 export const THREAD_HISTORY_MAX_RAW_TURNS = 150;
+export const THREAD_HISTORY_MAX_ITEMS_WITHIN_TURNS = 200;
 
 /** Extra rows let the projection query retain an inclusive cursor and prove another page exists. */
 export const THREAD_HISTORY_SNAPSHOT_ROW_LIMIT = THREAD_HISTORY_PAGE_POLICY.maxItems + 2;
@@ -164,8 +165,8 @@ export function isThreadHistoryUserTurn(item: OrchestrationV2TurnItem): boolean 
 
 /**
  * Walk a chronological timeline backward from the exclusive end, collecting rows
- * through complete user turns. Histories without turn starts use row budgets
- * and always admit at least one row so oversized items cannot deadlock paging.
+ * through user turns, subject to row/byte budgets even within a long turn.
+ * Always admit at least one row so oversized items cannot deadlock paging.
  */
 function selectOlderTimelinePage(input: {
   readonly items: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
@@ -188,14 +189,19 @@ function selectOlderTimelinePage(input: {
   const turnLimit = input.items.slice(0, end).some((row) => isThreadHistoryTurnStart(row.item))
     ? policy.maxUserTurns
     : undefined;
+  const maxItems =
+    turnLimit === undefined
+      ? policy.maxItems
+      : Math.max(policy.maxItems, THREAD_HISTORY_MAX_ITEMS_WITHIN_TURNS);
   for (let index = end - 1; index >= 0; index -= 1) {
     const row = input.items[index]!;
-    const rowBytes = turnLimit === undefined ? rowCost(row) : 0;
+    const rowBytes = rowCost(row);
     if (
       selected.length > 0 &&
-      (turnLimit === undefined
-        ? selected.length >= policy.maxItems || encodedBytes + rowBytes > policy.maxEncodedBytes
-        : userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)
+      (selected.length >= maxItems ||
+        encodedBytes + rowBytes > policy.maxEncodedBytes ||
+        (turnLimit !== undefined &&
+          (userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)))
     ) {
       break;
     }
@@ -353,7 +359,6 @@ function messagesForBoundedProjection(
     (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
     null,
   );
-  const retainedRunIds = new Set<string>();
   for (const run of projection.runs) {
     if (
       run.id === latestRun?.id ||
@@ -363,16 +368,13 @@ function messagesForBoundedProjection(
       run.status === "waiting" ||
       run.status === "queued"
     ) {
-      retainedRunIds.add(String(run.id));
       retainedMessageIds.add(String(run.userMessageId));
     }
   }
 
   return projection.messages.filter(
     (message) =>
-      retainedMessageIds.has(String(message.id)) ||
-      (message.runId !== null && retainedRunIds.has(String(message.runId))) ||
-      message.delegatedCompletion !== undefined,
+      retainedMessageIds.has(String(message.id)) || message.delegatedCompletion !== undefined,
   );
 }
 

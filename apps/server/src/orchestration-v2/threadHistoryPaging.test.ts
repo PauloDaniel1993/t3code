@@ -23,6 +23,7 @@ import {
   selectRecentTimelineWindow,
   THREAD_HISTORY_CURSOR_MAX_LENGTH,
   THREAD_HISTORY_PAGE_POLICY,
+  THREAD_HISTORY_MAX_ITEMS_WITHIN_TURNS,
 } from "./threadHistoryPaging.ts";
 import { buildBoundedThreadStreamSnapshot } from "./ThreadStream.ts";
 import { projectThreadProjectionForWire } from "./WireProjection.ts";
@@ -175,7 +176,7 @@ describe("threadHistoryPaging", () => {
     expect(item.payloadBudgetExceeded).toBe(false);
   });
 
-  it("keeps background turns with user turns, with main's 150-turn fan-out ceiling", () => {
+  it("pages background turns at the row ceiling without losing user turns", () => {
     const items = Array.from({ length: 161 }, (_, turn) => {
       const row = makeRow(turn * 2);
       if (row.item.type !== "command_execution") throw new Error("Expected command fixture");
@@ -195,18 +196,122 @@ describe("threadHistoryPaging", () => {
       return [prompt, makeRow(turn * 2 + 1)];
     }).flat();
     const first = selectRecentTimelineWindow({ items, snapshotSequence: 1 });
-    expect(first.items).toHaveLength(300);
-    expect(first.items[0]?.sourceItemId).toBe("item-22");
+    expect(first.items).toHaveLength(200);
+    expect(first.items[0]?.sourceItemId).toBe("item-122");
     const older = selectHistoryPageFromCursor({
       items,
       cursor: first.nextCursor!,
       snapshotSequence: 1,
     });
-    expect(older.items).toHaveLength(22);
+    expect(older.items).toHaveLength(122);
     expect(older.hasMoreHistory).toBe(false);
     expect([...older.items, ...first.items].map((row) => row.sourceItemId)).toEqual(
       items.map((row) => row.sourceItemId),
     );
+  });
+
+  it("measures and pages one turn with 10,000 tool items without gaps or duplicates", () => {
+    const command = makeRow(0);
+    if (command.item.type !== "command_execution") throw new Error("Expected command fixture");
+    const user = {
+      ...command,
+      item: {
+        ...command.item,
+        type: "user_message",
+        messageId: MessageId.make("prompt"),
+        createdBy: "user",
+        creationSource: "web",
+        inputIntent: "turn_start",
+        text: "Run tools",
+        attachments: [],
+      },
+    } satisfies OrchestrationV2ProjectedTurnItem;
+    const items = [user, ...Array.from({ length: 10_000 }, (_, index) => makeRow(index + 1))];
+    const first = buildBoundedThreadStreamSnapshot({
+      projection: makeProjection(items),
+      snapshotSequence: 1,
+    });
+    expect(first.projection.visibleTurnItems).toHaveLength(THREAD_HISTORY_MAX_ITEMS_WITHIN_TURNS);
+    expect(Buffer.byteLength(JSON.stringify(first.projection))).toBeLessThanOrEqual(
+      THREAD_HISTORY_PAGE_POLICY.maxEncodedBytes,
+    );
+    let cursor: string | null = first.historyCursor ?? null;
+    const loaded = [...first.projection.visibleTurnItems];
+    let pages = 1;
+    while (cursor !== null) {
+      const page = selectHistoryPageFromCursor({ items, cursor, snapshotSequence: 1 });
+      expect(page.items.length).toBeGreaterThan(0);
+      expect(page.items.length).toBeLessThanOrEqual(THREAD_HISTORY_MAX_ITEMS_WITHIN_TURNS);
+      loaded.unshift(...page.items);
+      cursor = page.nextCursor;
+      pages += 1;
+    }
+    expect(loaded.map((row) => row.sourceItemId)).toEqual(items.map((row) => row.sourceItemId));
+    const wireItems = projectThreadProjectionForWire(makeProjection(items)).visibleTurnItems;
+    process.stdout.write(
+      JSON.stringify({
+        measurement: "single-turn history",
+        beforeRows: wireItems.length,
+        beforeBytes: Buffer.byteLength(JSON.stringify(wireItems)),
+        afterRows: first.projection.visibleTurnItems.length,
+        afterBytes: Buffer.byteLength(JSON.stringify(first.projection.visibleTurnItems)),
+        pages,
+      }),
+    );
+  });
+
+  it("applies the byte budget within a turn and omits hidden messages from the latest run", () => {
+    const rows = Array.from({ length: 500 }, (_, index) => makeRow(index, { outputBytes: 20_000 }));
+    const first = rows[0]!;
+    if (first.item.type !== "command_execution") throw new Error("Expected command fixture");
+    rows[0] = {
+      ...first,
+      item: {
+        ...first.item,
+        type: "user_message",
+        messageId: MessageId.make("user"),
+        createdBy: "user",
+        creationSource: "web",
+        inputIntent: "turn_start",
+        text: "Run",
+        attachments: [],
+      },
+    };
+    const window = selectRecentTimelineWindow({ items: rows, snapshotSequence: 1 });
+    expect(window.items.length).toBeLessThan(200);
+    expect(
+      window.items.reduce((sum, row) => sum + projectedRowEncodedBytes(row), 0),
+    ).toBeLessThanOrEqual(THREAD_HISTORY_PAGE_POLICY.maxEncodedBytes);
+    const projection = makeProjection(rows);
+    const full = {
+      ...projection,
+      runs: [
+        {
+          ...projection.runs[0]!,
+          id: RunId.make("latest"),
+          ordinal: 1,
+          userMessageId: MessageId.make("user"),
+          status: "completed" as const,
+        },
+      ],
+      messages: Array.from({ length: 2_000 }, (_, index) => ({
+        id: MessageId.make(`hidden-${index}`),
+        threadId: THREAD,
+        runId: RunId.make("latest"),
+        nodeId: null,
+        role: "assistant" as const,
+        text: "x".repeat(1_000),
+        attachments: [],
+        streaming: false,
+        createdBy: "agent" as const,
+        creationSource: "provider" as const,
+        createdAt: NOW,
+        updatedAt: NOW,
+      })),
+    };
+    const bounded = buildBoundedThreadProjection({ projection: full, snapshotSequence: 1 });
+    expect(bounded.projection.messages).toEqual([]);
+    expect(bounded.payloadBudgetExceeded).toBe(false);
   });
 
   it("encodes opaque cursors with stable source identity", () => {
