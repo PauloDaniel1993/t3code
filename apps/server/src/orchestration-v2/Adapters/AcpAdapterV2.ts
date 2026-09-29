@@ -1999,8 +1999,9 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           permit: runtimeCallbackPermit,
           scope: sessionScope,
         });
-        const emitProviderEvent = (event: ProviderAdapterV2Event) =>
-          Queue.offer(events, toolActivity.normalize(event)).pipe(Effect.asVoid);
+        const emitProviderEvent = Effect.fnUntraced(function* (event: ProviderAdapterV2Event) {
+          yield* Queue.offer(events, toolActivity.normalize(event));
+        });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 

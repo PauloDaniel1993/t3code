@@ -1,9 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 import { OrchestrationV2TurnItem, TurnItemId, ThreadId } from "@t3tools/contracts";
+import { formatSearchToolLabel, collectToolFilePaths } from "@t3tools/shared/toolActivity";
 import * as DateTime from "effect/DateTime";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import {
   ACP_TOOL_INPUT_BYTES,
+  ACP_TOOL_LABEL_BYTES,
+  ACP_TOOL_OUTPUT_BYTES,
   normalizeAcpToolActivity,
   secretSafeAcpActivity,
 } from "./AcpToolActivityNormalizer.ts";
@@ -27,7 +31,7 @@ const base = {
 const decode = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
 
 describe("secret-safe ACP tool activity", () => {
-  it("keeps redacted MCP arguments and identity while removing intermediate results", () => {
+  it("keeps redacted MCP arguments, identity and live results", () => {
     const item = decode({
       ...base,
       type: "dynamic_tool",
@@ -40,7 +44,7 @@ describe("secret-safe ACP tool activity", () => {
     if (normalized.type !== "dynamic_tool") return;
     assert.equal(normalized.toolName, "t3.task_status");
     assert.deepEqual(normalized.input, { taskId: "task", apiKey: "[REDACTED]" });
-    assert.notProperty(normalized, "output");
+    assert.deepEqual(normalized.output, { progress: "working", password: "[REDACTED]" });
     if (item.type !== "dynamic_tool") return assert.fail("Expected dynamic tool input");
     assert.deepEqual(item.input, { taskId: "task", apiKey: "private-key" });
   });
@@ -69,7 +73,7 @@ describe("secret-safe ACP tool activity", () => {
     });
   });
 
-  it("preserves command text byte for byte and removes stdout only until terminal", () => {
+  it("preserves command text and live stdout byte for byte within the limit", () => {
     const item = decode({
       ...base,
       type: "command_execution",
@@ -78,7 +82,7 @@ describe("secret-safe ACP tool activity", () => {
       output: 'apiKey="private-key"\nfinished',
     });
     const running = normalizeAcpToolActivity(item);
-    assert.notProperty(running, "output");
+    assert.deepEqual(running, item);
     const completed = normalizeAcpToolActivity({ ...item, status: "completed" });
     assert.deepEqual(completed, { ...item, status: "completed" });
   });
@@ -95,7 +99,7 @@ describe("secret-safe ACP tool activity", () => {
     });
   });
 
-  it("removes intermediate diffs and search results but retains final typed output", () => {
+  it("retains live diffs and search results as well as final typed output", () => {
     for (const detail of [
       { type: "file_change", fileName: "file.ts", diffStr: 'password="private-password"' },
       { type: "file_search", results: [{ fileName: "file.ts", preview: "apiKey=private-key" }] },
@@ -106,8 +110,7 @@ describe("secret-safe ACP tool activity", () => {
     ]) {
       const item = decode({ ...base, ...detail });
       const running = normalizeAcpToolActivity(item);
-      assert.notProperty(running, "results");
-      assert.notProperty(running, "diffStr");
+      assert.deepEqual(running, item);
       const final = normalizeAcpToolActivity({ ...item, status: "failed" });
       assert.deepEqual(final, { ...item, status: "failed" });
       assert.deepEqual(decode(final), final);
@@ -234,5 +237,226 @@ describe("secret-safe ACP tool activity", () => {
     assert.include(encoded, "[REDACTED]");
     assert.notInclude(encoded, "�");
     assert.deepEqual(normalizeAcpToolActivity(normalized), normalized);
+  });
+
+  it("matches sensitive words across case and camel, snake and kebab spellings", () => {
+    const names = [
+      "idToken",
+      "authToken",
+      "id_token",
+      "x-api-key",
+      "githubToken",
+      "sessionToken",
+      "npm_config__authToken",
+      "ApiKey",
+      "APIKey",
+      "GITHUB_TOKEN",
+      "token_count",
+      "secret_name",
+      "password_hint",
+      "clientSecret",
+      "privateKey",
+      "cookies",
+      "credentials",
+    ];
+    const fields = Object.fromEntries(names.map((name) => [name, "private"]));
+    const once = secretSafeAcpActivity({
+      ...fields,
+      tokenizer: "kept",
+      max_tokens: 7,
+      key: "kept",
+      auth: "kept",
+    });
+    assert.deepEqual(once, {
+      ...Object.fromEntries(names.map((name) => [name, "[REDACTED]"])),
+      tokenizer: "kept",
+      max_tokens: 7,
+      key: "kept",
+      auth: "kept",
+    });
+    assert.deepEqual(secretSafeAcpActivity(once), once);
+  });
+
+  it("redacts sensitive header values in name/value and key/value lists", () => {
+    const payload = {
+      headers: [
+        { name: "Authorization", value: "Bearer private" },
+        { key: "x-api-key", value: "private" },
+        { Name: "GITHUB_TOKEN", Value: { credential: "private" } },
+        { name: "Accept", value: "application/json" },
+      ],
+      command: "curl -H 'Authorization: Bearer private'",
+    };
+    const once = secretSafeAcpActivity(payload);
+    assert.deepEqual(once, {
+      ...payload,
+      headers: [
+        { name: "Authorization", value: "[REDACTED]" },
+        { key: "x-api-key", value: "[REDACTED]" },
+        { Name: "GITHUB_TOKEN", Value: "[REDACTED]" },
+        { name: "Accept", value: "application/json" },
+      ],
+    });
+    assert.deepEqual(secretSafeAcpActivity(once), once);
+  });
+
+  it("keeps individually bounded label fields beside a preview of oversized arguments", () => {
+    const input = {
+      file_path: "src/a.ts",
+      command: "pnpm build",
+      query: "where is auth?",
+      path: "src",
+      globPattern: "*.ts",
+      content: "large content ".repeat(3_000),
+    };
+    const normalized = normalizeAcpToolActivity(
+      decode({ ...base, type: "dynamic_tool", toolName: "Write", input }),
+    );
+    for (const key of ["file_path", "command", "query", "path", "globPattern"] as const)
+      assert.nestedPropertyVal(normalized, `input.${key}`, input[key]);
+    assert.deepEqual(collectToolFilePaths(normalized), ["src", "src/a.ts"]);
+    assert.equal(formatSearchToolLabel(normalized), "Searched where is auth? in src");
+    assert.isAtMost(
+      Buffer.byteLength(
+        JSON.stringify(normalized.type === "dynamic_tool" ? normalized.input : null),
+      ),
+      ACP_TOOL_INPUT_BYTES,
+    );
+    assert.deepEqual(normalizeAcpToolActivity(normalized), normalized);
+    const hugeLabels = normalizeAcpToolActivity(
+      decode({
+        ...base,
+        type: "dynamic_tool",
+        toolName: "Write",
+        input: {
+          ...input,
+          file_path: "🦊".repeat(10_000),
+          command: '"\\'.repeat(10_000),
+          query: "q".repeat(10_000),
+        },
+      }),
+    );
+    if (hugeLabels.type !== "dynamic_tool") return assert.fail("Expected dynamic tool");
+    assert.isAtMost(Buffer.byteLength(JSON.stringify(hugeLabels.input)), ACP_TOOL_INPUT_BYTES);
+    if (!Predicate.isObject(hugeLabels.input)) return assert.fail("Expected label fields");
+    for (const field of ["file_path", "command", "query"] as const) {
+      if (!(field in hugeLabels.input)) return assert.fail("Missing label field");
+      assert.isAtMost(
+        Buffer.byteLength(JSON.stringify(hugeLabels.input[field])),
+        ACP_TOOL_LABEL_BYTES,
+      );
+    }
+    assert.deepEqual(normalizeAcpToolActivity(hugeLabels), hugeLabels);
+  });
+
+  it("never cuts inside a redaction marker at the preview boundary", () => {
+    for (let offset = 0; offset < 32; offset++) {
+      const item = decode({
+        ...base,
+        type: "dynamic_tool",
+        toolName: "Write",
+        input: {
+          padding: "p".repeat(ACP_TOOL_INPUT_BYTES - 100 - offset),
+          token: "private",
+          rest: "r".repeat(200),
+        },
+      });
+      const normalized = normalizeAcpToolActivity(item);
+      if (
+        normalized.type !== "dynamic_tool" ||
+        !normalized.input ||
+        typeof normalized.input !== "object" ||
+        !("preview" in normalized.input) ||
+        typeof normalized.input.preview !== "string"
+      )
+        return assert.fail("Expected a truncated preview");
+      for (let length = 1; length < "[REDACTED]".length; length++)
+        assert.isFalse(normalized.input.preview.endsWith(`${"[REDACTED]".slice(0, length)}…`));
+      assert.notInclude(JSON.stringify(normalized.input), "private");
+      assert.deepEqual(normalizeAcpToolActivity(normalized), normalized);
+    }
+    for (let offset = 0; offset < 120; offset++) {
+      const normalized = normalizeAcpToolActivity(
+        decode({
+          ...base,
+          type: "dynamic_tool",
+          toolName: "Tool",
+          input: {},
+          output: { token: "private", padding: "p".repeat(ACP_TOOL_OUTPUT_BYTES - 50 + offset) },
+        }),
+      );
+      if (normalized.type !== "dynamic_tool") return assert.fail("Expected dynamic tool");
+      assert.isAtMost(Buffer.byteLength(JSON.stringify(normalized.output)), ACP_TOOL_OUTPUT_BYTES);
+      if (!Predicate.isObject(normalized.output) || typeof normalized.output.preview !== "string")
+        continue;
+      for (let index = 1; index < "[REDACTED]".length; index++)
+        assert.isFalse(normalized.output.preview.startsWith(`…${"[REDACTED]".slice(index)}`));
+      assert.deepEqual(normalizeAcpToolActivity(normalized), normalized);
+    }
+  });
+
+  it("bounds running command and dynamic output while keeping the latest command progress", () => {
+    const command = normalizeAcpToolActivity(
+      decode({
+        ...base,
+        type: "command_execution",
+        input: "long command",
+        output: `${"old output".repeat(10_000)}\nlatest progress`,
+      }),
+    );
+    if (command.type !== "command_execution") return assert.fail("Expected command");
+    assert.include(command.output ?? "", "latest progress");
+    assert.isAtMost(Buffer.byteLength(JSON.stringify(command.output)), ACP_TOOL_OUTPUT_BYTES);
+    const dynamic = normalizeAcpToolActivity(
+      decode({
+        ...base,
+        type: "dynamic_tool",
+        toolName: "Tool",
+        input: {},
+        output: { text: '"\\🦊'.repeat(20_000), authToken: "private" },
+      }),
+    );
+    if (dynamic.type !== "dynamic_tool") return assert.fail("Expected dynamic tool");
+    assert.isAtMost(Buffer.byteLength(JSON.stringify(dynamic.output)), ACP_TOOL_OUTPUT_BYTES);
+    assert.notInclude(JSON.stringify(dynamic.output), "private");
+    assert.deepEqual(normalizeAcpToolActivity(dynamic), dynamic);
+  });
+
+  it("keeps bounded live diffs and typed search results", () => {
+    const large = '🦊\\"'.repeat(20_000);
+    for (const detail of [
+      { type: "file_change", fileName: "a.ts", diffStr: large, oldStr: large, newStr: large },
+      {
+        type: "file_search",
+        results: Array.from({ length: 30 }, () => ({ fileName: "a.ts", preview: large })),
+      },
+      {
+        type: "web_search",
+        results: Array.from({ length: 30 }, () => ({ url: "https://example.com", snippet: large })),
+      },
+    ]) {
+      const normalized = normalizeAcpToolActivity(decode({ ...base, ...detail }));
+      assert.deepEqual(decode(normalized), normalized);
+      if (normalized.type === "file_change") {
+        assert.isAtMost(
+          Buffer.byteLength(
+            JSON.stringify({
+              diffStr: normalized.diffStr,
+              oldStr: normalized.oldStr,
+              newStr: normalized.newStr,
+            }),
+          ),
+          ACP_TOOL_OUTPUT_BYTES,
+        );
+        assert.isNotEmpty(normalized.diffStr);
+      } else if (normalized.type === "file_search" || normalized.type === "web_search") {
+        assert.isAtMost(
+          Buffer.byteLength(JSON.stringify(normalized.results)),
+          ACP_TOOL_OUTPUT_BYTES,
+        );
+        assert.isNotEmpty(normalized.results);
+      } else return assert.fail("Expected diff or search results");
+      assert.deepEqual(normalizeAcpToolActivity(normalized), normalized);
+    }
   });
 });

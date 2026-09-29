@@ -648,10 +648,11 @@ describe("AcpAdapterV2", () => {
                       update: {
                         sessionUpdate: "tool_call",
                         toolCallId: "held",
-                        kind: "other",
+                        kind: "execute",
                         status: "inProgress",
                         title: "First progress",
-                        rawInput: { path: "a.ts" },
+                        rawInput: { command: "long command" },
+                        rawOutput: "initial progress",
                       },
                     });
                     yield* handler({
@@ -661,6 +662,7 @@ describe("AcpAdapterV2", () => {
                         toolCallId: "held",
                         status: "inProgress",
                         title: "Held progress",
+                        rawOutput: `${"old output ".repeat(3_000)}\nlatest progress`,
                       },
                     });
                     yield* handler({
@@ -749,9 +751,16 @@ describe("AcpAdapterV2", () => {
         const reply = replies.at(-1);
         assert.equal(reply?.type === "assistant_message" ? reply.text : undefined, "Hello world.");
         assert.equal(reply?.status, "completed");
-        const tools = items.filter((item) => item.type === "dynamic_tool");
+        const tools = items.filter((item) => item.type === "command_execution");
         assert.equal(tools.at(-1)?.status, flush === "timer" ? "completed" : "running");
         assert.equal(tools.at(-1)?.title, "Held progress");
+        assert.equal(tools[0]?.output, "initial progress");
+        const live = tools.find(
+          (item) => item.title === "Held progress" && item.status === "running",
+        );
+        assert.include(live?.output ?? "", "latest progress");
+        assert.isAtMost(Buffer.byteLength(yield* encodeUnknownJson(live?.output)), 16 * 1024);
+        if (flush === "timer") assert.equal(tools.at(-1)?.output, "done");
       }).pipe(Effect.provide(testLayer), Effect.scoped),
     );
   }
