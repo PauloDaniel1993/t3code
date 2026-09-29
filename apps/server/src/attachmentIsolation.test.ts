@@ -7,8 +7,9 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 
-import { initializeIsolatedAttachments } from "./attachmentIsolation.ts";
+import { AttachmentSeedSpace, initializeIsolatedAttachments } from "./attachmentIsolation.ts";
 import { deriveServerPaths, ensureServerDirectories, ServerConfig } from "./config.ts";
 import { layerConfig as persistenceLayer } from "./persistence/Layers/Sqlite.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -80,20 +81,118 @@ describe("V2 attachment isolation", () => {
         yield* fs.makeDirectory(source);
         yield* fs.makeDirectory(attachmentsDir);
         yield* fs.writeFileString(path.join(source, "image.png"), "complete");
+        yield* fs.writeFileString(path.join(source, "healthy.png"), "healthy");
         yield* initializeIsolatedAttachments({ stateDir, attachmentsDir }).pipe(
           Effect.provideService(FileSystem.FileSystem, {
             ...fs,
-            copyFile: (_from, to) =>
-              fs
-                .writeFileString(to, "partial")
-                .pipe(Effect.andThen(fs.copyFile(path.join(source, "missing"), to))),
+            copyFile: (from, to) =>
+              from.endsWith("image.png")
+                ? fs
+                    .writeFileString(to, "partial")
+                    .pipe(Effect.andThen(fs.copyFile(path.join(source, "missing"), to)))
+                : fs.copyFile(from, to),
           }),
-          Effect.flip,
         );
         expect(yield* fs.exists(path.join(attachmentsDir, "image.png"))).toBe(false);
         expect(yield* fs.exists(path.join(stateDir, ".attachments-v2-seeded"))).toBe(false);
+        expect(
+          (yield* fs.readDirectory(attachmentsDir)).filter((name) => name.endsWith(".part")),
+        ).toEqual([]);
+        expect(
+          yield* fs.readFileString(path.join(stateDir, ".attachments-v2-seed-report.json")),
+        ).toContain("missing");
+        yield* fs.remove(path.join(attachmentsDir, "healthy.png"));
         yield* initializeIsolatedAttachments({ stateDir, attachmentsDir });
         expect(yield* fs.readFileString(path.join(attachmentsDir, "image.png"))).toBe("complete");
+        expect(yield* fs.exists(path.join(attachmentsDir, "healthy.png"))).toBe(false);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+  for (const failure of ["PermissionDenied", "NotFound"] as const) {
+    it.effect(`starts with a ${failure} source file and records its reason`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig;
+        const source = path.join(config.stateDir, "attachments");
+        yield* fs.makeDirectory(source);
+        const bad = path.join(source, "unavailable.png");
+        yield* fs.writeFileString(bad, "unavailable");
+        yield* fs.writeFileString(path.join(source, "healthy.png"), "healthy");
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          expect(yield* sql`SELECT 1 AS ready`).toEqual([{ ready: 1 }]);
+        }).pipe(
+          Effect.provide(persistenceLayer),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            copyFile: (from, to) =>
+              from === bad
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: failure,
+                      module: "FileSystem",
+                      method: "copyFile",
+                      pathOrDescriptor: from,
+                    }),
+                  )
+                : fs.copyFile(from, to),
+          }),
+        );
+        expect(yield* fs.readFileString(path.join(config.attachmentsDir, "healthy.png"))).toBe(
+          "healthy",
+        );
+        const report = yield* fs.readFileString(
+          path.join(config.stateDir, ".attachments-v2-seed-report.json"),
+        );
+        expect(report).toContain("unavailable.png");
+        expect(report).toContain(failure);
+        expect(yield* fs.exists(path.join(config.stateDir, ".attachments-v2-seeded"))).toBe(false);
+      }).pipe(
+        Effect.provide(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-seed-unavailable-" }).pipe(
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+  }
+  it.effect(
+    "copies on a volume that refuses hard links and starts without copying when space is insufficient",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* fs.makeTempDirectoryScoped();
+        const source = path.join(stateDir, "attachments");
+        const attachmentsDir = path.join(stateDir, "attachments-v2");
+        yield* fs.makeDirectory(source);
+        yield* fs.writeFileString(path.join(source, "file.png"), "bytes");
+        yield* initializeIsolatedAttachments({ stateDir, attachmentsDir }).pipe(
+          Effect.provideService(AttachmentSeedSpace, { availableBytes: () => Effect.succeed(0) }),
+        );
+        expect(yield* fs.readDirectory(attachmentsDir)).toEqual([]);
+        expect(
+          yield* fs.readFileString(path.join(stateDir, ".attachments-v2-seed-report.json")),
+        ).toContain("Insufficient free space");
+        yield* initializeIsolatedAttachments({ stateDir, attachmentsDir }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            link: () =>
+              Effect.fail(
+                PlatformError.systemError({
+                  _tag: "Unknown",
+                  module: "FileSystem",
+                  method: "link",
+                  description: "Volume refuses hard links",
+                }),
+              ),
+          }),
+        );
+        expect(yield* fs.readFileString(path.join(attachmentsDir, "file.png"))).toBe("bytes");
+        expect(yield* fs.exists(path.join(stateDir, ".attachments-v2-seeded"))).toBe(true);
+        expect(
+          (yield* fs.readDirectory(attachmentsDir)).filter((name) => name.endsWith(".part")),
+        ).toEqual([]);
       }).pipe(Effect.provide(NodeServices.layer)),
   );
   it.effect(

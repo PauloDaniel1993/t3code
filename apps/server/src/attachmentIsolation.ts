@@ -1,10 +1,45 @@
 // @effect-diagnostics nodeBuiltinImport:off - unique staging names do not add config service dependencies.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import { normalizeAttachmentRelativePath } from "./attachmentPaths.ts";
+
+class AttachmentSeedError extends Schema.TaggedError<AttachmentSeedError>()("AttachmentSeedError", {
+  cause: Schema.Defect(),
+}) {
+  override get message(): string {
+    return String(this.cause);
+  }
+}
+const reportSchema = Schema.fromJsonString(
+  Schema.Struct({
+    completed: Schema.Array(Schema.String),
+    skipped: Schema.Array(Schema.Struct({ file: Schema.String, reason: Schema.String })),
+  }),
+);
+const encodeReport = Schema.encodeSync(reportSchema);
+const decodeReport = Schema.decodeUnknownEffect(reportSchema);
+
+export class AttachmentSeedSpace extends Context.Reference<{
+  readonly availableBytes: (directory: string) => Effect.Effect<number, AttachmentSeedError>;
+}>("t3/AttachmentSeedSpace", {
+  defaultValue: () => ({
+    availableBytes: (directory) =>
+      Effect.tryPromise({
+        try: async () => {
+          const info = await NodeFSP.statfs(directory);
+          return info.bavail * info.bsize;
+        },
+        catch: (cause) => new AttachmentSeedError({ cause }),
+      }),
+  }),
+}) {}
 
 /** Seed once with independent bytes: V1's cleanup queue cannot see V2's files. */
 export const initializeIsolatedAttachments = Effect.fn("initializeIsolatedAttachments")(
@@ -14,38 +49,113 @@ export const initializeIsolatedAttachments = Effect.fn("initializeIsolatedAttach
     yield* fs.makeDirectory(input.attachmentsDir, { recursive: true });
     const marker = path.join(input.stateDir, ".attachments-v2-seeded");
     if (yield* fs.exists(marker)) return;
-    const source = path.join(input.stateDir, "attachments");
-    if (yield* fs.exists(source)) {
-      const sourceRoot = yield* fs.realPath(source);
-      yield* Effect.forEach(
-        yield* fs.readDirectory(source),
-        Effect.fnUntraced(function* (entry) {
-          if (entry.startsWith(".") || entry.endsWith(".part")) return;
-          const normalized = normalizeAttachmentRelativePath(entry);
-          if (normalized !== entry || normalized.includes("/")) return;
-          const from = path.join(sourceRoot, entry);
-          // Never follow a symlink into another directory or back into the live install.
-          if ((yield* fs.realPath(from)) !== from || (yield* fs.stat(from)).type !== "File") {
-            return;
-          }
-          const to = path.join(input.attachmentsDir, entry);
-          if (yield* fs.exists(to)) return;
-          const temporary = `${to}.${NodeCrypto.randomUUID()}.part`;
-          yield* fs.copyFile(from, temporary);
-          // Publish without replacing a file another V2 initializer already copied.
-          // This link is wholly inside the private store, never back to V1's bytes.
-          yield* fs.link(temporary, to).pipe(
-            Effect.catchIf(
-              (error) => error.reason._tag === "AlreadyExists",
-              () => Effect.void,
-            ),
-            Effect.ensuring(fs.remove(temporary, { force: true }).pipe(Effect.ignore)),
-          );
-        }),
-        { concurrency: 4, discard: true },
+    const reportPath = path.join(input.stateDir, ".attachments-v2-seed-report.json");
+    const completed = new Set<string>();
+    if (yield* fs.exists(reportPath)) {
+      const previous = yield* fs.readFileString(reportPath);
+      const report = yield* decodeReport(previous).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Cannot read attachment seed report; startup continues", {
+            reportPath,
+            error,
+          }).pipe(Effect.as(null)),
+        ),
       );
+      if (report === null) return;
+      for (const file of report.completed) completed.add(file);
     }
+    const skipped: Array<{ file: string; reason: string }> = [];
+    const saveReport = () =>
+      fs
+        .writeFileString(reportPath, encodeReport({ completed: Array.from(completed), skipped }))
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Cannot write attachment seed report", { reportPath, error }),
+          ),
+        );
+    const record = (file: string, reason: string) =>
+      Effect.gen(function* () {
+        skipped.push({ file, reason });
+        yield* Effect.logWarning("V2 attachment seed skipped", { file, reason, reportPath });
+      });
+    const source = path.join(input.stateDir, "attachments");
+    const seed = Effect.gen(function* () {
+      if (yield* fs.exists(source)) {
+        const sourceRoot = yield* fs.realPath(source);
+        const files: Array<{ from: string; to: string; size: number }> = [];
+        for (const entry of yield* fs.readDirectory(source)) {
+          if (entry.startsWith(".") || entry.endsWith(".part")) continue;
+          const normalized = normalizeAttachmentRelativePath(entry);
+          if (normalized !== entry || normalized.includes("/")) continue;
+          const from = path.join(sourceRoot, entry);
+          if (completed.has(from)) continue;
+          yield* Effect.gen(function* () {
+            if ((yield* fs.realPath(from)) !== from)
+              return yield* record(from, "Symbolic link is not copied");
+            const info = yield* fs.stat(from);
+            if (info.type !== "File") return;
+            const to = path.join(input.attachmentsDir, entry);
+            if (!(yield* fs.exists(to))) files.push({ from, to, size: Number(info.size) });
+            else completed.add(from);
+          }).pipe(Effect.catch((error) => record(from, String(error))));
+        }
+        const space = yield* AttachmentSeedSpace;
+        const available = yield* space.availableBytes(input.attachmentsDir);
+        // A fallback publish temporarily holds a second private copy of the largest file.
+        const required =
+          files.reduce((total, file) => total + file.size, 0) +
+          files.reduce((largest, file) => Math.max(largest, file.size), 0);
+        if (available < required) {
+          for (const file of files)
+            yield* record(
+              file.from,
+              `Insufficient free space: need ${required} bytes, available ${available}`,
+            );
+          return;
+        }
+        yield* Effect.forEach(
+          files,
+          Effect.fnUntraced(function* ({ from, to }) {
+            if (yield* fs.exists(to)) return;
+            const temporary = `${to}.${NodeCrypto.randomUUID()}.part`;
+            yield* Effect.gen(function* () {
+              yield* fs.copyFile(from, temporary);
+              // Both operations publish exclusively and only inside the private V2 store.
+              yield* fs.link(temporary, to).pipe(
+                Effect.catch((error) =>
+                  error.reason._tag === "AlreadyExists"
+                    ? Effect.void
+                    : Effect.tryPromise({
+                        try: () => NodeFSP.copyFile(temporary, to, NodeFS.constants.COPYFILE_EXCL),
+                        catch: (cause) => new AttachmentSeedError({ cause }),
+                      }).pipe(
+                        Effect.catchIf(
+                          (error) =>
+                            error.cause instanceof Error &&
+                            "code" in error.cause &&
+                            error.cause.code === "EEXIST",
+                          () => Effect.void,
+                        ),
+                      ),
+                ),
+              );
+              completed.add(from);
+              yield* saveReport();
+            }).pipe(
+              Effect.ensuring(fs.remove(temporary, { force: true }).pipe(Effect.ignore)),
+              Effect.catch((error) => record(from, String(error))),
+            );
+          }),
+          { concurrency: 1, discard: true },
+        );
+      }
+    });
+    yield* seed.pipe(Effect.catch((error) => record(source, String(error))));
+    yield* saveReport();
     // No reseeding on restart: that would resurrect attachments V2 already pruned.
-    yield* fs.writeFileString(marker, "1\n");
+    if (skipped.length === 0) yield* fs.writeFileString(marker, "1\n");
   },
+  Effect.catch((error) =>
+    Effect.logWarning("V2 attachment seed could not complete; startup continues", { error }),
+  ),
 );
