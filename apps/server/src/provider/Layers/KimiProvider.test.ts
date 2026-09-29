@@ -15,6 +15,7 @@ it.layer(NodeServices.layer)("Kimi status", (it) => {
     Effect.gen(function* () {
       const snapshot = yield* buildInitialKimiProviderSnapshot(disabledConfig);
       expect(snapshot.status).toBe("disabled");
+      expect(snapshot.displayName).toBe("Kimi");
       expect(snapshot.models[0]?.slug).toBe("kimi-default");
       expect(snapshot.badgeLabel).toBe("Early Access");
     }),

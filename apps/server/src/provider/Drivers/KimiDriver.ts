@@ -146,7 +146,7 @@ export type KimiDriverEnv =
 
 export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
   driverKind: DRIVER_KIND,
-  metadata: { displayName: "Kimi Code (supported)", supportsMultipleInstances: true },
+  metadata: { displayName: "Kimi", supportsMultipleInstances: true },
   configSchema: KimiSettings,
   defaultConfig: () => decodeKimiSettings({}),
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>

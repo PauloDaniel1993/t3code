@@ -444,7 +444,7 @@ describe("KimiDriver", () => {
   it("registers a disabled, multi-instance Kimi driver", () => {
     expect(KimiDriver.driverKind).toBe("kimi");
     expect(KimiDriver.metadata).toEqual({
-      displayName: "Kimi Code (supported)",
+      displayName: "Kimi",
       supportsMultipleInstances: true,
     });
     expect(KimiDriver.defaultConfig()).toEqual({

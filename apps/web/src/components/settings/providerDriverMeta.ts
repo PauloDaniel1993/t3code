@@ -25,7 +25,6 @@ type ProviderSettingsSchema = {
 export interface ProviderClientDefinition {
   readonly value: ProviderDriverKind;
   readonly label: string;
-  readonly description?: string;
   readonly settingsSchema: ProviderSettingsSchema;
   readonly environmentFields?: readonly ProviderEnvironmentFieldDefinition[];
   /** Whether this driver has a built-in default instance backed by legacy settings. */
@@ -80,9 +79,7 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
   },
   {
     value: ProviderDriverKind.make("kimi"),
-    label: "Kimi Code (supported)",
-    description:
-      "Supported Kimi Code integration using @moonshot-ai/kimi-code. The ACP Registry's legacy Kimi CLI is a separate integration.",
+    label: "Kimi",
     badgeLabel: "Early Access",
     settingsSchema: KimiSettings,
   },

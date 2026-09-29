@@ -30,7 +30,7 @@ import {
 } from "../acp/KimiAcpSupport.ts";
 
 const KIMI_PRESENTATION = {
-  displayName: "Kimi Code (supported)",
+  displayName: "Kimi",
   badgeLabel: "Early Access",
   // Kimi exposes a native read-only plan mode ("Read-only planning; no tool
   // execution") through its `mode` config option, so the plan/implement toggle

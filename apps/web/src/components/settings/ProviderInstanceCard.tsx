@@ -994,7 +994,6 @@ export function ProviderInstanceCard({
       <SettingsSection title={displayName} icon={titleIconNode} headerAction={editorHeaderAction}>
         <SettingsRow
           title="Display name"
-          description={driverOption?.description}
           status={
             <>
               <ProviderStatusDiagnostic detail={statusDiagnostic}>
