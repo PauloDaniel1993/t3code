@@ -36,7 +36,6 @@ import { type SelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeRun
 import { FILE_HEADERS_ONLY, formatPatch, structuredPatch } from "diff";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
-import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import type * as Duration from "effect/Duration";
@@ -94,12 +93,7 @@ import {
   resolveEmbeddedTerminalContent,
   type AcpClientTerminals,
 } from "../../provider/acp/AcpClientTerminals.ts";
-import {
-  makeAcpEventQueue,
-  makeAcpProviderEventDelivery,
-} from "../../provider/acp/AcpEventQueue.ts";
-import { makeAcpToolProgressCoalescer } from "../../provider/acp/AcpToolProgressCoalescer.ts";
-import { normalizeAcpToolActivity } from "../../provider/acp/AcpToolActivityNormalizer.ts";
+import { makeAcpToolActivity } from "../../provider/acp/AcpToolActivity.ts";
 import { ACP_SESSION_MODE_OPTION_ID } from "../../provider/acp/AcpSessionConfig.ts";
 import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
 import {
@@ -1602,9 +1596,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
         // already approved satisfies an "ask" disposition.
         const clientPolicyGrants = makeAcpClientPolicyGrants();
         let latestRuntimePolicy: ProviderAdapterV2RuntimePolicy = input.runtimePolicy;
-        const events = yield* makeAcpEventQueue<ProviderAdapterV2Event>({
-          classify: makeAcpProviderEventDelivery(input.threadId),
-        });
+        const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
         const activeTurn = yield* Ref.make<ActiveAcpTurn | null>(null);
         const activeSessionId = yield* Ref.make<string | null>(null);
         const contextUsageBySessionId = yield* Ref.make(
@@ -2002,13 +1994,13 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             }
           });
 
-        const emitProviderEvent = Effect.fnUntraced(function* (event: ProviderAdapterV2Event) {
-          yield* events.offer(
-            event.type === "turn_item.updated"
-              ? { ...event, turnItem: normalizeAcpToolActivity(event.turnItem) }
-              : event,
-          );
+        const toolActivity = yield* makeAcpToolActivity({
+          activeTurn,
+          permit: runtimeCallbackPermit,
+          scope: sessionScope,
         });
+        const emitProviderEvent = (event: ProviderAdapterV2Event) =>
+          Queue.offer(events, toolActivity.normalize(event)).pipe(Effect.asVoid);
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 
@@ -2955,19 +2947,6 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           });
 
         // `let` breaks circular inference from monitor hydration re-entry.
-        const toolProgressWake = yield* Queue.dropping<void>(1);
-        const toolProgressByTurn = new WeakMap<
-          ActiveAcpTurn,
-          ReturnType<typeof makeAcpToolProgressCoalescer<Effect.Effect<void>>>
-        >();
-        const progressForTurn = (context: ActiveAcpTurn) => {
-          let progress = toolProgressByTurn.get(context);
-          if (progress === undefined) {
-            progress = makeAcpToolProgressCoalescer<Effect.Effect<void>>();
-            toolProgressByTurn.set(context, progress);
-          }
-          return progress;
-        };
         let emitTool: (
           context: ActiveAcpTurn,
           incoming: AcpToolCallState,
@@ -3165,17 +3144,8 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           }
           const status = projectedStatus ?? toolStatus(toolCall.status);
           const projection = projectTool(context, toolCall, status);
-          if (
-            !progressForTurn(context).offer(
-              `root:${toolCall.toolCallId}`,
-              projection,
-              status,
-              yield* Clock.currentTimeMillis,
-            )
-          ) {
-            yield* Queue.offer(toolProgressWake, undefined);
+          if (yield* toolActivity.hold(context, `root:${toolCall.toolCallId}`, status, projection))
             return;
-          }
           yield* projection;
         });
 
@@ -3318,11 +3288,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 {},
               ...(rawOutput === undefined ? {} : { output: acpMcpToolCallOutput(rawOutput) }),
             };
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver,
-              turnItem,
-            });
+            yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
             yield* rearmDeferredFinalize(context);
             return;
           } else if (changes.length > 0) {
@@ -3443,38 +3409,9 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 }
             }
           }
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem,
-          });
+          yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
           yield* rearmDeferredFinalize(context);
         });
-
-        const flushToolProgress = Effect.fnUntraced(function* (
-          context: ActiveAcpTurn,
-          all = false,
-        ) {
-          for (const projection of progressForTurn(context).flush(
-            yield* Clock.currentTimeMillis,
-            all,
-          )) {
-            yield* projection;
-          }
-        });
-        yield* Effect.forever(
-          Queue.take(toolProgressWake).pipe(
-            Effect.andThen(Effect.sleep("100 millis")),
-            Effect.andThen(
-              runtimeCallbackPermit.withPermit(
-                Effect.gen(function* () {
-                  const context = yield* Ref.get(activeTurn);
-                  if (context !== null && !context.finalized) yield* flushToolProgress(context);
-                }),
-              ),
-            ),
-          ),
-        ).pipe(Effect.forkIn(sessionScope));
 
         const emitPlan = Effect.fnUntraced(function* (
           context: ActiveAcpTurn,
@@ -4396,16 +4333,14 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                   },
                 });
                 if (
-                  !progressForTurn(context).offer(
+                  yield* toolActivity.hold(
+                    context,
                     `child:${key}`,
-                    projectTool,
                     toolStatus(merged.status),
-                    yield* Clock.currentTimeMillis,
+                    projectTool,
                   )
-                ) {
-                  yield* Queue.offer(toolProgressWake, undefined);
+                )
                   continue;
-                }
                 yield* projectTool;
               }
               return;
@@ -6476,7 +6411,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           failure?: OrchestrationV2ProviderFailure,
         ) {
           if (context.finalized) return;
-          yield* flushToolProgress(context, true);
+          yield* toolActivity.flush(context, true);
           const settledStatus = context.interrupted ? "interrupted" : status;
           context.finalizedStatus = settledStatus;
           context.finalized = true;
@@ -7221,7 +7156,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           driver,
           providerSessionId: input.providerSessionId,
           providerSession,
-          events: events.stream,
+          events: Stream.fromEffectRepeat(Queue.take(events)),
           ...(postSettleContinuationEnabled
             ? {
                 hasPendingBackgroundWork: Effect.gen(function* () {
