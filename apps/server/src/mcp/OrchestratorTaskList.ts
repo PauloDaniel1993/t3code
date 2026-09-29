@@ -20,11 +20,11 @@ export type TaskParentProjection = Pick<
 >;
 
 export const TASK_LIST_SUMMARY_MAX_CHARS = 2_000;
-export const TASK_LIST_SUMMARY_MIN_CHARS = 64;
+const TRUNCATION_MARKER = "\n[shortened; task_status returns full text]";
+export const TASK_LIST_SUMMARY_MIN_CHARS = 100 + TRUNCATION_MARKER.length;
 // Budget the complete MCP envelope (both text and structuredContent), pessimistically
 // treating every UTF-8 byte as a token, below Claude Code's ~25k-token ceiling.
 export const TASK_LIST_RESPONSE_MAX_BYTES = 24_000;
-const TRUNCATION_MARKER = "\n[shortened; task_status returns full text]";
 
 function summaryPreview(summary: string, maxChars: number) {
   return summary.length > maxChars
@@ -200,12 +200,12 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
       continue;
     const status = yield* readTask(task.id, parent).pipe(Effect.result);
     let item: OrchestratorMcpTaskListResult["tasks"][number] | undefined;
-    if (status._tag === "Failure" && input.status === undefined) {
+    if (status._tag === "Failure") {
       item = {
         threadId: task.childThreadId!,
         taskId: task.id,
         title: (task.title ?? task.prompt).slice(0, 120),
-        status: null,
+        status: "unreadable",
         createdBy: task.createdBy === "user" ? "user" : "agent",
         context: { kind: "none" },
         createdAt: DateTime.formatIso(task.startedAt ?? task.updatedAt),

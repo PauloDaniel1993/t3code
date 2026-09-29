@@ -124,7 +124,7 @@ export const OrchestratorMcpTaskListResult = Schema.Struct({
   tasks: Schema.Array(
     Schema.Struct({
       ...ForkTaskSummary.fields,
-      status: Schema.NullOr(ForkTaskStatus),
+      status: Schema.Union([ForkTaskStatus, Schema.Literal("unreadable")]),
       workState: Schema.optional(
         Schema.Literals(["working", "waiting_for_children", "result_available"]),
       ),

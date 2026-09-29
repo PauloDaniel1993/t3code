@@ -471,6 +471,11 @@ it.effect(
     const reads: ThreadId[] = [];
     return Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
+      const description = server.tools.find(({ tool }) => tool.name === "task_list")?.tool
+        .description;
+      expect(description).toContain(
+        "page very long results via t3_thread_read with itemId/textOffset",
+      );
       const seen: string[] = [];
       let cursor: string | undefined;
       do {
@@ -498,6 +503,9 @@ it.effect(
           });
           expect(entry.result?.summary.length).toBeGreaterThanOrEqual(TASK_LIST_SUMMARY_MIN_CHARS);
           expect(entry.result?.summary).toContain("[shortened; task_status returns full text]");
+          expect(entry.result!.summary.split("\n[shortened;")[0]!.length).toBeGreaterThanOrEqual(
+            100,
+          );
           expect(entry.latestTerminalResult).toBeUndefined();
           seen.push(entry.taskId);
         }
@@ -525,13 +533,30 @@ it.effect("returns readable siblings when one child cannot be loaded", () => {
     expect(result.tasks.map((entry) => entry.taskId)).toEqual(tasks.map((task) => task.id));
     expect(result.tasks[1]).toMatchObject({
       taskId: tasks[1]!.id,
-      status: null,
+      status: "unreadable",
       result: null,
       error: expect.stringContaining("Could not read this child"),
     });
     expect(result.tasks[0]?.result?.summary).toBe(tasks[0]!.result);
     expect(result.tasks[2]?.result?.summary).toBe(tasks[2]!.result);
   }).pipe(Effect.provide(makeLayer(recordsFor(tasks), { unreadable: tasks[1]!.childThreadId! })));
+});
+
+it.effect("keeps unreadable unresolved tasks visible in every status filter", () => {
+  const unknown = task("unreadable", { status: "running", result: null });
+  const tasks = [task("finished"), unknown];
+  return Effect.gen(function* () {
+    const service = yield* OrchestratorMcpService;
+    for (const status of ["queued", "running", "finished", "failed", "cancelled"] as const) {
+      const result = yield* service.listTasks(scope, { status });
+      expect(result.tasks.find((entry) => entry.taskId === unknown.id)).toMatchObject({
+        status: "unreadable",
+        result: null,
+        error: expect.stringContaining("Could not read this child"),
+      });
+      expect(result.nextCursor).toBeNull();
+    }
+  }).pipe(Effect.provide(makeLayer(recordsFor(tasks), { unreadable: unknown.childThreadId! })));
 });
 
 it.effect(
@@ -643,7 +668,7 @@ it.effect(
         { status: "finished" },
         { unreadable: tasks[2]!.childThreadId! },
       );
-      expect(unreadable).toMatchObject({ tasks: [], nextCursor: null });
+      expect(unreadable).toMatchObject({ tasks: [{ status: "unreadable" }], nextCursor: null });
     }).pipe(Effect.provide(makeLayer(recordsFor(tasks))));
   },
 );
@@ -771,6 +796,7 @@ it.effect("bounds child reads for 120 tasks, filtered discovery, and complete pa
     expect(first.nextCursor).not.toBeNull();
     expect(first.tasks.length).toBeLessThan(120);
     expect(reads).toHaveLength(1 + 2 * (first.tasks.length + 1));
+
     const seen = first.tasks.map((entry) => entry.taskId);
     let cursor = first.nextCursor;
     let pages = 1;
@@ -784,6 +810,12 @@ it.effect("bounds child reads for 120 tasks, filtered discovery, and complete pa
     }
     expect(seen).toEqual(tasks.toReversed().map((entry) => entry.id));
     expect(reads).toHaveLength(240 + 2 * (pages - 1) + pages);
+    expect({
+      firstPageTasks: first.tasks.length,
+      firstPageReads: 1 + 2 * (first.tasks.length + 1),
+      pages,
+      totalReads: reads.length,
+    }).toEqual({ firstPageTasks: 25, firstPageReads: 53, pages: 6, totalReads: 256 });
     expect(reads.filter((id) => id === parentId)).toHaveLength(pages);
     reads.length = 0;
     const limited = yield* service.listTasks(scope, { limit: 1 });

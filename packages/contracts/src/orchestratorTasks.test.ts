@@ -5,6 +5,7 @@ import {
   ForkTaskCancelInput,
   ForkTaskCreateInput,
   OrchestratorMcpTaskListInput,
+  OrchestratorMcpTaskListResult,
 } from "./orchestratorTasks.ts";
 
 const decode = Schema.decodeUnknownSync(OrchestratorMcpTaskListInput);
@@ -48,4 +49,27 @@ describe("delegated task list input", () => {
     expect(() => cancel({})).toThrow();
     expect(() => decode({ status: "completed" })).toThrow();
   });
+});
+
+it("represents an unreadable task explicitly in list results", () => {
+  const decodeResult = Schema.decodeUnknownSync(OrchestratorMcpTaskListResult);
+  expect(
+    decodeResult({
+      parentThreadId: "parent",
+      nextCursor: null,
+      tasks: [
+        {
+          threadId: "child",
+          taskId: "task",
+          title: "Check",
+          status: "unreadable",
+          createdBy: "agent",
+          context: { kind: "none" },
+          createdAt: "2026-09-29T12:00:00.000Z",
+          result: null,
+          error: "Could not read this child.",
+        },
+      ],
+    }).tasks[0]?.status,
+  ).toBe("unreadable");
 });

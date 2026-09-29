@@ -104,7 +104,7 @@ const TaskCreateTool = Tool.make("task_create", {
 
 const TaskListTool = Tool.make("task_list", {
   description:
-    "List this thread's direct tasks newest creation first, then ID; cursors continue strictly older than the last entry shown, including ID ties at one timestamp. Refresh without a cursor for newer tasks. Filter before limiting matches; uniformly shorten result previews from 2,000 to a minimum of 64 characters (including the shortened marker) to fit all matches in a 24,000-byte UTF-8 MCP response, then page only if needed. Follow nextCursor until null; empty pages never have a cursor. Fork statuses: queued, running (includes waiting), finished, failed, cancelled. Unreadable children appear unfiltered with status=null and an error. Listing is read-only; task_status returns full result text and acknowledges delivery.",
+    "List this thread's direct tasks newest creation first, then ID; cursors continue strictly older than the last entry shown, including ID ties at one timestamp. Refresh without a cursor for newer tasks. Filter before limiting matches; uniformly shorten result previews from 2,000 to a minimum of 100 result characters plus the shortened marker to fit all matches in a 24,000-byte UTF-8 MCP response, then page only if needed. Follow nextCursor until null; empty pages never have a cursor. Fork statuses: queued, running (includes waiting), finished, failed, cancelled. Unreadable children appear in every filter with status=unreadable and an error. Listing is read-only; task_status returns full result text and acknowledges delivery; page very long results via t3_thread_read with itemId/textOffset.",
   parameters: OrchestratorMcpTaskListInput,
   success: OrchestratorMcpTaskListResult,
   failure: OrchestratorMcpFailure,
