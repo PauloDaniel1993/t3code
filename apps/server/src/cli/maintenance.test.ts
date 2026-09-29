@@ -3,6 +3,8 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeURL from "node:url";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -69,17 +71,27 @@ it.effect("refuses status without a database and exposes recovery after a failed
 );
 
 describe.each([
-  ["V1", "DELETE FROM effect_sql_migrations WHERE migration_id >= 55"],
+  [
+    "V1",
+    `PRAGMA journal_mode=WAL;
+    CREATE TABLE effect_sql_migrations(migration_id INTEGER PRIMARY KEY, name TEXT);
+    INSERT INTO effect_sql_migrations VALUES(54,'ProjectionThreadsAutoSettleDisabledAt');
+    CREATE TABLE projection_threads(thread_id TEXT PRIMARY KEY);
+    CREATE TABLE maintenance_space(id INTEGER PRIMARY KEY,payload BLOB);`,
+  ],
   ["non-T3", "DROP TABLE effect_sql_migrations"],
   [
     "another schema version",
-    "INSERT INTO effect_sql_migrations VALUES (57, 'FutureSchema', 'now')",
+    "INSERT INTO effect_sql_migrations (migration_id,name,created_at) VALUES (57, 'FutureSchema', 'now')",
   ],
-])("refused %s files", (_kind, mutation) => {
+])("refused %s files", (kind, mutation) => {
   it.effect("leaves the file, pending WAL and SHM byte-identical for every command", () =>
     Effect.gen(function* () {
-      // The schema refusal itself is only in the WAL. An immutable=1 reader
-      // would incorrectly see the supported schema in the main file.
+      if (kind === "V1") {
+        databasePath = NodePath.join(directory, "state.sqlite");
+      }
+      // V1 has its entire schema in WAL. For the other two cases, immutable=1
+      // would incorrectly see a supported V2 schema in the main file.
       const child = NodeChildProcess.spawnSync(
         process.execPath,
         [
@@ -90,6 +102,7 @@ describe.each([
         db.exec("PRAGMA wal_autocheckpoint=0");
         db.exec(process.argv[2]);
         db.exec("INSERT INTO maintenance_space VALUES(99, zeroblob(100000))");
+        require('node:fs').writeSync(1, 'fixture-ready');
         process.kill(process.pid, 'SIGKILL');
       `,
           databasePath,
@@ -98,14 +111,17 @@ describe.each([
         { windowsHide: true },
       );
       expect(child.error).toBeUndefined();
+      expect(child.stdout.toString()).toBe("fixture-ready");
       expect(child.status).not.toBe(0);
       expect(NodeFS.statSync(`${databasePath}-wal`).size).toBeGreaterThan(32);
       expect(NodeFS.statSync(`${databasePath}-shm`).size).toBeGreaterThan(0);
       const hashes = () =>
         ["", "-wal", "-shm"].map((suffix) =>
-          NodeCrypto.createHash("sha256")
-            .update(NodeFS.readFileSync(`${databasePath}${suffix}`))
-            .digest("hex"),
+          NodeFS.existsSync(`${databasePath}${suffix}`)
+            ? NodeCrypto.createHash("sha256")
+                .update(NodeFS.readFileSync(`${databasePath}${suffix}`))
+                .digest("hex")
+            : null,
         );
       const before = hashes();
       const files = NodeFS.readdirSync(directory);
@@ -114,6 +130,65 @@ describe.each([
         expect(hashes(), command).toEqual(before);
         expect(NodeFS.readdirSync(directory), command).toEqual(files);
       }
+      // Also forbid creating a missing SHM, then forbid creating either sibling
+      // when the same refused schema has been checkpointed by the fixture itself.
+      NodeFS.unlinkSync(`${databasePath}-shm`);
+      for (const checkpointed of [false, true]) {
+        if (checkpointed) {
+          const fixtureWriter = new NodeSqlite.DatabaseSync(databasePath);
+          fixtureWriter.prepare("SELECT name FROM sqlite_schema").all();
+          fixtureWriter.close();
+        }
+        const expectedHashes = hashes();
+        const expectedFiles = NodeFS.readdirSync(directory);
+        for (const command of ["estimate", "compact", "status", "recover"]) {
+          yield* run([command, "--database", databasePath]).pipe(Effect.flip);
+          expect(hashes(), command).toEqual(expectedHashes);
+          expect(NodeFS.readdirSync(directory), command).toEqual(expectedFiles);
+        }
+      }
     }),
   );
 });
+
+it("streams phase progress to stderr while keeping the command's stdout as JSON", () => {
+  const entry = NodeURL.fileURLToPath(new URL("../bin.ts", import.meta.url));
+  const result = NodeChildProcess.spawnSync(
+    process.execPath,
+    [entry, "maintenance", "compact", "--database", databasePath],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout).phase).toBe("completed");
+  expect(result.stderr).toContain("Read-only preflight: started");
+  expect(result.stderr).toContain("Copying snapshot: started");
+  expect(result.stderr).toContain("Validating rewritten database: completed (elapsed");
+  expect(result.stderr).toContain("rough estimate");
+  expect(result.stderr).toContain("Remaining phases:");
+});
+
+it.effect("requires the recovery confirmation flag for a failed final check", () =>
+  Effect.gen(function* () {
+    expect(() =>
+      compactDatabase(
+        { databasePath },
+        {
+          onPhase: (journal) => {
+            if (journal.phase === "checking-result")
+              throw new Error("injected final-check failure");
+          },
+        },
+      ),
+    ).toThrow("injected final-check failure");
+    yield* run(["recover", "--database", databasePath]).pipe(Effect.flip);
+    expect(readMaintenanceJournal(databasePath)?.phase).toBe("failed");
+    yield* run(["compact", "--database", databasePath]).pipe(Effect.flip);
+    yield* run(["recover", "--database", databasePath, "--acknowledge-validation-failure"]);
+    expect(readMaintenanceJournal(databasePath)?.validationFailureAcknowledgedAt).toBeDefined();
+    yield* run(["compact", "--database", databasePath]);
+    expect(readMaintenanceJournal(databasePath)?.phase).toBe("completed");
+  }),
+);

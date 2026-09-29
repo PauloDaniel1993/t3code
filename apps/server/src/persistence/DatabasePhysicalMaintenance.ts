@@ -9,6 +9,8 @@ import * as Schema from "effect/Schema";
 import {
   type MaintenanceJournal,
   archiveMaintenanceJournal,
+  incompleteMaintenanceSnapshots,
+  maintenanceIncompleteSnapshotPath,
   maintenanceSnapshotPath,
   readMaintenanceJournal,
   syncDirectory,
@@ -24,6 +26,7 @@ import {
   withMaintenanceReadOnlyDatabase,
   withMaintenanceTemporaryDirectory,
 } from "./DatabaseMaintenanceSqlite.ts";
+import { maintenanceProgress, type MaintenanceProgress } from "./DatabaseMaintenanceProgress.ts";
 
 const SAFETY_MARGIN_BYTES = 64 * 1024 * 1024;
 const terminalPhases = new Set<MaintenanceJournal["phase"]>(["completed", "recovered"]);
@@ -38,8 +41,9 @@ export interface MaintenanceOptions {
   readonly serverRuntimeStatePath?: string;
 }
 
-/** Failure injection/receipts at durable boundaries; no production caller supplies these. */
+/** Progress for CLI callers, plus failure injection/receipts for fixture tests. */
 export interface MaintenanceHooks {
+  readonly onProgress?: (progress: MaintenanceProgress) => void;
   readonly onPhase?: (journal: MaintenanceJournal, snapshotPath: string) => void;
   readonly availableBytes?: (directory: string) => number;
 }
@@ -120,25 +124,32 @@ function withExclusiveDatabase<A>(
   options: MaintenanceOptions,
   run: (db: NodeSqlite.DatabaseSync, path: string) => A,
   preflight: (db: NodeSqlite.DatabaseSync, path: string) => void,
+  progress: ReturnType<typeof maintenanceProgress>,
 ): A {
   const path = existingDatabasePath(options.databasePath);
   ensureServerStopped(
     options.serverRuntimeStatePath ?? NodePath.join(NodePath.dirname(path), "server-runtime.json"),
   );
   return withMaintenanceTemporaryDirectory(NodePath.dirname(path), () => {
-    withMaintenanceReadOnlyDatabase(path, (database) => {
-      requireV2Database(database);
-      const mode = database.prepare("PRAGMA journal_mode").get()?.journal_mode;
-      if (mode !== "wal" && mode !== "delete" && mode !== "truncate" && mode !== "persist") {
-        throw new Error("Maintenance requires a durable SQLite journal mode.");
-      }
-      preflight(database, path);
-      checkDatabaseIntegrity(database);
-    });
+    progress.run("Read-only preflight", () =>
+      withMaintenanceReadOnlyDatabase(path, (database) => {
+        requireV2Database(database);
+        const mode = database.prepare("PRAGMA journal_mode").get()?.journal_mode;
+        if (mode !== "wal" && mode !== "delete" && mode !== "truncate" && mode !== "persist") {
+          throw new Error("Maintenance requires a durable SQLite journal mode.");
+        }
+        preflight(database, path);
+      }),
+    );
+    progress.run("Checking source integrity", () =>
+      withMaintenanceReadOnlyDatabase(path, checkDatabaseIntegrity),
+    );
     const database = new NodeSqlite.DatabaseSync(path, { timeout: 0 });
     try {
-      database.exec(
-        "PRAGMA locking_mode = EXCLUSIVE; PRAGMA busy_timeout = 0; PRAGMA synchronous = FULL; BEGIN EXCLUSIVE; COMMIT;",
+      progress.run("Acquiring exclusive lock", () =>
+        database.exec(
+          "PRAGMA locking_mode = EXCLUSIVE; PRAGMA busy_timeout = 0; PRAGMA synchronous = FULL; BEGIN EXCLUSIVE; COMMIT;",
+        ),
       );
       // locking_mode=EXCLUSIVE retains the lock after COMMIT, across VACUUM INTO,
       // validation, VACUUM and checkpoints, until this connection is closed.
@@ -167,6 +178,7 @@ export function estimateDatabaseMaintenance(databasePath: string) {
     return {
       databasePath: path,
       ...diskRequirement(database, path, {}),
+      incompleteSnapshots: incompleteMaintenanceSnapshots(path, readMaintenanceJournal(path)),
     };
   });
 }
@@ -174,7 +186,11 @@ export function estimateDatabaseMaintenance(databasePath: string) {
 export function databaseMaintenanceStatus(databasePath: string) {
   const path = existingDatabasePath(databasePath);
   withMaintenanceReadOnlyDatabase(path, requireV2Database);
-  return readMaintenanceJournal(path);
+  const journal = readMaintenanceJournal(path);
+  return {
+    ...(journal ?? { phase: "none" }),
+    incompleteSnapshots: incompleteMaintenanceSnapshots(path, journal),
+  };
 }
 
 /**
@@ -186,11 +202,26 @@ export function databaseMaintenanceStatus(databasePath: string) {
  * https://sqlite.org/lang_vacuum.html#how_vacuum_works
  */
 export function compactDatabase(options: MaintenanceOptions, hooks: MaintenanceHooks = {}) {
+  const progress = maintenanceProgress(
+    [
+      "Read-only preflight",
+      "Checking source integrity",
+      "Acquiring exclusive lock",
+      "Fingerprinting source",
+      "Copying snapshot",
+      "Validating snapshot",
+      "Rewriting database",
+      "Checkpointing WAL",
+      "Validating rewritten database",
+      "Publishing result",
+    ],
+    hooks.onProgress,
+  );
   const preflight = (database: NodeSqlite.DatabaseSync, path: string) => {
     const previous = readMaintenanceJournal(path);
     if (previous && !terminalPhases.has(previous.phase)) {
       throw new Error(
-        "Unfinished maintenance requires `maintenance recover` before another compact.",
+        `Unfinished maintenance requires \`maintenance recover\` before another compact. Unusable snapshots: ${JSON.stringify(incompleteMaintenanceSnapshots(path, previous))}`,
       );
     }
     const { requiredFreeBytes: requiredBytes, availableBytes: available } = diskRequirement(
@@ -223,38 +254,70 @@ export function compactDatabase(options: MaintenanceOptions, hooks: MaintenanceH
         beforeBytes,
       };
       const snapshot = maintenanceSnapshotPath(path, journal);
+      const incomplete = maintenanceIncompleteSnapshotPath(path, journal);
       const advance = (phase: MaintenanceJournal["phase"]) => {
         journal = { ...journal, phase, updatedAt: timestamp() };
         writeMaintenanceJournal(path, journal);
-        hooks.onPhase?.(journal, snapshot);
+        hooks.onPhase?.(journal, journal.fingerprint ? snapshot : incomplete);
       };
       try {
         advance("copying");
-        const fingerprint = fingerprintDatabase(database);
-        database.prepare("VACUUM INTO ?").run(snapshot);
-        syncFile(snapshot);
-        syncDirectory(snapshot);
+        const fingerprint = progress.run("Fingerprinting source", () =>
+          fingerprintDatabase(database),
+        );
+        progress.run("Copying snapshot", () => {
+          database.prepare("VACUUM INTO ?").run(incomplete);
+          syncFile(incomplete);
+          syncDirectory(incomplete);
+        });
         advance("copied");
-        if (snapshotFingerprint(snapshot) !== fingerprint) {
-          throw new Error("The compact snapshot does not match the complete source database.");
-        }
+        progress.run(
+          "Validating snapshot",
+          () => {
+            if (snapshotFingerprint(incomplete) !== fingerprint) {
+              throw new Error("The compact snapshot does not match the complete source database.");
+            }
+            NodeFS.renameSync(incomplete, snapshot);
+            syncDirectory(snapshot);
+          },
+          progress.validationEstimate(),
+        );
         journal = { ...journal, fingerprint };
         advance("validated");
         // No destructive SQL, checkpoint, or physical rewrite happens before the
         // snapshot passes integrity, foreign-key and full-content validation.
         advance("rewriting");
-        database.exec("VACUUM main");
-        checkpoint(database);
-        if (validatedFingerprint(database) !== fingerprint) {
-          throw new Error(
-            "The rewritten database failed validation; retain the recovery snapshot.",
-          );
-        }
+        progress.run("Rewriting database", () => database.exec("VACUUM main"));
+        progress.run("Checkpointing WAL", () => checkpoint(database));
+        // Durable before checking: even a crash or a failed failure-journal write
+        // must require explicit acknowledgement, never silently bless current data.
+        advance("checking-result");
+        progress.run(
+          "Validating rewritten database",
+          () => {
+            if (snapshotFingerprint(path) !== fingerprint) {
+              throw new Error(
+                "The rewritten database failed validation; retain the recovery snapshot.",
+              );
+            }
+          },
+          progress.validationEstimate(),
+        );
         journal = { ...journal, afterBytes: NodeFS.statSync(path).size };
-        advance("completed");
-        return { ...journal, snapshotPath: snapshot };
+        progress.run("Publishing result", () => advance("completed"));
+        return {
+          ...journal,
+          snapshotPath: snapshot,
+          incompleteSnapshots: incompleteMaintenanceSnapshots(path, journal),
+        };
       } catch (cause) {
-        journal = { ...journal, phase: "failed", updatedAt: timestamp(), error: String(cause) };
+        journal = {
+          ...journal,
+          failedPhase: journal.phase,
+          phase: "failed",
+          updatedAt: timestamp(),
+          error: String(cause),
+        };
         // If the disk is full, the previous durable phase still forces inspection.
         try {
           writeMaintenanceJournal(path, journal);
@@ -265,43 +328,95 @@ export function compactDatabase(options: MaintenanceOptions, hooks: MaintenanceH
       }
     },
     preflight,
+    progress,
   );
 }
 
 /**
- * Opening/locking the original lets SQLite recover its own hot journal. A saved
- * snapshot is never installed: the original may contain newer committed work.
+ * Read-only eligibility must succeed before SQLite can recover/write the original.
+ * A saved snapshot is never installed: the original may contain newer committed work.
  * Ambiguous/corrupt databases or missing validated snapshots fail closed.
  */
-export function recoverDatabaseMaintenance(options: MaintenanceOptions) {
+export function recoverDatabaseMaintenance(
+  options: MaintenanceOptions & { readonly acknowledgeValidationFailure?: boolean },
+  hooks: MaintenanceHooks = {},
+) {
+  const progress = maintenanceProgress(
+    [
+      "Read-only preflight",
+      "Checking source integrity",
+      "Acquiring exclusive lock",
+      "Fingerprinting source",
+      "Checkpointing WAL",
+      "Publishing result",
+    ],
+    hooks.onProgress,
+  );
+  const requiresAcknowledgement = (journal: MaintenanceJournal) =>
+    !journal.validationFailureAcknowledgedAt &&
+    (journal.phase === "checking-result" ||
+      journal.failedPhase === "checking-result" ||
+      // Journals written before failure stages were recorded still fail closed.
+      (journal.phase === "failed" &&
+        journal.error?.includes("rewritten database failed validation")));
+  const report = (path: string, journal: MaintenanceJournal) => ({
+    ...journal,
+    ...(journal.fingerprint ? { snapshotPath: maintenanceSnapshotPath(path, journal) } : {}),
+    incompleteSnapshots: incompleteMaintenanceSnapshots(path, journal),
+  });
   return withExclusiveDatabase(
     options,
     (database, path) => {
       const journal = readMaintenanceJournal(path);
-      if (!journal || terminalPhases.has(journal.phase)) return journal;
-      const current = validatedFingerprint(database);
+      if (!journal)
+        return {
+          incompleteSnapshots: incompleteMaintenanceSnapshots(path),
+          phase: "none" as const,
+          recovery: undefined,
+        };
+      // Older runs (or death between rename and journal publication) may have
+      // given an unvalidated file a final name. Keep it visibly unusable even
+      // after this journal is archived by a later compaction.
+      if (!journal.fingerprint) {
+        const legacy = maintenanceSnapshotPath(path, journal);
+        if (NodeFS.existsSync(legacy)) {
+          const incomplete = maintenanceIncompleteSnapshotPath(path, journal);
+          if (NodeFS.existsSync(incomplete)) {
+            throw new Error(
+              `Both unvalidated snapshots exist; inspect ${legacy} and ${incomplete}.`,
+            );
+          }
+          NodeFS.renameSync(legacy, incomplete);
+          syncDirectory(incomplete);
+        }
+      }
+      if (terminalPhases.has(journal.phase)) return report(path, journal);
+      const current = progress.run("Fingerprinting source", () => fingerprintDatabase(database));
       let recovery: MaintenanceJournal["recovery"] = "unvalidated";
       if (journal.fingerprint !== undefined) {
-        if (snapshotFingerprint(maintenanceSnapshotPath(path, journal)) !== journal.fingerprint) {
-          throw new Error(
-            "The validated recovery snapshot is missing or changed; manual inspection is required.",
-          );
-        }
         recovery = current === journal.fingerprint ? "unchanged" : "changed";
       }
-      checkpoint(database);
+      progress.run("Checkpointing WAL", () => checkpoint(database));
       const recovered: MaintenanceJournal = {
         ...journal,
         phase: "recovered",
         recovery,
         updatedAt: timestamp(),
         afterBytes: NodeFS.statSync(path).size,
+        ...(requiresAcknowledgement(journal)
+          ? { validationFailureAcknowledgedAt: timestamp() }
+          : {}),
       };
-      writeMaintenanceJournal(path, recovered);
-      return recovered;
+      progress.run("Publishing result", () => writeMaintenanceJournal(path, recovered));
+      return report(path, recovered);
     },
     (_database, path) => {
       const journal = readMaintenanceJournal(path);
+      if (journal && requiresAcknowledgement(journal) && !options.acknowledgeValidationFailure) {
+        throw new Error(
+          `Final validation failed or was interrupted. Keep the validated snapshot at ${maintenanceSnapshotPath(path, journal)} and inspect the current data. Another compaction is blocked until you explicitly run maintenance recover --acknowledge-validation-failure --database ${JSON.stringify(path)}. This accepts current data; it does not restore the snapshot.`,
+        );
+      }
       if (
         journal?.fingerprint &&
         !terminalPhases.has(journal.phase) &&
@@ -312,5 +427,6 @@ export function recoverDatabaseMaintenance(options: MaintenanceOptions) {
         );
       }
     },
+    progress,
   );
 }

@@ -13,6 +13,7 @@ export const MaintenanceJournal = Schema.Struct({
     "copied",
     "validated",
     "rewriting",
+    "checking-result",
     "completed",
     "failed",
     "recovered",
@@ -23,6 +24,8 @@ export const MaintenanceJournal = Schema.Struct({
   afterBytes: Schema.optional(Schema.Number),
   fingerprint: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
+  failedPhase: Schema.optional(Schema.String),
+  validationFailureAcknowledgedAt: Schema.optional(Schema.String),
   recovery: Schema.optional(Schema.Literals(["unchanged", "changed", "unvalidated"])),
 });
 export type MaintenanceJournal = typeof MaintenanceJournal.Type;
@@ -38,6 +41,29 @@ export const maintenanceSnapshotPath = (databasePath: string, journal: Maintenan
   }
   return `${databasePath}.maintenance-v2-${journal.runId}.sqlite`;
 };
+
+export const maintenanceIncompleteSnapshotPath = (
+  databasePath: string,
+  journal: MaintenanceJournal,
+) => `${maintenanceSnapshotPath(databasePath, journal)}.incomplete`;
+
+/** Include orphaned partial files and old, never-validated snapshots in status reports. */
+export function incompleteMaintenanceSnapshots(databasePath: string, journal?: MaintenanceJournal) {
+  const directory = NodePath.dirname(databasePath);
+  const prefix = `${NodePath.basename(databasePath)}.maintenance-v2-`;
+  const paths = NodeFS.readdirSync(directory)
+    .filter(
+      (name) =>
+        name.startsWith(prefix) &&
+        /^[0-9a-f-]{36}\.sqlite\.incomplete$/.test(name.slice(prefix.length)),
+    )
+    .map((name) => NodePath.join(directory, name));
+  if (journal && !journal.fingerprint) {
+    const legacy = maintenanceSnapshotPath(databasePath, journal);
+    if (NodeFS.existsSync(legacy)) paths.push(legacy);
+  }
+  return paths.map((path) => ({ path, usable: false as const }));
+}
 
 export function syncFile(path: string): void {
   const fd = NodeFS.openSync(path, "r+");
@@ -72,7 +98,8 @@ export function readMaintenanceJournal(databasePath: string): MaintenanceJournal
   maintenanceSnapshotPath(databasePath, journal);
   if (
     (journal.fingerprint !== undefined && !/^[0-9a-f]{64}$/.test(journal.fingerprint)) ||
-    (["validated", "rewriting", "completed"].includes(journal.phase) && !journal.fingerprint)
+    (["validated", "rewriting", "checking-result", "completed"].includes(journal.phase) &&
+      !journal.fingerprint)
   ) {
     throw new Error("Invalid database maintenance validation record.");
   }

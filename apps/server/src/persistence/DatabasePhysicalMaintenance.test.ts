@@ -8,12 +8,14 @@ import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { createMaintenanceFixture } from "./DatabaseMaintenanceFixture.test-support.ts";
 import {
   maintenanceJournalPath,
+  maintenanceIncompleteSnapshotPath,
   maintenanceSnapshotPath,
   readMaintenanceJournal,
 } from "./DatabaseMaintenanceJournal.ts";
 import { checkDatabaseIntegrity, fingerprintDatabase } from "./DatabaseMaintenanceValidation.ts";
 import {
   compactDatabase,
+  databaseMaintenanceStatus,
   estimateDatabaseMaintenance,
   recoverDatabaseMaintenance,
 } from "./DatabasePhysicalMaintenance.ts";
@@ -83,6 +85,136 @@ describe("physical maintenance", () => {
     expect(JSON.parse(NodeFS.readFileSync(`${first.snapshotPath}.json`, "utf8")).runId).toBe(
       first.runId,
     );
+  });
+
+  it("reports each phase before work, elapsed times and measured validation estimates", () => {
+    const events: import("./DatabaseMaintenanceProgress.ts").MaintenanceProgress[] = [];
+    compactDatabase(
+      { databasePath },
+      {
+        onProgress: (event) => {
+          events.push(event);
+          if (event.phase === "Copying snapshot" && event.state === "started") {
+            expect(NodeFS.readdirSync(directory).some((file) => file.endsWith(".incomplete"))).toBe(
+              false,
+            );
+          }
+        },
+      },
+    );
+    expect(events.filter((event) => event.state === "started").map((event) => event.phase)).toEqual(
+      [
+        "Read-only preflight",
+        "Checking source integrity",
+        "Acquiring exclusive lock",
+        "Fingerprinting source",
+        "Copying snapshot",
+        "Validating snapshot",
+        "Rewriting database",
+        "Checkpointing WAL",
+        "Validating rewritten database",
+        "Publishing result",
+      ],
+    );
+    for (let index = 0; index < events.length; index += 2) {
+      expect(events[index]?.state).toBe("started");
+      expect(events[index + 1]?.state).toBe("completed");
+      expect(events[index + 1]?.elapsedMs).toBeGreaterThanOrEqual(0);
+    }
+    expect(
+      events.find((event) => event.phase === "Validating rewritten database")?.estimatedMs,
+    ).toBeGreaterThan(0);
+  });
+
+  it("keeps partial snapshots visibly incomplete, reports them on recovery and never offers them as backups", () => {
+    const original = readFingerprint();
+    expect(() =>
+      compactDatabase(
+        { databasePath },
+        {
+          onPhase: (journal, candidate) => {
+            if (journal.phase !== "copying") return;
+            expect(candidate.endsWith(".incomplete")).toBe(true);
+            NodeFS.writeFileSync(candidate, "injected partial snapshot");
+            throw new Error("injected copy failure");
+          },
+        },
+      ),
+    ).toThrow("injected copy failure");
+    const journal = readMaintenanceJournal(databasePath)!;
+    const incomplete = maintenanceIncompleteSnapshotPath(databasePath, journal);
+    expect(NodeFS.existsSync(maintenanceSnapshotPath(databasePath, journal))).toBe(false);
+    expect(databaseMaintenanceStatus(databasePath).incompleteSnapshots).toEqual([
+      { path: incomplete, usable: false },
+    ]);
+    expect(estimateDatabaseMaintenance(databasePath).incompleteSnapshots).toEqual([
+      { path: incomplete, usable: false },
+    ]);
+    // Also recover the old naming scheme / the rename-before-journal crash gap.
+    const unvalidatedFinal = maintenanceSnapshotPath(databasePath, journal);
+    NodeFS.renameSync(incomplete, unvalidatedFinal);
+    expect(databaseMaintenanceStatus(databasePath).incompleteSnapshots).toEqual([
+      { path: unvalidatedFinal, usable: false },
+    ]);
+    const recovered = recoverDatabaseMaintenance({ databasePath });
+    expect(recovered).not.toHaveProperty("snapshotPath");
+    expect(recovered.incompleteSnapshots).toEqual([{ path: incomplete, usable: false }]);
+    expect(readFingerprint()).toBe(original);
+    const completed = compactDatabase({ databasePath });
+    expect(completed.incompleteSnapshots).toEqual([{ path: incomplete, usable: false }]);
+    expect(NodeFS.existsSync(completed.snapshotPath)).toBe(true);
+    expect(NodeFS.existsSync(`${completed.snapshotPath}.incomplete`)).toBe(false);
+  });
+
+  it("rereads the rewritten file on a fresh connection and gates a failed final check behind acknowledgement", () => {
+    const marker = "unique-final-validation-marker-37";
+    const db = new NodeSqlite.DatabaseSync(databasePath);
+    db.prepare("UPDATE future_fork_table SET value=?").run(marker);
+    db.close();
+    const before = readFingerprint();
+    expect(() =>
+      compactDatabase(
+        { databasePath },
+        {
+          onPhase: (journal) => {
+            if (journal.phase !== "checking-result") return;
+            // Change a stored value directly on disk while the writer still holds
+            // its cached pages and exclusive lock. A same-connection scan misses it.
+            const bytes = NodeFS.readFileSync(databasePath);
+            const offset = bytes.indexOf(marker);
+            expect(offset).toBeGreaterThan(0);
+            const fd = NodeFS.openSync(databasePath, "r+");
+            try {
+              NodeFS.writeSync(fd, Buffer.from("X"), 0, 1, offset);
+              NodeFS.fsyncSync(fd);
+            } finally {
+              NodeFS.closeSync(fd);
+            }
+          },
+        },
+      ),
+    ).toThrow("rewritten database failed validation");
+    const journal = readMaintenanceJournal(databasePath)!;
+    expect(journal.failedPhase).toBe("checking-result");
+    expect(readFingerprint(maintenanceSnapshotPath(databasePath, journal))).toBe(before);
+    const laterWriter = new NodeSqlite.DatabaseSync(databasePath);
+    laterWriter.exec(
+      "INSERT INTO future_fork_table(id,value) VALUES(2,'committed after failed validation')",
+    );
+    laterWriter.close();
+    const changed = readFingerprint();
+    expect(changed).not.toBe(before);
+    expect(() => recoverDatabaseMaintenance({ databasePath })).toThrow(
+      "acknowledge-validation-failure",
+    );
+    expect(readMaintenanceJournal(databasePath)?.phase).toBe("failed");
+    expect(() => compactDatabase({ databasePath })).toThrow("recover");
+    expect(
+      recoverDatabaseMaintenance({ databasePath, acknowledgeValidationFailure: true }).phase,
+    ).toBe("recovered");
+    expect(readMaintenanceJournal(databasePath)?.validationFailureAcknowledgedAt).toBeDefined();
+    expect(readFingerprint()).toBe(changed);
+    expect(compactDatabase({ databasePath }).phase).toBe("completed");
   });
 
   it("preserves DELETE journal mode and recovers safely without a WAL", () => {
@@ -388,6 +520,7 @@ async function interruptChild(phase: string, duringRewrite = false) {
     child.stdout.once("error", reject);
   });
   let watcher: NodeFS.FSWatcher | undefined;
+  let observedWalBytes = 0;
   try {
     await Promise.race([
       ready,
@@ -403,7 +536,9 @@ async function interruptChild(phase: string, duringRewrite = false) {
           watcher = NodeFS.watch(directory, (_event, file) => {
             if (file !== "statev2.sqlite-wal") return;
             try {
-              if (NodeFS.statSync(`${databasePath}-wal`).size > 32) {
+              const size = NodeFS.statSync(`${databasePath}-wal`).size;
+              if (size > 32) {
+                observedWalBytes = size;
                 child.kill("SIGKILL");
                 resolve();
               }
@@ -422,6 +557,7 @@ async function interruptChild(phase: string, duringRewrite = false) {
       child.kill("SIGKILL");
     }
     await exited;
+    return { observedWalBytes };
   } finally {
     watcher?.close();
     child.kill("SIGKILL");
@@ -431,7 +567,7 @@ async function interruptChild(phase: string, duringRewrite = false) {
 
 describe("process interruption", () => {
   it.each(["copying", "copied", "validated", "rewriting", "completed"])(
-    "survives process death at %s",
+    "survives process death at the durable %s journal receipt",
     async (phase) => {
       const before = readFingerprint();
       await interruptChild(phase);
@@ -441,15 +577,31 @@ describe("process interruption", () => {
     },
   );
 
-  it("recovers committed data after a process is killed during actual VACUUM WAL writes", async () => {
+  it("recovers committed data after observing VACUUM WAL writes and requesting process death", async () => {
     const db = new NodeSqlite.DatabaseSync(databasePath);
     db.exec("INSERT INTO maintenance_space VALUES (3, zeroblob(33554432))");
     db.close();
     const before = readFingerprint();
-    await interruptChild("rewriting", true);
-    expect(readMaintenanceJournal(databasePath)?.phase).toBe("rewriting");
-    expect(NodeFS.statSync(`${databasePath}-wal`).size).toBeGreaterThan(32);
-    expect(recoverDatabaseMaintenance({ databasePath })?.recovery).toBe("unchanged");
+    const interruption = await interruptChild("rewriting", true);
+    // The OS may deliver termination after VACUUM commits. This proves recovery
+    // after observed writes, not a deterministic mid-transaction interruption.
+    expect(["rewriting", "checking-result", "completed"]).toContain(
+      readMaintenanceJournal(databasePath)?.phase,
+    );
+    expect(interruption.observedWalBytes).toBeGreaterThan(32);
+    recoverDatabaseMaintenance({ databasePath, acknowledgeValidationFailure: true });
+    expect(readFingerprint()).toBe(before);
+  });
+
+  it("requires acknowledgement after death at the durable final-validation boundary", async () => {
+    const before = readFingerprint();
+    await interruptChild("checking-result");
+    expect(readMaintenanceJournal(databasePath)?.phase).toBe("checking-result");
+    expect(() => recoverDatabaseMaintenance({ databasePath })).toThrow(
+      "Final validation failed or was interrupted",
+    );
+    expect(() => compactDatabase({ databasePath })).toThrow("recover");
+    recoverDatabaseMaintenance({ databasePath, acknowledgeValidationFailure: true });
     expect(readFingerprint()).toBe(before);
   });
 });

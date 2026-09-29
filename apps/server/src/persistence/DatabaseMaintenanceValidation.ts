@@ -35,11 +35,9 @@ function hashRows(database: NodeSqlite.DatabaseSync, query: string): string {
 }
 
 export function checkDatabaseIntegrity(database: NodeSqlite.DatabaseSync): void {
-  for (const pragma of ["quick_check", "integrity_check"]) {
-    const result = database.prepare(`PRAGMA ${pragma}`).all();
-    if (result.length !== 1 || result[0]?.[pragma] !== "ok") {
-      throw new Error(`Database failed ${pragma}.`);
-    }
+  const result = database.prepare("PRAGMA integrity_check").all();
+  if (result.length !== 1 || result[0]?.integrity_check !== "ok") {
+    throw new Error("Database failed integrity_check.");
   }
   if (database.prepare("PRAGMA foreign_key_check").get() !== undefined) {
     throw new Error("Database failed foreign_key_check.");

@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - Synchronous progress must flush before SQLite blocks.
+import * as NodeFS from "node:fs";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import { Command, Flag } from "effect/unstable/cli";
@@ -8,6 +10,7 @@ import {
   estimateDatabaseMaintenance,
   recoverDatabaseMaintenance,
 } from "../persistence/DatabasePhysicalMaintenance.ts";
+import type { MaintenanceProgress } from "../persistence/DatabaseMaintenanceProgress.ts";
 
 const databaseFlags = {
   database: Flag.String("database").pipe(
@@ -21,6 +24,21 @@ const report = (operation: () => unknown) =>
   Effect.try(operation).pipe(
     Effect.flatMap((result) => Console.log(JSON.stringify(result ?? { phase: "none" }, null, 2))),
   );
+
+function printProgress(progress: MaintenanceProgress): void {
+  const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(1)}s`;
+  const timing =
+    progress.state === "started"
+      ? progress.estimatedMs === undefined
+        ? "duration unknown"
+        : `rough estimate ${seconds(progress.estimatedMs)} from source validation`
+      : `elapsed ${seconds(progress.elapsedMs)}`;
+  const remaining = progress.remainingPhases.length ? progress.remainingPhases.join(", ") : "none";
+  NodeFS.writeSync(
+    2,
+    `${progress.phase}: ${progress.state} (${timing}). Remaining phases: ${remaining}.\n`,
+  );
+}
 
 export const maintenanceCommand = Command.make("maintenance").pipe(
   Command.withDescription(
@@ -42,15 +60,28 @@ export const maintenanceCommand = Command.make("maintenance").pipe(
         "Retain a fully validated compact snapshot, then reclaim space under an exclusive SQLite lock.",
       ),
       Command.withHandler(({ database }) =>
-        report(() => compactDatabase({ databasePath: database })),
+        report(() => compactDatabase({ databasePath: database }, { onProgress: printProgress })),
       ),
     ),
-    Command.make("recover", databaseFlags).pipe(
+    Command.make("recover", {
+      ...databaseFlags,
+      acknowledgeValidationFailure: Flag.Boolean("acknowledge-validation-failure").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription(
+          "After manual inspection, accept current data despite a failed or interrupted final validation. Never restores the saved snapshot.",
+        ),
+      ),
+    }).pipe(
       Command.withDescription(
         "Check interrupted maintenance, keeping current data and all snapshots. Never restore over newer work.",
       ),
-      Command.withHandler(({ database }) =>
-        report(() => recoverDatabaseMaintenance({ databasePath: database })),
+      Command.withHandler(({ database, acknowledgeValidationFailure }) =>
+        report(() =>
+          recoverDatabaseMaintenance(
+            { databasePath: database, acknowledgeValidationFailure },
+            { onProgress: printProgress },
+          ),
+        ),
       ),
     ),
   ]),
