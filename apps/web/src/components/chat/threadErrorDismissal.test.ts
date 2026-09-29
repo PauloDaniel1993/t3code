@@ -339,6 +339,27 @@ describe("dismissing a thread error", () => {
     expect(onScreen(key, failed)).toBe("Provider crashed");
   });
 
+  it("shows a queued run that fails after the running run's dismissed failure is finalised", () => {
+    const key = "env:queued-after-finalised";
+    const first = failedRun("run-1", 1, "Provider crashed");
+    const old = session("Provider crashed", 12);
+    // run-3 was moved ahead of run-2 and is running when the user dismisses.
+    const before = thread(first, run("run-2", 2, "queued"), run("run-3", 3, "running"), old);
+    expect(onScreen(key, before)).toBe("Provider crashed");
+    dismiss(key, before);
+
+    const finalised = [run("run-2", 2, "queued"), failedRun("run-3", 3, "Provider crashed")];
+    expect(onScreen(key, thread(first, finalised, old))).toBeNull();
+
+    const running = failedRun("run-3", 3, "Provider crashed");
+    expect(
+      onScreen(key, thread(first, failedRun("run-2", 2, "Provider crashed"), running, old)),
+    ).toBe("Provider crashed");
+    expect(
+      onScreen(key, thread(first, failedRun("run-2", 2, "Authentication expired"), running, old)),
+    ).toBe("Authentication expired");
+  });
+
   it("keeps a dismissal after two hundred and one dismissals on other threads", () => {
     const projection = thread(failedRun("run-1", 1, "Provider crashed"));
     expect(onScreen("env:first", projection)).toBe("Provider crashed");

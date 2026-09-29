@@ -28,7 +28,8 @@ import { dismissThreadErrorBannerForSession, getThreadErrorBannerKey } from "./T
  *
  * The run that was executing at dismissal is not new when it later fails with
  * a text dismissed then: a provider publishes a failure on the session first
- * and finalises the run afterwards, and that is one failure. A new failed run
+ * and finalises the run afterwards, and that is one failure. It is the only
+ * exception; any other run that fails after the dismissal shows. A new failed run
  * is shown with its own message and class, even while the session still holds
  * older text, which V2's `threadErrorSummary` would otherwise prefer.
  *
@@ -82,19 +83,23 @@ const dismissalsByThreadKey = new Map<string, Dismissal>();
 
 const NOTHING_SHOWN: PresentedThreadError = { message: null, errorClass: null, dismissal: null };
 
-// A hidden banner rerenders with the same run and history on most renders, so
-// keep the last root failure lookup instead of walking the turn items again.
-let lastLookup: {
-  readonly run: OrchestrationV2Run;
-  readonly turnItems: Projection["turnItems"];
-  readonly failure: OrchestrationV2ProviderFailure | null;
-} | null = null;
+// A hidden banner rerenders with the same runs and history on most renders, so
+// keep each run's root failure lookup instead of walking the turn items again.
+const rootFailures = new WeakMap<
+  OrchestrationV2Run,
+  {
+    readonly turnItems: Projection["turnItems"];
+    readonly failure: OrchestrationV2ProviderFailure | null;
+  }
+>();
 
 function rootFailure(run: OrchestrationV2Run, turnItems: Projection["turnItems"]) {
-  if (lastLookup?.run !== run || lastLookup.turnItems !== turnItems) {
-    lastLookup = { run, turnItems, failure: latestRootProviderFailure(run, turnItems) };
+  let lookup = rootFailures.get(run);
+  if (lookup?.turnItems !== turnItems) {
+    lookup = { turnItems, failure: latestRootProviderFailure(run, turnItems) };
+    rootFailures.set(run, lookup);
   }
-  return lastLookup.failure;
+  return lookup.failure;
 }
 
 /** The newest run that failed after the dismissal, with the message it failed with. */
@@ -104,16 +109,19 @@ function failureSinceDismissal(
   serverError: string,
   serverErrorClass: FailureClass,
 ): { readonly message: string; readonly errorClass: FailureClass } | null {
+  // The failure the user dismissed, published on the session before its run
+  // was finalised. It is skipped, not a veto: another run may still show.
+  const isDismissedFailure = (run: OrchestrationV2Run) =>
+    dismissal.texts.includes(rootFailure(run, projection.turnItems)?.message ?? serverError);
   let newest: OrchestrationV2Run | null = null;
   for (const run of projection.runs) {
     if (run.status !== "failed") continue;
     if (run.ordinal <= dismissal.latestOrdinal && !dismissal.unfinishedRunIds.has(run.id)) continue;
+    if (run.id === dismissal.executingRunId && isDismissedFailure(run)) continue;
     if (newest === null || run.ordinal > newest.ordinal) newest = run;
   }
   if (newest === null) return null;
   const failure = rootFailure(newest, projection.turnItems);
-  const message = failure?.message ?? serverError;
-  if (newest.id === dismissal.executingRunId && dismissal.texts.includes(message)) return null;
   return failure === null
     ? { message: serverError, errorClass: serverErrorClass }
     : { message: failure.message, errorClass: failure.class };
