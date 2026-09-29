@@ -51,6 +51,7 @@ import type {
 } from "./ProviderAdapter.ts";
 import { ProviderAdapterTurnStartError } from "./ProviderAdapter.ts";
 import { ProviderEventIngestorV2 } from "./ProviderEventIngestor.ts";
+import { configureProviderEventFlow } from "./ProviderEventFlowRuntime.ts";
 import { makeProviderFailure, makeProviderFailureTurnItem } from "./ProviderFailure.ts";
 import { RunFinalizationObserver } from "./RunFinalizationService.ts";
 
@@ -932,6 +933,7 @@ export const layer: Layer.Layer<
                 : { relatedProviderThreadIds: input.relatedProviderThreadIds }),
             }),
           );
+          yield* configureProviderEventFlow(eventSubscription, routeIdentity, eventRouting);
           const rootTerminalSeen = yield* Ref.make(false);
           const rootRunFinalized = yield* Ref.make(false);
           const providerThreadOwnerLost = yield* Ref.make(false);

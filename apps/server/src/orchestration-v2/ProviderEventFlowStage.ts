@@ -1,14 +1,21 @@
+/**
+ * One non-blocking lane per run, routed before retention. Only superseded
+ * in-progress snapshots are replaced; finals, errors, requests, routing changes
+ * and each entity's last state remain ordered and lossless. 1,000 entries/8 MiB
+ * are pressure targets, not correctness-breaking hard caps: an irreducible tail
+ * of distinct entities or finals is retained even above them. Pressure never
+ * fails a run or leaves an unobserved native turn running. A finite hard bound
+ * on arbitrary lossless traffic would require disk spooling or backpressure.
+ * Provider failure seals admission and drains accepted events before failing;
+ * explicit close/shutdown discards the tail. No extra queue or flush timer.
+ */
 import type { ProviderSessionId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
-import {
-  ProviderAdapterEventStreamError,
-  type ProviderAdapterV2Error,
-  type ProviderAdapterV2Event,
-} from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2Error, ProviderAdapterV2Event } from "./ProviderAdapter.ts";
 import { sanitizeProviderEvent } from "./ProviderEventPayload.ts";
 
 export const PROVIDER_EVENT_BACKLOG_MAX_ITEMS = 1_000;
@@ -17,10 +24,6 @@ export const PROVIDER_EVENT_BACKLOG_MAX_BYTES = 8 * 1024 * 1024;
 function replacementKey(event: ProviderAdapterV2Event): string | undefined {
   switch (event.type) {
     case "node.updated":
-      // ACP emits a tool node before every tool snapshot. Preserve its first
-      // position and every routing identity: routeProviderEvent only reads
-      // threadId, runId and providerThreadId for nodes. A changed identity gets
-      // a separate slot, so coalescing cannot remove a routing transition.
       return event.node.kind === "tool_call" && event.node.status === "running"
         ? JSON.stringify([
             event.type,
@@ -45,7 +48,6 @@ function replacementKey(event: ProviderAdapterV2Event): string | undefined {
           ])
         : undefined;
     case "turn_item.updated":
-      // Requests, subagent links and lifecycle items must retain every transition.
       switch (event.turnItem.type) {
         case "assistant_message":
         case "reasoning":
@@ -68,12 +70,10 @@ function replacementKey(event: ProviderAdapterV2Event): string | undefined {
           return undefined;
       }
     default:
-      // Provider-thread/turn events and non-tool nodes establish routing identity.
       return undefined;
   }
 }
-
-type Entry = { event: ProviderAdapterV2Event; bytes: number; key: string | undefined };
+type Entry = { event: ProviderAdapterV2Event; key: string | undefined };
 const sizes = new WeakMap<ProviderAdapterV2Event, number>();
 function eventBytes(event: ProviderAdapterV2Event): number {
   const cached = sizes.get(event);
@@ -83,25 +83,22 @@ function eventBytes(event: ProviderAdapterV2Event): number {
   return bytes;
 }
 
-/** One non-blocking buffer per subscriber. Overflow fails this stream, never the session pump. */
 export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
   readonly driver: ProviderAdapterV2Event["driver"];
   readonly providerSessionId: ProviderSessionId;
   readonly maxItems?: number;
   readonly maxBytes?: number;
 }) {
-  const maxItems = input.maxItems ?? PROVIDER_EVENT_BACKLOG_MAX_ITEMS;
-  const maxBytes = input.maxBytes ?? PROVIDER_EVENT_BACKLOG_MAX_BYTES;
-  const wake = yield* Queue.unbounded<void, Cause.Done | ProviderAdapterV2Error>();
+  const wake = yield* Queue.unbounded<void, Cause.Done>();
   const pending = new Map<number, Entry>();
   const replaceable = new Map<string, Entry>();
+  let admit: (event: ProviderAdapterV2Event) => boolean = () => true;
   let nextId = 0;
-  let bytes = 0;
+  let lookupReady = false;
   let inFlight: Entry | undefined;
   let ended = false;
   let failure: Cause.Cause<ProviderAdapterV2Error> | undefined;
   let notified = false;
-
   const notify = () => {
     if (notified) return;
     notified = true;
@@ -110,51 +107,32 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
   const clear = () => {
     pending.clear();
     replaceable.clear();
-    bytes = 0;
     inFlight = undefined;
-  };
-  const failNow = (cause: Cause.Cause<ProviderAdapterV2Error>) => {
-    if (failure) return;
-    failure = cause;
-    ended = true;
-    clear();
-    Queue.failCauseUnsafe(wake, cause);
+    lookupReady = false;
   };
   const offer = (raw: ProviderAdapterV2Event) =>
     Effect.sync(() => {
-      if (ended) return;
+      if (ended || !admit(raw)) return;
       const event = sanitizeProviderEvent(raw);
-      const key = replacementKey(event);
-      const previous = key === undefined ? undefined : replaceable.get(key);
-      const size = eventBytes(event);
-      const nextBytes = bytes - (previous?.bytes ?? 0) + size;
-      const nextItems = pending.size + (inFlight === undefined ? 0 : 1) + (previous ? 0 : 1);
-      if (nextItems > maxItems || nextBytes > maxBytes) {
-        failNow(
-          Cause.fail(
-            new ProviderAdapterEventStreamError({
-              driver: input.driver,
-              providerSessionId: input.providerSessionId,
-              cause:
-                "Provider event backlog exceeded its memory budget. Retry the turn to resume the provider conversation.",
-            }),
-          ),
-        );
-        return;
-      }
-      bytes = nextBytes;
-      if (previous) {
-        previous.event = event;
-        previous.bytes = size;
-      } else {
-        const entry = { event, bytes: size, key };
-        pending.set(nextId++, entry);
-        if (key === undefined) {
-          // A lossless event is an ordering fence for every entity.
-          replaceable.clear();
-        } else {
-          replaceable.set(key, entry);
+      if (pending.size === 0) lookupReady = false;
+      // A consumer keeping up never needs a replacement key or JSON byte count.
+      // Materialize lookup only when another snapshot is actually waiting.
+      if (pending.size > 0 && !lookupReady) {
+        for (const entry of pending.values()) {
+          entry.key = replacementKey(entry.event);
+          if (entry.key === undefined) replaceable.clear();
+          else replaceable.set(entry.key, entry);
         }
+        lookupReady = true;
+      }
+      const key = pending.size === 0 ? undefined : replacementKey(event);
+      const previous = key === undefined ? undefined : replaceable.get(key);
+      if (previous) previous.event = event;
+      else {
+        const entry = { event, key };
+        pending.set(nextId++, entry);
+        if (key === undefined) replaceable.clear();
+        else replaceable.set(key, entry);
       }
       notify();
     });
@@ -168,21 +146,19 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
     Queue.endUnsafe(wake);
   });
   const take = Effect.fnUntraced(function* () {
-    if (inFlight) {
-      bytes -= inFlight.bytes;
-      inFlight = undefined;
-    }
+    inFlight = undefined;
     while (true) {
-      if (failure) return yield* Effect.failCause(failure);
       const first = pending.entries().next().value;
       if (first) {
         const [id, entry] = first;
         pending.delete(id);
         if (entry.key !== undefined && replaceable.get(entry.key) === entry)
           replaceable.delete(entry.key);
+        if (pending.size === 0) lookupReady = false;
         inFlight = entry;
         return entry.event;
       }
+      if (failure) return yield* Effect.failCause(failure);
       if (ended) return yield* Cause.done();
       yield* Queue.take(wake);
       notified = false;
@@ -190,12 +166,45 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
   });
   return {
     offer,
-    fail: (cause: Cause.Cause<ProviderAdapterV2Error>) => Effect.sync(() => failNow(cause)),
+    fail: (cause: Cause.Cause<ProviderAdapterV2Error>) =>
+      Effect.sync(() => {
+        if (ended) return;
+        ended = true;
+        failure = cause;
+        notify();
+      }),
     end,
     close,
+    // Configure before startTurn. Re-route the small pre-configuration tail too,
+    // since inherited-background discovery may yield while the session is busy.
+    filter: (predicate: (event: ProviderAdapterV2Event) => boolean) =>
+      Effect.sync(() => {
+        admit = predicate;
+        lookupReady = true;
+        replaceable.clear();
+        for (const [id, entry] of pending) {
+          if (!admit(entry.event)) {
+            pending.delete(id);
+            continue;
+          }
+          entry.key = replacementKey(entry.event);
+          if (entry.key === undefined) replaceable.clear();
+          else replaceable.set(entry.key, entry);
+        }
+      }),
     events: Stream.fromEffectRepeat(take()).pipe(Stream.ensuring(close)),
-    usage: Effect.sync(() => ({ items: pending.size + (inFlight === undefined ? 0 : 1), bytes })),
+    budget: {
+      items: input.maxItems ?? PROVIDER_EVENT_BACKLOG_MAX_ITEMS,
+      bytes: input.maxBytes ?? PROVIDER_EVENT_BACKLOG_MAX_BYTES,
+    },
+    // Serialization is diagnostic work only, never on the no-pressure pump path.
+    usage: Effect.sync(() => ({
+      items: pending.size + (inFlight === undefined ? 0 : 1),
+      bytes: [...pending.values(), ...(inFlight === undefined ? [] : [inFlight])].reduce(
+        (total, entry) => total + eventBytes(entry.event),
+        0,
+      ),
+    })),
   };
 });
-
 export type ProviderEventFlowStage = Effect.Success<ReturnType<typeof makeProviderEventFlowStage>>;

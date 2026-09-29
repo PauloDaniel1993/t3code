@@ -19,6 +19,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -44,11 +45,8 @@ import {
 } from "./ProviderAdapter.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
-import {
-  makeProviderEventFlowStage,
-  type ProviderEventFlowStage,
-} from "./ProviderEventFlowStage.ts";
-import { sanitizeProviderEvent } from "./ProviderEventPayload.ts";
+
+import { attachProviderEventFlow, closeProviderEventFlow } from "./ProviderEventFlowRuntime.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -200,7 +198,9 @@ interface LiveSessionEntry {
   readonly supportsMultipleProviderThreads: boolean;
   readonly runtime: ProviderAdapterV2SessionRuntime;
   readonly exposedRuntime: ProviderAdapterV2SessionRuntime;
-  readonly eventSubscribers: Ref.Ref<ReadonlyMap<number, ProviderEventFlowStage>>;
+  readonly eventSubscribers: Ref.Ref<
+    ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
+  >;
   readonly requestEventPermit: Semaphore.Semaphore;
   readonly scope: Scope.Closeable;
   readonly idleGeneration: number;
@@ -490,19 +490,16 @@ export const layerWithOptions = (
             );
 
       const publishToSubscribers = (
-        subscribers: Ref.Ref<ReadonlyMap<number, ProviderEventFlowStage>>,
+        subscribers: Ref.Ref<
+          ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
+        >,
         signal: ProviderSessionEventSignal,
       ) =>
         Ref.get(subscribers).pipe(
           Effect.flatMap((current) =>
-            Effect.forEach(
-              current.values(),
-              (stage) =>
-                signal.type === "event" ? stage.offer(signal.event) : stage.fail(signal.cause),
-              {
-                discard: true,
-              },
-            ),
+            Effect.forEach(current.values(), (queue) => Queue.offer(queue, signal), {
+              discard: true,
+            }),
           ),
         );
 
@@ -514,15 +511,25 @@ export const layerWithOptions = (
             cause: detail,
           });
           const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
-          yield* Effect.forEach(subscribers.values(), (queue) => queue.fail(Cause.fail(error)), {
-            discard: true,
-          });
+          yield* Effect.forEach(
+            subscribers.values(),
+            (queue) =>
+              Queue.offer(queue, {
+                type: "failure",
+                cause: Cause.fail(error),
+              }),
+            { discard: true },
+          );
         });
 
       const closeSubscribers = (entry: LiveSessionEntry) =>
         Effect.gen(function* () {
           const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
-          yield* Effect.forEach(subscribers.values(), (queue) => queue.close, { discard: true });
+          yield* Effect.forEach(
+            subscribers.values(),
+            (queue) => Queue.clear(queue).pipe(Effect.andThen(Queue.end(queue))),
+            { discard: true },
+          );
         });
 
       // Preserve already-published terminal events while ending subscriptions.
@@ -531,7 +538,7 @@ export const layerWithOptions = (
       const endSubscribers = (entry: LiveSessionEntry) =>
         Effect.gen(function* () {
           const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
-          yield* Effect.forEach(subscribers.values(), (queue) => queue.end, {
+          yield* Effect.forEach(subscribers.values(), (queue) => Queue.end(queue), {
             discard: true,
           });
         });
@@ -731,6 +738,7 @@ export const layerWithOptions = (
                   if (input.gracefulSubscribers === true) {
                     yield* endSubscribers(entry);
                   } else if (input.reason === "server_shutdown") {
+                    yield* closeProviderEventFlow(entry.exposedRuntime);
                     yield* closeSubscribers(entry);
                   } else {
                     yield* failSubscribers(
@@ -1206,35 +1214,51 @@ export const layerWithOptions = (
         );
 
       const makeEventSubscription = (
-        runtime: ProviderAdapterV2SessionRuntime,
-        subscribers: Ref.Ref<ReadonlyMap<number, ProviderEventFlowStage>>,
+        subscribers: Ref.Ref<
+          ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
+        >,
       ): Effect.Effect<ProviderAdapterV2EventSubscription> =>
         Effect.gen(function* () {
-          const queue = yield* makeProviderEventFlowStage(runtime);
+          const queue = yield* Queue.unbounded<ProviderSessionEventSignal, Cause.Done>();
           const subscriberId = yield* Ref.getAndUpdate(nextSubscriberId, (value) => value + 1);
           yield* Ref.update(subscribers, (current) => {
             const updated = new Map(current);
             updated.set(subscriberId, queue);
             return updated;
           });
-          const close = Ref.update(subscribers, (current) => {
+          const close = Ref.modify(subscribers, (current) => {
             if (!current.has(subscriberId)) {
-              return current;
+              return [false, current] as const;
             }
             const updated = new Map(current);
             updated.delete(subscriberId);
-            return updated;
-          }).pipe(Effect.andThen(queue.close));
-          const events = queue.events.pipe(Stream.ensuring(close));
+            return [true, updated] as const;
+          }).pipe(
+            Effect.flatMap((removed) =>
+              removed
+                ? Queue.clear(queue).pipe(Effect.andThen(Queue.end(queue)), Effect.asVoid)
+                : Effect.void,
+            ),
+          );
+          const events = Stream.fromQueue(queue).pipe(
+            Stream.mapEffect((signal) =>
+              signal.type === "event"
+                ? Effect.succeed(signal.event)
+                : Effect.failCause(signal.cause),
+            ),
+            Stream.ensuring(close),
+          );
           return { events, close } satisfies ProviderAdapterV2EventSubscription;
         });
 
       const decorateRuntime = (
         runtime: ProviderAdapterV2SessionRuntime,
-        eventSubscribers: Ref.Ref<ReadonlyMap<number, ProviderEventFlowStage>>,
+        eventSubscribers: Ref.Ref<
+          ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
+        >,
       ): ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
-        const subscribeEvents = makeEventSubscription(runtime, eventSubscribers);
+        const subscribeEvents = makeEventSubscription(eventSubscribers);
         return {
           ...runtime,
           subscribeEvents,
@@ -1393,7 +1417,6 @@ export const layerWithOptions = (
       const startEventPump = (entry: LiveSessionEntry) => {
         let stoppedByProvider = false;
         return entry.runtime.events.pipe(
-          Stream.map(sanitizeProviderEvent),
           Stream.runForEach((event) => {
             if (
               event.type === "provider_session.updated" &&
@@ -1626,10 +1649,15 @@ export const layerWithOptions = (
                       }),
                   ),
                 );
-              const eventSubscribers = yield* Ref.make<ReadonlyMap<number, ProviderEventFlowStage>>(
-                new Map(),
+              const eventSubscribers = yield* Ref.make<
+                ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
+              >(new Map());
+              const flow = yield* attachProviderEventFlow(
+                runtime,
+                (staged) => decorateRuntime(staged, eventSubscribers),
+                sessionScope,
               );
-              const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
+              const exposedRuntime = flow.exposedRuntime;
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
@@ -1641,7 +1669,7 @@ export const layerWithOptions = (
                 supportsMultipleProviderThreads:
                   runtime.providerSession.capabilities.sessions
                     .supportsMultipleProviderThreadsPerSession,
-                runtime,
+                runtime: flow.runtime,
                 exposedRuntime,
                 eventSubscribers,
                 requestEventPermit: yield* Semaphore.make(1),

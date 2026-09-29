@@ -82,6 +82,27 @@ function terminal(): ProviderAdapterV2Event {
 }
 
 describe("provider event flow stage", () => {
+  it.effect("drains accepted finals before reporting a provider stream failure", () =>
+    Effect.gen(function* () {
+      const stage = yield* makeProviderEventFlowStage(options);
+      const seen: ProviderAdapterV2Event[] = [];
+      yield* stage.offer(progress(1, "tool", "completed"));
+      yield* stage.offer(terminal());
+      yield* stage.fail(
+        Cause.fail(new ProviderAdapterEventStreamError({ ...options, cause: "transport failure" })),
+      );
+      const result = yield* stage.events.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            seen.push(event);
+          }),
+        ),
+        Effect.exit,
+      );
+      expect(Exit.isFailure(result)).toBe(true);
+      expect(seen.map((event) => event.type)).toEqual(["turn_item.updated", "turn.terminal"]);
+    }),
+  );
   it.effect("measures a 10,000-update burst against the unbounded FIFO", () =>
     Effect.gen(function* () {
       const raw = Array.from({ length: 10_000 }, (_, index) => progress(index));
@@ -278,59 +299,51 @@ describe("provider event flow stage", () => {
     }),
   );
 
-  it.effect("overflows one stalled subscriber while another receives its terminal", () =>
+  it.effect("retains irreducible latest states and finals above pressure targets", () =>
     Effect.gen(function* () {
-      const slow = yield* makeProviderEventFlowStage({ ...options, maxItems: 2 });
-      const fast = yield* makeProviderEventFlowStage(options);
-      const done = yield* Deferred.make<void>();
-      const consumer = yield* fast.events.pipe(
-        Stream.takeUntil((event) => event.type === "turn.terminal"),
-        Stream.runForEach((event) =>
-          event.type === "turn.terminal" ? Deferred.succeed(done, undefined) : Effect.void,
-        ),
-        Effect.forkScoped,
-      );
-      for (let index = 0; index < 10_000; index++) {
-        const event = progress(index, `tool-${index}`);
-        yield* slow.offer(event);
-      }
-      yield* slow.offer(terminal());
-      yield* fast.offer(terminal());
-      yield* Deferred.await(done);
-      yield* Fiber.join(consumer);
-      const result = yield* slow.events.pipe(Stream.runCollect, Effect.exit);
-      expect(Exit.isFailure(result)).toBe(true);
-      if (Exit.isFailure(result))
-        expect(Cause.squash(result.cause)).toBeInstanceOf(ProviderAdapterEventStreamError);
-      expect(yield* slow.usage).toEqual({ items: 0, bytes: 0 });
-    }).pipe(Effect.scoped),
+      const stage = yield* makeProviderEventFlowStage({ ...options, maxItems: 2, maxBytes: 100 });
+      for (let i = 0; i < 1_100; i++) yield* stage.offer(progress(i, `tool-${i}`, "completed"));
+      yield* stage.offer(terminal());
+      expect((yield* stage.usage).items).toBe(1_101);
+      yield* stage.end;
+      const received = yield* stage.events.pipe(Stream.runCollect);
+      expect(received).toHaveLength(1_101);
+      expect(received.at(-1)).toEqual(terminal());
+    }),
   );
 
-  it.effect("enforces bytes on replacements and includes a consumer's current item", () =>
+  it.effect("keeps the last state of distinct entities while a consumer is held", () =>
     Effect.gen(function* () {
-      const started = yield* Deferred.make<void>();
+      const entered = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
-      const stage = yield* makeProviderEventFlowStage({ ...options, maxItems: 1 });
+      const stage = yield* makeProviderEventFlowStage({ ...options, maxItems: 1, maxBytes: 100 });
+      const seen: ProviderAdapterV2Event[] = [];
       yield* stage.offer(progress(1));
       const consumer = yield* stage.events.pipe(
-        Stream.runForEach(() =>
-          Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            seen.push(event);
+            if (seen.length === 1) {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }
+          }),
         ),
-        Effect.exit,
         Effect.forkScoped,
       );
-      yield* Deferred.await(started);
-      expect((yield* stage.usage).items).toBe(1);
+      yield* Deferred.await(entered);
       yield* stage.offer(progress(2, "different"));
+      yield* stage.offer(progress(3, "different", "completed"));
+      yield* stage.offer(terminal());
+      yield* stage.end;
+      expect((yield* stage.usage).items).toBe(4);
       yield* Deferred.succeed(release, undefined);
-      expect(Exit.isFailure(yield* Fiber.join(consumer))).toBe(true);
-      const byBytes = yield* makeProviderEventFlowStage({ ...options, maxBytes: 1_000 });
-      yield* byBytes.offer(progress(1));
-      yield* byBytes.offer({
-        ...progress(2),
-        turnItem: { ...progress(2).turnItem, title: "x".repeat(4_000) },
-      });
-      expect(Exit.isFailure(yield* byBytes.events.pipe(Stream.runCollect, Effect.exit))).toBe(true);
+      yield* Fiber.join(consumer);
+      expect(
+        seen.map((event) =>
+          event.type === "turn_item.updated" ? event.turnItem.status : event.type,
+        ),
+      ).toEqual(["running", "running", "completed", "turn.terminal"]);
     }).pipe(Effect.scoped),
   );
 
@@ -398,7 +411,7 @@ describe("provider tool payloads", () => {
         output: {
           authorization: "hidden-auth",
           nested: [{ refresh_token: "hidden-refresh" }],
-          rawOutput: '{"secret":"hidden-secret"}\nBearer hidden-bearer',
+          rawOutput: '{"secret":"hidden-secret"}\nAuthorization: Bearer hidden-bearer',
         },
       },
     } satisfies ProviderAdapterV2Event;
@@ -411,7 +424,9 @@ describe("provider tool payloads", () => {
       ...tool,
       turnItem: { ...tool.turnItem, status: "running" },
     });
-    expect(running).toMatchObject({ turnItem: { input: null } });
+    expect(running).toMatchObject({
+      turnItem: { input: { password: "[REDACTED]", api_key: "[REDACTED]" } },
+    });
     if (running.type !== "turn_item.updated") throw new Error("Unexpected event");
     expect("output" in running.turnItem).toBe(false);
   });

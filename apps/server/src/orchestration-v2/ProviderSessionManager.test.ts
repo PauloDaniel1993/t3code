@@ -14,6 +14,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RunId,
+  RunAttemptId,
+  ProviderTurnId,
   TurnItemId,
   type ProviderSessionId,
   ThreadId,
@@ -22,7 +24,6 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -59,6 +60,8 @@ import {
 } from "./ProviderAdapter.ts";
 import { makeSingleLayer as makeProviderAdapterRegistryLayer } from "./ProviderAdapterRegistry.ts";
 import { layer as providerEventIngestorLayer } from "./ProviderEventIngestor.ts";
+import { configureProviderEventFlow } from "./ProviderEventFlowRuntime.ts";
+import { makeProviderEventRoutingState } from "./RunExecutionService.ts";
 import {
   ProviderSessionManagerV2,
   layerWithOptions as providerSessionManagerLayerWithOptions,
@@ -964,7 +967,7 @@ it.effect(
           status: "running",
           title: "Progress",
           input: "run",
-          output: "secret=fixture-secret",
+          output: "Authorization: Bearer ghp_fixturesecret",
           startedAt: now,
           completedAt: null,
           updatedAt: now,
@@ -983,7 +986,7 @@ it.effect(
             ...base,
             status: "completed",
             completedAt: now,
-            output: `password=fixture-secret\n${"界".repeat(100_000)}`,
+            output: `Authorization: Bearer ghp_fixturesecret\n${"界".repeat(100_000)}`,
           },
         });
         yield* Queue.offer(queue, {
@@ -1002,7 +1005,7 @@ it.effect(
           Stream.runCollect,
         );
         assert.equal(events.length, 3);
-        assert.notInclude(testJson(events), "fixture-secret");
+        assert.notInclude(testJson(events), "ghp_fixturesecret");
         assert.equal(
           events[0]?.type === "turn_item.updated" ? events[0].turnItem.title : null,
           "Progress 9999",
@@ -1019,7 +1022,7 @@ it.effect(
 );
 
 it.effect(
-  "ProviderSessionManagerV2 does not stall the session pump when one subscriber overflows",
+  "ProviderSessionManagerV2 retains lossless traffic without stalling another subscriber",
   () =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
@@ -1096,11 +1099,151 @@ it.effect(
           threadDisposition: "reusable",
         });
         yield* Fiber.join(consumed);
-        const failed = yield* stalled.events.pipe(Stream.runCollect, Effect.exit);
-        assert.isTrue(Exit.isFailure(failed));
-        if (Exit.isFailure(failed))
-          assert.instanceOf(Cause.squash(failed.cause), ProviderAdapterEventStreamError);
+        const retained = yield* stalled.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        assert.equal(retained.length, 1_101);
+        assert.equal(retained.at(-1)?.type, "turn.terminal");
         assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 isolates two runs before retention with no unrelated queue delay",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSinkV2;
+        const ids = yield* IdAllocatorV2;
+        const manager = yield* ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("isolated-A");
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const makeIdentity = (name: string) => ({
+          threadId: ThreadId.make(`isolated-${name}`),
+          runId: RunId.make(`run-${name}`),
+          attemptId: RunAttemptId.make(`attempt-${name}`),
+          providerThreadId: ids.derive.providerThread({
+            driver: CODEX_DRIVER,
+            nativeThreadId: name,
+          }),
+        });
+        const a = makeIdentity("A");
+        const b = makeIdentity("B");
+        const turnA = ProviderTurnId.make("turn-A");
+        const turnB = ProviderTurnId.make("turn-B");
+        const observerA = yield* runtime.subscribeEvents!;
+        const observerB = yield* runtime.subscribeEvents!;
+        yield* configureProviderEventFlow(
+          observerA,
+          a,
+          yield* Ref.make(makeProviderEventRoutingState({ identity: a, providerTurnId: turnA })),
+        );
+        yield* configureProviderEventFlow(
+          observerB,
+          b,
+          yield* Ref.make(makeProviderEventRoutingState({ identity: b, providerTurnId: turnB })),
+        );
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const receipts = yield* Queue.unbounded<void>();
+        const receivedA: ProviderAdapterV2Event[] = [];
+        const receivedB: ProviderAdapterV2Event[] = [];
+        const consumerA = yield* observerA.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              receivedA.push(event);
+              if (receivedA.length === 1) {
+                yield* Deferred.succeed(entered, undefined);
+                yield* Deferred.await(release);
+              }
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        const consumerB = yield* observerB.events.pipe(
+          Stream.take(1_100),
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              receivedB.push(event);
+            }).pipe(Effect.andThen(Queue.offer(receipts, undefined))),
+          ),
+          Effect.forkScoped,
+        );
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        const tool = (
+          identity: typeof a,
+          turnId: ProviderTurnId,
+          index: number,
+        ): ProviderAdapterV2Event => ({
+          type: "turn_item.updated",
+          driver: CODEX_DRIVER,
+          turnItem: {
+            id: TurnItemId.make(`tool-${identity.runId}-${index}`),
+            type: "command_execution",
+            threadId: identity.threadId,
+            runId: identity.runId,
+            nodeId: null,
+            providerThreadId: identity.providerThreadId,
+            providerTurnId: turnId,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: index + 1,
+            status: "completed",
+            title: "Tool",
+            input: "run",
+            output: "result",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* Queue.offer(queue, tool(a, turnA, 0));
+        yield* Deferred.await(entered);
+        for (let i = 0; i < 1_100; i++) {
+          yield* Queue.offer(queue, tool(b, turnB, i));
+          yield* Queue.take(receipts);
+        }
+        yield* Queue.offer(queue, {
+          type: "turn.terminal",
+          driver: CODEX_DRIVER,
+          providerThreadId: a.providerThreadId,
+          providerTurnId: turnA,
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(consumerA);
+        yield* Fiber.join(consumerB);
+        assert.deepEqual(
+          receivedA.map((event) => event.type),
+          ["turn_item.updated", "turn.terminal"],
+        );
+        assert.equal(receivedB.length, 1_100);
+        assert.deepEqual(
+          receivedB,
+          Array.from({ length: 1_100 }, (_, i) => tool(b, turnB, i)),
+        );
+        // Once admitted, A's final is behind exactly its one held write, zero B writes.
         assert.equal((yield* Ref.get(state)).closeCount, 0);
       }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
     }),
