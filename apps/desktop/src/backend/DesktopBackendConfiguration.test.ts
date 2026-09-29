@@ -12,6 +12,8 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -235,6 +237,62 @@ const withPackagedWslHarness = <A, E, R>(
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 describe("DesktopBackendConfiguration", () => {
+  for (const isPackaged of [false, true]) {
+    it.effect(`preserves V2's ordinary ${isPackaged ? "release" : "dev"} backend environment`, () =>
+      withHarness(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const expected = {
+            T3CODE_HOME: environment.baseDir,
+            HOME: "custom-git-home",
+            APPDATA: "custom-roaming",
+            LOCALAPPDATA: "custom-local",
+            USERPROFILE: "custom-profile",
+            TEMP: "custom-temp",
+            TMP: "custom-tmp",
+            T3CODE_DESKTOP_DISPLAY_NAME: "ordinary-display",
+            T3CODE_DESKTOP_LOCAL_IDENTITY: "inherited-flag",
+          };
+          const names = Object.keys(expected);
+          const previous = names.map((name) => [name, process.env[name]] as const);
+          try {
+            Object.assign(process.env, expected);
+            const previousPath = process.env.PATH;
+            process.env.PATH = "";
+            let config;
+            try {
+              config = yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration)
+                .resolvePrimary;
+            } finally {
+              restoreEnv("PATH", previousPath);
+            }
+            assert.isTrue(config.extendEnv);
+            assert.equal(config.bootstrap.t3Home, environment.baseDir);
+            assert.equal(
+              environment.stateDir,
+              environment.path.join(environment.baseDir, "userdata"),
+            );
+            const encodedNames = yield* encodeShellArgs(names);
+            const probe = `process.stdout.write(${encodedNames}.map(name => process.env[name] ?? '').join('|'))`;
+            const output = NodeChildProcess.execFileSync(process.execPath, ["-e", probe], {
+              env: { ...process.env, ...config.env },
+              encoding: "utf8",
+              windowsHide: true,
+            });
+            assert.equal(output, Object.values(expected).join("|"));
+          } finally {
+            for (const [name, value] of previous) restoreEnv(name, value);
+          }
+        }),
+        {
+          platform: "win32",
+          isPackaged,
+          ...(!isPackaged ? { devServerUrl: "http://localhost:5173" } : {}),
+        },
+      ),
+    );
+  }
+
   it.effect("keeps installed identity out of an agent shell started by its backend", () =>
     Effect.gen(function* () {
       const testHostPlatform = yield* HostProcessPlatform;
@@ -258,10 +316,24 @@ describe("DesktopBackendConfiguration", () => {
               T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code.v2.local",
               T3CODE_DISABLE_AUTO_UPDATE: "true",
             });
-            const config = yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration)
-              .resolvePrimary;
+            const previousPath = process.env.PATH;
+            process.env.PATH = "";
+            let config;
+            try {
+              config = yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration)
+                .resolvePrimary;
+            } finally {
+              restoreEnv("PATH", previousPath);
+            }
             assert.isFalse(config.extendEnv);
             assert.isNotEmpty(config.bootstrap.t3Home);
+            if (testHostPlatform === "win32") {
+              assert.equal(config.env.HOME, NodeOS.userInfo().homedir);
+              assert.equal(
+                config.env.APPDATA,
+                NodePath.win32.join(NodeOS.userInfo().homedir, "AppData", "Roaming"),
+              );
+            }
             const env = Object.fromEntries(
               Object.entries(config.env).filter(
                 (entry): entry is [string, string] => entry[1] !== undefined,
@@ -269,7 +341,16 @@ describe("DesktopBackendConfiguration", () => {
             );
             // A backend-shaped Node process starts the same kind of ordinary shell
             // used by providers/terminals, without booting a server or an app.
-            const shell = testHostPlatform === "win32" ? "powershell.exe" : "/bin/sh";
+            const shell =
+              testHostPlatform === "win32"
+                ? NodePath.win32.join(
+                    process.env.SystemRoot ?? "C:\\Windows",
+                    "System32",
+                    "WindowsPowerShell",
+                    "v1.0",
+                    "powershell.exe",
+                  )
+                : "/bin/sh";
             const shellArgs =
               testHostPlatform === "win32"
                 ? [

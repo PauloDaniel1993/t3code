@@ -78,12 +78,6 @@ const emptyBackendObservabilitySettings: BackendObservabilitySettings = {
 };
 
 const DESKTOP_BACKEND_ENV_NAMES = [
-  "T3CODE_DESKTOP_LOCAL_IDENTITY",
-  "T3CODE_LOCAL_BOOTSTRAP_VERSION",
-  "T3CODE_HOME",
-  "T3CODE_DESKTOP_DISPLAY_NAME",
-  "T3CODE_DESKTOP_APP_USER_MODEL_ID",
-  "T3CODE_DISABLE_AUTO_UPDATE",
   "T3CODE_PORT",
   "T3CODE_MODE",
   "T3CODE_NO_BROWSER",
@@ -94,6 +88,16 @@ const DESKTOP_BACKEND_ENV_NAMES = [
   "T3CODE_DESKTOP_HTTPS_ENDPOINTS",
   "T3CODE_TAILSCALE_SERVE",
   "T3CODE_TAILSCALE_SERVE_PORT",
+] as const;
+
+const LOCAL_DESKTOP_BACKEND_ENV_NAMES = [
+  ...DESKTOP_BACKEND_ENV_NAMES,
+  "T3CODE_DESKTOP_LOCAL_IDENTITY",
+  "T3CODE_LOCAL_BOOTSTRAP_VERSION",
+  "T3CODE_HOME",
+  "T3CODE_DESKTOP_DISPLAY_NAME",
+  "T3CODE_DESKTOP_APP_USER_MODEL_ID",
+  "T3CODE_DISABLE_AUTO_UPDATE",
 ] as const;
 
 // Env vars that the WSL backend needs but Windows process.env won't forward
@@ -137,15 +141,17 @@ const nodeBinDirOf = (nodePath: string): string => {
   return lastSlash > 0 ? nodePath.slice(0, lastSlash) : "/usr/bin";
 };
 
-const backendChildEnvPatch = (): Record<string, string | undefined> =>
-  Object.fromEntries([
-    ...Object.keys(process.env)
-      .filter((name) =>
-        DESKTOP_BACKEND_ENV_NAMES.some((reserved) => reserved === name.toUpperCase()),
-      )
-      .map((name) => [name, undefined]),
-    ...DESKTOP_BACKEND_ENV_NAMES.map((name) => [name, undefined]),
-  ]);
+const backendChildEnvPatch = (isLocalIdentity = false): Record<string, string | undefined> =>
+  isLocalIdentity
+    ? Object.fromEntries([
+        ...Object.keys(process.env)
+          .filter((name) =>
+            LOCAL_DESKTOP_BACKEND_ENV_NAMES.some((reserved) => reserved === name.toUpperCase()),
+          )
+          .map((name) => [name, undefined]),
+        ...LOCAL_DESKTOP_BACKEND_ENV_NAMES.map((name) => [name, undefined]),
+      ])
+    : Object.fromEntries(DESKTOP_BACKEND_ENV_NAMES.map((name) => [name, undefined]));
 
 const getWslEnvEntryName = (entry: string): string => {
   const slashIndex = entry.indexOf("/");
@@ -563,6 +569,26 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const backendExposure = yield* serverExposure.backendConfig;
 
+    // Local installs redirect their own APPDATA. Restore the account profile for
+    // child shells without a synchronous PowerShell lookup during app startup.
+    const home =
+      environment.isLocalIdentity && environment.platform === "win32"
+        ? NodeOS.userInfo().homedir
+        : undefined;
+    const localEnv = environment.isLocalIdentity
+      ? {
+          ...(home === undefined
+            ? process.env
+            : restoreWindowsUserDirectories(process.env, {
+                home,
+                appData: environment.path.join(home, "AppData", "Roaming"),
+                localAppData: environment.path.join(home, "AppData", "Local"),
+              })),
+          ...(environment.platform === "linux" ? { XDG_CONFIG_HOME: undefined } : {}),
+          ...backendChildEnvPatch(true),
+        }
+      : undefined;
+
     const bootstrap = {
       mode: "desktop" as const,
       noBrowser: true,
@@ -596,18 +622,11 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       entryPath: environment.backendEntryPath,
       cwd: environment.backendCwd,
       env: {
-        ...(environment.platform === "win32"
-          ? restoreWindowsUserDirectories(process.env)
-          : process.env),
-        ...(environment.isLocalIdentity && environment.platform === "linux"
-          ? { XDG_CONFIG_HOME: undefined }
-          : {}),
-        ...backendChildEnvPatch(),
+        ...(localEnv ?? backendChildEnvPatch()),
         ELECTRON_RUN_AS_NODE: "1",
       },
-      // The bootstrap carries this backend's home. Agent shells and terminals
-      // inherit ordinary user folders, without this desktop's install identity.
-      extendEnv: false,
+      // Primary wants process.env (PATH, dev-runner's T3CODE_HOME, etc.).
+      extendEnv: !environment.isLocalIdentity,
       bootstrap,
       bootstrapDelivery: "fd3",
       httpBaseUrl: backendExposure.httpBaseUrl,
@@ -770,7 +789,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     cwd: environment.backendCwd,
     env: {
       ...parentEnvWithoutT3Home,
-      ...backendChildEnvPatch(),
+      ...backendChildEnvPatch(environment.isLocalIdentity),
       ...forwardedEnv,
       ...(wslEnv !== undefined ? { WSLENV: wslEnv } : {}),
     },

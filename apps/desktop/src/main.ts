@@ -35,7 +35,6 @@ import * as DesktopApp from "./app/DesktopApp.ts";
 import * as DesktopAppActivation from "./app/DesktopAppActivation.ts";
 import * as DesktopAppIdentity from "./app/DesktopAppIdentity.ts";
 import { applyInstalledDesktopBootstrap } from "./app/DesktopInstallBootstrap.ts";
-import { getWindowsUserDirectories } from "../../../scripts/lib/windows-user-directories.ts";
 import * as DesktopConnectionCatalogStore from "./app/DesktopConnectionCatalogStore.ts";
 import * as DesktopClerk from "./app/DesktopClerk.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
@@ -71,10 +70,10 @@ import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
 
-// oxlint-disable-next-line t3code/no-global-process-runtime -- Synchronous OS folder lookup before installed identity bootstrap.
+// oxlint-disable-next-line t3code/no-global-process-runtime -- OS account home before installed identity bootstrap; no child process.
 const desktopHostPlatform = process.platform;
 const desktopHomeDirectory =
-  desktopHostPlatform === "win32" ? getWindowsUserDirectories().home : NodeOS.homedir();
+  desktopHostPlatform === "win32" ? NodeOS.userInfo().homedir : NodeOS.homedir();
 const isLocalIdentity = applyInstalledDesktopBootstrap({
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Synchronous installed identity boundary before desktop layers.
   platform: process.platform,

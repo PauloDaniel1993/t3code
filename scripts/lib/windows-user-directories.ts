@@ -43,8 +43,13 @@ let directories: ReturnType<typeof readWindowsUserDirectories> | undefined;
 export const getWindowsUserDirectories = () => (directories ??= readWindowsUserDirectories());
 
 /** A build or backend child gets Windows' user folders, even inside another install's shell. */
-export function restoreWindowsUserDirectories(env: NodeJS.ProcessEnv) {
-  const folders = getWindowsUserDirectories();
+export function restoreWindowsUserDirectories(
+  env: NodeJS.ProcessEnv,
+  folders: Pick<
+    ReturnType<typeof readWindowsUserDirectories>,
+    "home" | "appData" | "localAppData"
+  > = getWindowsUserDirectories(),
+) {
   return {
     ...Object.fromEntries(
       Object.entries(env).filter(
