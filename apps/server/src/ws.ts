@@ -191,7 +191,7 @@ import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as WayfinderMaps from "./wayfinder/WayfinderMaps.ts";
-import { toWayfinderMapsRpcError } from "./wayfinder/WayfinderRpcError.ts";
+import { refreshWayfinderMaps, subscribeWayfinderMaps } from "./wayfinder/WayfinderRpcHandlers.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
@@ -3139,27 +3139,14 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeWayfinderMaps]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeWayfinderMaps,
-            wayfinderMaps
-              .stream(input.cwd, {
-                automaticBootstrapProbeInterval: Effect.succeed(
-                  WayfinderMaps.WAYFINDER_MAPS_DEFAULT_BOOTSTRAP_PROBE_INTERVAL,
-                ),
-              })
-              .pipe(Stream.mapError((cause) => toWayfinderMapsRpcError(input.cwd, cause))),
-            {
-              "rpc.aggregate": "workspace",
-            },
+            subscribeWayfinderMaps(wayfinderMaps, input),
+            { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.wayfinderRefreshMaps]: (input) =>
           observeRpcEffect(
             WS_METHODS.wayfinderRefreshMaps,
-            wayfinderMaps.refresh(input.cwd).pipe(
-              Effect.mapError((cause) => toWayfinderMapsRpcError(input.cwd, cause)),
-              Effect.as({}),
-            ),
-            {
-              "rpc.aggregate": "workspace",
-            },
+            refreshWayfinderMaps(wayfinderMaps, input),
+            { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.subscribeWorktreeSetup]: (input) =>
           observeRpcStream(

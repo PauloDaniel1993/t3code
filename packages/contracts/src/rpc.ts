@@ -322,7 +322,7 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
-import { WayfinderMapsError, WayfinderMapsInput, WayfinderMapsSnapshot } from "./wayfinder.ts";
+import { WAYFINDER_WS_METHODS, WayfinderRpcs } from "./wayfinderRpc.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -336,8 +336,7 @@ export const WS_METHODS = {
   projectsWriteFile: "projects.writeFile",
   projectsMutate: "projects.mutate",
 
-  // Wayfinder methods
-  wayfinderRefreshMaps: "wayfinder.refreshMaps",
+  ...WAYFINDER_WS_METHODS,
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -506,7 +505,6 @@ export const WS_METHODS = {
 
   // Streaming subscriptions
   subscribeVcsStatus: "subscribeVcsStatus",
-  subscribeWayfinderMaps: "subscribeWayfinderMaps",
   subscribeWorktreeSetup: "subscribeWorktreeSetup",
   worktreeSetupCancel: "worktreeSetup.cancel",
   subscribeTerminalEvents: "subscribeTerminalEvents",
@@ -1629,19 +1627,6 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
-const WsSubscribeWayfinderMapsRpc = Rpc.make(WS_METHODS.subscribeWayfinderMaps, {
-  payload: WayfinderMapsInput,
-  success: WayfinderMapsSnapshot,
-  error: Schema.Union([WayfinderMapsError, EnvironmentAuthorizationError]),
-  stream: true,
-});
-
-const WsWayfinderRefreshMapsRpc = Rpc.make(WS_METHODS.wayfinderRefreshMaps, {
-  payload: WayfinderMapsInput,
-  success: Schema.Struct({}),
-  error: Schema.Union([WayfinderMapsError, EnvironmentAuthorizationError]),
-});
-
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
@@ -1749,8 +1734,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
-  WsSubscribeWayfinderMapsRpc,
-  WsWayfinderRefreshMapsRpc,
+  ...WayfinderRpcs,
   WsSubscribeWorktreeSetupRpc,
   WsWorktreeSetupCancelRpc,
   WsVcsPullRpc,
