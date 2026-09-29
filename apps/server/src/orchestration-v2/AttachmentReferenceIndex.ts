@@ -10,7 +10,7 @@ import * as Schedule from "effect/Schedule";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 export const ATTACHMENT_REFERENCE_TABLE = "fork_v2_attachment_references";
-export const ATTACHMENT_REFERENCE_VERSION = 2;
+export const ATTACHMENT_REFERENCE_VERSION = 3;
 export const ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE = 64;
 export const ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS = 25;
 const stateTable = "fork_v2_attachment_reference_state";
@@ -45,15 +45,13 @@ const sources = [
 function inserts(source: (typeof sources)[number], row: string, from = "", where = "1") {
   const column = `${row}.${source.name === "legacy" ? "attachments_json" : "payload_json"}`;
   const safePayload = `CASE WHEN json_valid(${column}) THEN ${source.payload(row)} ELSE NULL END`;
-  // V1 documents retain all formats of their ID, but never authorize a download.
-  const types = source.name === "legacy" ? "'image', 'file', 'document'" : "'image', 'file'";
+  // Unknown/document descriptors retain their ID, but never authorize a download.
   return [
     `INSERT OR IGNORE INTO ${ATTACHMENT_REFERENCE_TABLE}
       SELECT '${source.name}', ${row}.${source.key}, ${row}.thread_id,
         json_extract(attachment.value, '$.id'), attachment.value
       FROM ${from === "" ? "" : `${from}, `}json_tree(${safePayload}) AS attachment
       WHERE ${where} AND attachment.type = 'object'
-        AND json_extract(attachment.value, '$.type') IN (${types})
         AND json_extract(attachment.value, '$.id') IS NOT NULL`,
     `INSERT OR IGNORE INTO ${ATTACHMENT_REFERENCE_TABLE}
       SELECT '${source.name}', ${row}.${source.key}, ${row}.thread_id, '*', 'null'
@@ -79,6 +77,11 @@ const definitions = [
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL,
       complete INTEGER NOT NULL, source_index INTEGER NOT NULL, cursor TEXT
     )`,
+  },
+  {
+    type: "index",
+    name: "fork_v2_attachment_id_nocase_idx",
+    ddl: `CREATE INDEX fork_v2_attachment_id_nocase_idx ON ${ATTACHMENT_REFERENCE_TABLE}(attachment_id COLLATE NOCASE, thread_id)`,
   },
   {
     type: "index",

@@ -79,6 +79,7 @@ export const findReadableAttachment = Effect.fnUntraced(function* (
 /** One point-index query for an entire bounded cleanup batch. */
 export const referencedAttachmentPaths = Effect.fnUntraced(function* (
   attachmentIds: ReadonlyArray<string>,
+  caseInsensitive = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (attachmentIds.length === 0) return new Set<string>();
@@ -88,15 +89,20 @@ export const referencedAttachmentPaths = Effect.fnUntraced(function* (
     FROM fork_v2_attachment_references AS reference
     LEFT JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = reference.thread_id
     LEFT JOIN orchestration_v2_legacy_imports AS imported ON imported.thread_id = reference.thread_id
-    WHERE ${sql.in("reference.attachment_id", [...attachmentIds, "*"])} AND thread.deleted_at IS NULL
+    WHERE ${
+      caseInsensitive
+        ? sql`reference.attachment_id COLLATE NOCASE IN (${sql.join(",", false)([...attachmentIds, "*"].map((id) => sql`${id}`))})`
+        : sql.in("reference.attachment_id", [...attachmentIds, "*"])
+    } AND thread.deleted_at IS NULL
       AND (reference.source <> 'legacy' OR imported.transcript_imported_at IS NULL)
   `;
   const retained = new Set<string>();
   for (const row of rows) {
     const references = attachmentReferences(decodePayload(row.attachment_json));
     // Malformed legacy metadata retains all formats for this ID.
-    if (references.length === 0) retained.add(row.attachment_id);
-    for (const reference of references) retained.add(reference.relativePath);
+    const normalize = (value: string) => (caseInsensitive ? value.toLowerCase() : value);
+    if (references.length === 0) retained.add(normalize(row.attachment_id));
+    for (const reference of references) retained.add(normalize(reference.relativePath));
   }
   return retained;
 });

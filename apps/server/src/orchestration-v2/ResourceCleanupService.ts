@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -91,17 +92,51 @@ export const live = Layer.effect(
               });
               return resolved === null ? [] : [{ attachmentId, relativePath, resolved }];
             });
+          // Test the actual store, including case-sensitive volumes on Windows/macOS.
+          let caseInsensitive = false;
+          for (const entry of paths) {
+            const alternate = entry.relativePath.replace(/[a-zA-Z]/, (letter) =>
+              letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase(),
+            );
+            if (alternate === entry.relativePath) continue;
+            const original = yield* fileSystem
+              .stat(entry.resolved)
+              .pipe(
+                Effect.catchTag("PlatformError", (error) =>
+                  error.reason._tag === "NotFound" ? Effect.succeed(undefined) : Effect.fail(error),
+                ),
+              );
+            if (original === undefined) continue;
+            const alias = yield* fileSystem
+              .stat(path.join(config.attachmentsDir, alternate))
+              .pipe(
+                Effect.catchTag("PlatformError", (error) =>
+                  error.reason._tag === "NotFound" ? Effect.succeed(undefined) : Effect.fail(error),
+                ),
+              );
+            if (
+              alias !== undefined &&
+              original.dev === alias.dev &&
+              (Option.isNone(original.ino) ||
+                Option.isNone(alias.ino) ||
+                original.ino.value === alias.ino.value)
+            ) {
+              caseInsensitive = true;
+              break;
+            }
+          }
           yield* sql.withTransaction(
             Effect.gen(function* () {
               const retained = yield* referencedAttachmentPaths(
                 Array.from(new Set(paths.map((entry) => entry.attachmentId))),
+                caseInsensitive,
               );
               for (const entry of paths) {
-                if (
-                  !retained.has("*") &&
-                  !retained.has(entry.attachmentId) &&
-                  !retained.has(entry.relativePath)
-                )
+                const id = caseInsensitive ? entry.attachmentId.toLowerCase() : entry.attachmentId;
+                const name = caseInsensitive
+                  ? entry.relativePath.toLowerCase()
+                  : entry.relativePath;
+                if (!retained.has("*") && !retained.has(id) && !retained.has(name))
                   yield* fileSystem.remove(entry.resolved, { force: true });
               }
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),

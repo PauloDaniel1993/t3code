@@ -44,6 +44,7 @@ import {
   rebuildAttachmentReferenceIndex,
   rebuildAttachmentReferenceIndexPass,
 } from "./AttachmentReferenceIndex.ts";
+import { referencedAttachmentPaths } from "./AttachmentReferences.ts";
 import {
   OrchestrationEffectExecutorV2,
   OrchestrationEffectExecutionError,
@@ -563,6 +564,116 @@ describe("attachment pruning through the effect outbox", () => {
         expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(false);
         yield* deleteThread(thread);
       }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "keeps a file on a case-insensitive store while a differently cased ID still references it",
+    () =>
+      Effect.gen(function* () {
+        const { file } = yield* seedAttachment();
+        const fs = yield* FileSystem.FileSystem;
+        const upper = { ...attachment, id: ChatAttachmentId.make(attachment.id.toUpperCase()) };
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig;
+        const ignoresCase = yield* fs.exists(
+          path.join(config.attachmentsDir, `Thread-owner-00000000-0000-4000-8000-000000000001.png`),
+        );
+        const other = yield* createThread(ThreadId.make("case-holder"));
+        const sink = yield* EventSinkV2;
+        yield* sink.write({
+          events: [
+            yield* messageEvent("case:reference", [upper], other.id),
+            yield* messageEvent("case:removed", []),
+          ],
+        });
+        const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+        yield* cleanup.cleanupAttachments([attachment.id]);
+        expect(yield* fs.exists(file)).toBe(ignoresCase);
+        // Also check the case-folded index lookup on every platform.
+        expect(
+          (yield* referencedAttachmentPaths([attachment.id], true)).has(`${attachment.id}.png`),
+        ).toBe(true);
+        yield* sink.write({
+          events: [yield* messageEvent("case:last-reference-removed", [], other.id)],
+        });
+        yield* cleanup.cleanupAttachments([attachment.id]);
+        expect(yield* fs.exists(file)).toBe(false);
+      }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps cleanup pending without spending attempts, then deletes after rebuilding", () =>
+    Effect.gen(function* () {
+      const { file } = yield* seedAttachment();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+      yield* initializeAttachmentReferenceIndex();
+      yield* (yield* EventSinkV2).write({ events: [yield* messageEvent("rebuild:removed", [])] });
+      const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+      const executor = OrchestrationEffectExecutorV2.of({
+        execute: (effect) =>
+          effect.request.type === "attachment.cleanup"
+            ? cleanup
+                .cleanupAttachments(effect.request.attachmentIds, effect.request.relativePaths)
+                .pipe(
+                  Effect.asVoid,
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                )
+            : Effect.void,
+      });
+      const worker = yield* OrchestrationEffectWorkerV2.pipe(
+        Effect.provide(workerLayer({ maxAttempts: 1 })),
+        Effect.provideService(OrchestrationEffectExecutorV2, executor),
+      );
+      for (let n = 0; n < 10; n++) {
+        expect(yield* worker.runOnce).toBe(true);
+        expect(
+          yield* sql`SELECT status, attempt_count FROM orchestration_v2_effect_outbox WHERE effect_type = 'attachment.cleanup'`,
+        ).toEqual([{ status: "pending", attempt_count: 0 }]);
+        expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(true);
+        yield* TestClock.adjust(1000);
+      }
+      yield* rebuildAttachmentReferenceIndex();
+      expect(yield* worker.drain()).toBe(1);
+      expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(false);
+      expect(
+        yield* sql`SELECT status, attempt_count FROM orchestration_v2_effect_outbox WHERE effect_type = 'attachment.cleanup'`,
+      ).toEqual([{ status: "succeeded", attempt_count: 1 }]);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("retains an imported V2 document descriptor independently of later type mapping", () =>
+    Effect.gen(function* () {
+      const { file } = yield* seedAttachment();
+      const other = yield* createThread(ThreadId.make("imported-document"));
+      const sql = yield* SqlClient.SqlClient;
+      const document = { ...attachment, type: "document" };
+      yield* sql`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
+        VALUES ('imported-document-message', ${other.id}, 'user', 0, '2026-01-01', '2026-01-01', ${encodeJson({ attachments: [document] })})`;
+      yield* sql`INSERT INTO orchestration_v2_legacy_imports (thread_id, source_updated_at, shell_imported_at, transcript_imported_at)
+        VALUES (${other.id}, '2026-01-01', '2026-01-01', '2026-01-01')`;
+      yield* (yield* EventSinkV2).write({
+        events: [yield* messageEvent("document:mapped-removed", [])],
+      });
+      const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+      yield* cleanup.cleanupAttachments([attachment.id]);
+      expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(true);
+      expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
+      yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+      yield* initializeAttachmentReferenceIndex();
+      yield* rebuildAttachmentReferenceIndex();
+      yield* cleanup.cleanupAttachments([attachment.id]);
+      expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(true);
+      yield* sql`DELETE FROM orchestration_v2_projection_messages WHERE message_id = 'imported-document-message'`;
+      yield* cleanup.cleanupAttachments([attachment.id]);
+      expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(false);
+    }).pipe(Effect.provide(testLayer)),
   );
 
   it.effect(
