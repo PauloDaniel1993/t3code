@@ -5,8 +5,13 @@ import { Button } from "../ui/button";
 import { CircleAlertIcon, XIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-export function getThreadErrorBannerKey(threadKey: string, error: string | null): string | null {
-  return error === null ? null : `${threadKey}\u0000${error}`;
+/** `occurrence` tells apart two failures on one thread that carry the same text. */
+export function getThreadErrorBannerKey(
+  threadKey: string,
+  error: string | null,
+  occurrence = "",
+): string | null {
+  return error === null ? null : `${threadKey}\u0000${occurrence}\u0000${error}`;
 }
 
 export function shouldShowThreadErrorBanner(
@@ -19,9 +24,9 @@ export function shouldShowThreadErrorBanner(
 
 // Session-scoped (module-level so it survives ChatView remounts, e.g. route
 // changes between threads). Mirrors the branch-mismatch banner: a dismissal
-// is remembered per thread key plus message, so navigating away to a thread
-// with no error cannot resurrect the banner, while a different error message
-// on the same thread still appears.
+// is remembered per thread key, occurrence and message, so navigating away to
+// a thread with no error cannot resurrect the banner, while a different error,
+// or the same text failing again, on the same thread still appears.
 const sessionDismissedThreadErrorBannerKeys = new Set<string>();
 
 export function dismissThreadErrorBannerForSession(bannerKey: string | null): void {

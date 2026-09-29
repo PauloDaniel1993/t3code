@@ -446,6 +446,7 @@ import {
   shouldShowThreadErrorBanner,
   ThreadErrorBanner,
 } from "./chat/ThreadErrorBanner";
+import { deriveThreadErrorOccurrence } from "./chat/threadErrorOccurrence";
 import {
   QueuedRunsControl,
   type QueuedRunsControlHandle,
@@ -2092,7 +2093,19 @@ export default function ChatView(props: ChatViewProps) {
   // keeps its error in session.lastError, so clearing the local shadow would
   // just fall through to the persisted one. Mask the current error until a
   // different error arrives, mirroring the provider status banner.
-  const threadErrorBannerKey = getThreadErrorBannerKey(routeThreadKey, threadError);
+  const threadErrorBannerKey = getThreadErrorBannerKey(
+    routeThreadKey,
+    threadError,
+    deriveThreadErrorOccurrence({
+      localError: isServerThread
+        ? localServerErrorsByThreadKey[routeThreadKey]
+        : draftId
+          ? localDraftErrorsByDraftId[draftId]
+          : undefined,
+      projection: serverProjection,
+      latestRun: serverLatestRun,
+    }),
+  );
   const visibleThreadError = shouldShowThreadErrorBanner(
     routeThreadKey,
     threadError,
