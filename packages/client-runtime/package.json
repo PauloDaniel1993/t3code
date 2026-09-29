@@ -299,6 +299,10 @@
       "types": "./src/state/vcs.ts",
       "default": "./src/state/vcs.ts"
     },
+    "./state/wayfinder": {
+      "types": "./src/state/wayfinder.ts",
+      "default": "./src/state/wayfinder.ts"
+    },
     "./work-log/user-input": {
       "types": "./src/work-log/userInput.ts",
       "default": "./src/work-log/userInput.ts"
