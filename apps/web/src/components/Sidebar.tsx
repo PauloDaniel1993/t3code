@@ -2685,8 +2685,8 @@ export default function Sidebar() {
       taskGrouper({
         threads,
         scopedProjectKeys,
+        enabled: threadTasksEnabled,
         supportsTasks: (thread) =>
-          threadTasksEnabled &&
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true,
       }),
     [taskGrouper, threads, scopedProjectKeys, threadTasksEnabled, serverConfigs],

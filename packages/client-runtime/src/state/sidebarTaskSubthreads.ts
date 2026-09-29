@@ -35,6 +35,7 @@ export function createSidebarTaskGrouper() {
     threads: ReadonlyArray<Thread>;
     scopedProjectKeys: ReadonlySet<string> | null;
     supportsTasks: (thread: Thread) => boolean;
+    enabled?: boolean;
   }) => {
     const topLevel: Thread[] = [];
     const grouped = new Map<string, Thread[]>();
@@ -58,6 +59,8 @@ export function createSidebarTaskGrouper() {
       )
         continue;
       const parentId = thread.lineage.parentThreadId;
+      // Match upstream's list when the local grouping preference is off.
+      if (input.enabled === false && isSidebarTaskThread(thread)) continue;
       if (
         isProviderNativeSubagentThread({
           lineage: thread.lineage,

@@ -89,7 +89,7 @@ describe("sidebar delegated task grouping", () => {
     expect(isSidebarTaskThread(fork)).toBe(false);
     expect(isSidebarTaskThread(thread("parent"))).toBe(false);
   });
-  it("falls back to top-level when disabled or unsupported", () => {
+  it("falls back to top-level when the environment does not support task groups", () => {
     const rows = [thread("parent"), child("child")];
     const result = createSidebarTaskGrouper()({
       threads: rows,
@@ -98,6 +98,33 @@ describe("sidebar delegated task grouping", () => {
     });
     expect(result.topLevel).toEqual(rows);
     expect(result.tasksByParent.size).toBe(0);
+  });
+  it("hides tasks when disabled, including surviving orphans, but keeps ordinary forks", () => {
+    const parent = thread("parent");
+    const fork = child("fork", {
+      lineage: { ...child("fork").lineage, relationshipToParent: "fork" },
+    });
+    const orphan = child("orphan", {
+      lineage: { ...child("orphan").lineage, parentThreadId: ThreadId.make("deleted") },
+    });
+    const rows = [parent, child("task"), orphan, fork];
+    const group = createSidebarTaskGrouper();
+    const disabled = group({
+      threads: rows,
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+      enabled: false,
+    });
+    expect(disabled.topLevel).toEqual([parent, fork]);
+    expect(disabled.tasksByParent.size).toBe(0);
+    const restored = group({
+      threads: rows,
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+      enabled: true,
+    });
+    expect(restored.tasksByParent.get("local:parent")?.map((task) => task.id)).toEqual(["task"]);
+    expect(restored.topLevel).toEqual([parent, orphan, fork]);
   });
   it("scopes joins by environment, filters projects before joining, and leaves orphans hidden", () => {
     const local = child("child");
