@@ -2002,7 +2002,13 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             }
           });
 
-        const emitProviderEvent = (event: ProviderAdapterV2Event) => events.offer(event);
+        const emitProviderEvent = Effect.fnUntraced(function* (event: ProviderAdapterV2Event) {
+          yield* events.offer(
+            event.type === "turn_item.updated"
+              ? { ...event, turnItem: normalizeAcpToolActivity(event.turnItem) }
+              : event,
+          );
+        });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 
@@ -3308,7 +3314,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             yield* emitProviderEvent({
               type: "turn_item.updated",
               driver,
-              turnItem: normalizeAcpToolActivity(turnItem, toolCall),
+              turnItem,
             });
             yield* rearmDeferredFinalize(context);
             return;
@@ -3433,7 +3439,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           yield* emitProviderEvent({
             type: "turn_item.updated",
             driver,
-            turnItem: normalizeAcpToolActivity(turnItem, toolCall),
+            turnItem,
           });
           yield* rearmDeferredFinalize(context);
         });
@@ -4362,29 +4368,26 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                   yield* emitProviderEvent({
                     type: "turn_item.updated",
                     driver,
-                    turnItem: normalizeAcpToolActivity(
-                      {
-                        id: providerTurnItemId(key),
-                        threadId: subagent.childThreadId,
-                        runId: null,
-                        nodeId: subagent.childRootNodeId,
-                        providerThreadId: subagent.task.providerThreadId,
-                        providerTurnId: null,
-                        nativeItemRef: { driver, nativeId: key, strength: "strong" },
-                        parentItemId: null,
-                        ordinal,
-                        status,
-                        title: merged.title ?? merged.kind ?? "Tool",
-                        startedAt,
-                        completedAt: completedAtForStatus(status, now),
-                        updatedAt: now,
-                        type: "dynamic_tool",
-                        toolName: merged.title ?? merged.kind ?? "Tool",
-                        input: merged.data.rawInput ?? null,
-                        output: merged.data.rawOutput ?? merged.data.content ?? null,
-                      },
-                      merged,
-                    ),
+                    turnItem: {
+                      id: providerTurnItemId(key),
+                      threadId: subagent.childThreadId,
+                      runId: null,
+                      nodeId: subagent.childRootNodeId,
+                      providerThreadId: subagent.task.providerThreadId,
+                      providerTurnId: null,
+                      nativeItemRef: { driver, nativeId: key, strength: "strong" },
+                      parentItemId: null,
+                      ordinal,
+                      status,
+                      title: merged.title ?? merged.kind ?? "Tool",
+                      startedAt,
+                      completedAt: completedAtForStatus(status, now),
+                      updatedAt: now,
+                      type: "dynamic_tool",
+                      toolName: merged.title ?? merged.kind ?? "Tool",
+                      input: merged.data.rawInput ?? null,
+                      output: merged.data.rawOutput ?? merged.data.content ?? null,
+                    },
                   });
                 });
                 if (

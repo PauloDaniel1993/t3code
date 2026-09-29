@@ -710,7 +710,8 @@ describe("AcpAdapterV2", () => {
       );
       assert.equal(tools.length, 2);
       assert.equal(tools[0]!.status, "running");
-      assert.deepEqual(tools[0]!.input, {});
+      assert.deepEqual(tools[0]!.input, { apiKey: "[REDACTED]", command: "identity" });
+      assert.deepEqual(tools[1]!.input, tools[0]!.input);
       assert.notProperty(tools[0]!, "output");
       assert.deepEqual(tools[1]!.output, { result: "final result", token: "[REDACTED]" });
       assert.equal(tools[1]!.status, "completed");
@@ -1311,8 +1312,11 @@ describe("AcpAdapterV2", () => {
         (item) => item.threadId === task?.childThreadId && item.type === "dynamic_tool",
       );
       assert.isAtLeast(childTools.length, 2);
-      for (const item of childTools) {
-        if (item.type === "dynamic_tool") assert.deepEqual(item.input, {});
+      for (const item of childTools.filter((item) =>
+        item.nativeItemRef?.nativeId?.endsWith(":tool:child-pwd"),
+      )) {
+        if (item.type === "dynamic_tool")
+          assert.deepEqual(item.input, { command: "pwd", apiKey: "[REDACTED]" });
       }
       const serializedItems = yield* encodeUnknownJson(childTools);
       assert.notInclude(serializedItems, "child-private-key");
@@ -1463,7 +1467,7 @@ describe("AcpAdapterV2", () => {
       const read = items.find((item) => item.type === "dynamic_tool" && item.toolName === "Read");
       assert.deepEqual(
         read?.type === "dynamic_tool" ? { title: read.title, input: read.input } : null,
-        { title: "Read src/env.ts", input: {} },
+        { title: "Read src/env.ts", input: { path: "src/env.ts" } },
       );
       const search = items.find((item) => item.type === "file_search");
       assert.deepEqual(
