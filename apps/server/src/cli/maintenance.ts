@@ -2,9 +2,9 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import { Command, Flag } from "effect/unstable/cli";
 
-import { readMaintenanceJournal } from "../persistence/DatabaseMaintenanceJournal.ts";
 import {
   compactDatabase,
+  databaseMaintenanceStatus,
   estimateDatabaseMaintenance,
   recoverDatabaseMaintenance,
 } from "../persistence/DatabasePhysicalMaintenance.ts";
@@ -33,9 +33,9 @@ export const maintenanceCommand = Command.make("maintenance").pipe(
     ),
     Command.make("status", databaseFlags).pipe(
       Command.withDescription(
-        "Read the external maintenance journal without opening the database.",
+        "Check database identity read-only and report its external maintenance journal.",
       ),
-      Command.withHandler(({ database }) => report(() => readMaintenanceJournal(database))),
+      Command.withHandler(({ database }) => report(() => databaseMaintenanceStatus(database))),
     ),
     Command.make("compact", databaseFlags).pipe(
       Command.withDescription(

@@ -54,6 +54,14 @@ export function requireV2Database(database: NodeSqlite.DatabaseSync): void {
   if (migration?.name !== "OrchestrationV2") {
     throw new Error("Maintenance requires an already migrated orchestration v2 database.");
   }
+  const latest = database
+    .prepare(
+      "SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id DESC LIMIT 1",
+    )
+    .get();
+  if (latest?.migration_id !== 56 || latest.name !== "RemoveRedundantProjectionIndexes") {
+    throw new Error("Maintenance requires the supported V2 schema version (migration 56).");
+  }
   for (const name of [
     "orchestration_events",
     "orchestration_command_receipts",
@@ -67,6 +75,11 @@ export function requireV2Database(database: NodeSqlite.DatabaseSync): void {
       !database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name)
     ) {
       throw new Error(`Required V2 table is missing: ${name}.`);
+    }
+  }
+  for (const table of decodeTables(database.prepare("PRAGMA main.table_list").all())) {
+    if (table.type !== "table" && table.type !== "view") {
+      throw new Error(`Maintenance cannot validate ${table.type} table ${table.name}.`);
     }
   }
 }

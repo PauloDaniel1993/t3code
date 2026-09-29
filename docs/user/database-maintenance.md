@@ -12,8 +12,17 @@ t3 maintenance compact --database 'C:\path\to\userdata\statev2.sqlite'
 t3 maintenance status --database 'C:\path\to\userdata\statev2.sqlite'
 ```
 
-`estimate` reports free pages and the temporary disk requirement. Compaction
-requires approximately three times the database size in free space, plus 64 MiB.
+`estimate` reports bytes in existing free pages, not savings from deleting old
+history. Actual reclamation may differ because VACUUM also repacks pages. This
+command does not run V2's logical event compactor.
+
+Compaction requires free space on the **database's volume** for one retained
+snapshot, one SQLite temporary copy, and one database-sized journal/WAL. The
+reported requirement is three database sizes plus journal frame overhead and
+64 MiB. SQLite's temporary directory is explicitly set to the database directory
+and checked; the operating system's TEMP/TMP volume is not used by this operation.
+`estimate` reports both selected directories, required bytes and available bytes.
+No extra volume is used for snapshots.
 It creates and validates a compact recovery snapshot before rewriting the
 database. The snapshot stays beside the database at the path printed by
 `compact`; keeping it consumes disk space. Move it to backup storage or remove

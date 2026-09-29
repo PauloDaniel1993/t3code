@@ -135,6 +135,38 @@ describe("physical maintenance", () => {
     expect(NodeFS.existsSync(maintenanceJournalPath(databasePath))).toBe(false);
   });
 
+  it("selects and checks the same volume for the database, snapshot and SQLite temporary files", () => {
+    const estimate = estimateDatabaseMaintenance(databasePath);
+    expect(estimate.sqliteTemporaryDirectory).toBe(directory);
+    expect(estimate.snapshotDirectory).toBe(directory);
+    expect(estimate.requiredFreeBytes).toBeGreaterThan(
+      3 * estimate.databaseBytes + 64 * 1024 * 1024,
+    );
+    const checked: string[] = [];
+    expect(() =>
+      compactDatabase(
+        { databasePath },
+        {
+          availableBytes: (selected) => {
+            checked.push(selected);
+            // Read the process-global setting on a separate, disposable connection.
+            const probe = new NodeSqlite.DatabaseSync(":memory:");
+            try {
+              expect(probe.prepare("PRAGMA temp_store_directory").get()?.temp_store_directory).toBe(
+                directory,
+              );
+            } finally {
+              probe.close();
+            }
+            return estimate.requiredFreeBytes - 1;
+          },
+        },
+      ),
+    ).toThrow("disk space");
+    expect(checked).toEqual([directory]);
+    expect(NodeFS.existsSync(maintenanceJournalPath(databasePath))).toBe(false);
+  });
+
   it.each(["wal", "delete"])(
     "refuses a live %s writer and preserves its committed and pending work",
     (mode) => {
