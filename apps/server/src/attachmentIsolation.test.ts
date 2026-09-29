@@ -8,13 +8,120 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
+import { vi } from "vite-plus/test";
 
-import { AttachmentSeedSpace, initializeIsolatedAttachments } from "./attachmentIsolation.ts";
+import {
+  AttachmentSeedSpace,
+  initializeIsolatedAttachments,
+  ATTACHMENT_SEED_REPORT_BATCH_SIZE,
+  ATTACHMENT_SEED_REPORT_INTERVAL_MS,
+} from "./attachmentIsolation.ts";
 import { deriveServerPaths, ensureServerDirectories, ServerConfig } from "./config.ts";
 import { layerConfig as persistenceLayer } from "./persistence/Layers/Sqlite.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+const decodeSeedReport = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ completed: Schema.Array(Schema.String) })),
+);
+
 describe("V2 attachment isolation", () => {
+  for (const count of [10, 1000]) {
+    it.effect(
+      `checkpoints ${count} seeded files in batches and writes a complete final report`,
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const stateDir = yield* fs.makeTempDirectoryScoped();
+          const source = path.join(stateDir, "attachments");
+          const attachmentsDir = path.join(stateDir, "attachments-v2");
+          yield* fs.makeDirectory(source);
+          yield* Effect.forEach(
+            Array.from({ length: count }, (_, i) => i),
+            (i) => fs.writeFileString(path.join(source, `${i}.png`), "bytes"),
+            { concurrency: 16, discard: true },
+          );
+          const reportPath = path.join(stateDir, ".attachments-v2-seed-report.json");
+          const writes: Array<number> = [];
+          let copies = 0;
+          const timer = vi.spyOn(performance, "now").mockReturnValue(0);
+          try {
+            yield* initializeIsolatedAttachments({ stateDir, attachmentsDir }).pipe(
+              Effect.provideService(FileSystem.FileSystem, {
+                ...fs,
+                copyFile: (from, to) =>
+                  fs.copyFile(from, to).pipe(
+                    Effect.tap(() =>
+                      Effect.sync(() => {
+                        copies++;
+                      }),
+                    ),
+                  ),
+                writeFileString: (file, data, options) => {
+                  if (file === reportPath) writes.push(copies);
+                  return fs.writeFileString(file, data, options);
+                },
+              }),
+            );
+          } finally {
+            timer.mockRestore();
+          }
+          expect(copies).toBe(count);
+          expect(writes).toEqual([
+            ...Array.from(
+              { length: Math.floor(count / ATTACHMENT_SEED_REPORT_BATCH_SIZE) },
+              (_, i) => (i + 1) * ATTACHMENT_SEED_REPORT_BATCH_SIZE,
+            ),
+            count,
+          ]);
+          const report = yield* decodeSeedReport(yield* fs.readFileString(reportPath));
+          expect(report.completed).toHaveLength(count);
+          expect(yield* fs.exists(path.join(stateDir, ".attachments-v2-seeded"))).toBe(true);
+        }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
+
+  it.effect("checkpoints by elapsed time during a long seed before the batch limit", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const stateDir = yield* fs.makeTempDirectoryScoped();
+      const source = path.join(stateDir, "attachments");
+      const attachmentsDir = path.join(stateDir, "attachments-v2");
+      yield* fs.makeDirectory(source);
+      for (const name of ["a.png", "b.png", "c.png"])
+        yield* fs.writeFileString(path.join(source, name), "bytes");
+      const writes: Array<number> = [];
+      let copies = 0;
+      let elapsed = 0;
+      const timer = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+      try {
+        yield* initializeIsolatedAttachments({ stateDir, attachmentsDir }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            copyFile: (from, to) =>
+              fs.copyFile(from, to).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    copies++;
+                    elapsed += copies === 2 ? ATTACHMENT_SEED_REPORT_INTERVAL_MS : 1;
+                  }),
+                ),
+              ),
+            writeFileString: (file, data, options) => {
+              if (file.endsWith(".attachments-v2-seed-report.json")) writes.push(copies);
+              return fs.writeFileString(file, data, options);
+            },
+          }),
+        );
+      } finally {
+        timer.mockRestore();
+      }
+      expect(writes).toEqual([2, 3]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect(
     "seeds at database initialization so configuration reads cannot freeze an earlier attachment snapshot",
     () =>

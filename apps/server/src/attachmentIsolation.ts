@@ -25,6 +25,8 @@ const reportSchema = Schema.fromJsonString(
 );
 const encodeReport = Schema.encodeSync(reportSchema);
 const decodeReport = Schema.decodeUnknownEffect(reportSchema);
+export const ATTACHMENT_SEED_REPORT_BATCH_SIZE = 256;
+export const ATTACHMENT_SEED_REPORT_INTERVAL_MS = 5_000;
 
 export class AttachmentSeedSpace extends Context.Reference<{
   readonly availableBytes: (directory: string) => Effect.Effect<number, AttachmentSeedError>;
@@ -65,18 +67,33 @@ export const initializeIsolatedAttachments = Effect.fn("initializeIsolatedAttach
       for (const file of report.completed) completed.add(file);
     }
     const skipped: Array<{ file: string; reason: string }> = [];
-    const saveReport = () =>
-      fs
+    let outcomesSinceReport = 0;
+    let lastReportAt = performance.now();
+    const saveReport = Effect.fnUntraced(function* () {
+      yield* fs
         .writeFileString(reportPath, encodeReport({ completed: Array.from(completed), skipped }))
         .pipe(
           Effect.catch((error) =>
             Effect.logWarning("Cannot write attachment seed report", { reportPath, error }),
           ),
         );
+      outcomesSinceReport = 0;
+      lastReportAt = performance.now();
+    });
+    // Checkpoint long passes; save the final report before startup can prune.
+    const checkpointReport = Effect.fnUntraced(function* () {
+      outcomesSinceReport++;
+      if (
+        outcomesSinceReport >= ATTACHMENT_SEED_REPORT_BATCH_SIZE ||
+        performance.now() - lastReportAt >= ATTACHMENT_SEED_REPORT_INTERVAL_MS
+      )
+        yield* saveReport();
+    });
     const record = (file: string, reason: string) =>
       Effect.gen(function* () {
         skipped.push({ file, reason });
         yield* Effect.logWarning("V2 attachment seed skipped", { file, reason, reportPath });
+        yield* checkpointReport();
       });
     const source = path.join(input.stateDir, "attachments");
     const seed = Effect.gen(function* () {
@@ -96,7 +113,10 @@ export const initializeIsolatedAttachments = Effect.fn("initializeIsolatedAttach
             if (info.type !== "File") return;
             const to = path.join(input.attachmentsDir, entry);
             if (!(yield* fs.exists(to))) files.push({ from, to, size: Number(info.size) });
-            else completed.add(from);
+            else {
+              completed.add(from);
+              yield* checkpointReport();
+            }
           }).pipe(Effect.catch((error) => record(from, String(error))));
         }
         const space = yield* AttachmentSeedSpace;
@@ -116,7 +136,11 @@ export const initializeIsolatedAttachments = Effect.fn("initializeIsolatedAttach
         yield* Effect.forEach(
           files,
           Effect.fnUntraced(function* ({ from, to }) {
-            if (yield* fs.exists(to)) return;
+            if (yield* fs.exists(to)) {
+              completed.add(from);
+              yield* checkpointReport();
+              return;
+            }
             const temporary = `${to}.${NodeCrypto.randomUUID()}.part`;
             yield* Effect.gen(function* () {
               yield* fs.copyFile(from, temporary);
@@ -140,7 +164,7 @@ export const initializeIsolatedAttachments = Effect.fn("initializeIsolatedAttach
                 ),
               );
               completed.add(from);
-              yield* saveReport();
+              yield* checkpointReport();
             }).pipe(
               Effect.ensuring(fs.remove(temporary, { force: true }).pipe(Effect.ignore)),
               Effect.catch((error) => record(from, String(error))),
