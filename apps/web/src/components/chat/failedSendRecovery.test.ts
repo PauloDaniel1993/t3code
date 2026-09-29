@@ -1,4 +1,8 @@
 // @vitest-environment jsdom
+// ChatView.send.testSupport cuts the real onSend body from ChatView.tsx?raw,
+// strips its TypeScript, and supplies hook bindings to a headless function.
+// After an upstream merge, fix the extraction markers or missing bindings there
+// if these tests break; keep exercising production onSend instead of copying it.
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   EnvironmentId,
@@ -18,12 +22,12 @@ import {
 } from "../../composerDraftStore";
 import { threadContextRecord } from "../../lib/composerContextRecords";
 import { type FailedSendDraft } from "./failedSendRecovery";
-import { createSendHarness } from "./ChatView.send.testSupport";
+import * as ChatViewLogic from "../ChatView.logic";
+import { createSendHarness, deferred } from "./ChatView.send.testSupport";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   toasts: { add: vi.fn(), close: vi.fn(), update: vi.fn() },
-  retry: vi.fn(),
   uploads: vi.fn(),
 }));
 vi.mock("../../rpc/atomRegistry", () => ({ appAtomRegistry: { get: mocks.get } }));
@@ -34,7 +38,6 @@ vi.mock("../../state/threads", () => ({
 vi.mock("../ui/toast", () => ({ toastManager: mocks.toasts }));
 vi.mock("../../lib/attachmentUploadQueue", () => ({
   readAttachmentUpload: () => undefined,
-  retryAttachmentUpload: mocks.retry,
   startAttachmentUpload: vi.fn(),
   awaitAttachmentUploads: async () => {},
   releaseDraftAttachments: vi.fn(),
@@ -173,6 +176,21 @@ async function failSend(
   await sent;
 }
 
+// The harness does not mount ChatComposer's image persistence effect.
+async function saveMountedComposerImages(destination: ComposerThreadTarget = target) {
+  const store = useComposerDraftStore.getState();
+  const images = store.getComposerDraft(destination)?.images ?? [];
+  await store.syncPersistedAttachments(
+    destination,
+    await Promise.all(
+      images.map(async ({ file, previewUrl: _previewUrl, type: _type, ...image }) => ({
+        ...image,
+        dataUrl: await ChatViewLogic.readFileAsDataUrl(file),
+      })),
+    ),
+  );
+}
+
 async function reloadDrafts() {
   window.dispatchEvent(new Event("beforeunload"));
   const options = useComposerDraftStore.persist.getOptions();
@@ -209,7 +227,6 @@ describe("ChatView single-send failures", () => {
         : null,
     );
     mocks.toasts.add.mockReset();
-    mocks.retry.mockClear();
     mocks.uploads.mockImplementation(({ images }: { images: FailedSendDraft["images"] }) =>
       images.map((image) => ({
         type: image.type,
@@ -243,6 +260,43 @@ describe("ChatView single-send failures", () => {
     expect(harness.refs.sendInFlightRef.current).toBe(false);
     expect(mocks.toasts.add).not.toHaveBeenCalled();
   });
+
+  it("shows the error and stops sending on the original route without reading images", async () => {
+    const read = vi.spyOn(ChatViewLogic, "readFileAsDataUrl");
+    writeDraft(makeDraft("failed"));
+    const harness = createSendHarness(target);
+    await failSend(harness, makeDraft("newer"));
+    expect(read).not.toHaveBeenCalled();
+    expect(harness.setThreadError).toHaveBeenLastCalledWith(threadId, "Send rejected");
+    expect(harness.refs.sendInFlightRef.current).toBe(false);
+    expect(harness.messages).toEqual([]);
+  });
+
+  it.each(["newer", "failed", ""])(
+    "keeps the typing cursor when merging into '%s'",
+    async (failedPrompt) => {
+      const failed = plain(failedPrompt);
+      if (!failedPrompt.length) failed.images = makeDraft("failed").images;
+      writeDraft(failed);
+      const harness = createSendHarness(target);
+      const sent = harness.send();
+      await Promise.race([
+        harness.started.promise,
+        sent.then(() => {
+          throw new Error("Send finished before turn start");
+        }),
+      ]);
+      writeDraft(plain(failedPrompt === "newer" ? "typing here" : "failed"));
+      harness.refresh();
+      const resets = harness.resetCursorState.mock.calls.length;
+      harness.result.resolve(await harness.failure);
+      await sent;
+      expect(harness.resetCursorState).toHaveBeenCalledTimes(resets);
+      expect(harness.refs.promptRef.current).toBe(
+        failedPrompt === "newer" ? "typing here\n\nnewer" : "failed",
+      );
+    },
+  );
 
   it("keeps upstream's empty-composer restore for an ordinary text send", async () => {
     writeDraft(plain("failed"));
@@ -296,6 +350,7 @@ describe("ChatView single-send failures", () => {
     writeDraft(makeDraft("failed"));
     const harness = createSendHarness(target);
     await failSend(harness, makeDraft("newer"));
+    await saveMountedComposerImages();
     await reloadDrafts();
     const draft = useComposerDraftStore.getState().getComposerDraft(target);
     expect(draft?.prompt.indexOf("newer prompt")).toBeLessThan(
@@ -325,6 +380,7 @@ describe("ChatView single-send failures", () => {
     newer.terminalContexts[0]!.terminalId = failed.terminalContexts[0]!.terminalId;
     writeDraft(failed);
     await failSend(createSendHarness(target), newer);
+    await saveMountedComposerImages();
     await reloadDrafts();
     const contexts = useComposerDraftStore.getState().getComposerDraft(target)?.terminalContexts;
     expect(contexts).toHaveLength(1);
@@ -390,11 +446,24 @@ describe("ChatView single-send failures", () => {
     expect(draft?.prompt).toContain("newer prompt");
     expect(draft?.prompt).toContain("failed prompt");
     expect(draft?.files).toHaveLength(2);
+    await saveMountedComposerImages();
     await reloadDrafts();
     expect(useComposerDraftStore.getState().getComposerDraft(target)?.images).toHaveLength(2);
   });
 
   it("recovers into the sending thread after navigation and leaves the visible thread alone", async () => {
+    const reads = [deferred<string>(), deferred<string>()];
+    const read = vi
+      .spyOn(ChatViewLogic, "readFileAsDataUrl")
+      .mockReturnValueOnce(reads[0]!.promise)
+      .mockReturnValueOnce(reads[1]!.promise);
+    const saved = deferred<void>();
+    const store = useComposerDraftStore.getState();
+    const sync = store.syncPersistedAttachments;
+    vi.spyOn(store, "syncPersistedAttachments").mockImplementation(async (...args) => {
+      await sync(...args);
+      saved.resolve();
+    });
     const other = scopeThreadRef(EnvironmentId.make("remote"), threadId);
     writeDraft(makeDraft("failed"));
     const harness = createSendHarness(target);
@@ -418,6 +487,13 @@ describe("ChatView single-send failures", () => {
     expect(harness.refs.promptRef.current).toBe(otherDraft.prompt);
     expect(harness.resetCursorState).toHaveBeenCalledTimes(resets);
     expect(harness.messages).toEqual([]);
+    expect(harness.setThreadError).toHaveBeenLastCalledWith(threadId, "Send rejected");
+    expect(harness.refs.sendInFlightRef.current).toBe(false);
+    expect(read.mock.calls.map(([file]) => file.name)).toEqual(["newer.png", "failed.png"]);
+    reads[0]!.resolve("data:image/png;base64,bmV3ZXI=");
+    reads[1]!.resolve("data:image/png;base64,ZmFpbGVk");
+    await saved.promise;
+    expect(read).toHaveBeenCalledTimes(2);
     await reloadDrafts();
     const draft = useComposerDraftStore.getState().getComposerDraft(target);
     expect(draft?.prompt).toContain("failed prompt");
@@ -522,7 +598,6 @@ describe("ChatView single-send failures", () => {
       await sent;
       expect(useComposerDraftStore.getState().getComposerDraft(target)).toBe(before);
       expect(harness.messages).toEqual([]);
-      expect(mocks.retry).not.toHaveBeenCalled();
     },
   );
 });

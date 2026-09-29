@@ -7,7 +7,7 @@ import {
   type ComposerThreadTarget,
   useComposerDraftStore,
 } from "../../composerDraftStore";
-import { readAttachmentUpload, retryAttachmentUpload } from "../../lib/attachmentUploadQueue";
+import { readAttachmentUpload } from "../../lib/attachmentUploadQueue";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentThreadDetails } from "../../state/threads";
 import type { ChatMessage } from "../../types";
@@ -70,7 +70,7 @@ function mergeTerminalContexts(
 }
 
 /** Runs only after a single send fails. Plain empty composers retain upstream's restore path. */
-export async function recoverFailedSendDraft(options: {
+export function recoverFailedSendDraft(options: {
   target: ComposerThreadTarget;
   threadRef: ScopedThreadRef;
   messageId: MessageId;
@@ -167,59 +167,52 @@ export async function recoverFailedSendDraft(options: {
     target,
     mergeById(current?.threadContexts ?? [], failed.threadContexts, (item) => item.contextId),
   );
-  // Invalidate the queue's ready cache. Files are verified, missing uploads are
-  // re-uploaded from retained bytes, and hydrated missing files become reattach chips.
-  for (const image of restored) {
-    if (!readAttachmentUpload(image.id) && (image.type !== "file" || !image.uploadedAttachmentId))
-      continue;
-    retryAttachmentUpload({
-      environmentId: options.threadRef.environmentId,
-      image,
-      draftTarget: target,
-    });
-  }
   const draft = store.getComposerDraft(target);
   if (draft && options.isOriginalRoute()) options.onRestored(draft);
-  // A different thread has no mounted composer to serialize the recovered images.
-  // Re-read ownership after the byte reads: promotion or typing can happen meanwhile.
-  const serialized = await Promise.allSettled(
-    (draft?.images ?? []).map(async (image) => ({
-      id: image.id,
-      name: image.name,
-      mimeType: image.mimeType,
-      sizeBytes: image.sizeBytes,
-      ...(image.source ? { source: image.source } : {}),
-      dataUrl: await readFileAsDataUrl(image.file),
-    })),
-  );
-  const persistenceTarget =
-    typeof target === "string" && !store.getDraftSession(target) ? options.threadRef : target;
-  const latest = store.getComposerDraft(persistenceTarget);
-  if (latest && serialized.length > 0) {
-    const persistedImages = serialized.flatMap((result) =>
-      result.status === "fulfilled" ? [result.value] : [],
-    );
-    const imageIds = new Set(latest.images.map((image) => image.id));
-    await store.syncPersistedAttachments(
-      persistenceTarget,
-      mergeById(latest.persistedAttachments, persistedImages, (item) => item.id).filter((image) =>
-        imageIds.has(image.id),
-      ),
-    );
-    const unreadableNames = serialized.flatMap((result, index) =>
-      result.status === "rejected" ? [draft!.images[index]!.name] : [],
-    );
-    if (unreadableNames.length > 0) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Some images could not be saved for reload",
-          description: `${unreadableNames.join(", ")}. Keep this composer open and attach these images again.`,
-          data: { threadRef: options.threadRef },
-          timeout: 0,
-        }),
+  // The mounted composer saves its own images. Offscreen reads must not delay
+  // the send error or spinner; re-read ownership after promotion or typing.
+  if (!options.isOriginalRoute()) {
+    void (async () => {
+      const serialized = await Promise.allSettled(
+        (draft?.images ?? []).map(async (image) => ({
+          id: image.id,
+          name: image.name,
+          mimeType: image.mimeType,
+          sizeBytes: image.sizeBytes,
+          ...(image.source ? { source: image.source } : {}),
+          dataUrl: await readFileAsDataUrl(image.file),
+        })),
       );
-    }
+      const persistenceTarget =
+        typeof target === "string" && !store.getDraftSession(target) ? options.threadRef : target;
+      const latest = store.getComposerDraft(persistenceTarget);
+      if (latest && serialized.length > 0) {
+        const persistedImages = serialized.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+        const imageIds = new Set(latest.images.map((image) => image.id));
+        await store.syncPersistedAttachments(
+          persistenceTarget,
+          mergeById(latest.persistedAttachments, persistedImages, (item) => item.id).filter(
+            (image) => imageIds.has(image.id),
+          ),
+        );
+        const unreadableNames = serialized.flatMap((result, index) =>
+          result.status === "rejected" ? [draft!.images[index]!.name] : [],
+        );
+        if (unreadableNames.length > 0) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Some images could not be saved for reload",
+              description: `${unreadableNames.join(", ")}. Keep this composer open and attach these images again.`,
+              data: { threadRef: options.threadRef },
+              timeout: 0,
+            }),
+          );
+        }
+      }
+    })();
   }
   if (dropped.length > 0) {
     toastManager.add(

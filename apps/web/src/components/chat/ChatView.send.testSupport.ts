@@ -23,6 +23,7 @@ import * as ChatLogic from "../ChatView.logic";
 import { toastManager } from "../ui/toast";
 import { stackedThreadToast } from "../ui/toastHelpers";
 import * as Recovery from "./failedSendRecovery";
+import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "./composerPromptHistory";
 import { fileAttachmentCapabilityBlockReason } from "./composerAttachmentFiles";
 import chatViewSource from "../ChatView.tsx?raw";
 
@@ -96,6 +97,7 @@ export function createSendHarness(
     assistantCitationsToPlainText,
     truncate,
     PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+    ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     environmentId: threadRef.environmentId,
     routeThreadKey,
     composerDraftTarget: target,

@@ -9297,7 +9297,7 @@ export default function ChatView(props: ChatViewProps) {
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
       if (
-        await recoverFailedSendDraft({
+        recoverFailedSendDraft({
           target: composerDraftTarget,
           threadRef: scopeThreadRef(environmentId, threadIdForSend),
           messageId: messageIdForSend,
@@ -9316,11 +9316,6 @@ export default function ChatView(props: ChatViewProps) {
             composerImagesRef.current = draft.images;
             composerFilesRef.current = draft.files;
             composerTerminalContextsRef.current = draft.terminalContexts;
-            composerRef.current?.resetCursorState({
-              cursor: collapseExpandedComposerCursor(draft.prompt, draft.prompt.length),
-              prompt: draft.prompt,
-              detectTrigger: true,
-            });
           },
         })
       ) {
