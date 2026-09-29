@@ -70,17 +70,16 @@ import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
 
-// oxlint-disable-next-line t3code/no-global-process-runtime -- OS account home before installed identity bootstrap; no child process.
-const desktopHostPlatform = process.platform;
-const desktopHomeDirectory =
-  desktopHostPlatform === "win32" ? NodeOS.userInfo().homedir : NodeOS.homedir();
 const isLocalIdentity = applyInstalledDesktopBootstrap({
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Synchronous installed identity boundary before desktop layers.
   platform: process.platform,
   isPackaged: Electron.app.isPackaged,
   appPath: Electron.app.getAppPath(),
   executablePath: process.execPath,
-  homeDirectory: desktopHomeDirectory,
+  // The bootstrap reads this only after confirming the packaged local identity.
+  get homeDirectory() {
+    return NodeOS.userInfo().homedir;
+  },
   env: process.env,
 });
 
@@ -94,7 +93,7 @@ const desktopEnvironmentLayer = Layer.unwrap(
     return DesktopEnvironment.layer({
       isLocalIdentity,
       dirname: __dirname,
-      homeDirectory: desktopHomeDirectory,
+      homeDirectory: isLocalIdentity ? NodeOS.userInfo().homedir : NodeOS.homedir(),
       platform,
       processArch,
       ...metadata,

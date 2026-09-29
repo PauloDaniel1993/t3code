@@ -186,8 +186,11 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appVersion: input.appVersion,
   });
   const displayName = isLocalIdentity
-    ? LOCAL_DESKTOP_IDENTITY.productName
-    : Option.getOrElse(config.displayNameOverride, () => standardBranding.displayName);
+    ? Option.getOrElse(
+        yield* DesktopConfig.localDisplayNameOverride,
+        () => LOCAL_DESKTOP_IDENTITY.productName,
+      )
+    : standardBranding.displayName;
   const branding = { ...standardBranding, displayName };
   const stateDir = resolveDesktopStateDir({
     baseDir,

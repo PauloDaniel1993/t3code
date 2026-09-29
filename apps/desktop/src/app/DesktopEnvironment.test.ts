@@ -63,6 +63,7 @@ describe("DesktopEnvironment", () => {
         {},
         {
           T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
+          T3CODE_DESKTOP_DISPLAY_NAME: "T3 alpha.local",
           VITE_DEV_SERVER_URL: "http://localhost:5173",
         },
       );
@@ -71,6 +72,22 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
       assert.equal(environment.stateDir, "/Users/alice/.t3/dev");
     }),
+  );
+  it.effect(
+    "keeps release branding despite an inherited display name, and reads the override only for local builds",
+    () =>
+      Effect.gen(function* () {
+        const release = yield* makeEnvironment(
+          { isPackaged: true },
+          { T3CODE_DESKTOP_DISPLAY_NAME: "T3 alpha.local" },
+        );
+        assert.equal(release.displayName, "T3 Code (Alpha)");
+        const local = yield* makeEnvironment(
+          { isPackaged: true, isLocalIdentity: true },
+          { T3CODE_DESKTOP_DISPLAY_NAME: " T3 v2.local " },
+        );
+        assert.equal(local.displayName, "T3 v2.local");
+      }),
   );
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {

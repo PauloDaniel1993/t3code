@@ -170,6 +170,9 @@ describe("installed local identity", () => {
     assert.isFalse(
       applyInstalledDesktopBootstrap({
         ...defaults,
+        get homeDirectory(): string {
+          throw new Error("Ordinary builds must not query the OS account home");
+        },
         env,
         readFileString: () => JSON.stringify({ name: "t3code" }),
       }),
@@ -177,6 +180,9 @@ describe("installed local identity", () => {
     assert.isFalse(
       applyInstalledDesktopBootstrap({
         ...defaults,
+        get homeDirectory(): string {
+          throw new Error("Dev runs must not query the OS account home");
+        },
         isPackaged: false,
         env,
         readFileString: () => {
