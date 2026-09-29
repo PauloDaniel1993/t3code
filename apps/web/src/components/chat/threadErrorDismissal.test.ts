@@ -348,7 +348,7 @@ describe("dismissing a thread error", () => {
     expect(onScreen(key, before)).toBe("Provider crashed");
     dismiss(key, before);
 
-    const finalised = [run("run-2", 2, "queued"), failedRun("run-3", 3, "Provider crashed")];
+    const finalised = [run("run-2", 2, "queued"), ...failedRun("run-3", 3, "Provider crashed")];
     expect(onScreen(key, thread(first, finalised, old))).toBeNull();
 
     const running = failedRun("run-3", 3, "Provider crashed");
