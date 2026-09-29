@@ -8,6 +8,7 @@ import {
   ACP_TOOL_INPUT_BYTES,
   ACP_TOOL_LABEL_BYTES,
   ACP_TOOL_OUTPUT_BYTES,
+  isSensitiveAcpField,
   normalizeAcpToolActivity,
   secretSafeAcpActivity,
 } from "./AcpToolActivityNormalizer.ts";
@@ -239,7 +240,7 @@ describe("secret-safe ACP tool activity", () => {
     assert.deepEqual(normalizeAcpToolActivity(normalized), normalized);
   });
 
-  it("matches sensitive words across case and camel, snake and kebab spellings", () => {
+  it("matches sensitive suffixes across case and camel, snake and kebab spellings", () => {
     const names = [
       "idToken",
       "authToken",
@@ -251,9 +252,6 @@ describe("secret-safe ACP tool activity", () => {
       "ApiKey",
       "APIKey",
       "GITHUB_TOKEN",
-      "token_count",
-      "secret_name",
-      "password_hint",
       "clientSecret",
       "privateKey",
       "cookies",
@@ -264,6 +262,9 @@ describe("secret-safe ACP tool activity", () => {
       ...fields,
       tokenizer: "kept",
       max_tokens: 7,
+      token_count: 7,
+      secret_name: "kept",
+      password_hint: "kept",
       key: "kept",
       auth: "kept",
     });
@@ -271,19 +272,100 @@ describe("secret-safe ACP tool activity", () => {
       ...Object.fromEntries(names.map((name) => [name, "[REDACTED]"])),
       tokenizer: "kept",
       max_tokens: 7,
+      token_count: 7,
+      secret_name: "kept",
+      password_hint: "kept",
       key: "kept",
       auth: "kept",
     });
     assert.deepEqual(secretSafeAcpActivity(once), once);
   });
 
-  it("redacts sensitive header values in name/value and key/value lists", () => {
+  it.each([
+    ["idToken", true],
+    ["authToken", true],
+    ["id_token", true],
+    ["x-api-key", true],
+    ["tokenizer", false],
+    ["author", false],
+    ["keyboard", false],
+    ["secretary", false],
+    ["passwordHint", false],
+    ["max_tokens", false],
+    ["token_count", false],
+    ["totalTokenCount", false],
+    ["promptTokenCount", false],
+    ["candidatesTokenCount", false],
+    ["token_type", false],
+    ["tokenLimit", false],
+    ["maxToken", true],
+    ["secret_name", false],
+    ["aws_secret_access_key", true],
+    ["set-cookie", true],
+    ["tokens", true],
+    ["accessTokens", true],
+    ["OPENAI_API_KEY", true],
+    ["apiKeys", true],
+    ["apiKey", true],
+    ["access_token", true],
+    ["clientSecret", true],
+    ["password", true],
+    ["Authorization", true],
+    ["privateKey", true],
+    ["secretKey", true],
+    ["accessKey", true],
+    ["privateKeys", true],
+    ["secretKeys", true],
+    ["accessKeys", true],
+    ["passwords", true],
+    ["passwds", true],
+    ["secrets", true],
+    ["authorizations", true],
+    ["minTokens", false],
+    ["total_tokens", false],
+    ["num-tokens", false],
+    ["countTokens", false],
+    ["maxPasswords", false],
+    ["totalCookies", false],
+    ["numCredentials", false],
+    ["apiKeyHint", false],
+    ["privateKeyPath", false],
+  ])(
+    "preserves the verification probe's %s field unless its suffix is sensitive (%s)",
+    (name, sensitive) => {
+      assert.equal(isSensitiveAcpField(name), sensitive);
+      const value = { [name]: 812 };
+      const expected = { [name]: sensitive ? "[REDACTED]" : 812 };
+      for (const status of ["running", "completed"]) {
+        const item = decode({
+          ...base,
+          type: "dynamic_tool",
+          toolName: "Tool",
+          status,
+          input: value,
+          output: { usage: value },
+        });
+        const once = normalizeAcpToolActivity(item);
+        if (once.type !== "dynamic_tool") return assert.fail("Expected dynamic tool");
+        assert.deepEqual(once.input, expected);
+        assert.deepEqual(once.output, { usage: expected });
+        assert.deepEqual(normalizeAcpToolActivity(once), once);
+        if (item.type !== "dynamic_tool") return assert.fail("Expected original dynamic tool");
+        assert.deepEqual(item.input, value);
+        assert.deepEqual(item.output, { usage: value });
+      }
+    },
+  );
+
+  it("redacts sensitive header values in object and tuple lists", () => {
     const payload = {
       headers: [
         { name: "Authorization", value: "Bearer private" },
         { key: "x-api-key", value: "private" },
         { Name: "GITHUB_TOKEN", Value: { credential: "private" } },
         { name: "Accept", value: "application/json" },
+        ["Authorization", "Bearer abc"],
+        ["Accept", "json"],
       ],
       command: "curl -H 'Authorization: Bearer private'",
     };
@@ -295,10 +377,57 @@ describe("secret-safe ACP tool activity", () => {
         { key: "x-api-key", value: "[REDACTED]" },
         { Name: "GITHUB_TOKEN", Value: "[REDACTED]" },
         { name: "Accept", value: "application/json" },
+        ["Authorization", "[REDACTED]"],
+        ["Accept", "json"],
       ],
     });
     assert.deepEqual(secretSafeAcpActivity(once), once);
   });
+
+  it.each(["headers", "requestHeaders", "responseHeaders"])(
+    "redacts two-string tuples only inside %s fields",
+    (field) => {
+      const tuples = [
+        ["Authorization", "Bearer abc"],
+        ["apiKeys", "private"],
+        ["Accept", "json"],
+        ["token_count", "7"],
+        ["Authorization", "first", "second"],
+        ["Authorization", 812],
+        { args: ["Authorization", "ordinary argument"] },
+      ];
+      const payload = {
+        nested: { [field]: tuples },
+        args: ["Authorization", "ordinary argument"],
+        rows: [["Authorization", "ordinary row"]],
+        other: { pairs: tuples },
+        notheaders: [["Authorization", "ordinary row"]],
+      };
+      const expected = {
+        ...payload,
+        nested: {
+          [field]: [["Authorization", "[REDACTED]"], ["apiKeys", "[REDACTED]"], ...tuples.slice(2)],
+        },
+      };
+      const once = secretSafeAcpActivity(payload);
+      assert.deepEqual(once, expected);
+      assert.deepEqual(secretSafeAcpActivity(once), once);
+      const item = decode({
+        ...base,
+        type: "dynamic_tool",
+        toolName: "Tool",
+        status: "completed",
+        input: payload,
+        output: payload,
+      });
+      const normalized = normalizeAcpToolActivity(item);
+      if (normalized.type !== "dynamic_tool") return assert.fail("Expected dynamic tool");
+      assert.deepEqual(normalized.input, expected);
+      assert.deepEqual(normalized.output, expected);
+      assert.deepEqual(normalizeAcpToolActivity(normalized), normalized);
+      assert.deepEqual(payload.nested[field], tuples);
+    },
+  );
 
   it("keeps individually bounded label fields beside a preview of oversized arguments", () => {
     const input = {

@@ -1,10 +1,14 @@
 /**
  * Split field names at camelCase/acronym boundaries and separators, ignore case,
- * and redact values whose words contain authorization, cookie/cookies,
- * credential/credentials, password, passwd, secret, token, or the adjacent words
- * api key or private key. In name/value or key/value objects, redact the value
- * when the name or key follows the same rule. Replace sensitive values with
- * [REDACTED] idempotently and never search or rewrite free text.
+ * and redact values whose last word is authorization, cookie, credential,
+ * password, passwd, secret or token, or whose last two words are api key,
+ * private key, secret key or access key. Plurals count, except a plural preceded
+ * by max, min, total, num or count denotes a quantity (max_tokens stays intact).
+ * Earlier sensitive words and substrings do not count: token_count, tokenLimit,
+ * token_type, passwordHint, tokenizer, secretary, keyboard and author survive.
+ * In name/value or key/value objects, redact the value by the same name rule;
+ * two-string [name, value] arrays count only inside headers or *Headers fields.
+ * Replace sensitive values with [REDACTED] idempotently; never search free text.
  *
  * Inputs retain 16 KiB of encoded JSON at every status; oversized inputs keep
  * label fields (256 bytes each) beside a preview of the remaining redacted data.
@@ -15,7 +19,9 @@ import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 
 export const ACP_SENSITIVE_FIELD_WORDS =
-  /(?:^|_)(?:authorization|cookies?|credentials?|password|passwd|secret|token|api_key|private_key)(?:_|$)/;
+  /(?:^|_)(?:authorizations?|cookies?|credentials?|passwords?|passwds?|secrets?|tokens?|(?:api|private|secret|access)_keys?)$/;
+const QUANTITY_FIELD_WORDS =
+  /(?:^|_)(?:max|min|total|num|count)_(?:authorizations|cookies|credentials|passwords|passwds|secrets|tokens)$/;
 export const ACP_TOOL_INPUT_BYTES = 16 * 1024;
 export const ACP_TOOL_OUTPUT_BYTES = 16 * 1024;
 export const ACP_TOOL_LABEL_BYTES = 256;
@@ -53,20 +59,33 @@ const LABEL_FIELDS = new Set([
 ]);
 
 export function isSensitiveAcpField(key: string): boolean {
-  return ACP_SENSITIVE_FIELD_WORDS.test(
-    key
-      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-      .replace(/[^a-z0-9]+/gi, "_")
-      .toLowerCase(),
-  );
+  const words = key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return ACP_SENSITIVE_FIELD_WORDS.test(words) && !QUANTITY_FIELD_WORDS.test(words);
 }
 
-export function secretSafeAcpActivity(value: unknown, seen = new WeakSet<object>()): unknown {
+export function secretSafeAcpActivity(
+  value: unknown,
+  seen = new WeakSet<object>(),
+  headerPairs = false,
+): unknown {
   if (typeof value === "bigint") return value.toString();
   if (typeof value === "function" || typeof value === "symbol") return undefined;
   if (!Predicate.isObjectOrArray(value)) return value;
   if (seen.has(value)) return "[CIRCULAR]";
+  if (
+    headerPairs &&
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === "string" &&
+    typeof value[1] === "string" &&
+    isSensitiveAcpField(value[0])
+  )
+    return [value[0], REDACTED];
   seen.add(value);
   const entries = Array.isArray(value) ? [] : Object.entries(value);
   const sensitivePair =
@@ -76,13 +95,13 @@ export function secretSafeAcpActivity(value: unknown, seen = new WeakSet<object>
         /^(?:name|key)$/i.test(key) && typeof entry === "string" && isSensitiveAcpField(entry),
     );
   const result = Array.isArray(value)
-    ? value.map((entry) => secretSafeAcpActivity(entry, seen))
+    ? value.map((entry) => secretSafeAcpActivity(entry, seen, headerPairs))
     : Object.fromEntries(
         entries.map(([key, entry]) => [
           key,
           isSensitiveAcpField(key) || (sensitivePair && /^value$/i.test(key))
             ? REDACTED
-            : secretSafeAcpActivity(entry, seen),
+            : secretSafeAcpActivity(entry, seen, /^headers$/i.test(key) || key.endsWith("Headers")),
         ]),
       );
   seen.delete(value);
