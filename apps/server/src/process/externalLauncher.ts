@@ -34,7 +34,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Ref from "effect/Ref";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -86,6 +86,8 @@ const DETACHED_IGNORE_STDIO_OPTIONS = {
   stdout: "ignore",
   stderr: "ignore",
 } as const satisfies ChildProcess.CommandOptions;
+
+const EDITOR_DISCOVERY_CONCURRENCY = 8;
 
 const compactEnv = (input: Record<string, Option.Option<string>>): NodeJS.ProcessEnv =>
   Object.fromEntries(
@@ -416,23 +418,22 @@ const buildAvailableEditors = Effect.fn("externalLauncher.buildAvailableEditors"
   never,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
-  const available: EditorId[] = [];
+  const available = yield* Effect.forEach(
+    EDITORS,
+    (editor) =>
+      Effect.gen(function* () {
+        if (editor.commands === null) {
+          const command = yield* resolveUsableFileManagerCommand(platform, env);
+          return command === undefined ? null : editor.id;
+        }
 
-  for (const editor of EDITORS) {
-    if (editor.commands === null) {
-      if ((yield* resolveUsableFileManagerCommand(platform, env)) !== undefined) {
-        available.push(editor.id);
-      }
-      continue;
-    }
+        const command = yield* resolveEditorCommand(editor, env);
+        return Option.isSome(command) ? editor.id : null;
+      }),
+    { concurrency: EDITOR_DISCOVERY_CONCURRENCY },
+  );
 
-    const command = yield* resolveEditorCommand(editor, env);
-    if (Option.isSome(command)) {
-      available.push(editor.id);
-    }
-  }
-
-  return available;
+  return available.filter((editor): editor is EditorId => editor !== null);
 });
 
 const resolveBrowserLaunch = Effect.fn("externalLauncher.resolveBrowserLaunch")(function* (
@@ -461,6 +462,7 @@ const resolveFileManagerRevealKind = Effect.fn("externalLauncher.resolveFileMana
 // client connect (the server config embeds the available editors). Memoize
 // the discovered set for a bounded window so repeat connects skip even the
 // per-command cache lookups in @t3tools/shared/shell.
+// Synchronize misses so concurrent client connects share one successful scan.
 //
 // This deliberately does not use `Effect.cachedWithTTL`: that memoizes the
 // first caller's Exit whatever it is, including an interrupt. Callers run this
@@ -760,27 +762,27 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
 
-  const editorDiscoveryCache = yield* Ref.make<Option.Option<EditorDiscoveryCacheEntry>>(
-    Option.none(),
-  );
-  const cachedAvailableEditors = Effect.gen(function* () {
-    const nowNanos = yield* Clock.currentTimeNanos;
-    const entry = yield* Ref.get(editorDiscoveryCache);
-    if (Option.isSome(entry) && entry.value.expiresAtNanos > nowNanos) {
-      return entry.value.editors;
-    }
-    const editors = yield* provideCommandResolutionServices(resolveAvailableEditors()).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    );
-    yield* Ref.set(
-      editorDiscoveryCache,
-      Option.some({
+  const editorDiscoveryCache = yield* SynchronizedRef.make<
+    Option.Option<EditorDiscoveryCacheEntry>
+  >(Option.none());
+  const cachedAvailableEditors = SynchronizedRef.modifyEffect(editorDiscoveryCache, (entry) =>
+    Effect.gen(function* () {
+      const nowNanos = yield* Clock.currentTimeNanos;
+      if (Option.isSome(entry) && entry.value.expiresAtNanos > nowNanos) {
+        return [entry.value.editors, entry] as const;
+      }
+      const editors = yield* provideCommandResolutionServices(resolveAvailableEditors()).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
+      return [
         editors,
-        expiresAtNanos: nowNanos + EDITOR_DISCOVERY_CACHE_TTL_NANOS,
-      }),
-    );
-    return editors;
-  });
+        Option.some({
+          editors,
+          expiresAtNanos: nowNanos + EDITOR_DISCOVERY_CACHE_TTL_NANOS,
+        }),
+      ] as const;
+    }),
+  );
 
   return ExternalLauncher.of({
     resolveAvailableEditors: () => cachedAvailableEditors,
