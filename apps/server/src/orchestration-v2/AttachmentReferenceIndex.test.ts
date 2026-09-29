@@ -7,7 +7,9 @@ import * as Console from "effect/Console";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import { SqlError, ConnectionError } from "effect/unstable/sql/SqlError";
+import * as TestClock from "effect/testing/TestClock";
+import * as Queue from "effect/Queue";
 import {
   EventId,
   MessageId,
@@ -18,7 +20,11 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import { vi } from "vite-plus/test";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  SqlitePersistenceMemory,
+  makeSqlitePersistenceLive,
+} from "../persistence/Layers/Sqlite.ts";
+import * as Path from "effect/Path";
 import {
   ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE,
   ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS,
@@ -75,6 +81,172 @@ const smallFixture = Effect.gen(function* () {
 });
 
 describe("attachment reference index", () => {
+  it.effect("shared CLI persistence prepares the index but only server startup rebuilds it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      const database = makeSqlitePersistenceLive(path.join(directory, "statev2.sqlite"));
+      yield* Effect.gen(function* () {
+        yield* smallFixture;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+      }).pipe(Effect.provide(database));
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        expect(yield* sql`SELECT complete, cursor FROM fork_v2_attachment_reference_state`).toEqual(
+          [{ complete: 0, cursor: null }],
+        );
+        yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = payload_json WHERE message_id = 'message-005'`;
+        expect(yield* sql`SELECT count(*) AS count FROM fork_v2_attachment_references`).toEqual([
+          { count: 1 },
+        ]);
+        const rebuild = yield* startAttachmentReferenceIndex();
+        if (rebuild !== undefined) yield* Fiber.join(rebuild);
+        yield* requireCompleteAttachmentReferenceIndex();
+        expect(yield* sql`SELECT count(*) AS count FROM fork_v2_attachment_references`).toEqual([
+          { count: 200 },
+        ]);
+      }).pipe(Effect.provide(database));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  for (const source of ["message", "item", "legacy"] as const) {
+    it.effect(`reads an unindexed ${source} attachment from live source metadata only`, () =>
+      Effect.gen(function* () {
+        yield* smallFixture;
+        const sql = yield* SqlClient.SqlClient;
+        if (source === "item")
+          yield* sql`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json)
+          SELECT message_id, thread_id, 1, 'user_input_request', 'completed', updated_at,
+            json_object('questionAnswer', json_object('attachmentsByQuestionId', json_object('answer', json_extract(payload_json, '$.attachments'))))
+          FROM orchestration_v2_projection_messages WHERE message_id = 'message-005'`;
+        if (source === "legacy")
+          yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, is_streaming, created_at, updated_at, attachments_json)
+          SELECT message_id, thread_id, 'user', '', 0, created_at, updated_at, json_extract(payload_json, '$.attachments')
+          FROM orchestration_v2_projection_messages WHERE message_id = 'message-005'`;
+        if (source !== "message") yield* sql`DELETE FROM orchestration_v2_projection_messages`;
+        yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+        yield* initializeAttachmentReferenceIndex();
+        expect(yield* sql`SELECT * FROM fork_v2_attachment_references`).toEqual([]);
+        expect((yield* findReadableAttachment(id(5), "thread-0"))?.relativePath).toBe(
+          `${id(5)}.png`,
+        );
+        expect(yield* findReadableAttachment(id(5), "other")).toBeNull();
+        expect(yield* findReadableAttachment("absent")).toBeNull();
+        if (source === "legacy") {
+          yield* sql`INSERT INTO orchestration_v2_legacy_imports (thread_id, source_updated_at, shell_imported_at, transcript_imported_at)
+            VALUES ('thread-0', '2026-01-01', '2026-01-01', '2026-01-01')`;
+          expect(yield* findReadableAttachment(id(5))).toBeNull();
+        } else {
+          yield* sql`UPDATE orchestration_v2_projection_threads SET deleted_at = '2026-01-01'`;
+          expect(yield* findReadableAttachment(id(5))).toBeNull();
+          yield* sql`UPDATE orchestration_v2_projection_threads SET deleted_at = NULL`;
+          yield* sql`UPDATE projection_projects SET deleted_at = '2026-01-01'`;
+          expect(yield* findReadableAttachment(id(5))).toBeNull();
+        }
+      }).pipe(Effect.provide(testLayer)),
+    );
+  }
+
+  it.effect("ignores unrelated objects sharing the fork attachment prefix", () =>
+    Effect.gen(function* () {
+      yield* smallFixture;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE fork_v2_attachment_uploads(id TEXT)`;
+      yield* sql`CREATE TABLE forkXv2XattachmentXforeign(id TEXT)`;
+      expect(yield* initializeAttachmentReferenceIndex()).toBe(true);
+      yield* requireCompleteAttachmentReferenceIndex();
+      expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
+      expect(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'fork_v2_attachment_uploads'`,
+      ).toHaveLength(1);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("checks schema definitions once per DDL cookie, never for ordinary reads", () =>
+    Effect.gen(function* () {
+      yield* smallFixture;
+      const sql = yield* SqlClient.SqlClient;
+      let checks = 0;
+      const counted = new Proxy(sql, {
+        apply: (target, receiver, args) => {
+          if (
+            Array.isArray(args[0]) &&
+            args[0].some(
+              (part: unknown) => typeof part === "string" && part.includes("FROM sqlite_master"),
+            )
+          )
+            checks++;
+          return Reflect.apply(target, receiver, args);
+        },
+      });
+      const reads = Effect.gen(function* () {
+        for (let n = 0; n < 10; n++)
+          expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
+      }).pipe(Effect.provideService(SqlClient.SqlClient, counted));
+      yield* initializeAttachmentReferenceIndex().pipe(
+        Effect.provideService(SqlClient.SqlClient, counted),
+      );
+      expect(checks).toBe(1);
+      yield* reads;
+      expect(checks).toBe(1);
+      yield* sql`CREATE TABLE unrelated_schema_change(id TEXT)`;
+      yield* reads;
+      expect(checks).toBe(2);
+      yield* sql`DROP TRIGGER fork_v2_attachment_message_insert`;
+      yield* requireCompleteAttachmentReferenceIndex().pipe(
+        Effect.provideService(SqlClient.SqlClient, counted),
+        Effect.flip,
+      );
+      expect(checks).toBe(3);
+      // Source metadata still authorizes this same attachment despite index damage.
+      yield* reads;
+      expect(checks).toBe(3);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("retries failed passes with test-clock backoff capped at five seconds", () =>
+    Effect.gen(function* () {
+      yield* smallFixture;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+      const attempts = yield* Queue.unbounded<number>();
+      let failures = 0;
+      const gated = new Proxy(sql, {
+        get: (target, key, receiver) =>
+          key === "unsafe"
+            ? (query: string, ...args: Array<unknown>) => {
+                if (query.startsWith("SELECT message_id AS id") && failures < 8) {
+                  failures++;
+                  return Queue.offer(attempts, failures).pipe(
+                    Effect.andThen(
+                      new SqlError({
+                        reason: new ConnectionError({ cause: "SQLITE_BUSY_SNAPSHOT" }),
+                      }),
+                    ),
+                  );
+                }
+                return Reflect.apply(target.unsafe, target, [query, ...args]);
+              }
+            : Reflect.get(target, key, receiver),
+      });
+      const rebuild = yield* startAttachmentReferenceIndex().pipe(
+        Effect.provideService(SqlClient.SqlClient, gated),
+      );
+      expect(yield* Queue.take(attempts)).toBe(1);
+      for (const [i, delay] of [100, 200, 400, 800, 1600, 3200, 5000, 5000].entries()) {
+        yield* TestClock.adjust(delay - 1);
+        expect(failures).toBe(i + 1);
+        yield* TestClock.adjust(1);
+        if (i < 7) expect(yield* Queue.take(attempts)).toBe(i + 2);
+      }
+      if (rebuild !== undefined) yield* Fiber.join(rebuild);
+      yield* requireCompleteAttachmentReferenceIndex();
+      expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   for (const [damage, statement] of [
     ["missing trigger", "DROP TRIGGER fork_v2_attachment_message_insert"],
     [

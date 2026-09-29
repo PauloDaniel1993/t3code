@@ -17,7 +17,8 @@ import {
   orchestrationEffectQueueWait,
 } from "../observability/Metrics.ts";
 import { RunFinalizationService } from "./RunFinalizationService.ts";
-import { ResourceCleanupService } from "./ResourceCleanupService.ts";
+import { ResourceCleanupService, ResourceCleanupError } from "./ResourceCleanupService.ts";
+import { AttachmentReferenceIndexUnavailable } from "./AttachmentReferenceIndex.ts";
 import {
   EffectOutboxV2,
   EffectOutboxError,
@@ -42,6 +43,9 @@ export class OrchestrationEffectExecutionError extends Schema.TaggedError<Orches
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
+const isExecutionError = Schema.is(OrchestrationEffectExecutionError);
+const isCleanupError = Schema.is(ResourceCleanupError);
+const isIndexUnavailable = Schema.is(AttachmentReferenceIndexUnavailable);
 
 /**
  * Pure interrupt races with hard process teardown or a dead session produce
@@ -680,6 +684,32 @@ export const layerWithOptions = (
           }
 
           const error = Cause.pretty(exit.cause);
+          const waitingForAttachmentIndex =
+            effect.request.type === "attachment.cleanup" &&
+            exit.cause.reasons.some(
+              (reason) =>
+                Cause.isFailReason(reason) &&
+                isExecutionError(reason.error) &&
+                isCleanupError(reason.error.cause) &&
+                isIndexUnavailable(reason.error.cause.cause),
+            );
+          if (waitingForAttachmentIndex) {
+            const rescheduled = yield* outbox
+              .retry({
+                effectId: effect.id,
+                workerId,
+                error,
+                delayMs: 1000,
+                consumeAttempt: false,
+              })
+              .pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
+            if (!rescheduled && !(yield* wasCancelled(effect.id)))
+              return yield* new OrchestrationEffectWorkerError({
+                operation: "reschedule",
+                effectId: effect.id,
+              });
+            return true;
+          }
           const nonRetryable = isNonRetryableProviderTurnControlFailure(effect.request.type, error);
           yield* Effect.logWarning("Orchestration effect execution failed", {
             effectId: effect.id,

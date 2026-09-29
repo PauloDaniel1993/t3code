@@ -44,6 +44,12 @@ import {
   rebuildAttachmentReferenceIndex,
   rebuildAttachmentReferenceIndexPass,
 } from "./AttachmentReferenceIndex.ts";
+import {
+  OrchestrationEffectExecutorV2,
+  OrchestrationEffectExecutionError,
+  OrchestrationEffectWorkerV2,
+  layerWithOptions as workerLayer,
+} from "./EffectWorker.ts";
 
 const configLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-attachment-protections-" });
 const databaseLayer = SqlitePersistenceMemory;
@@ -499,6 +505,67 @@ describe("signed attachment ownership", () => {
 
 describe("attachment pruning through the effect outbox", () => {
   it.effect(
+    "reads only the bound file and owner throughout a rebuild, then prunes missed rows",
+    () =>
+      Effect.gen(function* () {
+        const { file, thread } = yield* seedAttachment();
+        const minted = yield* issue();
+        const sql = yield* SqlClient.SqlClient;
+        const sink = yield* EventSinkV2;
+        const other = yield* createThread(ThreadId.make("other-during-rebuild"));
+        const otherAttachment = { ...attachment, id: ChatAttachmentId.make("other-file") };
+        yield* sink.write({
+          events: [yield* messageEvent("other:image", [otherAttachment], other.id)],
+        });
+        yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+        yield* initializeAttachmentReferenceIndex();
+        // No backfill has run: all authorization must come from source tables.
+        expect(yield* sql`SELECT * FROM fork_v2_attachment_references`).toEqual([]);
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "image.png")).toMatchObject({
+          kind: "file",
+          path: file,
+        });
+        expect(
+          yield* resolveAsset(tokenOf((yield* issue()).relativeUrl), "image.png"),
+        ).toMatchObject({ path: file });
+        expect(
+          yield* resolveAsset(
+            yield* signedClaim({
+              attachmentId: attachment.id,
+              threadId: other.id,
+              relativePath: `${attachment.id}.png`,
+            }),
+            "image.png",
+          ),
+        ).toBeNull();
+        expect(
+          yield* resolveAsset(
+            yield* signedClaim({
+              attachmentId: attachment.id,
+              threadId: ownerId,
+              relativePath: "other-file.png",
+            }),
+            "image.png",
+          ),
+        ).toBeNull();
+        const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+        yield* cleanup.cleanupAttachments([attachment.id]).pipe(Effect.flip);
+        expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(true);
+        yield* sink.write({ events: [yield* messageEvent("unindexed:remove", [])] });
+        const effects = yield* sql<{
+          payload_json: string;
+        }>`SELECT payload_json FROM orchestration_v2_effect_outbox WHERE effect_type = 'attachment.cleanup'`;
+        expect(effects.some((row) => row.payload_json.includes(`${attachment.id}.png`))).toBe(true);
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "image.png")).toBeNull();
+        expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
+        yield* rebuildAttachmentReferenceIndex();
+        yield* cleanup.cleanupAttachments([attachment.id]);
+        expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(false);
+        yield* deleteThread(thread);
+      }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
     "retains a newly referenced file after a trigger is dropped, throughout repair, and after rebuilding",
     () =>
       Effect.gen(function* () {
@@ -522,7 +589,9 @@ describe("attachment pruning through the effect outbox", () => {
         expect(yield* fs.exists(file)).toBe(true);
         // Stale ownership also cannot authorize a download with an old token.
         expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "image.png")).toBeNull();
-        expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
+        expect(
+          yield* resolveAsset(tokenOf((yield* issue()).relativeUrl), "image.png"),
+        ).toMatchObject({ path: file });
         yield* initializeAttachmentReferenceIndex();
         yield* rebuildAttachmentReferenceIndexPass();
         expect((yield* cleanup.cleanupAttachments([attachment.id]).pipe(Effect.flip))._tag).toBe(

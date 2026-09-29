@@ -6,6 +6,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 export const ATTACHMENT_REFERENCE_TABLE = "fork_v2_attachment_references";
@@ -115,13 +116,21 @@ const definitions = [
   }),
 ];
 const normalizeDdl = (ddl: string) => ddl.replace(/\s+/g, " ").trim();
+const schemaCache = new WeakMap<SqlClient.SqlClient, { version: number; valid: boolean }>();
 
 const hasExpectedSchema = Effect.fnUntraced(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // SQLite changes this cookie on DDL, including DDL from other connections.
+  const [cookie] = yield* sql<{ schema_version: number }>`PRAGMA schema_version`;
+  const cached = schemaCache.get(sql);
+  if (cookie !== undefined && cached?.version === cookie.schema_version) return cached.valid;
   const actual = yield* sql<{ type: string; name: string; sql: string }>`
-    SELECT type, name, sql FROM sqlite_master WHERE name LIKE 'fork_v2_attachment_%' AND sql IS NOT NULL
+    SELECT type, name, sql FROM sqlite_master WHERE ${sql.in(
+      "name",
+      definitions.map((definition) => definition.name),
+    )} AND sql IS NOT NULL
   `;
-  return (
+  const valid =
     actual.length === definitions.length &&
     definitions.every((expected) =>
       actual.some(
@@ -130,8 +139,9 @@ const hasExpectedSchema = Effect.fnUntraced(function* () {
           row.name === expected.name &&
           normalizeDdl(row.sql) === normalizeDdl(expected.ddl),
       ),
-    )
-  );
+    );
+  if (cookie !== undefined) schemaCache.set(sql, { version: cookie.schema_version, valid });
+  return valid;
 });
 
 interface RebuildState {
@@ -165,81 +175,125 @@ export const requireCompleteAttachmentReferenceIndex = Effect.fnUntraced(functio
   if ((yield* readState())?.complete !== 1) return yield* new AttachmentReferenceIndexUnavailable();
 });
 
+export const isCompleteAttachmentReferenceIndex = Effect.fnUntraced(function* () {
+  return (yield* readState())?.complete === 1;
+});
+
+/** Source lookups during rebuilding only; never use them to authorize deletion. */
+export const attachmentSourceRows = Effect.fnUntraced(function* (
+  threadId?: string,
+  row?: { source: "message" | "item"; id: string },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const queries = sources
+    .filter((source) => row === undefined || source.name === row.source)
+    .map((source) => {
+      const column = source.name === "legacy" ? "attachments_json" : "payload_json";
+      return sql`SELECT ${source.name} AS source, entry.thread_id,
+      CASE WHEN json_valid(${sql(`entry.${column}`)}) THEN ${sql.unsafe(source.payload("entry"))} ELSE NULL END AS payload_json
+      FROM ${sql(source.table)} AS entry
+      WHERE ${threadId === undefined ? sql`1` : sql`entry.thread_id = ${threadId}`}
+        AND ${row === undefined ? sql`1` : sql`${sql(`entry.${source.key}`)} = ${row.id}`}`;
+    });
+  return sql.join(" UNION ALL ", false)(queries);
+});
+
 /** Idempotent migration/fallback: only DDL and indexed existence checks, no backfill. */
 export const initializeAttachmentReferenceIndex = Effect.fnUntraced(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql.withTransaction(
-    Effect.gen(function* () {
-      const state = yield* readState();
-      if (state !== undefined) return state.complete === 1;
-      // A missing trigger may have missed both inserts and deletes. Trust no old rows.
-      for (const definition of definitions.toReversed())
-        yield* sql.unsafe(`DROP ${definition.type.toUpperCase()} IF EXISTS ${definition.name}`);
-      for (const definition of definitions) yield* sql.unsafe(definition.ddl);
-      let empty = true;
-      for (const source of sources) {
-        const rows = yield* sql.unsafe(`SELECT ${source.key} FROM ${source.table} LIMIT 1`);
-        if (rows.length > 0) empty = false;
-      }
-      yield* sql`INSERT INTO ${sql(stateTable)} (singleton, version, complete, source_index, cursor)
+  return yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const state = yield* readState();
+        if (state !== undefined) return state.complete === 1;
+        // A missing trigger may have missed both inserts and deletes. Trust no old rows.
+        for (const definition of definitions.toReversed())
+          yield* sql.unsafe(`DROP ${definition.type.toUpperCase()} IF EXISTS ${definition.name}`);
+        for (const definition of definitions) yield* sql.unsafe(definition.ddl);
+        let empty = true;
+        for (const source of sources) {
+          const rows = yield* sql.unsafe(`SELECT ${source.key} FROM ${source.table} LIMIT 1`);
+          if (rows.length > 0) empty = false;
+        }
+        yield* sql`INSERT INTO ${sql(stateTable)} (singleton, version, complete, source_index, cursor)
       VALUES (1, ${ATTACHMENT_REFERENCE_VERSION}, ${empty ? 1 : 0}, ${empty ? sources.length : 0}, NULL)`;
-      return empty;
-    }),
-  );
+        return empty;
+      }),
+    )
+    .pipe(
+      Effect.onError(() =>
+        Effect.sync(() => {
+          schemaCache.delete(sql);
+        }),
+      ),
+    );
 });
 
 /** Release the connection after <=64 rows or 25ms, checked between individual rows. */
 export const rebuildAttachmentReferenceIndexPass = Effect.fnUntraced(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql.withTransaction(
-    Effect.gen(function* () {
-      yield* initializeAttachmentReferenceIndex();
-      const state = yield* readState();
-      if (state === undefined) return yield* new AttachmentReferenceIndexUnavailable();
-      if (state.complete === 1) return true;
-      const source = sources[state.source_index];
-      if (source === undefined) {
-        yield* sql`UPDATE ${sql(stateTable)} SET complete = 1 WHERE singleton = 1`;
-        return true;
-      }
-      const rows = yield* sql.unsafe<{ id: string }>(
-        `SELECT ${source.key} AS id FROM ${source.table} ${state.cursor === null ? "" : `WHERE ${source.key} > ?`}
+  return yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        yield* initializeAttachmentReferenceIndex();
+        const state = yield* readState();
+        if (state === undefined) return yield* new AttachmentReferenceIndexUnavailable();
+        if (state.complete === 1) return true;
+        const source = sources[state.source_index];
+        if (source === undefined) {
+          yield* sql`UPDATE ${sql(stateTable)} SET complete = 1 WHERE singleton = 1`;
+          return true;
+        }
+        const rows = yield* sql.unsafe<{ id: string }>(
+          `SELECT ${source.key} AS id FROM ${source.table} ${state.cursor === null ? "" : `WHERE ${source.key} > ?`}
         ORDER BY ${source.key} LIMIT ${ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE}`,
-        state.cursor === null ? [] : [state.cursor],
-      );
-      if (rows.length === 0) {
-        yield* sql`UPDATE ${sql(stateTable)} SET source_index = ${state.source_index + 1}, cursor = NULL WHERE singleton = 1`;
+          state.cursor === null ? [] : [state.cursor],
+        );
+        if (rows.length === 0) {
+          yield* sql`UPDATE ${sql(stateTable)} SET source_index = ${state.source_index + 1}, cursor = NULL WHERE singleton = 1`;
+          return false;
+        }
+        const started = performance.now();
+        for (const row of rows) {
+          for (const insert of inserts(
+            source,
+            "row",
+            `${source.table} AS row`,
+            `row.${source.key} = ?`,
+          ))
+            yield* sql.unsafe(insert, [row.id]);
+          yield* sql`UPDATE ${sql(stateTable)} SET cursor = ${row.id} WHERE singleton = 1`;
+          if (performance.now() - started >= ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS) break;
+        }
         return false;
-      }
-      const started = performance.now();
-      for (const row of rows) {
-        for (const insert of inserts(
-          source,
-          "row",
-          `${source.table} AS row`,
-          `row.${source.key} = ?`,
-        ))
-          yield* sql.unsafe(insert, [row.id]);
-        yield* sql`UPDATE ${sql(stateTable)} SET cursor = ${row.id} WHERE singleton = 1`;
-        if (performance.now() - started >= ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS) break;
-      }
-      return false;
-    }),
-  );
+      }),
+    )
+    .pipe(
+      Effect.onError(() =>
+        Effect.sync(() => {
+          schemaCache.delete(sql);
+        }),
+      ),
+    );
 });
 
-/** Drainable by tests; production runs it in the persistence layer's scope. */
+/** Drainable by tests; each failed pass retries with Clock-driven, capped backoff. */
 export const rebuildAttachmentReferenceIndex = Effect.fnUntraced(function* () {
-  while (!(yield* rebuildAttachmentReferenceIndexPass())) yield* Effect.yieldNow;
+  while (
+    !(yield* rebuildAttachmentReferenceIndexPass().pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning("Attachment reference rebuild pass failed; retrying", { error }),
+      ),
+      Effect.retry(
+        Schedule.min([Schedule.exponential("100 millis"), Schedule.spaced("5 seconds")]),
+      ),
+    ))
+  )
+    yield* Effect.yieldNow;
 });
 
 /** Run after base and fork migrations. Rebuilding existing data never holds startup. */
 export const startAttachmentReferenceIndex = Effect.fnUntraced(function* () {
   if (yield* initializeAttachmentReferenceIndex()) return;
-  return yield* rebuildAttachmentReferenceIndex().pipe(
-    Effect.catch((error) =>
-      Effect.logWarning("Attachment reference rebuild incomplete; cleanup disabled", { error }),
-    ),
-    Effect.forkScoped,
-  );
+  return yield* rebuildAttachmentReferenceIndex().pipe(Effect.forkScoped);
 });

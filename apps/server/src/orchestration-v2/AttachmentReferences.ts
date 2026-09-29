@@ -12,7 +12,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { attachmentRelativePath } from "../attachmentStore.ts";
 import { normalizeAttachmentRelativePath } from "../attachmentPaths.ts";
 import { EffectOutboxV2 } from "./EffectOutbox.ts";
-import { requireCompleteAttachmentReferenceIndex } from "./AttachmentReferenceIndex.ts";
+import {
+  attachmentSourceRows,
+  isCompleteAttachmentReferenceIndex,
+  requireCompleteAttachmentReferenceIndex,
+} from "./AttachmentReferenceIndex.ts";
 import type { ProjectionStoreV2Shape } from "./ProjectionStore.ts";
 
 const isAttachment = Schema.is(ChatAttachment);
@@ -31,7 +35,7 @@ function attachmentReferences(payload: unknown): Array<{ id: string; relativePat
   return Predicate.isObject(payload) ? Object.values(payload).flatMap(attachmentReferences) : [];
 }
 
-/** Indexed candidates only: missing IDs never scan projection payloads. */
+/** Reads use current source metadata while the derived index is incomplete. */
 export const findReadableAttachment = Effect.fnUntraced(function* (
   attachmentId: string,
   threadId?: string,
@@ -39,10 +43,16 @@ export const findReadableAttachment = Effect.fnUntraced(function* (
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* requireCompleteAttachmentReferenceIndex();
+      const complete = yield* isCompleteAttachmentReferenceIndex();
+      const candidates = complete
+        ? sql`SELECT source, thread_id, attachment_id, attachment_json FROM fork_v2_attachment_references`
+        : sql`SELECT payload.source, payload.thread_id, json_extract(attachment.value, '$.id') AS attachment_id,
+            attachment.value AS attachment_json
+          FROM (${yield* attachmentSourceRows(threadId)}) AS payload, json_tree(payload.payload_json) AS attachment
+          WHERE attachment.type = 'object' AND json_extract(attachment.value, '$.id') = ${attachmentId}`;
       const rows = yield* sql<{ thread_id: string; attachment_json: string }>`
     SELECT reference.thread_id, reference.attachment_json
-    FROM fork_v2_attachment_references AS reference
+    FROM (${candidates}) AS reference
     JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = reference.thread_id
     JOIN projection_projects AS project ON project.project_id = thread.project_id
     LEFT JOIN orchestration_v2_legacy_imports AS imported ON imported.thread_id = reference.thread_id
@@ -127,7 +137,8 @@ export const applyWithAttachmentPruning = Effect.fnUntraced(function* (
     return 0;
   }
   const sql = yield* SqlClient.SqlClient;
-  const oldPayloads = yield* sql<{ payload_json: string }>`
+  const oldPayloads = (yield* isCompleteAttachmentReferenceIndex())
+    ? yield* sql<{ payload_json: string }>`
     SELECT reference.attachment_json AS payload_json
     FROM fork_v2_attachment_references AS reference
     LEFT JOIN orchestration_v2_legacy_imports AS imported ON imported.thread_id = reference.thread_id
@@ -137,6 +148,19 @@ export const applyWithAttachmentPruning = Effect.fnUntraced(function* (
         : sql`reference.source = ${event.type === "message.updated" ? "message" : "item"} AND reference.row_id = ${event.payload.id}`
     }
       AND (reference.source <> 'legacy' OR imported.transcript_imported_at IS NULL)
+  `
+    : yield* sql<{ payload_json: string | null }>`
+    SELECT payload.payload_json FROM (${yield* attachmentSourceRows(
+      event.threadId,
+      event.type === "thread.deleted"
+        ? undefined
+        : {
+            source: event.type === "message.updated" ? "message" : "item",
+            id: event.payload.id,
+          },
+    )}) AS payload
+    LEFT JOIN orchestration_v2_legacy_imports AS imported ON imported.thread_id = payload.thread_id
+    WHERE payload.source <> 'legacy' OR imported.transcript_imported_at IS NULL
   `;
   const retained = new Set(
     event.type === "thread.deleted"
