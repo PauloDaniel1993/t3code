@@ -441,9 +441,17 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
-                    // Removed surfaces: plans render inline, agents in thread lineage.
-                    const kind = (surface as { kind?: string }).kind;
-                    if (kind === "plan" || kind === "agents") return [];
+                    // Persisted state can outlive the build that wrote it. Drop malformed
+                    // entries and kinds this build does not have (plans render inline and
+                    // agents live in thread lineage; a newer or older build may add or
+                    // remove others) so they never render as ghost tabs or abort the load.
+                    if (
+                      !surface ||
+                      typeof surface !== "object" ||
+                      !RIGHT_PANEL_KINDS.includes(surface.kind)
+                    ) {
+                      return [];
+                    }
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&
@@ -1007,6 +1015,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       }),
       migrate: migratePersistedRightPanelState,
+      // `migrate` only runs when the stored version differs. State written at this version
+      // by another build (a rollback) needs the same validation, so normalize on hydration too.
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...migratePersistedRightPanelState(persistedState),
+      }),
     },
   ),
 );
