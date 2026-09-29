@@ -67,8 +67,8 @@ it.effect("an idle timer that finds no session emits no logs or spans", () => {
     const tracer = makeTracer(sessions);
     for (let check = 0; check < 1000; check += 1) {
       const trace = yield* tracer.begin(key, input, undefined);
-      yield* trace.stopRequested();
-      yield* trace.stopFinished();
+      yield* trace.observePendingWorkCheck(Effect.void);
+      yield* trace.observeStop(Effect.void);
     }
     assert.deepEqual(telemetry.logs, []);
     assert.deepEqual(telemetry.spans, []);
@@ -81,9 +81,7 @@ it.effect("records a correlated candidate, decision, stop request and result", (
     const entry = candidate();
     const sessions = yield* Ref.make(new Map([[key, entry]]));
     const trace = yield* makeTracer(sessions).begin(key, input, entry);
-    yield* trace.stopRequested();
-    yield* Ref.set(sessions, new Map());
-    yield* trace.stopFinished();
+    yield* trace.observeStop(Ref.set(sessions, new Map()));
 
     assert.deepEqual(
       telemetry.logs.map((log) => log.message),
@@ -128,14 +126,12 @@ for (const { overrides, decision } of [
   { overrides: { busyCount: 1 }, decision: "skip_active_turn" },
   { overrides: { idleGeneration: 2 }, decision: "skip_stale_generation" },
 ]) {
-  it.effect(`explains ${decision} and offers no stop to report`, () => {
+  it.effect(`explains ${decision}`, () => {
     const telemetry = captureTelemetry();
     return Effect.gen(function* () {
       const entry = candidate(overrides);
       const sessions = yield* Ref.make(new Map([[key, entry]]));
-      const trace = yield* makeTracer(sessions).begin(key, input, entry);
-      yield* trace.stopRequested();
-      yield* trace.stopFinished();
+      yield* makeTracer(sessions).begin(key, input, entry);
       assert.deepEqual(
         telemetry.logs.map((log) => log.message[0]),
         ["provider.session.release.candidate", "provider.session.release.decision"],
@@ -166,7 +162,7 @@ it.effect("names an expired background pin in the stop decision", () => {
     const sessions = yield* Ref.make(new Map([[key, entry]]));
     const trace = yield* makeTracer(sessions).begin(key, input, entry);
     yield* trace.pinExpired(4000);
-    yield* trace.stopRequested();
+    yield* trace.observeStop(Effect.void);
     const decisions = telemetry.logs.filter(
       (log) => log.message[0] === "provider.session.release.decision",
     );
@@ -199,11 +195,11 @@ it.effect("does not report a guarded no-op release as the entry being removed", 
     const entry = candidate();
     const sessions = yield* Ref.make(new Map([[key, entry]]));
     const trace = yield* makeTracer(sessions).begin(key, input, entry);
-    yield* trace.stopRequested();
     // The manager's atomic guard left the entry in place: a turn started.
-    yield* Ref.set(sessions, new Map([[key, { ...entry, busyCount: 1, idleGeneration: 2 }]]));
-    yield* trace.stopFinished();
-    assert.equal(telemetry.logs.at(-1)?.annotations.result, "entry_still_resident");
+    yield* trace.observeStop(
+      Ref.set(sessions, new Map([[key, { ...entry, busyCount: 1, idleGeneration: 2 }]])),
+    );
+    assert.equal(telemetry.logs.at(-1)?.annotations.result, "skipped_session_busy");
     assert.equal(telemetry.logs.at(-1)?.annotations.currentBusyCount, 1);
     assert.equal(telemetry.logs.at(-1)?.annotations.currentGeneration, 2);
   }).pipe(Effect.provide(telemetry.layer), Effect.withTracer(telemetry.tracer));

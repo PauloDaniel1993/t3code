@@ -853,7 +853,6 @@ export const layerWithOptions = (
         );
 
       const idleReleaseTracer = makeIdleReleaseTracer({ sessions, idleTimeoutMs, maxIdlePinMs });
-
       // Annotated to break the releaseIfStillIdle <-> scheduleIdleReleaseInternal
       // inference cycle introduced by the pin re-arm below.
       const releaseIfStillIdle = (input: {
@@ -879,6 +878,7 @@ export const layerWithOptions = (
             probedRuntime.hasPendingBackgroundWork === undefined
               ? false
               : yield* probedRuntime.hasPendingBackgroundWork.pipe(
+                  trace.observePendingWorkCheck,
                   Effect.catchCause(() => Effect.succeed(false)),
                 );
           if (hasPendingWork) {
@@ -926,13 +926,13 @@ export const layerWithOptions = (
           // decision above can go stale; the generation guard revalidates
           // busyCount and idleGeneration inside releaseEntry's atomic
           // entry removal.
-          yield* trace.stopRequested();
           yield* releaseEntry({
             providerSessionId: input.providerSessionId,
             reason: "idle_timeout",
             cancelIdleFiber: false,
             onlyIfIdleGeneration: input.generation,
           }).pipe(
+            trace.observeStop,
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.driver-session.idle-release-failed", {
                 providerSessionId: input.providerSessionId,
@@ -940,7 +940,6 @@ export const layerWithOptions = (
               }),
             ),
           );
-          yield* trace.stopFinished();
         });
 
       const withActivityError = <A, E, R>(
