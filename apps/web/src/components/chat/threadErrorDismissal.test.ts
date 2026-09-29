@@ -10,7 +10,7 @@ import { dismissThreadError, presentThreadError } from "./threadErrorDismissal";
 
 const at = (minute: number) => DateTime.makeUnsafe(Date.UTC(2026, 2, 29, 0, minute));
 
-type RunStatus = "running" | "completed" | "failed";
+type RunStatus = "queued" | "running" | "completed" | "failed";
 
 interface ThreadParts {
   runs?: ReadonlyArray<object>;
@@ -35,8 +35,8 @@ function run(id: string, ordinal: number, status: RunStatus): ThreadParts {
         ordinal,
         status,
         requestedAt: at(minute),
-        startedAt: at(minute),
-        completedAt: status === "running" ? null : at(minute + 1),
+        startedAt: status === "queued" ? null : at(minute),
+        completedAt: status === "running" || status === "queued" ? null : at(minute + 1),
         rootNodeId: `root-${id}`,
       },
     ],
@@ -271,6 +271,50 @@ describe("dismissing a thread error", () => {
     expect(onScreen(key, expanded())).toBeNull();
     expect(onScreen(key, bounded())).toBeNull();
     expect(onScreen(key, expanded())).toBeNull();
+  });
+
+  it("stays dismissed when a fuller run history brings an older failed run", () => {
+    const key = "env:run-window";
+    const old = session("Provider crashed", 22);
+    // A bounded snapshot holds only the latest run; run-1 failed before it.
+    const windowed = thread(run("run-2", 2, "completed"), old);
+    expect(onScreen(key, windowed)).toBe("Provider crashed");
+    dismiss(key, windowed);
+
+    const fuller = thread(
+      failedRun("run-1", 1, "Provider crashed"),
+      run("run-2", 2, "completed"),
+      old,
+    );
+    expect(onScreen(key, fuller)).toBeNull();
+
+    const later = thread(
+      failedRun("run-1", 1, "Provider crashed"),
+      run("run-2", 2, "completed"),
+      failedRun("run-3", 3, "Provider crashed"),
+      old,
+    );
+    expect(onScreen(key, later)).toBe("Provider crashed");
+  });
+
+  it("shows a run that was queued at dismissal when it later fails", () => {
+    const key = "env:queued-at-dismissal";
+    const first = failedRun("run-1", 1, "Provider crashed");
+    const old = session("Provider crashed", 12);
+    // run-3 was queued ahead of run-2, so the watermark is run-3's ordinal.
+    const before = thread(first, run("run-2", 2, "queued"), run("run-3", 3, "running"), old);
+    expect(onScreen(key, before)).toBe("Provider crashed");
+    dismiss(key, before);
+
+    const settled = thread(first, run("run-2", 2, "queued"), run("run-3", 3, "completed"), old);
+    expect(onScreen(key, settled)).toBeNull();
+    const failed = thread(
+      first,
+      failedRun("run-2", 2, "Provider crashed"),
+      run("run-3", 3, "completed"),
+      old,
+    );
+    expect(onScreen(key, failed)).toBe("Provider crashed");
   });
 
   it("keeps a dismissal after two hundred and one dismissals on other threads", () => {

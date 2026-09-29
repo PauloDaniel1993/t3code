@@ -12,33 +12,31 @@ import {
 /*
  * Dismissing a thread's error banner, and deciding when it comes back.
  *
- * Rule: a dismissed error on a thread stays hidden until the thread has a
- * failed run that had not failed when the user dismissed, or until the
+ * Rule: a dismissed error on a thread stays hidden until a run fails that
+ * comes after the latest run the thread had at dismissal, in V2's run order
+ * (`ordinal`), or a run fails that had not finished then; or until the
  * thread's error text becomes one it did not have at dismissal.
  *
- * A dismissal records a watermark, not an identity for the error: the texts
- * the thread had, which runs had failed, and which run was the latest. Every
- * field an identity could be built from (a session's update time, the latest
- * run's status, error items in the loaded history window) also changes for
- * reasons other than a new failure. Runs are in every snapshot, bounded or
- * not, so the watermark reads only them.
+ * The run half is a watermark by order rather than by membership: the client
+ * may hold only a window of the thread's runs, and a fuller history can bring
+ * older failed runs it never saw. Those are below the watermark, so they never
+ * bring the banner back.
  *
- * The latest run at dismissal is not new when it later fails with a dismissed
- * text: a provider publishes a failure on the session first and finalises the
- * run afterwards, and that is one failure. A new failed run is shown with its
- * own message, even while the session still holds older text, which V2's
- * `threadErrorSummary` would otherwise prefer.
+ * The run that was executing at dismissal is not new when it later fails with
+ * a text dismissed then: a provider publishes a failure on the session first
+ * and finalises the run afterwards, and that is one failure. A new failed run
+ * is shown with its own message and class, even while the session still holds
+ * older text, which V2's `threadErrorSummary` would otherwise prefer.
  *
- * Client-local errors are not recorded: the dismiss handler clears them.
+ * Client-local errors always show; the dismiss handler clears them.
  *
  * State is renderer memory, one entry per environment-scoped thread key, and
  * is lost on reload, as upstream's mask is. A dismissal replaces the thread's
- * entry. Entries are not evicted: one is written only by a click and holds a
- * few strings and run ids, so an entry for a thread deleted since stays until
- * reload.
+ * entry; an entry holds one or two texts, an ordinal and the ids of runs
+ * still unfinished at dismissal.
  *
  * Known limit: two session-only failures with the same text and no run
- * between them are one banner. A different text always shows.
+ * between them are one banner.
  */
 
 type FailureClass = OrchestrationV2ProviderFailureClass | null;
@@ -46,8 +44,12 @@ type Projection = Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">;
 
 interface Dismissal {
   readonly texts: ReadonlyArray<string>;
-  readonly failedRunIds: ReadonlySet<string>;
-  readonly latestRunId: string | null;
+  /** The highest run ordinal the thread had at dismissal. */
+  readonly latestOrdinal: number;
+  /** Runs that had not finished at dismissal and may still fail. */
+  readonly unfinishedRunIds: ReadonlySet<string>;
+  /** The run executing at dismissal, whose failure the session may have published first. */
+  readonly executingRunId: string | null;
 }
 
 /** What the dismiss handler records for the error on screen. */
@@ -63,6 +65,14 @@ export interface PresentedThreadError {
   /** Null when there is nothing to remember, such as a client-local error. */
   readonly dismissal: PendingThreadErrorDismissal | null;
 }
+
+const FINISHED_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
+  "completed",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "rolled_back",
+]);
 
 const dismissalsByThreadKey = new Map<string, Dismissal>();
 
@@ -92,13 +102,14 @@ function failureSinceDismissal(
 ): { readonly message: string; readonly errorClass: FailureClass } | null {
   let newest: OrchestrationV2Run | null = null;
   for (const run of projection.runs) {
-    if (run.status !== "failed" || dismissal.failedRunIds.has(run.id)) continue;
+    if (run.status !== "failed") continue;
+    if (run.ordinal <= dismissal.latestOrdinal && !dismissal.unfinishedRunIds.has(run.id)) continue;
     if (newest === null || run.ordinal > newest.ordinal) newest = run;
   }
   if (newest === null) return null;
   const failure = rootFailure(newest, projection.turnItems);
   const message = failure?.message ?? serverError;
-  if (newest.id === dismissal.latestRunId && dismissal.texts.includes(message)) return null;
+  if (newest.id === dismissal.executingRunId && dismissal.texts.includes(message)) return null;
   return failure === null
     ? { message: serverError, errorClass: serverErrorClass }
     : { message: failure.message, errorClass: failure.class };
@@ -107,7 +118,7 @@ function failureSinceDismissal(
 /**
  * The thread error to show in the banner, or null once the user dismissed it.
  * `serverError` and `serverErrorClass` are the thread runtime's `lastError`
- * and `lastErrorClass`; a local error takes precedence, as in the chat view.
+ * and `lastErrorClass`. A local error takes precedence, as in the chat view.
  */
 export function presentThreadError(input: {
   threadKey: string;
@@ -145,13 +156,17 @@ export function presentThreadError(input: {
 /** Records the watermark for the error the user just dismissed. */
 export function dismissThreadError(pending: PendingThreadErrorDismissal | null): void {
   if (pending === null) return;
-  const failedRunIds = new Set<string>();
+  let latestOrdinal = 0;
+  const unfinishedRunIds = new Set<string>();
   for (const run of pending.runs) {
-    if (run.status === "failed") failedRunIds.add(run.id);
+    if (run.ordinal > latestOrdinal) latestOrdinal = run.ordinal;
+    if (!FINISHED_RUN_STATUSES.has(run.status)) unfinishedRunIds.add(run.id);
   }
+  const executing = latestExecutedRun(pending.runs);
   dismissalsByThreadKey.set(pending.threadKey, {
     texts: pending.texts,
-    failedRunIds,
-    latestRunId: latestExecutedRun(pending.runs)?.id ?? null,
+    latestOrdinal,
+    unfinishedRunIds,
+    executingRunId: executing !== null && unfinishedRunIds.has(executing.id) ? executing.id : null,
   });
 }
