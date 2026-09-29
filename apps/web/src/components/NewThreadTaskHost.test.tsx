@@ -3,8 +3,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { makeThreadProjectionFixture } from "../test-fixtures";
 import { openNewThreadTaskDialog } from "../newThreadTaskBus";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -16,16 +17,22 @@ import { NewThreadTaskAction } from "./NewThreadTaskAction";
 const state = vi.hoisted(() => ({
   route: null as ScopedThreadRef | null,
   parents: new Map<string, OrchestrationV2ThreadProjection>(),
+  statuses: new Map<string, EnvironmentThreadStatus>(),
   parentListeners: new Set<() => void>(),
   connected: true,
   startTurn: vi.fn(),
   toast: vi.fn(),
 }));
 const key = (ref: ScopedThreadRef) => `${ref.environmentId}:${ref.threadId}`;
+const parentStatus = (ref: ScopedThreadRef) =>
+  state.statuses.get(key(ref)) ?? (state.parents.has(key(ref)) ? "live" : "synchronizing");
 
 vi.mock("@effect/atom-react", async () => {
   const { DEFAULT_RESOLVED_KEYBINDINGS } = await import("@t3tools/shared/keybindings");
-  return { useAtomValue: () => DEFAULT_RESOLVED_KEYBINDINGS };
+  return {
+    useAtomValue: (atom: { kind?: string; ref?: ScopedThreadRef }) =>
+      atom.kind === "status" && atom.ref ? parentStatus(atom.ref) : DEFAULT_RESOLVED_KEYBINDINGS,
+  };
 });
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => (state.route ? { kind: "server", threadRef: state.route } : null),
@@ -55,7 +62,7 @@ vi.mock("../rpc/atomRegistry", () => ({
         const projection = state.parents.get(`${atom.ref.environmentId}:${atom.ref.threadId}`);
         return projection ? { projection } : null;
       }
-      if (atom.kind === "status") return "live";
+      if (atom.kind === "status" && atom.ref) return parentStatus(atom.ref);
       if (atom.kind === "presentation")
         return { connection: { phase: state.connected ? "connected" : "disconnected" } };
       if (atom.kind === "config")
@@ -66,6 +73,7 @@ vi.mock("../rpc/atomRegistry", () => ({
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => state.startTurn }));
 vi.mock("../hooks/useNewThreadTaskAvailability", async () => {
   const { useSyncExternalStore } = await import("react");
+  const { getNewThreadTaskUnavailableReason } = await import("./NewThreadTaskDialog.logic");
   return {
     useNewThreadTaskParent: (ref: ScopedThreadRef) =>
       useSyncExternalStore(
@@ -77,8 +85,24 @@ vi.mock("../hooks/useNewThreadTaskAvailability", async () => {
         },
         () => state.parents.get(`${ref.environmentId}:${ref.threadId}`)?.thread ?? null,
       ),
-    useNewThreadTaskAvailability: () => ({
-      problem: state.connected ? null : "Connect to this thread's environment to request a task.",
+    useNewThreadTaskAvailability: (ref: ScopedThreadRef) => ({
+      problem: useSyncExternalStore(
+        (listener) => {
+          state.parentListeners.add(listener);
+          return () => {
+            state.parentListeners.delete(listener);
+          };
+        },
+        () =>
+          getNewThreadTaskUnavailableReason({
+            projection: state.parents.get(key(ref)) ?? null,
+            status: parentStatus(ref),
+            connected: state.connected,
+            providers: [
+              { instanceId: ProviderInstanceId.make("codex"), enabled: true, status: "ready" },
+            ],
+          }),
+      ),
       providers: [],
     }),
   };
@@ -120,6 +144,7 @@ const routeRef = scopeThreadRef(EnvironmentId.make("local"), ThreadId.make("open
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.parents.clear();
+  state.statuses.clear();
   state.parentListeners.clear();
   state.parents.set(key(routeRef), {
     ...makeThreadProjectionFixture(),
@@ -209,7 +234,7 @@ describe("shared task host", () => {
         initialDraft: { title: "Loading draft", prompt: "Check the files" },
       }),
     );
-    expect(document.body.textContent).toContain("Loading the parent thread");
+    expect(document.body.textContent).toContain("Wait for the thread to load.");
     const projection = makeThreadProjectionFixture();
     state.parents.set(key(ref), {
       ...projection,
@@ -220,6 +245,36 @@ describe("shared task host", () => {
     });
     expect(container.textContent).toContain("Loading draft");
     expect(container.textContent).toContain("Check the files");
+  });
+
+  it("offers only Cancel when the requested parent does not exist", async () => {
+    const ref = scopeThreadRef(EnvironmentId.make("remote"), ThreadId.make("missing-parent"));
+    state.statuses.set(key(ref), "deleted");
+    await act(async () => root.render(<NewThreadTaskHost />));
+    await act(async () => openNewThreadTaskDialog({ threadRef: ref }));
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("This thread is no longer available.");
+    const buttons = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"));
+    expect(buttons.map((button) => button.textContent)).toEqual(["Cancel"]);
+    await act(async () => buttons[0]!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(state.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("replaces an open draft with only Cancel when its parent is deleted", async () => {
+    await act(async () => root.render(<NewThreadTaskHost />));
+    await act(async () => openNewThreadTaskDialog({ threadRef: routeRef }));
+    expect(container.textContent).toContain("Request task");
+    state.parents.delete(key(routeRef));
+    state.statuses.set(key(routeRef), "deleted");
+    await act(async () => {
+      for (const listener of state.parentListeners) listener();
+    });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("This thread is no longer available.");
+    const buttons = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"));
+    expect(buttons.map((button) => button.textContent)).toEqual(["Cancel"]);
+    expect(state.startTurn).not.toHaveBeenCalled();
   });
 
   it("shows the unavailable reason when the shortcut is pressed", async () => {

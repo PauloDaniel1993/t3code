@@ -215,7 +215,7 @@ describe("inherited modes", () => {
 function availability(
   overrides: {
     projection?: OrchestrationV2ThreadProjection | null;
-    status?: "cached" | "live";
+    status?: Parameters<typeof getNewThreadTaskUnavailableReason>[0]["status"];
     connected?: boolean;
     providers?: Parameters<typeof getNewThreadTaskUnavailableReason>[0]["providers"];
   } = {},
@@ -249,6 +249,25 @@ describe("shared entry point guards", () => {
     expect(availability({ connected: false })).not.toBeNull();
     expect(availability({ status: "cached" })).not.toBeNull();
     expect(availability({ projection: null })).not.toBeNull();
+  });
+
+  it("distinguishes a missing or deleted parent from one that is still loading", () => {
+    expect(availability({ projection: null, status: "synchronizing" })).toBe(
+      "Wait for the thread to load.",
+    );
+    expect(availability({ projection: null, status: "deleted" })).toBe(
+      "This thread is no longer available.",
+    );
+    const projection = makeThreadProjectionFixture();
+    expect(
+      availability({
+        connected: false,
+        projection: {
+          ...projection,
+          thread: { ...projection.thread, deletedAt: projection.thread.createdAt },
+        },
+      }),
+    ).toBe("This thread is no longer available.");
   });
 
   it("blocks archived and deleted threads", () => {

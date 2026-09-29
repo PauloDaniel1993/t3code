@@ -171,6 +171,7 @@ function NewThreadTaskSession({
 }) {
   const { threadRef } = request;
   const parent = useNewThreadTaskParent(threadRef);
+  const status = useAtomValue(environmentThreadDetails.statusAtom(threadRef));
   const { problem } = useNewThreadTaskAvailability(threadRef);
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const previous = useRef<NewThreadTaskRequest | null>(null);
@@ -204,7 +205,8 @@ function NewThreadTaskSession({
     return error instanceof Error ? error.message : "Could not request a task.";
   }
 
-  return initialModel ? (
+  const parentUnavailable = status === "deleted" || (parent?.deletedAt ?? null) !== null;
+  return initialModel && !parentUnavailable ? (
     <NewThreadTaskDialog
       parentThreadRef={threadRef}
       initialModelSelection={initialModel}
@@ -219,7 +221,7 @@ function NewThreadTaskSession({
         if (!open) onClose();
       }}
     >
-      <DialogPopup>
+      <DialogPopup showCloseButton={!parentUnavailable}>
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>{problem ?? "Loading the parent thread…"}</DialogDescription>

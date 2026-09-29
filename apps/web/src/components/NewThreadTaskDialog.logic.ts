@@ -73,10 +73,13 @@ export function getNewThreadTaskUnavailableReason(input: {
   readonly connected: boolean;
   readonly providers: ReadonlyArray<ProviderAvailability>;
 }): string | null {
+  if (input.status === "deleted" || (input.projection?.thread.deletedAt ?? null) !== null) {
+    return "This thread is no longer available.";
+  }
   if (!input.connected) return "Connect to this thread's environment to request a task.";
   if (input.status !== "live" || input.projection === null) return "Wait for the thread to load.";
   const { thread, runtimeRequests } = input.projection;
-  if (thread.deletedAt !== null || thread.archivedAt !== null) {
+  if (thread.archivedAt !== null) {
     return "Reopen this thread to request a task.";
   }
   if (isProviderNativeSubagentThread(thread)) {
