@@ -23,7 +23,7 @@ export function retainProviderHistoryGraph(
   for (const { item } of visible) {
     if (item.nodeId != null) nodeIds.add(item.nodeId);
     if (item.providerTurnId != null) providerTurnIds.add(item.providerTurnId);
-    if ("runtimeRequestId" in item) requestIds.add(String(item.runtimeRequestId));
+    if ("requestId" in item) requestIds.add(String(item.requestId));
     if ("checkpointId" in item) checkpointIds.add(String(item.checkpointId));
   }
   for (const node of projection.nodes) if (active(node.status)) nodeIds.add(node.id);
