@@ -285,6 +285,7 @@ import {
 import { cn, randomUUID } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { recoverFailedSendDraft, removeFailedOptimisticMessage } from "./chat/failedSendRecovery";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -9295,48 +9296,45 @@ export default function ChatView(props: ChatViewProps) {
         );
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
-      if (
-        backgroundDraftOpened
-          ? !composerDraftHasUserContent(
-              useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
-            )
-          : promptRef.current.length === 0 &&
-            composerImagesRef.current.length === 0 &&
-            composerFilesRef.current.length === 0 &&
-            composerTerminalContextsRef.current.length === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
-              ?.previewAnnotations.length ?? 0) === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
-              .length ?? 0) === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.threadContexts
-              .length ?? 0) === 0
-      ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
-        promptRef.current = messageTextForSend;
-        const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
-        composerImagesRef.current = retryComposerImages;
-        composerFilesRef.current = composerFilesSnapshot;
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, messageTextForSend);
-        addComposerDraftImages(composerDraftTarget, retryComposerImages);
-        addComposerDraftFiles(composerDraftTarget, composerFilesSnapshot);
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
-        setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
-        setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
-        setComposerDraftThreadContexts(composerDraftTarget, composerThreadContextsSnapshot);
-        composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(messageTextForSend, messageTextForSend.length),
+      setOptimisticUserMessages((existing) =>
+        removeFailedOptimisticMessage(existing, messageIdForSend),
+      );
+      recoverFailedSendDraft({
+        target: composerDraftTarget,
+        failedDraft: {
           prompt: messageTextForSend,
-          detectTrigger: true,
-        });
-      }
+          images: composerImagesSnapshot,
+          files: composerFilesSnapshot,
+          terminalContexts: composerTerminalContextsSnapshot,
+          previewAnnotations: composerPreviewAnnotationsSnapshot,
+          reviewComments: composerReviewCommentsSnapshot,
+          threadContexts: composerThreadContextsSnapshot,
+        },
+        isSendPending: () => sendInFlightRef.current,
+        onRestored: (draft) => {
+          if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
+          promptRef.current = draft.prompt;
+          composerImagesRef.current = draft.images;
+          composerFilesRef.current = draft.files;
+          composerTerminalContextsRef.current = draft.terminalContexts;
+          composerRef.current?.resetCursorState({
+            cursor: collapseExpandedComposerCursor(draft.prompt, draft.prompt.length),
+            prompt: draft.prompt,
+            detectTrigger: true,
+          });
+        },
+        openComposer: () => {
+          void navigate(
+            draftId && useComposerDraftStore.getState().getDraftSession(draftId)
+              ? { to: "/draft/$draftId", params: { draftId } }
+              : {
+                  to: "/$environmentId/$threadId",
+                  params: buildThreadRouteParams(scopeThreadRef(environmentId, threadIdForSend)),
+                },
+          );
+        },
+        toasts: toastManager,
+      });
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(
