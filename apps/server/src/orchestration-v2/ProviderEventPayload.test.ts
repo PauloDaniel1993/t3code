@@ -191,23 +191,36 @@ describe("provider payload preservation", () => {
       const secrets = ["ghp_abc", "sk-abcdefghijklmnop1234", "AKIA1234567890ABCDEF"];
 
       const body = secrets.join(" ");
+      const credentials = {
+        env: { GITHUB_TOKEN: "ghp_abc", AWS_SECRET_ACCESS_KEY: "xyz" },
+        password: 'prefix"REVIEW_SECRET_SUFFIX\\tail',
+        message: "keep this",
+      };
+      const embedded = JSON.stringify(credentials);
 
       const text =
         container === "json"
-          ? JSON.stringify({ text: body, password: 'prefix"suffix' })
+          ? JSON.stringify({ text: body, ...credentials })
           : container === "shell"
-            ? `export GITHUB_TOKEN=ghp_abc AWS_SECRET_ACCESS_KEY=xyz\n${body}`
+            ? `export GITHUB_TOKEN=ghp_abc AWS_SECRET_ACCESS_KEY=xyz\nprintf '%s' '${embedded}'\n${body}`
             : container === "diff"
-              ? `+const key = "${body}";`
-              : `const key = "${body}";`;
+              ? `+const key = "${body}";\n+const credentials = ${embedded};`
+              : `const key = "${body}";\nconst credentials = ${embedded};`;
 
       const result = String(boundProviderToolResult(text));
 
       for (const secret of secrets) expect(result).not.toContain(secret);
 
       expect(result).not.toContain("prefix");
-
-      if (container === "shell") expect(result).not.toContain("=xyz");
+      expect(result).not.toContain("REVIEW_SECRET_SUFFIX");
+      expect(result).not.toContain("xyz");
+      expect(result).toContain("keep this");
+      expect(
+        sanitize({ ...base, type: "command_execution", input: text, output: text }),
+      ).toMatchObject({ input: result, output: result });
+      expect(
+        sanitize({ ...base, type: "file_change", fileName: "a.ts", diffStr: text }),
+      ).toMatchObject({ diffStr: result });
     },
   );
 
