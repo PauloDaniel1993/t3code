@@ -180,8 +180,24 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
     entry: (typeof owned)[number];
     item: OrchestratorMcpTaskListResult["tasks"][number];
   }[] = [];
+  const fits = (result: OrchestratorMcpTaskListResult) =>
+    taskListResponseBytes(result) <= TASK_LIST_RESPONSE_MAX_BYTES &&
+    (result.nextCursor?.length ?? 0) <= 8_000;
+  let hasMore = false;
   for (const entry of remaining) {
     const { task } = entry;
+    // Published terminal status is authoritative in the parent. Child state is
+    // still needed for matches, including pending follow-ups and later results.
+    if (
+      input.status !== undefined &&
+      task.result !== null &&
+      (task.status === "completed" ||
+        task.status === "failed" ||
+        task.status === "cancelled" ||
+        task.status === "interrupted") &&
+      forkTaskStatus(task.status) !== input.status
+    )
+      continue;
     const status = yield* readTask(task.id, parent).pipe(Effect.result);
     let item: OrchestratorMcpTaskListResult["tasks"][number] | undefined;
     if (status._tag === "Failure" && input.status === undefined) {
@@ -219,11 +235,26 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
             }),
       };
     }
-    if (item !== undefined) matching.push({ entry, item });
+    if (item !== undefined) {
+      matching.push({ entry, item });
+      // One matching lookahead establishes a non-empty continuation; never read
+      // the remaining tail after the limit or minimum-preview budget is full.
+      if (
+        matching.length > (input.limit ?? Infinity) ||
+        !fits(page(matching.length, TASK_LIST_SUMMARY_MIN_CHARS, true))
+      ) {
+        hasMore = true;
+        break;
+      }
+    }
   }
   if (matching.length === 0) return { parentThreadId: threadId, tasks: [], nextCursor: null };
 
-  const page = (count: number, previewChars: number): OrchestratorMcpTaskListResult => {
+  function page(
+    count: number,
+    previewChars: number,
+    more = hasMore,
+  ): OrchestratorMcpTaskListResult {
     const selected = matching.slice(0, count);
     return {
       parentThreadId: threadId,
@@ -237,14 +268,11 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
             }),
       })),
       nextCursor:
-        count === matching.length
+        count === matching.length && !more
           ? null
           : encodeCursor(advanceCursor(selected.map(({ entry }) => entry))),
     };
-  };
-  const fits = (result: OrchestratorMcpTaskListResult) =>
-    taskListResponseBytes(result) <= TASK_LIST_RESPONSE_MAX_BYTES &&
-    (result.nextCursor?.length ?? 0) <= 8_000;
+  }
   let count = Math.min(input.limit ?? matching.length, matching.length);
   // First shorten every preview to try to fit all matches, then page only when
   // the compact metadata and minimum previews still exceed the envelope budget.

@@ -741,6 +741,57 @@ it.effect(
   },
 );
 
+it.effect("bounds child reads for 120 tasks, filtered discovery, and complete pagination", () => {
+  const tasks = Array.from({ length: 120 }, (_, index) =>
+    task(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, {
+      title: "Review component and report findings.",
+      startedAt: DateTime.makeUnsafe(DateTime.toEpochMillis(now) + index),
+      ...(index < 110
+        ? { result: `Report ${index}: ` + "Long completed task result. ".repeat(1_000) }
+        : { result: null, status: "running" }),
+    }),
+  );
+  const records = recordsFor(tasks);
+  const reads: ThreadId[] = [];
+  return Effect.gen(function* () {
+    const service = yield* OrchestratorMcpService;
+    const running = yield* service.listTasks(scope, { status: "running" });
+    expect(running.tasks.map((entry) => entry.taskId)).toEqual(
+      tasks
+        .slice(110)
+        .toReversed()
+        .map((entry) => entry.id),
+    );
+    expect(running.nextCursor).toBeNull();
+    expect(reads).toHaveLength(21);
+    expect(reads.filter((id) => id === parentId)).toHaveLength(1);
+    for (const settled of tasks.slice(0, 110)) expect(reads).not.toContain(settled.childThreadId);
+    reads.length = 0;
+    const first = yield* service.listTasks(scope, {});
+    expect(first.nextCursor).not.toBeNull();
+    expect(first.tasks.length).toBeLessThan(120);
+    expect(reads).toHaveLength(1 + 2 * (first.tasks.length + 1));
+    const seen = first.tasks.map((entry) => entry.taskId);
+    let cursor = first.nextCursor;
+    let pages = 1;
+    while (cursor !== null) {
+      const page = yield* service.listTasks(scope, { cursor });
+      expect(page.tasks.length).toBeGreaterThan(0);
+      expect(taskListResponseBytes(page)).toBeLessThanOrEqual(TASK_LIST_RESPONSE_MAX_BYTES);
+      seen.push(...page.tasks.map((entry) => entry.taskId));
+      cursor = page.nextCursor;
+      pages++;
+    }
+    expect(seen).toEqual(tasks.toReversed().map((entry) => entry.id));
+    expect(reads).toHaveLength(240 + 2 * (pages - 1) + pages);
+    expect(reads.filter((id) => id === parentId)).toHaveLength(pages);
+    reads.length = 0;
+    const limited = yield* service.listTasks(scope, { limit: 1 });
+    expect(limited.tasks).toHaveLength(1);
+    expect(reads).toHaveLength(5);
+  }).pipe(Effect.provide(makeLayer(records, { reads })));
+});
+
 it.effect(
   "passes Claude ultrathink to the adapter so the child prompt gets exactly one prefix",
   () => {
