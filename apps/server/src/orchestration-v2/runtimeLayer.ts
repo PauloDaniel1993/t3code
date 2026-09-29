@@ -27,6 +27,10 @@ import { layer as idAllocatorLayer } from "./IdAllocator.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import { layer as orchestratorLayer } from "./Orchestrator.ts";
 import { layer as projectionStoreLayer } from "./ProjectionStore.ts";
+import {
+  layer as attachmentProjectionLayer,
+  sinkLayer as attachmentSinkLayer,
+} from "./AttachmentProjection.ts";
 import { layer as projectionMaintenanceLayer } from "./ProjectionMaintenance.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { layerFromProviderInstanceRegistry as providerAdapterRegistryLayerFromProviderInstances } from "./ProviderAdapterRegistry.ts";
@@ -77,7 +81,15 @@ const storesLayer = Layer.mergeAll(
   turnItemPositionStoreLayer,
 );
 
-export const OrchestrationV2EventSinkLayerLive = eventSinkLayer.pipe(Layer.provide(storesLayer));
+const attachmentStoresLayer = attachmentProjectionLayer.pipe(Layer.provide(storesLayer));
+export const OrchestrationV2EventSinkLayerLive = attachmentSinkLayer.pipe(
+  Layer.provide(
+    Layer.merge(
+      effectOutboxLayer,
+      eventSinkLayer.pipe(Layer.provide(Layer.merge(storesLayer, attachmentStoresLayer))),
+    ),
+  ),
+);
 const eventSinkProvided = OrchestrationV2EventSinkLayerLive;
 const projectionMaintenanceProvided = projectionMaintenanceLayer.pipe(Layer.provide(storesLayer));
 const legacyV1ThreadImporterProvided = LegacyV1ThreadImporter.layer.pipe(
@@ -256,6 +268,7 @@ const threadTitleRegenerationProvided = threadTitleRegenerationServiceLayer.pipe
 const effectExecutorProvided = effectExecutorLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      effectOutboxLayer,
       runFinalizationServiceProvided,
       checkpointRollbackServiceProvided,
       providerSessionManagerProvided,

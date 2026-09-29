@@ -43,6 +43,16 @@ import { OrchestrationV2EventSinkLayerLive } from "./runtimeLayer.ts";
 const configLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-attachment-protections-" });
 const databaseLayer = SqlitePersistenceMemory;
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeDraft = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      attachments: Schema.Array(Schema.Struct({ uploadedAttachmentId: Schema.String })),
+    }),
+  ),
+);
+const decodeTestClaims = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
 const testLayer = Layer.mergeAll(
   databaseLayer,
   configLayer,
@@ -171,6 +181,171 @@ const deleteThread = Effect.fnUntraced(function* (thread: OrchestrationV2AppThre
   });
 });
 
+const signedClaim = Effect.fnUntraced(function* (claims: object, secretOverride?: Uint8Array) {
+  const secrets = yield* ServerSecretStore.ServerSecretStore;
+  const secret =
+    secretOverride ?? (yield* secrets.getOrCreateRandom("asset-access-signing-key", 32));
+  const encoded = base64UrlEncode(
+    encodeJson({
+      version: 1,
+      kind: "attachment",
+      expiresAt: DateTime.toEpochMillis(yield* DateTime.now) + 10000,
+      ...claims,
+    }),
+  );
+  return `${encoded}.${signPayload(encoded, secret)}`;
+});
+
+describe("pending draft verification", () => {
+  for (const extension of ["png", "pdf"]) {
+    it.effect(
+      `verifies a persisted pending ${extension} after a draft reload without consulting projections`,
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const config = yield* ServerConfig;
+          const id = `pending-00000000-0000-4000-8000-000000000002${extension === "pdf" ? "-pdf" : ""}`;
+          const file = path.join(config.attachmentsDir, `${id}.${extension}`);
+          yield* fs.writeFile(file, new Uint8Array([1, 2, 3]));
+          const draft = yield* decodeDraft(
+            encodeJson({ attachments: [{ uploadedAttachmentId: id }] }),
+          );
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DROP TABLE fork_v2_attachment_references`;
+          const minted = yield* issueAssetUrl({
+            resource: {
+              _tag: "attachment",
+              attachmentId: draft.attachments[0]!.uploadedAttachmentId,
+            },
+          });
+          expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toMatchObject({
+            kind: "file",
+            path: file,
+          });
+          yield* fs.remove(file);
+          expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toBeNull();
+          expect(
+            (yield* issueAssetUrl({ resource: { _tag: "attachment", attachmentId: id } }).pipe(
+              Effect.flip,
+            ))._tag,
+          ).toBe("AssetAttachmentNotFoundError");
+        }).pipe(Effect.provide(testLayer)),
+    );
+  }
+  it.effect(
+    "refuses pending claims for a different file, owner, identity, signature or expiry",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig;
+        const id = "pending-00000000-0000-4000-8000-000000000002";
+        const otherId = "pending-00000000-0000-4000-8000-000000000003";
+        const file = path.join(config.attachmentsDir, `${id}.png`);
+        yield* fs.writeFileString(file, "pending");
+        yield* fs.writeFileString(path.join(config.attachmentsDir, `${otherId}.png`), "other");
+        const minted = yield* issueAssetUrl({ resource: { _tag: "attachment", attachmentId: id } });
+        const claims = decodeTestClaims(
+          Buffer.from(tokenOf(minted.relativeUrl).split(".")[0]!, "base64url").toString(),
+        );
+        for (const extra of [
+          { relativePath: `${otherId}.png` },
+          { attachmentId: otherId },
+          { threadId: ownerId },
+          { device: "different" },
+          { inode: "different" },
+          { relativePath: undefined },
+          { device: undefined, inode: undefined },
+          { expiresAt: 0 },
+          { attachmentId: attachment.id, relativePath: `${attachment.id}.png` },
+        ])
+          expect(
+            yield* resolveAsset(yield* signedClaim({ ...claims, ...extra }), "attachment"),
+          ).toBeNull();
+        expect(yield* resolveAsset(`${tokenOf(minted.relativeUrl)}x`, "attachment")).toBeNull();
+        expect(
+          yield* resolveAsset(yield* signedClaim(claims, new Uint8Array(32).fill(7)), "attachment"),
+        ).toBeNull();
+        const replacement = path.join(config.attachmentsDir, "replacement.png");
+        yield* fs.writeFileString(replacement, "replacement");
+        yield* fs.remove(file);
+        yield* fs.rename(replacement, file);
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toBeNull();
+        yield* TestClock.adjust("61 minutes");
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toBeNull();
+      }).pipe(Effect.provide(testLayer)),
+  );
+  it.effect.skipIf(!symlinksSupported)("refuses pending symlinks at issue and redemption", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const id = "pending-00000000-0000-4000-8000-000000000002";
+      const file = path.join(config.attachmentsDir, `${id}.png`);
+      yield* fs.writeFileString(file, "pending");
+      const minted = yield* issueAssetUrl({ resource: { _tag: "attachment", attachmentId: id } });
+      const target = path.join(config.stateDir, "outside.png");
+      yield* fs.writeFileString(target, "outside");
+      yield* fs.remove(file);
+      yield* Effect.promise(() => NodeFSP.symlink(target, file));
+      expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toBeNull();
+      expect(
+        (yield* issueAssetUrl({ resource: { _tag: "attachment", attachmentId: id } }).pipe(
+          Effect.flip,
+        ))._tag,
+      ).toBe("AssetAttachmentNotFoundError");
+    }).pipe(Effect.provide(testLayer)),
+  );
+});
+
+for (const bad of [
+  "\\\\server\\share\\file",
+  `${attachment.id}:stream`,
+  attachment.id.toUpperCase(),
+]) {
+  it.effect(`refuses unsafe ID and signed path ${bad}`, () =>
+    Effect.gen(function* () {
+      yield* seedAttachment();
+      expect(
+        (yield* issueAssetUrl({ resource: { _tag: "attachment", attachmentId: bad } }).pipe(
+          Effect.flip,
+        ))._tag,
+      ).toBe("AssetAttachmentNotFoundError");
+      expect(
+        yield* resolveAsset(
+          yield* signedClaim({
+            attachmentId: bad,
+            threadId: ownerId,
+            relativePath: `${attachment.id}.png`,
+          }),
+          "attachment",
+        ),
+      ).toBeNull();
+      expect(
+        yield* resolveAsset(
+          yield* signedClaim({ attachmentId: attachment.id, threadId: ownerId, relativePath: bad }),
+          "attachment",
+        ),
+      ).toBeNull();
+      const pendingId = "pending-00000000-0000-4000-8000-000000000002";
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      yield* fs.writeFileString(path.join(config.attachmentsDir, `${pendingId}.png`), "pending");
+      const minted = yield* issueAssetUrl({
+        resource: { _tag: "attachment", attachmentId: pendingId },
+      });
+      const claims = decodeTestClaims(
+        Buffer.from(tokenOf(minted.relativeUrl).split(".")[0]!, "base64url").toString(),
+      );
+      expect(
+        yield* resolveAsset(yield* signedClaim({ ...claims, relativePath: bad }), "attachment"),
+      ).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+}
+
 describe("signed attachment ownership", () => {
   it.effect.skipIf(!symlinksSupported)(
     "refuses a referenced path replaced by a symlink outside the attachment directory",
@@ -199,12 +374,6 @@ describe("signed attachment ownership", () => {
       const { file } = yield* seedAttachment();
       const otherId = ThreadId.make("thread-other");
       yield* createThread(otherId);
-      for (const threadId of [otherId, ThreadId.make("missing")]) {
-        const error = yield* issueAssetUrl({
-          resource: { _tag: "attachment", attachmentId: attachment.id, threadId },
-        }).pipe(Effect.flip);
-        expect(error._tag).toBe("AssetAttachmentNotFoundError");
-      }
       const result = yield* issue();
       const resolved = yield* resolveAsset(tokenOf(result.relativeUrl), "image.png");
       expect(resolved).toMatchObject({ kind: "file", path: file });
@@ -214,18 +383,13 @@ describe("signed attachment ownership", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("refuses orphan and pending files even when they have a plausible thread prefix", () =>
+  it.effect("refuses orphan files and unsafe IDs even when the file exists", () =>
     Effect.gen(function* () {
       yield* createThread();
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const config = yield* ServerConfig;
-      for (const attachmentId of [
-        attachment.id,
-        "pending-00000000-0000-4000-8000-000000000001",
-        "../outside",
-        "C:\\outside",
-      ]) {
+      for (const attachmentId of [attachment.id, "../outside", "C:\\outside"]) {
         if (!attachmentId.includes("/") && !attachmentId.includes("\\"))
           yield* fs.writeFile(
             path.join(config.attachmentsDir, `${attachmentId}.png`),
@@ -244,10 +408,12 @@ describe("signed attachment ownership", () => {
       yield* seedAttachment();
       const collidingId = ThreadId.make("Thread Owner");
       yield* createThread(collidingId);
-      const error = yield* issueAssetUrl({
-        resource: { _tag: "attachment", attachmentId: attachment.id, threadId: collidingId },
-      }).pipe(Effect.flip);
-      expect(error._tag).toBe("AssetAttachmentNotFoundError");
+      const issued = yield* issue();
+      const claims = decodeTestClaims(
+        Buffer.from(tokenOf(issued.relativeUrl).split(".")[0]!, "base64url").toString(),
+      );
+      expect(claims.threadId).toBe(ownerId);
+      expect(claims.threadId).not.toBe(collidingId);
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -287,7 +453,7 @@ describe("signed attachment ownership", () => {
         yield* deleteThread(thread);
         expect(yield* resolveAsset(tokenOf(result.relativeUrl), "image.png")).toBeNull();
         expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
-        yield* sql`DROP TABLE orchestration_v2_projection_messages`;
+        yield* sql`DROP TABLE fork_v2_attachment_references`;
         expect(yield* resolveAsset(tokenOf(result.relativeUrl), "image.png")).toBeNull();
         expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
       }).pipe(Effect.provide(testLayer)),
@@ -298,11 +464,13 @@ describe("signed attachment ownership", () => {
     () =>
       Effect.gen(function* () {
         yield* seedAttachment();
+        yield* createThread(ThreadId.make("thread-other"));
         const secretStore = yield* ServerSecretStore.ServerSecretStore;
         const secret = yield* secretStore.getOrCreateRandom("asset-access-signing-key", 32);
         for (const extra of [
           {},
           { threadId: "missing" },
+          { threadId: "thread-other" },
           { threadId: "thread-owner", attachmentId: "../outside" },
           { threadId: "thread-owner", relativePath: "../outside" },
         ]) {
@@ -325,6 +493,54 @@ describe("signed attachment ownership", () => {
 });
 
 describe("attachment pruning through the effect outbox", () => {
+  it.effect("refuses malformed references and retains bytes until metadata is repaired", () =>
+    Effect.gen(function* () {
+      const { file } = yield* seedAttachment();
+      const minted = yield* issue();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = 'malformed' WHERE message_id = ${`message:${ownerId}`}`;
+      expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "image.png")).toBeNull();
+      expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
+      const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+      yield* cleanup.cleanupAttachments([attachment.id], [`${attachment.id}.png`]);
+      expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(true);
+      yield* (yield* EventSinkV2).write({ events: [yield* messageEvent("repaired", [])] });
+      yield* cleanup.cleanupAttachments([attachment.id], [`${attachment.id}.png`]);
+      expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(false);
+    }).pipe(Effect.provide(testLayer)),
+  );
+  it.effect("bounds each cleanup pass to 128 paths and continues through a large thread", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const ids = Array.from(
+        { length: 1001 },
+        (_, i) => `thread-owner-00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+      );
+      yield* Effect.forEach(
+        ids,
+        (id) => fs.writeFileString(path.join(config.attachmentsDir, `${id}.png`), "bytes"),
+        { concurrency: 4 },
+      );
+      const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+      let pending: ResourceCleanup.AttachmentCleanupContinuation | void = {
+        attachmentIds: ids,
+        relativePaths: ids.map((id) => `${id}.png`),
+      };
+      let passes = 0;
+      while (pending !== undefined) {
+        pending = yield* cleanup.cleanupAttachments(pending.attachmentIds, pending.relativePaths);
+        passes++;
+        expect((yield* fs.readDirectory(config.attachmentsDir)).length).toBe(
+          Math.max(0, 1001 - 128 * passes),
+        );
+        // Other SQL can make progress between passes.
+        expect(yield* (yield* SqlClient.SqlClient)`SELECT 1 AS ready`).toEqual([{ ready: 1 }]);
+      }
+      expect(passes).toBe(8);
+    }).pipe(Effect.provide(testLayer)),
+  );
   it.effect(
     "commits stale paths with message edits and preserves the pending effect across replay",
     () =>
@@ -484,7 +700,7 @@ describe("attachment pruning through the effect outbox", () => {
     Effect.gen(function* () {
       const { file } = yield* seedAttachment();
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`DROP TABLE orchestration_v2_projection_messages`;
+      yield* sql`DROP TABLE fork_v2_attachment_references`;
       const cleanup = yield* ResourceCleanup.ResourceCleanupService;
       const error = yield* cleanup.cleanupAttachments([attachment.id]).pipe(Effect.flip);
       expect(error._tag).toBe("ResourceCleanupError");

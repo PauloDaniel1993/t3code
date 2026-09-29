@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { AssetCreateUrlInput, AttachmentCreateUploadUrlInput } from "./assets.ts";
+import { AttachmentCreateUploadUrlInput } from "./assets.ts";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -14,16 +14,6 @@ const uploadInput = {
   mimeType: "image/png",
   sizeBytes: 3,
 } as const;
-
-describe("attachment asset thread context", () => {
-  const accepts = Schema.is(AssetCreateUrlInput);
-  it("accepts explicit ownership context and preserves older clients that omit it", () => {
-    const resource = { _tag: "attachment", attachmentId: "attachment-1" };
-    expect(accepts({ resource })).toBe(true);
-    expect(accepts({ resource: { ...resource, threadId: "thread-1" } })).toBe(true);
-    expect(accepts({ resource: { ...resource, threadId: "" } })).toBe(false);
-  });
-});
 
 describe("AttachmentCreateUploadUrlInput", () => {
   it("accepts supported image attachments", () => {

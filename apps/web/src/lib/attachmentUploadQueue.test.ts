@@ -62,6 +62,7 @@ import {
   retryAttachmentUpload,
   startAttachmentUpload,
   useAttachmentUploadStore,
+  verifyStashedAttachmentUpload,
 } from "./attachmentUploadQueue";
 
 type ProgressListener = (event: {
@@ -473,6 +474,55 @@ describe("attachmentUploadQueue", () => {
       input: { resource: { _tag: "attachment", attachmentId: "pending-restored-pdf" } },
     });
     expect(TestXmlHttpRequest.requests).toHaveLength(0);
+  });
+
+  it("restores a reloaded draft's files as present without uploading again", async () => {
+    const draftId = DraftId.make("reloaded-attachments");
+    const file: ComposerFileAttachment = {
+      ...makeFile("reloaded-file"),
+      file: null,
+      uploadedAttachmentId: "pending-reloaded-file-pdf",
+      uploadEnvironmentId: firstEnvironment,
+    };
+    const secondFile: ComposerFileAttachment = {
+      ...makeFile("reloaded-second-file"),
+      file: null,
+      uploadedAttachmentId: "pending-reloaded-second-file-pdf",
+      uploadEnvironmentId: firstEnvironment,
+    };
+    const store = useComposerDraftStore.getState();
+    store.addFiles(draftId, [file, secondFile]);
+    try {
+      // Reload has discarded the queue and local bytes; persisted IDs are all that remains.
+      startAttachmentUpload({ environmentId: firstEnvironment, image: file, draftTarget: draftId });
+      startAttachmentUpload({
+        environmentId: firstEnvironment,
+        image: secondFile,
+        draftTarget: draftId,
+      });
+      await awaitAttachmentUploads([file.id, secondFile.id]);
+      for (const item of [file, secondFile])
+        expect(readAttachmentUpload(item.id)).toMatchObject({
+          status: "ready",
+          attachmentId: item.uploadedAttachmentId,
+        });
+      expect(composerFileNeedsReattach(store.getComposerDraft(draftId)!.files[0]!)).toBe(false);
+      expect(
+        getUploadedAttachments({ environmentId: firstEnvironment, images: [file, secondFile] }),
+      ).toHaveLength(2);
+      expect(TestXmlHttpRequest.requests).toHaveLength(0);
+    } finally {
+      store.clearComposerContent(draftId);
+    }
+  });
+
+  it("marks a restored stashed image upload as verified", async () => {
+    expect(
+      await verifyStashedAttachmentUpload({
+        environmentId: firstEnvironment,
+        attachmentId: "pending-stashed-image",
+      }),
+    ).toEqual({ status: "verified" });
   });
 
   it("turns an expired persisted file into a marker that a re-pick can replace", async () => {

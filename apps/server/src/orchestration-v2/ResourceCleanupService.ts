@@ -8,7 +8,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
-import { isAttachmentPathReferenced } from "./AttachmentReferences.ts";
+import { referencedAttachmentPaths } from "./AttachmentReferences.ts";
 import * as ServerConfig from "../config.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 
@@ -22,12 +22,18 @@ export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupErro
   },
 ) {}
 
+export const ATTACHMENT_CLEANUP_BATCH_SIZE = 128;
+export interface AttachmentCleanupContinuation {
+  readonly attachmentIds: ReadonlyArray<string>;
+  readonly relativePaths?: ReadonlyArray<string>;
+}
+
 export class ResourceCleanupService extends Context.Reference<{
   readonly cleanupTerminals: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupAttachments: (
     attachmentIds: ReadonlyArray<string>,
     relativePaths?: ReadonlyArray<string>,
-  ) => Effect.Effect<void, ResourceCleanupError>;
+  ) => Effect.Effect<void | AttachmentCleanupContinuation, ResourceCleanupError>;
 }>("t3/orchestration-v2/ResourceCleanupService", {
   defaultValue: () => ({
     cleanupTerminals: () => Effect.void,
@@ -56,39 +62,64 @@ export const live = Layer.effect(
         attachmentIds: ReadonlyArray<string>,
         relativePaths?: ReadonlyArray<string>,
       ) =>
-        Effect.forEach(
-          relativePaths ??
-            attachmentIds.flatMap((attachmentId) => {
+        Effect.gen(function* () {
+          const inputs = relativePaths ?? attachmentIds;
+          const batch = inputs.slice(0, ATTACHMENT_CLEANUP_BATCH_SIZE);
+          const remaining = inputs.slice(ATTACHMENT_CLEANUP_BATCH_SIZE);
+          const idSet = new Set(attachmentIds);
+          const paths = batch
+            .flatMap((value) => {
+              if (relativePaths !== undefined) return [value];
               const resolved = resolveAttachmentPathById({
                 attachmentsDir: config.attachmentsDir,
-                attachmentId,
+                attachmentId: value,
               });
               return resolved === null ? [] : [path.relative(config.attachmentsDir, resolved)];
-            }),
-          Effect.fnUntraced(
-            function* (relativePath) {
-              const attachmentId = attachmentIds.find((id) => relativePath.startsWith(`${id}.`));
+            })
+            .flatMap((relativePath) => {
+              const attachmentId = relativePath.slice(0, relativePath.lastIndexOf("."));
               if (
-                attachmentId === undefined ||
+                !idSet.has(attachmentId) ||
                 relativePath.includes("/") ||
                 relativePath.includes("\\")
               )
-                return;
+                return [];
               const resolved = resolveAttachmentRelativePath({
                 attachmentsDir: config.attachmentsDir,
                 relativePath,
               });
-              if (resolved === null) return;
-              if (yield* isAttachmentPathReferenced(attachmentId, relativePath)) return;
-              yield* fileSystem.remove(resolved, { force: true });
-            },
-            sql.withTransaction,
-            Effect.provideService(SqlClient.SqlClient, sql),
-            Effect.mapError(
-              (cause) => new ResourceCleanupError({ operation: "attachment", cause }),
-            ),
-          ),
-          { discard: true, concurrency: 4 },
+              return resolved === null ? [] : [{ attachmentId, relativePath, resolved }];
+            });
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const retained = yield* referencedAttachmentPaths(
+                Array.from(new Set(paths.map((entry) => entry.attachmentId))),
+              );
+              for (const entry of paths) {
+                if (
+                  !retained.has("*") &&
+                  !retained.has(entry.attachmentId) &&
+                  !retained.has(entry.relativePath)
+                )
+                  yield* fileSystem.remove(entry.resolved, { force: true });
+              }
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          );
+          if (remaining.length === 0) return;
+          return relativePaths === undefined
+            ? { attachmentIds: remaining }
+            : {
+                attachmentIds: Array.from(
+                  new Set(
+                    remaining
+                      .map((value) => value.slice(0, value.lastIndexOf(".")))
+                      .filter((id) => idSet.has(id)),
+                  ),
+                ),
+                relativePaths: remaining,
+              };
+        }).pipe(
+          Effect.mapError((cause) => new ResourceCleanupError({ operation: "attachment", cause })),
         ),
     };
   }),

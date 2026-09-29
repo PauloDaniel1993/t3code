@@ -20,6 +20,7 @@ import { RunFinalizationService } from "./RunFinalizationService.ts";
 import { ResourceCleanupService } from "./ResourceCleanupService.ts";
 import {
   EffectOutboxV2,
+  EffectOutboxError,
   REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS,
   type OrchestrationEffectV2,
 } from "./EffectOutbox.ts";
@@ -99,6 +100,7 @@ export const executorLayer: Layer.Layer<
   Effect.gen(function* () {
     const runFinalization = yield* RunFinalizationService;
     const resourceCleanup = yield* ResourceCleanupService;
+    const cleanupOutbox = yield* Effect.serviceOption(EffectOutboxV2);
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManagerV2;
     const providerTurnControl = yield* ProviderTurnControlServiceV2;
@@ -414,6 +416,31 @@ export const executorLayer: Layer.Layer<
             return resourceCleanup
               .cleanupAttachments(effect.request.attachmentIds, effect.request.relativePaths)
               .pipe(
+                Effect.flatMap((remaining) =>
+                  remaining === undefined
+                    ? Effect.void
+                    : Option.match(cleanupOutbox, {
+                        onNone: () =>
+                          Effect.fail(
+                            new EffectOutboxError({
+                              operation: "continue-attachment-cleanup",
+                              effectId: effect.id,
+                              cause: "Attachment cleanup continuation requires the effect outbox.",
+                            }),
+                          ),
+                        onSome: (outbox) =>
+                          outbox
+                            .enqueue([
+                              {
+                                id: `${effect.id}:next`,
+                                commandId: effect.commandId,
+                                threadId: effect.threadId,
+                                request: { type: "attachment.cleanup", ...remaining },
+                              },
+                            ])
+                            .pipe(Effect.andThen(outbox.notifyAvailable(1))),
+                      }),
+                ),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({

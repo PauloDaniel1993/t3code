@@ -39,6 +39,14 @@ import { RuntimeRequestServiceV2 } from "./RuntimeRequestService.ts";
 import { ThreadTitleRegenerationService } from "./ThreadTitleRegenerationService.ts";
 import { ThreadManagementService } from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { layer as durableOutboxLayer } from "./EffectOutbox.ts";
+const attachmentOutboxTestLayer = durableOutboxLayer.pipe(
+  Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(NodeServices.layer),
+);
+import { ResourceCleanupService } from "./ResourceCleanupService.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
@@ -88,9 +96,16 @@ function restartEffect(
 function makeExecutorLayer(input: {
   readonly events: Ref.Ref<ReadonlyArray<string>>;
   readonly failFirstStart?: Ref.Ref<boolean>;
+  readonly outbox?: EffectOutboxV2["Service"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const dependencies = Layer.mergeAll(
+    input.outbox === undefined
+      ? Layer.mock(EffectOutboxV2)({
+          enqueue: () => Effect.void,
+          notifyAvailable: () => Effect.void,
+        })
+      : Layer.succeed(EffectOutboxV2, input.outbox),
     Layer.succeed(
       ProviderTurnControlServiceV2,
       ProviderTurnControlServiceV2.of({
@@ -750,4 +765,54 @@ it.effect("safely retries after replacement cleanup succeeds and start fails", (
       "start",
     ]);
   }),
+);
+
+it.effect(
+  "persists a replay-safe continuation before completing a bounded attachment cleanup pass",
+  () =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const outbox = yield* EffectOutboxV2;
+      const executor = yield* OrchestrationEffectExecutorV2.pipe(
+        Effect.provide(makeExecutorLayer({ events, outbox })),
+        Effect.provideService(ResourceCleanupService, {
+          cleanupTerminals: () => Effect.void,
+          cleanupAttachments: () =>
+            Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
+        }),
+      );
+      const now = yield* DateTime.now;
+      const effect = {
+        ...restartEffect(now, {
+          type: "replace",
+          replacementProviderSessionId: replacementSessionId,
+        }),
+        id: "cleanup:large",
+        request: { type: "attachment.cleanup" as const, attachmentIds: ["first", "second"] },
+      };
+      yield* executor.execute(effect, { willRetry: false }).pipe(
+        Effect.provideService(ResourceCleanupService, {
+          cleanupTerminals: () => Effect.void,
+          cleanupAttachments: () =>
+            Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
+        }),
+      );
+      const next = yield* outbox.get("cleanup:large:next");
+      assert.isTrue(Option.isSome(next));
+      if (Option.isSome(next))
+        assert.deepStrictEqual(next.value.request, {
+          type: "attachment.cleanup",
+          attachmentIds: ["second"],
+          relativePaths: ["second.png"],
+        });
+      // Retrying the original pass uses the same continuation identity.
+      yield* executor.execute(effect, { willRetry: false }).pipe(
+        Effect.provideService(ResourceCleanupService, {
+          cleanupTerminals: () => Effect.void,
+          cleanupAttachments: () =>
+            Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
+        }),
+      );
+      assert.strictEqual((yield* outbox.listByCommandId(effect.commandId)).length, 1);
+    }).pipe(Effect.provide(attachmentOutboxTestLayer)),
 );

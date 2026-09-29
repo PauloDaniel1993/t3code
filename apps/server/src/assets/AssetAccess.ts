@@ -47,7 +47,11 @@ import {
   timingSafeEqualBase64Url,
 } from "../auth/utils.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { parseAttachmentFileExtension } from "../attachmentStore.ts";
+import {
+  parseAttachmentFileExtension,
+  parseThreadSegmentFromAttachmentId,
+  resolveAttachmentPathById,
+} from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
 import { ThreadId } from "@t3tools/contracts";
 import { findReadableAttachment } from "../orchestration-v2/AttachmentReferences.ts";
@@ -114,6 +118,8 @@ const AssetClaimsSchema = Schema.Union([
     attachmentId: Schema.String,
     threadId: Schema.optionalKey(ThreadId),
     relativePath: Schema.optionalKey(Schema.String),
+    device: Schema.optionalKey(Schema.String),
+    inode: Schema.optionalKey(Schema.String),
     /** Decided at mint time. Absent tokens (from before this field) serve
         inline, which is only ever the image case. */
     download: Schema.optionalKey(Schema.Boolean),
@@ -537,10 +543,22 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
     }
     case "attachment": {
       const config = yield* ServerConfig.ServerConfig;
-      const reference = yield* findReadableAttachment(
-        input.resource.attachmentId,
-        input.resource.threadId,
-      ).pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource: input.resource })));
+      const pending =
+        input.resource.attachmentId.startsWith("pending-") &&
+        parseThreadSegmentFromAttachmentId(input.resource.attachmentId) === "pending";
+      const pendingPath = pending
+        ? resolveAttachmentPathById({
+            attachmentsDir: config.attachmentsDir,
+            attachmentId: input.resource.attachmentId,
+          })
+        : null;
+      const reference = pending
+        ? pendingPath === null
+          ? null
+          : { threadId: undefined, relativePath: path.relative(config.attachmentsDir, pendingPath) }
+        : yield* findReadableAttachment(input.resource.attachmentId).pipe(
+            Effect.mapError(() => new AssetAttachmentNotFoundError({ resource: input.resource })),
+          );
       if (reference === null) {
         return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
       }
@@ -562,6 +580,13 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       if (canonical === null) {
         return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
       }
+      const pendingFile = pending
+        ? yield* openMediaFile(canonical).pipe(
+            Effect.mapError(() => new AssetAttachmentNotFoundError({ resource: input.resource })),
+          )
+        : null;
+      if (pending && pendingFile === null)
+        return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
       // Generic files carry their extension inside the attachment id (that
       // shape resolves the on-disk path); images do not. Videos and images
       // render inline. Other generic files download unless a viewer requests
@@ -581,7 +606,10 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         version: 1,
         kind: "attachment",
         attachmentId: input.resource.attachmentId,
-        threadId: reference.threadId,
+        ...(reference.threadId === undefined ? {} : { threadId: reference.threadId }),
+        ...(pendingFile === null
+          ? {}
+          : { device: pendingFile.info.dev.toString(), inode: pendingFile.info.ino.toString() }),
         relativePath: reference.relativePath,
         ...(isGenericFile && !isVideo && inlinePreviewMimeType === undefined
           ? { download: true }
@@ -774,13 +802,29 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
 
   if (claims.kind === "attachment") {
-    // Old unbound capabilities are deliberately refused, including pending uploads.
-    if (claims.threadId === undefined || claims.relativePath === undefined) return null;
-    const reference = yield* findReadableAttachment(claims.attachmentId, claims.threadId).pipe(
-      Effect.orElseSucceed(() => null),
-    );
-    if (reference === null || reference.relativePath !== claims.relativePath) return null;
+    if (claims.relativePath === undefined) return null;
+    const path = yield* Path.Path;
     const config = yield* ServerConfig.ServerConfig;
+    const pending =
+      claims.threadId === undefined &&
+      claims.attachmentId.startsWith("pending-") &&
+      parseThreadSegmentFromAttachmentId(claims.attachmentId) === "pending";
+    if (claims.threadId === undefined && !pending) return null;
+    if (pending && (claims.device === undefined || claims.inode === undefined)) return null;
+    const pendingPath = pending
+      ? resolveAttachmentPathById({
+          attachmentsDir: config.attachmentsDir,
+          attachmentId: claims.attachmentId,
+        })
+      : null;
+    const reference = pending
+      ? pendingPath === null
+        ? null
+        : { relativePath: path.relative(config.attachmentsDir, pendingPath) }
+      : yield* findReadableAttachment(claims.attachmentId, claims.threadId).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+    if (reference === null || reference.relativePath !== claims.relativePath) return null;
     const attachmentPath = resolveAttachmentRelativePath({
       attachmentsDir: config.attachmentsDir,
       relativePath: reference.relativePath,
@@ -793,7 +837,12 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     const file =
       canonical === null
         ? null
-        : yield* openMediaFile(canonical).pipe(Effect.orElseSucceed(() => null));
+        : yield* openMediaFile(
+            canonical,
+            pending && claims.device !== undefined && claims.inode !== undefined
+              ? { device: claims.device, inode: claims.inode }
+              : undefined,
+          ).pipe(Effect.orElseSucceed(() => null));
     return canonical !== null && file !== null
       ? ({
           kind: "file",
