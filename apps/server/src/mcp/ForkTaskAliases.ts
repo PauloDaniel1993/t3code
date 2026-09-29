@@ -140,7 +140,6 @@ export const forkTaskCreate = Effect.fn("ForkTaskAliases.create")(function* (
     .find((provider) => provider.providerInstanceId === instanceId)
     ?.models.find((entry) => entry.id === model);
   let options: ModelSelection["options"];
-  let prompt = input.prompt;
   if (input.reasoning !== undefined) {
     if (targetModel === undefined) {
       return yield* new OrchestratorMcpFailure({
@@ -173,10 +172,9 @@ export const forkTaskCreate = Effect.fn("ForkTaskAliases.create")(function* (
       ...base.filter((option) => option.id !== descriptor.id),
       { id: descriptor.id, value: choice.id },
     ];
-    if (descriptor.promptInjectedValues?.includes(choice.id)) prompt = `${choice.id}\n\n${prompt}`;
   }
   const status = yield* service.delegateTask(scope, {
-    task: prompt,
+    task: input.prompt,
     title: input.title,
     target: {
       providerInstanceId: instanceId,

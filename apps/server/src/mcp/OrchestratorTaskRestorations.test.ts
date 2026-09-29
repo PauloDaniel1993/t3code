@@ -19,6 +19,7 @@ import {
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
+import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -26,6 +27,8 @@ import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import { compileClaudeModelSelection } from "../claudeModelOptions.ts";
+import { SYNTHETIC_CLAUDE_MODEL_CATALOG } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -699,6 +702,89 @@ it.effect(
       expect(some.nextCursor).toBeNull();
       expect(some.tasks[0]!.result!.summary.length).toBeLessThan(TASK_LIST_SUMMARY_MAX_CHARS);
     }).pipe(Effect.provide(makeMcpLayer(recordsFor(tasks))));
+  },
+);
+
+it.effect(
+  "passes Claude ultrathink to the adapter so the child prompt gets exactly one prefix",
+  () => {
+    const activeProvider: ServerProvider = {
+      ...provider,
+      driver: ProviderDriverKind.make("claudeCode"),
+      models: SYNTHETIC_CLAUDE_MODEL_CATALOG.models.map((entry) => entry.model),
+    };
+    const model = activeProvider.models[0]!;
+    const child = task("ultrathink", { status: "running", result: null });
+    const records = recordsFor([child]);
+    records.set(parentId, { ...records.get(parentId)!, runs: [run(parentId, "running")] });
+    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
+    const prompt = "Review the module.";
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const call = (name: string, args: Record<string, unknown>) =>
+        server
+          .callTool({ name, arguments: args })
+          .pipe(
+            Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+      const catalog = yield* decodeModels((yield* call("task_models", {})).structuredContent);
+      expect(catalog.instances[0]!.models[0]!.reasoningLevels).toContainEqual({
+        id: "ultrathink",
+        label: "Ultrathink",
+        isDefault: false,
+        promptInjected: true,
+      });
+      yield* decodeCreatedTask(
+        (yield* call("task_create", {
+          title: "Review",
+          prompt,
+          context: "none",
+          model: { instanceId, model: model.slug },
+          reasoning: "ultrathink",
+        })).structuredContent,
+      );
+      expect(commands).toHaveLength(1);
+      const command = commands[0]!;
+      expect(command.type).toBe("delegated_task.request");
+      if (command.type !== "delegated_task.request")
+        throw new Error("Expected a delegated task request");
+      expect(command.task).toBe(prompt);
+      expect(command.modelSelection.options).toContainEqual({ id: "effort", value: "ultrathink" });
+      const compiled = compileClaudeModelSelection(
+        command.modelSelection,
+        SYNTHETIC_CLAUDE_MODEL_CATALOG,
+      );
+      expect(compiled.promptEffort).toBe("ultrathink");
+      const childPrompt = applyClaudePromptEffortPrefix(command.task, compiled.promptEffort);
+      expect(childPrompt).toBe(`Ultrathink:\n${prompt}`);
+      expect(childPrompt.match(/ultrathink/gi)).toHaveLength(1);
+    }).pipe(
+      Effect.provide(
+        makeMcpLayer(records, {
+          providers: [activeProvider],
+          dispatch: (command) => {
+            commands.push(command);
+            return Effect.succeed({
+              sequence: 1,
+              storedEvents: [
+                {
+                  sequence: 1,
+                  commandId: command.commandId,
+                  event: {
+                    id: EventId.make("event:ultrathink"),
+                    threadId: parentId,
+                    type: "subagent.updated",
+                    occurredAt: now,
+                    payload: child,
+                  },
+                },
+              ],
+            });
+          },
+        }),
+      ),
+    );
   },
 );
 
