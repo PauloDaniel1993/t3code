@@ -38,18 +38,25 @@ export function applyInstalledDesktopBootstrap(
   if (appPackage.name !== LOCAL_DESKTOP_IDENTITY.packageName) return false;
 
   let t3Home = path.join(input.homeDirectory, LOCAL_DESKTOP_IDENTITY.homeName);
-  if (input.platform === "win32") {
+  {
     let raw: string | undefined;
     try {
       raw = read(
-        path.join(path.dirname(input.executablePath), LOCAL_DESKTOP_IDENTITY.metadataFileName),
+        path.join(
+          input.platform === "darwin"
+            ? path.resolve(path.dirname(input.executablePath), "../..")
+            : path.dirname(input.executablePath),
+          LOCAL_DESKTOP_IDENTITY.metadataFileName,
+        ),
       );
     } catch (cause) {
       if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) throw cause;
     }
     if (raw !== undefined) t3Home = decodeMetadata(raw).t3Home;
   }
-  if (!path.isAbsolute(t3Home)) throw new Error("The local desktop home must be absolute.");
+  if (!path.isAbsolute(t3Home)) {
+    throw new Error(`${LOCAL_DESKTOP_BOOTSTRAP_VERSION}: the local desktop home must be absolute.`);
+  }
   t3Home = path.resolve(t3Home);
   for (const name of [".t3", ".t3.local"]) {
     const protectedHome = path.join(input.homeDirectory, name);
@@ -64,10 +71,11 @@ export function applyInstalledDesktopBootstrap(
   }
 
   // A desktop can inherit alpha.local's environment when launched from its terminal.
-  // Install identity wins over ambient overrides so that cannot select a live home.
+  // Own metadata (then the isolated default) beats even explicit T3CODE_HOME:
+  // shells inside alpha.local export its live home. Move this home with --state-dir.
   input.env.T3CODE_HOME = t3Home;
-  input.env.T3CODE_LOCAL_BOOTSTRAP_VERSION = LOCAL_DESKTOP_BOOTSTRAP_VERSION;
-  input.env.T3CODE_DESKTOP_LOCAL_IDENTITY = "true";
+  delete input.env.T3CODE_DESKTOP_LOCAL_IDENTITY;
+  delete input.env.T3CODE_LOCAL_BOOTSTRAP_VERSION;
   input.env.T3CODE_DESKTOP_DISPLAY_NAME = LOCAL_DESKTOP_IDENTITY.productName;
   input.env.T3CODE_DESKTOP_APP_USER_MODEL_ID = LOCAL_DESKTOP_IDENTITY.appId;
   input.env.T3CODE_DISABLE_AUTO_UPDATE = "true";

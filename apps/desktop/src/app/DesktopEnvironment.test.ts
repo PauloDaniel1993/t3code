@@ -43,9 +43,8 @@ describe("DesktopEnvironment", () => {
   it.effect("gives the local build its own home, profile parent and app identity", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
-        { platform: "win32", isPackaged: true },
+        { platform: "win32", isPackaged: true, isLocalIdentity: true },
         {
-          T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
           APPDATA: "/official/profiles",
           T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code",
         },
@@ -56,6 +55,21 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.appUserModelId, "com.t3tools.t3code.v2.local");
       assert.equal(environment.branding.displayName, "T3 v2.local");
       assert.equal(environment.linuxWmClass, "t3code-v2-local");
+    }),
+  );
+  it.effect("ignores an inherited local identity flag in an ordinary development run", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {},
+        {
+          T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
+          VITE_DEV_SERVER_URL: "http://localhost:5173",
+        },
+      );
+      assert.isFalse(environment.isLocalIdentity);
+      assert.equal(environment.displayName, "T3 Code (Dev)");
+      assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
+      assert.equal(environment.stateDir, "/Users/alice/.t3/dev");
     }),
   );
   it.effect("derives state paths and development identity inside Effect", () =>

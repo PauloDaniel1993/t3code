@@ -27,7 +27,8 @@ describe("installed local identity", () => {
   it("isolates a taskbar launch even when it inherits the alpha.local environment", () => {
     const env: NodeJS.ProcessEnv = {
       T3CODE_HOME: "C:\\Users\\alice\\.t3.local",
-      APPDATA: "C:\\Users\\alice\\AppData\\Roaming",
+      APPDATA: "C:\\Users\\alice\\.t3.local\\appdata",
+      T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
       T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code.alpha.local",
       T3CODE_DISABLE_AUTO_UPDATE: "false",
       VITE_DEV_SERVER_URL: "http://localhost:5173",
@@ -37,10 +38,27 @@ describe("installed local identity", () => {
     assert.equal(env.APPDATA, `${localMetadata.t3Home}\\appdata`);
     assert.equal(env.T3CODE_DESKTOP_DISPLAY_NAME, "T3 v2.local");
     assert.equal(env.T3CODE_DESKTOP_APP_USER_MODEL_ID, localMetadata.windowsAppUserModelId);
-    assert.equal(env.T3CODE_DESKTOP_LOCAL_IDENTITY, "true");
-    assert.equal(env.T3CODE_LOCAL_BOOTSTRAP_VERSION, "t3code-v2-local-bootstrap-1");
+    assert.isUndefined(env.T3CODE_DESKTOP_LOCAL_IDENTITY);
+    assert.isUndefined(env.T3CODE_LOCAL_BOOTSTRAP_VERSION);
     assert.equal(env.T3CODE_DISABLE_AUTO_UPDATE, "true");
     assert.isUndefined(env.VITE_DEV_SERVER_URL);
+  });
+
+  it("keeps its custom metadata home ahead of an explicit home from another install", () => {
+    const env: NodeJS.ProcessEnv = {
+      T3CODE_HOME: "C:\\Users\\alice\\.t3.local",
+      APPDATA: "C:\\Users\\alice\\.t3.local\\appdata",
+    };
+    applyInstalledDesktopBootstrap({
+      ...defaults,
+      env,
+      readFileString: (path) =>
+        path.endsWith("package.json")
+          ? read(path)
+          : JSON.stringify({ ...localMetadata, t3Home: "D:\\V2 state" }),
+    });
+    assert.equal(env.T3CODE_HOME, "D:\\V2 state");
+    assert.equal(env.APPDATA, "D:\\V2 state\\appdata");
   });
 
   it("uses the isolated default for an unpacked local artifact without installer metadata", () => {
@@ -124,11 +142,28 @@ describe("installed local identity", () => {
         ...defaults,
         platform,
         homeDirectory: "/home/alice",
-        appPath: "/opt/t3/resources/app.asar",
+        appPath:
+          platform === "darwin"
+            ? "/opt/t3.app/Contents/Resources/app.asar"
+            : "/opt/t3/resources/app.asar",
+        executablePath:
+          platform === "darwin"
+            ? "/opt/t3.app/Contents/MacOS/T3 v2.local"
+            : "/opt/t3/t3code-v2-local",
         env,
-        readFileString: read,
+        readFileString: (path) => {
+          if (path.endsWith("package.json")) return read(path);
+          assert.equal(
+            path,
+            platform === "darwin"
+              ? "/opt/t3.app/.t3code-install.json"
+              : "/opt/t3/.t3code-install.json",
+          );
+          return JSON.stringify({ ...localMetadata, t3Home: "/custom/v2-state" });
+        },
       });
-      assert.equal(env.T3CODE_HOME, "/home/alice/.t3.v2");
+      assert.equal(env.T3CODE_HOME, "/custom/v2-state");
+      if (platform === "linux") assert.equal(env.XDG_CONFIG_HOME, "/custom/v2-state/appdata");
     }
   });
 });

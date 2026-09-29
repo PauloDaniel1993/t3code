@@ -10,6 +10,19 @@ import {
 describe("DesktopEarlyElectronStartup", () => {
   const joinPath = NodePath.posix.join;
 
+  it("uses the supplied local identity and ignores a shell's inherited identity flag", () => {
+    const input = {
+      env: { T3CODE_DESKTOP_LOCAL_IDENTITY: "true" },
+      homeDirectory: "/home/user",
+      joinPath,
+      readFileString: () => "{}",
+    };
+    assert.equal(resolveEarlyLinuxElectronOptions(input).linuxWmClass, "t3code");
+    const local = resolveEarlyLinuxElectronOptions({ ...input, isLocalIdentity: true });
+    assert.equal(local.linuxWmClass, "t3code-v2-local");
+    assert.equal(local.linuxDesktopEntryName, "com.t3tools.t3code.v2.local.desktop");
+  });
+
   it("reads the persisted linux password-store preference before Electron is ready", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
       env: { T3CODE_HOME: "/home/user/.t3-test" },

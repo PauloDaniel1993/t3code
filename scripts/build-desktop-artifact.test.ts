@@ -2259,39 +2259,46 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("resolves default platform and architecture from host references", () =>
     Effect.gen(function* () {
-      const resolved = yield* resolveBuildOptions({
-        platform: Option.none(),
-        target: Option.none(),
-        arch: Option.none(),
-        buildVersion: Option.none(),
-        outputDir: Option.none(),
-        skipBuild: Option.none(),
-        keepStage: Option.none(),
-        signed: Option.none(),
-        verbose: Option.none(),
-        mockUpdates: Option.none(),
-        mockUpdateServerPort: Option.none(),
-        wslRuntime: Option.none(),
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            Layer.succeed(HostProcessPlatform, "win32"),
-            Layer.succeed(HostProcessArchitecture, "x64"),
-            ConfigProvider.layer(
-              ConfigProvider.fromEnv({
-                env: {
-                  PROCESSOR_ARCHITECTURE: "AMD64",
-                  PROCESSOR_ARCHITEW6432: "ARM64",
-                },
-              }),
+      for (const localIdentity of [false, true]) {
+        const resolved = yield* resolveBuildOptions({
+          localIdentity: localIdentity ? Option.some(true) : Option.none(),
+          platform: Option.none(),
+          target: Option.none(),
+          arch: Option.none(),
+          buildVersion: Option.none(),
+          outputDir: Option.none(),
+          skipBuild: Option.none(),
+          keepStage: Option.none(),
+          signed: Option.none(),
+          verbose: Option.none(),
+          mockUpdates: Option.none(),
+          mockUpdateServerPort: Option.none(),
+          wslRuntime: Option.none(),
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(HostProcessPlatform, "win32"),
+              Layer.succeed(HostProcessArchitecture, "x64"),
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: {
+                    T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
+                    T3CODE_HOME: "C:\\Users\\alice\\.t3.local",
+                    APPDATA: "C:\\Users\\alice\\.t3.local\\appdata",
+                    PROCESSOR_ARCHITECTURE: "AMD64",
+                    PROCESSOR_ARCHITEW6432: "ARM64",
+                  },
+                }),
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      assert.equal(resolved.platform, "win");
-      assert.equal(resolved.target, "nsis");
-      assert.equal(resolved.arch, "arm64");
+        assert.equal(resolved.platform, "win");
+        assert.equal(resolved.target, "nsis");
+        assert.equal(resolved.arch, "arm64");
+        assert.equal(resolved.localIdentity, localIdentity);
+      }
     }),
   );
 

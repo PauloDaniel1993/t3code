@@ -20,6 +20,7 @@ import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
+import { restoreWindowsUserDirectories } from "../../../../scripts/lib/windows-user-directories.ts";
 
 export class DesktopBackendObservabilitySettingsReadError extends Schema.TaggedError<DesktopBackendObservabilitySettingsReadError>()(
   "DesktopBackendObservabilitySettingsReadError",
@@ -77,6 +78,12 @@ const emptyBackendObservabilitySettings: BackendObservabilitySettings = {
 };
 
 const DESKTOP_BACKEND_ENV_NAMES = [
+  "T3CODE_DESKTOP_LOCAL_IDENTITY",
+  "T3CODE_LOCAL_BOOTSTRAP_VERSION",
+  "T3CODE_HOME",
+  "T3CODE_DESKTOP_DISPLAY_NAME",
+  "T3CODE_DESKTOP_APP_USER_MODEL_ID",
+  "T3CODE_DISABLE_AUTO_UPDATE",
   "T3CODE_PORT",
   "T3CODE_MODE",
   "T3CODE_NO_BROWSER",
@@ -131,7 +138,14 @@ const nodeBinDirOf = (nodePath: string): string => {
 };
 
 const backendChildEnvPatch = (): Record<string, string | undefined> =>
-  Object.fromEntries(DESKTOP_BACKEND_ENV_NAMES.map((name) => [name, undefined]));
+  Object.fromEntries([
+    ...Object.keys(process.env)
+      .filter((name) =>
+        DESKTOP_BACKEND_ENV_NAMES.some((reserved) => reserved === name.toUpperCase()),
+      )
+      .map((name) => [name, undefined]),
+    ...DESKTOP_BACKEND_ENV_NAMES.map((name) => [name, undefined]),
+  ]);
 
 const getWslEnvEntryName = (entry: string): string => {
   const slashIndex = entry.indexOf("/");
@@ -582,11 +596,18 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       entryPath: environment.backendEntryPath,
       cwd: environment.backendCwd,
       env: {
+        ...(environment.platform === "win32"
+          ? restoreWindowsUserDirectories(process.env)
+          : process.env),
+        ...(environment.isLocalIdentity && environment.platform === "linux"
+          ? { XDG_CONFIG_HOME: undefined }
+          : {}),
         ...backendChildEnvPatch(),
         ELECTRON_RUN_AS_NODE: "1",
       },
-      // Primary wants process.env (PATH, dev-runner's T3CODE_HOME, etc.).
-      extendEnv: true,
+      // The bootstrap carries this backend's home. Agent shells and terminals
+      // inherit ordinary user folders, without this desktop's install identity.
+      extendEnv: false,
       bootstrap,
       bootstrapDelivery: "fd3",
       httpBaseUrl: backendExposure.httpBaseUrl,

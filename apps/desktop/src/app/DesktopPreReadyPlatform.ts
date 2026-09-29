@@ -31,14 +31,16 @@ function readCommandLineSwitchValue(
   return value.length > 0 ? value : null;
 }
 
-export const resolveEarlyLinuxElectronOptionsFromProcess =
-  (): DesktopEarlyElectronStartup.EarlyLinuxElectronOptions =>
-    DesktopEarlyElectronStartup.resolveEarlyLinuxElectronOptions({
-      env: process.env,
-      homeDirectory: NodeOS.homedir(),
-      joinPath: NodePath.posix.join,
-      readFileString: (path) => NodeFS.readFileSync(path, "utf8"),
-    });
+export const resolveEarlyLinuxElectronOptionsFromProcess = (
+  isLocalIdentity = false,
+): DesktopEarlyElectronStartup.EarlyLinuxElectronOptions =>
+  DesktopEarlyElectronStartup.resolveEarlyLinuxElectronOptions({
+    env: process.env,
+    isLocalIdentity,
+    homeDirectory: NodeOS.homedir(),
+    joinPath: NodePath.posix.join,
+    readFileString: (path) => NodeFS.readFileSync(path, "utf8"),
+  });
 
 export class DesktopPreReadyElectronOptions extends Context.Service<
   DesktopPreReadyElectronOptions,
@@ -49,14 +51,17 @@ export class DesktopPreReadyElectronOptions extends Context.Service<
 >()("@t3tools/desktop/app/DesktopPreReadyPlatform/DesktopPreReadyElectronOptions") {}
 
 /** @public Service construction is part of the canonical Effect module API. */
-export const make = Effect.gen(function* () {
+export const makeWithIdentity = Effect.fn("desktop.electron.configureBeforeReady")(function* (
+  isLocalIdentity: boolean,
+) {
   const platform = yield* HostProcessPlatform;
   return yield* Effect.sync((): DesktopPreReadyElectronOptions["Service"] => {
     const linuxPasswordStoreCommandLine =
       platform === "linux"
         ? readCommandLineSwitchValue(Electron.app.commandLine, "password-store")
         : null;
-    const linux = platform === "linux" ? resolveEarlyLinuxElectronOptionsFromProcess() : null;
+    const linux =
+      platform === "linux" ? resolveEarlyLinuxElectronOptionsFromProcess(isLocalIdentity) : null;
 
     if (linux !== null) {
       // The portal also requires a valid desktop entry. An AppImage update may
@@ -94,11 +99,16 @@ export const make = Effect.gen(function* () {
 
     return { linux, linuxPasswordStoreCommandLine };
   });
-}).pipe(Effect.withSpan("desktop.electron.configureBeforeReady"));
+});
+
+export const make = makeWithIdentity(false);
 
 // Keep Electron's strict pre-ready setup isolated so later runtime layers cannot
 // observe app readiness before scheme privileges and command-line switches exist.
-export const layer = Layer.mergeAll(
-  ElectronProtocol.layerSchemePrivileges,
-  Layer.effect(DesktopPreReadyElectronOptions, make),
-);
+export const layerWithIdentity = (isLocalIdentity: boolean) =>
+  Layer.mergeAll(
+    ElectronProtocol.layerSchemePrivileges,
+    Layer.effect(DesktopPreReadyElectronOptions, makeWithIdentity(isLocalIdentity)),
+  );
+
+export const layer = layerWithIdentity(false);

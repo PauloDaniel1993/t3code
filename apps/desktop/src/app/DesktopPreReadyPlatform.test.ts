@@ -57,6 +57,29 @@ describe("DesktopPreReadyPlatform", () => {
     writeFileSyncMock.mockReset();
   });
 
+  it.effect("applies the supplied local portal identity before startup yields", () => {
+    vi.stubEnv("VITE_DEV_SERVER_URL", "");
+    vi.stubEnv("XDG_DATA_HOME", "/xdg");
+    vi.stubEnv("T3CODE_DESKTOP_LOCAL_IDENTITY", "false");
+    return Effect.gen(function* () {
+      const options = yield* DesktopPreReadyPlatform.DesktopPreReadyElectronOptions;
+      assert.equal(options.linux?.linuxWmClass, "t3code-v2-local");
+      assert.deepEqual(setDesktopNameMock.mock.calls, [["com.t3tools.t3code.v2.local.desktop"]]);
+      assert.isTrue(
+        appendSwitchMock.mock.calls.some(
+          ([name, value]) => name === "class" && value === "t3code-v2-local",
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        DesktopPreReadyPlatform.layerWithIdentity(true).pipe(
+          Layer.provide(Layer.succeed(HostProcessPlatform, "linux")),
+        ),
+      ),
+      Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())),
+    );
+  });
+
   it.effect("preserves an explicit Linux password-store switch", () => {
     hasSwitchMock.mockImplementation((switchName) => switchName === "password-store");
     getSwitchValueMock.mockReturnValue(" basic ");

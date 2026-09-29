@@ -23,7 +23,9 @@ interface EarlyDesktopSettingsInput {
   readonly readFileString: (path: string) => string;
 }
 
-type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput;
+type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput & {
+  readonly isLocalIdentity?: boolean;
+};
 
 export interface EarlyLinuxElectronOptions {
   readonly isDevelopment: boolean;
@@ -94,7 +96,7 @@ export function resolveEarlyLinuxElectronOptions(
 ): EarlyLinuxElectronOptions {
   const preference = resolveEarlyLinuxPasswordStorePreference(input);
   const isDevelopment = isDevelopmentEnvironment(input.env);
-  const localIdentity = input.env.T3CODE_DESKTOP_LOCAL_IDENTITY === "true";
+  const localIdentity = input.isLocalIdentity ?? false;
   return {
     isDevelopment,
     linuxWmClass: localIdentity

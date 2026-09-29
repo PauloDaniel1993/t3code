@@ -1591,7 +1591,6 @@ const BuildEnvConfig = Config.all({
   signed: Config.Boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
   verbose: Config.Boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
   mockUpdates: Config.Boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
-  localIdentity: Config.Boolean("T3CODE_DESKTOP_LOCAL_IDENTITY").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
   // Path to the Linux CLI release archive (t3-<version>-linux-x64.tar.gz) built
   // by the build_linux_cli CI job. The Windows build embeds it verbatim as the
@@ -1675,7 +1674,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
   const signed = resolveBooleanFlag(input.signed, env.signed);
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
-  const localIdentity = resolveBooleanFlag(input.localIdentity ?? Option.none(), env.localIdentity);
+  const localIdentity = Option.getOrElse(input.localIdentity ?? Option.none(), () => false);
 
   const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
   const configuredMockUpdateServerPort = Option.getOrUndefined(env.mockUpdateServerPort);
@@ -3996,9 +3995,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
   localIdentity: Flag.Boolean("local-identity").pipe(
-    Flag.withDescription(
-      "Build T3 v2.local with its own package and app identity (env: T3CODE_DESKTOP_LOCAL_IDENTITY).",
-    ),
+    Flag.withDescription("Build T3 v2.local with its own package and app identity."),
     Flag.optional,
   ),
   mockUpdateServerPort: Flag.Int("mock-update-server-port").pipe(

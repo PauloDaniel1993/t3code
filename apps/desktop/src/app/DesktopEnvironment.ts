@@ -20,6 +20,7 @@ import type { OtlpProtocol } from "@t3tools/shared/observability";
 import { LOCAL_DESKTOP_IDENTITY } from "../../../../scripts/lib/local-desktop-identity.ts";
 
 export interface MakeDesktopEnvironmentInput {
+  readonly isLocalIdentity?: boolean;
   readonly dirname: string;
   readonly homeDirectory: string;
   readonly platform: NodeJS.Platform;
@@ -158,13 +159,14 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
-  const t3Home = config.localIdentity
+  const isLocalIdentity = input.isLocalIdentity ?? false;
+  const t3Home = isLocalIdentity
     ? Option.orElse(config.t3Home, () =>
         Option.some(path.join(homeDirectory, LOCAL_DESKTOP_IDENTITY.homeName)),
       )
     : config.t3Home;
   const baseDir = resolveDesktopBaseDir({ homeDirectory, joinPath: path.join, t3Home });
-  const appDataDirectory = config.localIdentity
+  const appDataDirectory = isLocalIdentity
     ? path.join(baseDir, "appdata")
     : input.platform === "win32"
       ? Option.getOrElse(config.appDataDirectory, () =>
@@ -183,7 +185,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     isDevelopment,
     appVersion: input.appVersion,
   });
-  const displayName = config.localIdentity
+  const displayName = isLocalIdentity
     ? LOCAL_DESKTOP_IDENTITY.productName
     : Option.getOrElse(config.displayNameOverride, () => standardBranding.displayName);
   const branding = { ...standardBranding, displayName };
@@ -206,7 +208,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     processArch: input.processArch,
     isPackaged: input.isPackaged,
     isDevelopment,
-    isLocalIdentity: config.localIdentity,
+    isLocalIdentity,
     appVersion: input.appVersion,
     appPath: input.appPath,
     resourcesPath,
@@ -243,13 +245,13 @@ const make = Effect.fn("desktop.environment.make")(function* (
     otlpProtocol: config.otlpProtocol,
     branding,
     displayName,
-    appUserModelId: config.localIdentity
+    appUserModelId: isLocalIdentity
       ? LOCAL_DESKTOP_IDENTITY.appId
       : Option.getOrElse(config.appUserModelIdOverride, () =>
           isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
         ),
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, config.localIdentity),
-    linuxWmClass: config.localIdentity
+    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, isLocalIdentity),
+    linuxWmClass: isLocalIdentity
       ? LOCAL_DESKTOP_IDENTITY.packageName
       : isDevelopment
         ? "t3code-dev"
