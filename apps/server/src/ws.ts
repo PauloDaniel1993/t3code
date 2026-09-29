@@ -190,8 +190,7 @@ import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
-import * as WayfinderMaps from "./wayfinder/WayfinderMaps.ts";
-import { refreshWayfinderMaps, subscribeWayfinderMaps } from "./wayfinder/WayfinderRpcHandlers.ts";
+import { makeWayfinderRpcHandlers } from "./wayfinder/WayfinderRpcHandlers.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
@@ -1163,7 +1162,7 @@ const makeWsRpcLayer = (
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
-      const wayfinderMaps = yield* WayfinderMaps.WayfinderMaps;
+      const wayfinder = yield* makeWayfinderRpcHandlers;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -3137,17 +3136,13 @@ const makeWsRpcLayer = (
             },
           ),
         [WS_METHODS.subscribeWayfinderMaps]: (input) =>
-          observeRpcStream(
-            WS_METHODS.subscribeWayfinderMaps,
-            subscribeWayfinderMaps(wayfinderMaps, input),
-            { "rpc.aggregate": "workspace" },
-          ),
+          observeRpcStream(WS_METHODS.subscribeWayfinderMaps, wayfinder.subscribe(input), {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.wayfinderRefreshMaps]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.wayfinderRefreshMaps,
-            refreshWayfinderMaps(wayfinderMaps, input),
-            { "rpc.aggregate": "workspace" },
-          ),
+          observeRpcEffect(WS_METHODS.wayfinderRefreshMaps, wayfinder.refresh(input), {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.subscribeWorktreeSetup]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeWorktreeSetup,

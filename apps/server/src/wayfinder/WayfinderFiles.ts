@@ -1,19 +1,30 @@
-// @effect-diagnostics nodeBuiltinImport:off - bounded directory enumeration needs `opendir`, which FileSystem does not expose.
+// @effect-diagnostics nodeBuiltinImport:off - FileSystem exposes no `opendir`, no descriptor and no raw watch callback; this reader needs all three.
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 
 import * as Data from "effect/Data";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type { PlatformError } from "effect/PlatformError";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import type { WayfinderMarkdownFile } from "./WayfinderMarkdown.ts";
 
-class WayfinderDirectoryReadError extends Data.TaggedError("WayfinderDirectoryReadError")<{
+class WayfinderNodeFileError extends Data.TaggedError("WayfinderNodeFileError")<{
   readonly code: string | undefined;
 }> {}
+
+const nodeCall = <A>(run: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: run,
+    catch: (cause) => new WayfinderNodeFileError({ code: (cause as NodeJS.ErrnoException).code }),
+  });
+
+const isAbsent = (code: string | undefined) => code === "ENOENT" || code === "ENOTDIR";
 
 export interface WayfinderDirectoryListing {
   readonly entries: ReadonlyArray<string>;
@@ -44,23 +55,11 @@ export interface WayfinderFiles {
 }
 
 /**
- * Every file and directory the Wayfinder reader touches goes through here. A path is only
- * usable when its real location (symlinks and Windows junctions resolved) is inside the real
- * project root; anything else reads as absent and is logged. The lexical check in
- * `WorkspacePaths` alone would let `.scratch/effort` be a junction to another folder.
- *
- * A link swapped in between the check and the open cannot be ruled out without `openat`, so a
- * file read is also re-verified after the open: the path must still resolve to the same place
- * and to the file the handle points at.
+ * The canonical path of an existing directory: links resolved, and on Windows the on-disk
+ * letter case. Two spellings of one folder give one string, so it can key per-root state.
  */
-export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
-  workspaceRoot: string,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
-
-  const realRoot = yield* fileSystem.realPath(workspaceRoot).pipe(
+export const resolveRealRoot = (workspaceRoot: string) =>
+  nodeCall(() => NodeFSP.realpath(workspaceRoot)).pipe(
     Effect.mapError(
       (cause) =>
         new WorkspacePaths.WorkspaceRootStatFailedError({
@@ -72,12 +71,70 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
     ),
   );
 
-  const logProbeFailure = (operation: string, relativePath: string, cause: PlatformError) =>
-    Effect.logWarning("Wayfinder filesystem probe failed", {
-      operation,
-      relativePath,
-      reason: cause.reason._tag,
-    });
+/**
+ * Watches a directory and hands each changed name, relative to it, to `onChange`. Nothing
+ * else runs per event (`FileSystem.watch` stats every renamed path and queues every event),
+ * so the caller's filter is the whole cost of an unrelated change. The returned deferred
+ * completes when the watch closes or fails; closing the scope stops the watch.
+ */
+export const watchDirectory = (
+  directory: string,
+  recursive: boolean,
+  onChange: (event: "rename" | "change", name: string) => void,
+) =>
+  Effect.acquireRelease(
+    Effect.try({
+      try: () => {
+        const closed = Deferred.makeUnsafe<void>();
+        const watcher = NodeFS.watch(directory, { recursive }, (event, name) => {
+          if (name) onChange(event, name);
+        });
+        const markClosed = () => Deferred.doneUnsafe(closed, Effect.void);
+        watcher.on("error", markClosed);
+        watcher.on("close", markClosed);
+        return { watcher, closed };
+      },
+      catch: (cause) => new WayfinderNodeFileError({ code: (cause as NodeJS.ErrnoException).code }),
+    }),
+    ({ watcher }) => Effect.sync(() => watcher.close()),
+  ).pipe(Effect.map(({ closed }) => closed));
+
+/**
+ * Every file and directory the Wayfinder reader touches goes through here. A path is only
+ * usable when its real location (symlinks and Windows junctions resolved) is inside the real
+ * project root. Anything else reads exactly as a missing file does and is logged on the
+ * server only, so a client cannot learn whether something exists outside the project.
+ *
+ * What a file read guarantees:
+ * - A link that exists while the file is read, or one swapped in once between the check and
+ *   the open, is never followed out of the project.
+ * - On Linux the check is made on the open descriptor, so the bytes read come from a file
+ *   inside the project whatever happens to the path.
+ * - Windows and macOS have no Node call that names an open handle. There the path is
+ *   resolved again after the open and must still name the same file. A process that renames
+ *   a folder inside the project away, back and away again within one read can still have an
+ *   outside file read. That process can already write into the project, so it could as well
+ *   copy in any outside file it can read.
+ * - A hard link is a file inside the project and is read.
+ *
+ * Directory listings and watches resolve the path and then open it, without a second check.
+ * A swap there exposes nothing: a listing only supplies names that are read through the
+ * check above, and a watch event only asks for a rescan.
+ */
+export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
+  workspaceRoot: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
+  const platform = yield* HostProcessPlatform;
+
+  const realRoot = yield* resolveRealRoot(workspaceRoot);
+
+  const logProbeFailure = (operation: string, relativePath: string, reason: string) =>
+    Effect.logWarning("Wayfinder filesystem probe failed", { operation, relativePath, reason });
+  const logPlatformFailure = (operation: string, relativePath: string, cause: PlatformError) =>
+    logProbeFailure(operation, relativePath, cause.reason._tag);
 
   const isInsideRealRoot = (realPath: string) => {
     const relative = path.relative(realRoot, realPath);
@@ -102,9 +159,10 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
       Effect.catch((cause) =>
         cause.reason._tag === "NotFound"
           ? Effect.succeed(Option.none<string>())
-          : (quiet ? Effect.void : logProbeFailure("real-path", target.relativePath, cause)).pipe(
-              Effect.as(Option.none<string>()),
-            ),
+          : (quiet
+              ? Effect.void
+              : logPlatformFailure("real-path", target.relativePath, cause)
+            ).pipe(Effect.as(Option.none<string>())),
       ),
     );
     if (Option.isNone(realPath)) {
@@ -133,7 +191,7 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
       Effect.catch((cause) =>
         (cause.reason._tag === "NotFound"
           ? Effect.void
-          : logProbeFailure("stat", target.relativePath, cause)
+          : logPlatformFailure("stat", target.relativePath, cause)
         ).pipe(Effect.as(null)),
       ),
     );
@@ -148,33 +206,25 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
       }
       // `opendir` streams entries in small batches, so a huge directory is never fully
       // materialised; `readDirectory` would fetch every name before any budget applies.
-      return yield* Effect.tryPromise({
-        try: async (): Promise<WayfinderDirectoryListing> => {
-          const directory = await NodeFSP.opendir(target.absolutePath);
-          const entries: Array<string> = [];
-          try {
-            for await (const entry of directory) {
-              if (entries.length >= entryBudget) {
-                return { entries, truncated: true };
-              }
-              entries.push(entry.name);
+      return yield* nodeCall(async (): Promise<WayfinderDirectoryListing> => {
+        const directory = await NodeFSP.opendir(target.absolutePath);
+        const entries: Array<string> = [];
+        try {
+          for await (const entry of directory) {
+            if (entries.length >= entryBudget) {
+              return { entries, truncated: true };
             }
-            return { entries, truncated: false };
-          } finally {
-            await directory.close().catch(() => undefined);
+            entries.push(entry.name);
           }
-        },
-        catch: (cause) =>
-          new WayfinderDirectoryReadError({ code: (cause as NodeJS.ErrnoException).code }),
+          return { entries, truncated: false };
+        } finally {
+          await directory.close().catch(() => undefined);
+        }
       }).pipe(
         Effect.catch((cause) =>
-          (cause.code === "ENOENT" || cause.code === "ENOTDIR"
+          (isAbsent(cause.code)
             ? Effect.void
-            : Effect.logWarning("Wayfinder filesystem probe failed", {
-                operation: "read-directory",
-                relativePath: target.relativePath,
-                reason: cause.code ?? "unknown",
-              })
+            : logProbeFailure("read-directory", target.relativePath, cause.code ?? "unknown")
           ).pipe(Effect.as(empty)),
         ),
       );
@@ -192,7 +242,7 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
         Effect.catch((cause) =>
           (cause.reason._tag === "NotFound"
             ? Effect.void
-            : logProbeFailure("stat", target.relativePath, cause)
+            : logPlatformFailure("stat", target.relativePath, cause)
           ).pipe(Effect.as(false)),
         ),
       );
@@ -205,51 +255,52 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
       if (!target) {
         return null;
       }
-      const attempt = Effect.scoped(
-        Effect.gen(function* () {
-          const file = yield* fileSystem.open(target.absolutePath, { flag: "r" });
-          const info = yield* file.stat;
-          if (info.type !== "File") {
-            return null;
-          }
-          // Re-verify after the open: the path must still lead to the file we hold.
-          const [stillThere, onDisk] = yield* Effect.all([
-            contain(relativePath, true),
-            fileSystem.stat(target.absolutePath),
-          ]);
-          if (
-            stillThere?.absolutePath !== target.absolutePath ||
-            onDisk.dev !== info.dev ||
-            Option.getOrUndefined(onDisk.ino) !== Option.getOrUndefined(info.ino)
-          ) {
-            yield* Effect.logWarning("Wayfinder refused a file that changed while it was opened", {
-              relativePath: target.relativePath,
+      // True when the open handle is a file inside the project; see the guarantees above.
+      const heldInsideRoot = (handle: NodeFSP.FileHandle, held: NodeFS.BigIntStats) =>
+        platform === "linux"
+          ? nodeCall(() => NodeFSP.readlink(`/proc/self/fd/${handle.fd}`)).pipe(
+              Effect.map(isInsideRealRoot),
+            )
+          : Effect.gen(function* () {
+              const again = yield* contain(relativePath, true);
+              if (again?.absolutePath !== target.absolutePath) {
+                return false;
+              }
+              const onDisk = yield* nodeCall(() =>
+                NodeFSP.stat(target.absolutePath, { bigint: true }),
+              );
+              return onDisk.dev === held.dev && onDisk.ino === held.ino;
             });
-            return null;
-          }
-          const truncated = info.size > BigInt(byteLimit);
-          const bytesToRead = truncated ? byteLimit : Number(info.size);
-          if (bytesToRead === 0) {
-            return {
-              relativePath: target.relativePath,
-              contents: "",
-              truncated: false,
-            } satisfies WayfinderMarkdownFile;
-          }
-          const buffer = new Uint8Array(bytesToRead);
-          const bytesRead = Number(yield* file.read(buffer));
-          return {
+      const attempt = Effect.gen(function* () {
+        const handle = yield* Effect.acquireRelease(
+          nodeCall(() => NodeFSP.open(target.absolutePath, "r")),
+          (handle) => Effect.promise(() => handle.close().catch(() => undefined)),
+        );
+        const held = yield* nodeCall(() => handle.stat({ bigint: true }));
+        if (!held.isFile()) {
+          return null;
+        }
+        if (!(yield* heldInsideRoot(handle, held))) {
+          yield* Effect.logWarning("Wayfinder refused a file that changed while it was opened", {
             relativePath: target.relativePath,
-            contents: new TextDecoder("utf-8").decode(buffer.subarray(0, bytesRead)),
-            truncated,
-          } satisfies WayfinderMarkdownFile;
-        }),
-      );
+          });
+          return null;
+        }
+        const truncated = held.size > BigInt(byteLimit);
+        const buffer = new Uint8Array(truncated ? byteLimit : Number(held.size));
+        const { bytesRead } = yield* nodeCall(() => handle.read(buffer, 0, buffer.length, 0));
+        return {
+          relativePath: target.relativePath,
+          contents: new TextDecoder("utf-8").decode(buffer.subarray(0, bytesRead)),
+          truncated,
+        } satisfies WayfinderMarkdownFile;
+      });
       return yield* attempt.pipe(
-        Effect.catchTag("PlatformError", (cause) =>
-          (cause.reason._tag === "NotFound"
+        Effect.scoped,
+        Effect.catchTag("WayfinderNodeFileError", (cause) =>
+          (isAbsent(cause.code)
             ? Effect.void
-            : logProbeFailure("bounded-read", target.relativePath, cause)
+            : logProbeFailure("bounded-read", target.relativePath, cause.code ?? "unknown")
           ).pipe(Effect.as<WayfinderMarkdownFile | null>(null)),
         ),
       );

@@ -15,9 +15,14 @@ Discovery uses four bounded top-level probes rather than walking the workspace t
 
 Every path goes through `WayfinderFiles.ts`, which resolves its real location (symlinks and Windows
 junctions followed) and only reads it when that is inside the real project root. Anything that
-leaves the root, including a link to a folder or file outside it, reads as absent and is logged. A
-file read is checked again after it opens, since a link could be swapped in between the check and
-the open. The lexical check in `WorkspacePaths` alone is not enough for this.
+leaves the root reads exactly as a missing file does. The lexical check in `WorkspacePaths` alone is
+not enough for this.
+
+A link swapped in while a file is read is the hard case, because Node has no `openat` and no call
+that names an open handle. On Linux the check is made on the descriptor, through `/proc/self/fd`.
+On Windows and macOS the path is resolved again after the open and must name the same file, which a
+process renaming a project folder away, back and away again within one read can defeat. The comment
+on `makeWayfinderFiles` states the guarantee; do not widen it without a handle-based check.
 
 The supported layouts are `.plan/<effort>/map.md` with `tickets/`,
 `.plan/maps/<effort>/map.md` with `tickets/`, `.scratch/<effort>/map.md` with `issues/`, and the
@@ -30,23 +35,27 @@ frontmatter, bold `**Field:** value` lines, and plain `Field: value` lines. The 
 is used by the local-markdown tracker under `.scratch`; its `Type`, `Status`, and `Blocked by`
 fields feed the same status and blocker model as the other dialects.
 
-The service runs three supervised watchers, each with a missing-directory re-arm probe:
+The service runs three supervised watchers, each with a missing-directory re-arm probe: `.plan`
+and `.scratch` recursively, so a ticket in a nested folder is seen, and the workspace root without
+recursion, for `wayfinder-map.md`. Recursing on the root would traverse `node_modules` and `.git`.
 
-- `.plan` and `.scratch`, watched recursively, because Effect's `FileSystem.watch` is not recursive
-  unless asked. This is what delivers a change to a ticket file in a nested directory.
-- the workspace root, watched without recursion and filtered to `wayfinder-map.md`, for the root
-  map file. Recursing here would also traverse `node_modules` and `.git`.
-
-A watched directory is resolved to its real path first, so a link out of the project is never
-watched. Each watcher takes its OS watch before its arming scan, so a change made before the watch
-existed is still picked up.
+Agents write thousands of unrelated files under `.scratch`, so the watches use Node's `fs.watch`
+directly rather than `FileSystem.watch`, which stats every renamed path and queues every event
+before any filter runs. Each event is checked against `wayfinderPathKind`, the same rule discovery
+uses for names, and a relevant one fills a single pending slot per root. A folder's `change` events
+are ignored: on Windows they are timestamp updates caused by the files inside. The watches exist
+before a root's first scan, so no change can fall between the two.
 
 A scan is bounded in what it looks at as well as in what it keeps. Directory listings stop at a
 fixed number of entries, at most 128 candidate maps are probed, and a ticket folder is read up to a
-fixed entry count; reaching any of them marks the snapshot truncated. Scans of one root are also
-coalesced and spaced: callers that arrive while a scan is waiting or running share the next one, and
-scans of one root start at most once a second. A fixed number of scans run at once across all roots.
-The first scan of a root happens on first use, so a refresh of a fresh root is one scan.
+fixed entry count; reaching any of them marks the snapshot truncated. Scans of one root are
+coalesced and start at least a second apart, measured from when a scan actually starts, and two
+scans run at once across all roots.
+
+Roots are keyed by real path, so every spelling of a folder shares one root. Only a subscription
+creates a root; a refresh of a root nobody watches does nothing. The server holds at most 32 live
+roots and a connection at most 16 subscriptions; past either cap the request fails with
+`capacity_reached`, which the panel shows. A root closes a minute after its last subscriber.
 
 The header reload action sends a workspace-scoped RPC through the active environment. It runs the
 same refresh as the watchers and publishes a snapshot only when the parsed content changed, so

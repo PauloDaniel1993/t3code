@@ -78,3 +78,6 @@ If T3 Code finds a map whose markdown it cannot make sense of, the surface shows
 warnings instead of the no-map message. If only part of a map can be read, the usable tickets still
 appear and the warnings remain available. A map or ticket file that cannot be opened at all, or one
 that is a link to somewhere outside the project, is skipped rather than reported.
+
+A server shows maps for a limited number of folders at once. If the Map surface says that limit is
+reached, close map panels you no longer need and try again a minute later.

@@ -2,7 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -11,6 +11,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { makeWayfinderFiles } from "./WayfinderFiles.ts";
@@ -245,4 +247,118 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps containment", 
       expect(yield* files.resolveDirectory(".plan", { quiet: true })).not.toBeNull();
     }),
   );
+  it.effect(
+    "answers the same for a link to an outside folder that exists and one that does not",
+    () =>
+      Effect.gen(function* () {
+        const { path, project, outside } = yield* makeSandbox;
+        const twin = path.join(path.dirname(project), "twin");
+        for (const [root, target] of [
+          [project, outside],
+          [twin, path.join(path.dirname(project), "missing")],
+        ] as const) {
+          yield* writeText(path.join(root, ".scratch", "own", "map.md"), mapMarkdown("Own"));
+          yield* writeText(path.join(root, ".scratch", "two", "map.md"), mapMarkdown("Two"));
+          // A map folder and a ticket folder that lead out of the project.
+          expect(
+            yield* tryLink(target, path.join(root, ".scratch", "eff"), directoryLinkType),
+          ).toBe(true);
+          expect(
+            yield* tryLink(
+              path.join(target, "issues"),
+              path.join(root, ".scratch", "two", "issues"),
+              directoryLinkType,
+            ),
+          ).toBe(true);
+        }
+
+        expect(textOf(yield* snapshotOf(project))).toEqual(textOf(yield* snapshotOf(twin)));
+      }),
+  );
+
+  describe("a folder swapped for a link while a file is read", () => {
+    /**
+     * `project/data` holds a safe map. `swapOut` parks it and puts a link to the outside
+     * folder in its place; `restore` puts it back. The swaps run inside `realPath`, the
+     * check, so they land exactly between the check and the open, and around the recheck.
+     */
+    const makeSwap = Effect.gen(function* () {
+      const { path, project, outside } = yield* makeSandbox;
+      const data = path.join(project, "data");
+      const parked = path.join(project, "parked");
+      yield* writeText(path.join(data, "map.md"), mapMarkdown("Safe"));
+      let swapped = false;
+      const swapOut = Effect.promise(async () => {
+        if (swapped) return;
+        await NodeFSP.rename(data, parked);
+        await NodeFSP.symlink(outside, data, directoryLinkType);
+        swapped = true;
+      });
+      const restore = Effect.promise(async () => {
+        if (!swapped) return;
+        await NodeFSP.unlink(data);
+        await NodeFSP.rename(parked, data);
+        swapped = false;
+      });
+      yield* Effect.addFinalizer(() => restore);
+      return { project, target: path.join(data, "map.md"), swapOut, restore };
+    });
+
+    /** Files for `project` whose n-th `realPath` of `target` runs `around[n]`. */
+    const filesWithSwaps = Effect.fn("filesWithSwaps")(function* (
+      project: string,
+      target: string,
+      around: ReadonlyArray<{
+        readonly before?: Effect.Effect<void>;
+        readonly after?: Effect.Effect<void>;
+      }>,
+    ) {
+      const fileSystem = yield* FileSystem.FileSystem;
+      let calls = 0;
+      const swapping = FileSystem.make({
+        ...fileSystem,
+        realPath: (path) => {
+          if (path !== target) return fileSystem.realPath(path);
+          const step = around[calls++];
+          return (step?.before ?? Effect.void).pipe(
+            Effect.andThen(fileSystem.realPath(path)),
+            Effect.tap(() => step?.after ?? Effect.void),
+          );
+        },
+      });
+      return yield* makeWayfinderFiles(project).pipe(
+        Effect.provideService(FileSystem.FileSystem, swapping),
+      );
+    });
+
+    it.effect("refuses the outside file when the swap lands between the check and the open", () =>
+      Effect.gen(function* () {
+        const { project, target, swapOut } = yield* makeSwap;
+        const files = yield* filesWithSwaps(project, target, [{ after: swapOut }]);
+
+        expect(yield* files.readBounded("data/map.md", 65536)).toBeNull();
+      }),
+    );
+
+    it.effect(
+      "refuses the outside file when the path is put back for the recheck (Linux only)",
+      (context) =>
+        Effect.gen(function* () {
+          // Only Linux lets Node name the file behind a descriptor; elsewhere this swap is
+          // the documented limit in WayfinderFiles.ts.
+          if (HostProcessPlatform.defaultValue() !== "linux") {
+            return context.skip("needs /proc/self/fd, which only Linux has");
+          }
+          const { project, target, swapOut, restore } = yield* makeSwap;
+          const files = yield* filesWithSwaps(project, target, [
+            { after: swapOut },
+            { before: restore, after: swapOut },
+          ]);
+
+          const read = yield* files.readBounded("data/map.md", 65536);
+
+          expect(read).toBeNull();
+        }),
+    );
+  });
 });

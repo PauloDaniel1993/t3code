@@ -1,15 +1,17 @@
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as LayerMap from "effect/LayerMap";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
+import * as RcMap from "effect/RcMap";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -18,7 +20,7 @@ import * as Path from "effect/Path";
 
 import { subscribeBeforeSnapshot } from "../utils/subscribeBeforeSnapshot.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { makeWayfinderFiles } from "./WayfinderFiles.ts";
+import { makeWayfinderFiles, resolveRealRoot, watchDirectory } from "./WayfinderFiles.ts";
 import {
   parseWayfinderMaps,
   type WayfinderMap,
@@ -39,6 +41,9 @@ export const WAYFINDER_MAPS_MAX_DISCOVERY_ENTRIES = 256;
 export const WAYFINDER_MAPS_MAX_CANDIDATES = 128;
 export const WAYFINDER_MAPS_MAX_TICKET_DIRECTORY_ENTRIES = 512;
 export const WAYFINDER_MAPS_MAX_CONCURRENT_SCANS = 2;
+// Admission: what one server holds for all clients, and what one connection may hold of it.
+export const WAYFINDER_MAPS_MAX_LIVE_ROOTS = 32;
+export const WAYFINDER_MAPS_MAX_SUBSCRIPTIONS_PER_CONNECTION = 16;
 export const WAYFINDER_MAPS_DEFAULT_BOOTSTRAP_PROBE_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_MIN_SCAN_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_WATCH_DEBOUNCE = Duration.millis(100);
@@ -66,7 +71,13 @@ class WayfinderScanGate extends Context.Service<WayfinderScanGate, Semaphore.Sem
   );
 }
 
+/** A new root or subscription was refused because its admission cap is reached. */
+export class WayfinderMapsCapacityError extends Data.TaggedError("WayfinderMapsCapacityError")<{
+  readonly message: string;
+}> {}
+
 export type WayfinderMapsError =
+  | WayfinderMapsCapacityError
   | WorkspacePaths.WorkspaceRootNotExistsError
   | WorkspacePaths.WorkspaceRootCreateFailedError
   | WorkspacePaths.WorkspaceRootStatFailedError
@@ -151,20 +162,71 @@ function enforceTitleCap(snapshot: WayfinderMapsSnapshot): WayfinderMapsSnapshot
 type ScanDeferred = Deferred.Deferred<void, WorkspacePaths.WorkspacePathOutsideRootError>;
 
 interface WatchSpec {
-  readonly label: string;
+  /** Where the watched directory sits, relative to the workspace root ("" for the root). */
+  readonly relativePath: string;
   /** Real path to watch, or null while it is absent or resolves outside the project. */
   readonly resolve: Effect.Effect<string | null, WorkspacePaths.WorkspacePathOutsideRootError>;
   readonly recursive: boolean;
-  readonly accepts: (event: FileSystem.WatchEvent) => boolean;
 }
 
 const ROOT_MAP_FILE_NAME = "wayfinder-map.md";
+/** Where discovery looks: `<container>/<effort>/map.md`, tickets in `<effort>/<tickets>/`. */
+const MAP_CONTAINERS = [
+  { segments: [".plan", "maps"], tickets: "tickets" },
+  { segments: [".plan"], tickets: "tickets" },
+  { segments: [".scratch"], tickets: "issues" },
+] as const;
+
+/**
+ * What a path, relative to the workspace root, can be to discovery: a file it reads, a
+ * folder whose appearance or removal changes what it finds, or nothing. Discovery filters
+ * ticket names with it and the watchers filter every event with it. Names compare without
+ * case, because discovery's fixed names (`map.md`, `wayfinder-map.md`, `tickets`) also match
+ * other spellings on Windows and macOS; on Linux the extra match costs a scan, nothing else.
+ */
+export function wayfinderPathKind(relativePath: string): "file" | "folder" | null {
+  const segments = relativePath
+    .toLowerCase()
+    .split(/[\\/]+/)
+    .filter((segment) => segment.length > 0);
+  const [first, second, third, ...deeper] = segments;
+  if (second === undefined) {
+    if (first === ROOT_MAP_FILE_NAME) return "file";
+    return first === ".plan" || first === ".scratch" ? "folder" : null;
+  }
+  // The root map's tickets.
+  if (first === ".plan" && second === "tickets" && third?.endsWith(".md") && deeper.length === 0) {
+    return "file";
+  }
+  for (const container of MAP_CONTAINERS) {
+    if (!container.segments.every((name, index) => segments[index] === name)) continue;
+    const [effort, entry, ticket, ...rest] = segments.slice(container.segments.length);
+    if (rest.length > 0) continue;
+    if (effort === undefined || entry === undefined) return "folder";
+    if (ticket === undefined) {
+      if (entry === "map.md") return "file";
+      if (entry === container.tickets) return "folder";
+      continue;
+    }
+    if (entry === container.tickets && ticket.endsWith(".md")) return "file";
+  }
+  return null;
+}
+
+/**
+ * Whether a watch event can change a snapshot. A folder only matters when it appears, goes or
+ * is renamed: its `change` events are timestamp updates from the files inside, which arrive
+ * with their own names.
+ */
+export function isWayfinderMapChange(event: "rename" | "change", relativePath: string): boolean {
+  const kind = wayfinderPathKind(relativePath);
+  return kind === "file" || (kind === "folder" && event === "rename");
+}
 
 const rootLayer = (workspaceRoot: string) =>
   Layer.effect(
     WayfinderMapsRoot,
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
       const tuning = yield* WayfinderMapsTuning;
@@ -235,7 +297,10 @@ const rootLayer = (workspaceRoot: string) =>
           WAYFINDER_MAPS_MAX_TICKET_DIRECTORY_ENTRIES,
         );
         const ticketEntries = listing.entries
-          .filter((entry) => entry.toLowerCase().endsWith(".md"))
+          .filter(
+            (entry) =>
+              wayfinderPathKind(path.join(candidate.ticketsRelativePath, entry)) === "file",
+          )
           .toSorted((left, right) => left.localeCompare(right));
         const perMapEntries = ticketEntries.slice(0, WAYFINDER_MAPS_MAX_TICKETS_PER_MAP);
         const selectedEntries = perMapEntries.slice(0, remainingNodeCapacity);
@@ -297,6 +362,7 @@ const rootLayer = (workspaceRoot: string) =>
       const publishMutex = yield* Semaphore.make(1);
       const scanMutex = yield* Semaphore.make(1);
       const pendingScanRef = yield* Ref.make(Option.none<ScanDeferred>());
+      const runningScanRef = yield* Ref.make(Option.none<ScanDeferred>());
       const lastScanStartRef = yield* Ref.make(Option.none<number>());
       const watcherStartedRef = yield* Ref.make(false);
       const watcherScope = yield* Scope.make("sequential");
@@ -321,8 +387,9 @@ const rootLayer = (workspaceRoot: string) =>
       });
 
       // Runs one scan for everything that asked while it was waiting. It clears the pending
-      // slot only once it starts scanning, so requests arriving during the throttle wait join
-      // it, and requests arriving during the scan queue exactly one more.
+      // slot and stamps the start only once it holds a global permit and starts scanning, so
+      // requests arriving during the throttle or permit wait join it, requests arriving during
+      // the scan queue exactly one more, and that one waits a full interval from this start.
       const runPendingScan = scanMutex.withPermits(1)(
         Effect.gen(function* () {
           const lastStart = yield* Ref.get(lastScanStartRef);
@@ -334,9 +401,13 @@ const rootLayer = (workspaceRoot: string) =>
           if (waitMillis > 0) {
             yield* Effect.sleep(Duration.millis(waitMillis));
           }
-          yield* Ref.set(pendingScanRef, Option.none());
-          yield* Ref.set(lastScanStartRef, Option.some(yield* Clock.currentTimeMillis));
-          yield* scanGate.withPermits(1)(scanAndPublish);
+          yield* scanGate.withPermits(1)(
+            Effect.gen(function* () {
+              yield* Ref.set(runningScanRef, yield* Ref.getAndSet(pendingScanRef, Option.none()));
+              yield* Ref.set(lastScanStartRef, Option.some(yield* Clock.currentTimeMillis));
+              yield* scanAndPublish.pipe(Effect.ensuring(Ref.set(runningScanRef, Option.none())));
+            }),
+          );
         }),
       );
 
@@ -360,56 +431,105 @@ const rootLayer = (workspaceRoot: string) =>
         }),
       );
 
+      // A root's first subscribers share its first scan: one arriving while it runs waits
+      // for it rather than queueing another scan a full interval later.
       const latestSnapshot = Effect.gen(function* () {
         if (Option.isNone(yield* Ref.get(snapshotRef))) {
-          yield* requestScan;
+          const running = yield* Ref.get(runningScanRef);
+          yield* Option.isSome(running) ? Deferred.await(running.value) : requestScan;
         }
         return yield* Ref.get(snapshotRef).pipe(Effect.map(Option.getOrThrow));
       });
 
+      // Recursive on `.plan` and `.scratch` so a change to any ticket or map below them is
+      // seen; the workspace root is watched without recursion because it holds node_modules
+      // and .git. Every event is filtered by `wayfinderPathKind` before anything else runs.
       const watchSpecs: ReadonlyArray<WatchSpec> = [
-        // Recursive so a change to any ticket or map below `.plan` or `.scratch` reaches
-        // subscribers. Only these two subtrees are watched this way; the workspace root is
-        // never watched recursively because it holds node_modules and .git.
         {
-          label: planTarget.relativePath,
+          relativePath: planTarget.relativePath,
           resolve: files.resolveDirectory(planTarget.relativePath, { quiet: true }),
           recursive: true,
-          accepts: () => true,
         },
         {
-          label: scratchTarget.relativePath,
+          relativePath: scratchTarget.relativePath,
           resolve: files.resolveDirectory(scratchTarget.relativePath, { quiet: true }),
           recursive: true,
-          accepts: () => true,
         },
-        // The root map file sits directly in the workspace root: watch that one directory
-        // without recursion and react only to the map file.
-        {
-          label: ROOT_MAP_FILE_NAME,
-          resolve: Effect.succeed(workspaceRoot),
-          recursive: false,
-          accepts: (event) => event.path === ROOT_MAP_FILE_NAME,
-        },
+        { relativePath: "", resolve: Effect.succeed(workspaceRoot), recursive: false },
       ];
 
-      const runWatcher = Effect.fn("WayfinderMaps.runWatcher")(function* (
-        directory: string,
-        spec: WatchSpec,
-      ) {
-        // Taking the pull is what creates the OS watch, so it comes first: the arming scan
-        // below then cannot miss a change made before the watch existed.
-        const pull = yield* Stream.toPull(
-          fileSystem.watch(directory, { recursive: spec.recursive }),
-        );
-        yield* requestScan;
-        yield* Stream.fromPull(Effect.succeed(pull)).pipe(
-          Stream.filter(spec.accepts),
-          Stream.debounce(tuning.watchDebounce),
-          Stream.runForEach(() => requestScan),
-        );
-      }, Effect.scoped);
+      // The root's whole pending watch state: one slot, full when a relevant change has been
+      // seen since the last scan was requested. Further events while it is full are dropped.
+      const changed = yield* Queue.dropping<void>(1);
+      const noteChange = (spec: WatchSpec) => (event: "rename" | "change", name: string) => {
+        if (isWayfinderMapChange(event, path.join(spec.relativePath, name))) {
+          Queue.offerUnsafe(changed, undefined);
+        }
+      };
 
+      /**
+       * Keeps one watch alive, re-arming it when its directory appears or the watch fails.
+       * `armed` completes once the first attempt has either armed it or found nothing to watch.
+       */
+      const superviseWatcher = (
+        spec: WatchSpec,
+        armed: Deferred.Deferred<void>,
+        sleepUntilNextProbe: Effect.Effect<void>,
+      ) => {
+        // After the first attempt, a new watch may have missed changes and must be followed
+        // by a scan. The first one precedes the subscriber's own first scan.
+        let missedChanges = false;
+        const attempt = Effect.gen(function* () {
+          const directory = yield* spec.resolve;
+          if (directory === null) {
+            missedChanges = true;
+            return;
+          }
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const closed = yield* watchDirectory(directory, spec.recursive, noteChange(spec));
+              yield* Deferred.succeed(armed, undefined);
+              if (missedChanges) {
+                yield* requestScan;
+              }
+              missedChanges = true;
+              yield* Deferred.await(closed);
+            }),
+          );
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("Wayfinder watcher stopped; re-arming", {
+                  cause,
+                  relativePath: spec.relativePath,
+                }),
+          ),
+        );
+        return Effect.forever(
+          attempt.pipe(
+            Effect.andThen(Deferred.succeed(armed, undefined)),
+            Effect.andThen(sleepUntilNextProbe),
+          ),
+        );
+      };
+
+      // Turns the slot into scans: wait out the debounce so a burst of writes lands in one
+      // scan, empty the slot, scan. Changes during the scan refill the slot for the next one.
+      const scanOnChange = Effect.forever(
+        Queue.take(changed).pipe(
+          Effect.andThen(Effect.sleep(tuning.watchDebounce)),
+          Effect.andThen(Queue.clear(changed)),
+          Effect.andThen(requestScan),
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("Wayfinder change scan failed", { cause }),
+          ),
+        ),
+      );
+
+      /** Starts the watches once per root and returns when each has had its first attempt. */
       const startWatcher = Effect.fn("WayfinderMaps.startWatcher")(function* (
         options?: WayfinderMapsStreamOptions,
       ) {
@@ -421,34 +541,23 @@ const rootLayer = (workspaceRoot: string) =>
           options?.automaticBootstrapProbeInterval ??
           Effect.succeed(WAYFINDER_MAPS_DEFAULT_BOOTSTRAP_PROBE_INTERVAL);
         const sleepUntilNextProbe = probeInterval.pipe(Effect.flatMap(Effect.sleep));
-        for (const spec of watchSpecs) {
-          const superviseWatcher = Effect.forever(
-            Effect.gen(function* () {
-              let directory = yield* spec.resolve;
-              while (directory === null) {
-                yield* sleepUntilNextProbe;
-                directory = yield* spec.resolve;
-              }
-              yield* runWatcher(directory, spec);
-            }).pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterrupts(cause)
-                  ? Effect.failCause(cause)
-                  : Effect.logWarning("Wayfinder watcher stopped; re-arming", {
-                      cause,
-                      relativePath: spec.label,
-                    }),
-              ),
-              Effect.andThen(sleepUntilNextProbe),
-            ),
-          );
-          yield* superviseWatcher.pipe(Effect.forkIn(watcherScope));
-        }
+        yield* scanOnChange.pipe(Effect.forkIn(watcherScope));
+        const armed = yield* Effect.forEach(watchSpecs, (spec) =>
+          Effect.gen(function* () {
+            const specArmed = yield* Deferred.make<void>();
+            yield* superviseWatcher(spec, specArmed, sleepUntilNextProbe).pipe(
+              Effect.forkIn(watcherScope),
+            );
+            return specArmed;
+          }),
+        );
+        yield* Effect.forEach(armed, Deferred.await, { discard: true });
       });
 
       const stream: WayfinderMapsRootService["stream"] = (options) =>
         Stream.unwrap(
           Effect.gen(function* () {
+            // Watches exist before the first scan, so no change can fall between the two.
             yield* startWatcher(options);
             // The first scan must finish before the mutex is taken to subscribe: it publishes
             // under the same mutex.
@@ -489,14 +598,39 @@ export class WayfinderMaps extends Context.Service<
 export const make = Effect.gen(function* () {
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const maps = yield* WayfinderMapsMap;
+  const admission = yield* Semaphore.make(1);
 
-  const normalizeRoot = (cwd: string) => workspacePaths.normalizeWorkspaceRoot(cwd);
+  // Roots are keyed by real path, so every spelling of one folder (letter case, a link to
+  // it) shares one set of watches, one throttle and one scan. A path that cannot be resolved
+  // (missing, or `~`) goes to `normalizeWorkspaceRoot` as given, which expands or reports it.
+  const rootKey = (cwd: string) =>
+    resolveRealRoot(cwd).pipe(
+      Effect.orElseSucceed(() => cwd),
+      Effect.flatMap((root) => workspacePaths.normalizeWorkspaceRoot(root)),
+    );
 
+  /** A root that is live or can still be admitted under the live-root cap. */
+  const acquireRoot = (workspaceRoot: string) =>
+    admission.withPermits(1)(
+      Effect.gen(function* () {
+        const live = Array.from(yield* RcMap.keys(maps.rcMap));
+        if (!live.includes(workspaceRoot) && live.length >= WAYFINDER_MAPS_MAX_LIVE_ROOTS) {
+          return yield* new WayfinderMapsCapacityError({
+            message: `This server is already showing maps for ${WAYFINDER_MAPS_MAX_LIVE_ROOTS} folders. Close some map panels and try again in a minute.`,
+          });
+        }
+        return yield* maps.contextEffect(workspaceRoot);
+      }),
+    );
+
+  // A refresh only rescans a root that is live: with nobody subscribed there is nothing to
+  // update, so it never creates a root.
   const refresh: WayfinderMaps["Service"]["refresh"] = Effect.fn("WayfinderMaps.refresh")(
     function* (cwd) {
-      const workspaceRoot = yield* normalizeRoot(cwd);
-      const context = yield* maps.contextEffect(workspaceRoot);
-      return yield* Context.get(context, WayfinderMapsRoot).refresh;
+      const context = yield* maps.contextEffectOption(yield* rootKey(cwd));
+      if (Option.isSome(context)) {
+        yield* Context.get(context.value, WayfinderMapsRoot).refresh;
+      }
     },
     Effect.scoped,
   );
@@ -504,8 +638,7 @@ export const make = Effect.gen(function* () {
   const stream: WayfinderMaps["Service"]["stream"] = (cwd, options) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        const workspaceRoot = yield* normalizeRoot(cwd);
-        const context = yield* maps.contextEffect(workspaceRoot);
+        const context = yield* acquireRoot(yield* rootKey(cwd));
         return Context.get(context, WayfinderMapsRoot).stream(options);
       }),
     );

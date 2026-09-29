@@ -1,6 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
-import * as Context from "effect/Context";
+import { describe, expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -13,46 +12,10 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as WayfinderMaps from "./WayfinderMaps.ts";
 import type { WayfinderMapsSnapshot } from "./WayfinderMarkdown.ts";
 
-interface ArmedWatch {
-  readonly path: string;
-  readonly recursive: boolean;
-}
-
-// The real file system, except that `watch` reports each watch once it exists. Native
-// watches are taken through `toPull`, so an entry here means the OS watch is live and any
-// later write must arrive as an event.
-class ArmedWatches extends Context.Service<ArmedWatches, Queue.Queue<ArmedWatch>>()(
-  "t3/wayfinder/WayfinderMapsWatch.test/ArmedWatches",
-) {
-  static readonly layer = Layer.effect(ArmedWatches, Queue.unbounded<ArmedWatch>());
-}
-
-const observedFileSystem = Layer.effect(
-  FileSystem.FileSystem,
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const armedWatches = yield* ArmedWatches;
-    return FileSystem.make({
-      ...fileSystem,
-      watch: (path, options) =>
-        Stream.scoped(
-          Stream.fromPull(
-            Effect.gen(function* () {
-              const pull = yield* Stream.toPull(fileSystem.watch(path, options));
-              yield* Queue.offer(armedWatches, { path, recursive: options?.recursive ?? false });
-              return pull;
-            }),
-          ),
-        ),
-    });
-  }),
+const workspace = Layer.merge(
+  NodeServices.layer,
+  WorkspacePaths.layer.pipe(Layer.provide(NodeServices.layer)),
 );
-
-const platform = Layer.provideMerge(
-  observedFileSystem,
-  Layer.merge(NodeServices.layer, ArmedWatches.layer),
-);
-const workspace = Layer.merge(platform, WorkspacePaths.layer.pipe(Layer.provide(platform)));
 const quickTuning = Layer.succeed(WayfinderMaps.WayfinderMapsTuning, {
   minScanInterval: Duration.zero,
   watchDebounce: Duration.millis(5),
@@ -90,27 +53,43 @@ const writeText = Effect.fn("writeText")(function* (
 });
 
 /**
- * Subscribes, waits for the first snapshot and for the three watchers to be live, then lets
- * every scan they triggered on arming finish. What arrives after that can only have come from
- * a watch event.
+ * Subscribes and takes the first snapshot. The watches are live before that snapshot's scan,
+ * and arming them scans nothing more, so whatever arrives next came from a watch event.
  */
-const subscribeAndSettle = Effect.fn("subscribeAndSettle")(function* (cwd: string) {
+const subscribe = Effect.fn("subscribe")(function* (cwd: string) {
   const maps = yield* WayfinderMaps.WayfinderMaps;
-  const armedWatches = yield* ArmedWatches;
-  yield* Queue.clear(armedWatches);
   const snapshots = yield* Queue.unbounded<WayfinderMapsSnapshot>();
   yield* maps.stream(cwd).pipe(
     Stream.runForEach((snapshot) => Queue.offer(snapshots, snapshot)),
     Effect.forkScoped,
   );
   const initial = yield* Queue.take(snapshots);
-  const watches = yield* Effect.all([
-    Queue.take(armedWatches),
-    Queue.take(armedWatches),
-    Queue.take(armedWatches),
-  ]);
-  yield* maps.refresh(cwd);
-  return { snapshots, initial, watches };
+  return { snapshots, initial };
+});
+
+describe("isWayfinderMapChange", () => {
+  it.each([
+    ["rename", "wayfinder-map.md", true],
+    ["change", "WAYFINDER-MAP.MD", true],
+    ["change", ".scratch/eff/map.md", true],
+    ["change", ".scratch\\eff\\issues\\01-a.md", true],
+    ["change", ".plan/maps/deep/tickets/02-b.MD", true],
+    ["change", ".plan/tickets/01-root.md", true],
+    ["rename", ".scratch/eff", true],
+    ["rename", ".plan/eff/tickets", true],
+    ["rename", ".plan", true],
+    // A folder's own `change` is the timestamp of a file written inside it.
+    ["change", ".scratch/noise", false],
+    ["change", ".scratch", false],
+    ["change", ".scratch/noise/output.txt", false],
+    ["rename", ".scratch/eff/notes.md", false],
+    ["change", ".scratch/eff/issues/old/01-a.md", false],
+    ["change", ".scratch/eff/issues/01-a.txt", false],
+    ["change", "src/wayfinder-map.md", false],
+    ["rename", "node_modules", false],
+  ] as const)("%s %s counts: %s", (event, relativePath, expected) => {
+    expect(WayfinderMaps.isWayfinderMapChange(event, relativePath)).toBe(expected);
+  });
 });
 
 it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps watching", (it) => {
@@ -124,31 +103,10 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps watching", (it
     return cwd;
   });
 
-  it.effect("watches .plan and .scratch recursively and the workspace root without recursion", () =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const cwd = yield* makeProject;
-
-      const { watches } = yield* subscribeAndSettle(cwd);
-
-      expect(
-        watches
-          .map((watch) => ({ name: path.basename(watch.path), recursive: watch.recursive }))
-          .toSorted((left, right) => left.name.localeCompare(right.name)),
-      ).toEqual(
-        [
-          { name: ".plan", recursive: true },
-          { name: ".scratch", recursive: true },
-          { name: path.basename(cwd), recursive: false },
-        ].toSorted((left, right) => left.name.localeCompare(right.name)),
-      );
-    }),
-  );
-
   it.effect("publishes a change to a ticket file in a nested .scratch directory", () =>
     Effect.gen(function* () {
       const cwd = yield* makeProject;
-      const { snapshots, initial } = yield* subscribeAndSettle(cwd);
+      const { snapshots, initial } = yield* subscribe(cwd);
       expect(initial.maps.flatMap((map) => map.nodes.map((node) => node.status))).not.toContain(
         "resolved",
       );
@@ -165,7 +123,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps watching", (it
   it.effect("publishes a new ticket file created two levels below .plan", () =>
     Effect.gen(function* () {
       const cwd = yield* makeProject;
-      const { snapshots } = yield* subscribeAndSettle(cwd);
+      const { snapshots } = yield* subscribe(cwd);
 
       yield* writeText(cwd, ".plan/maps/deep/tickets/02-new.md", ticketMarkdown("New"));
       const changed = yield* Queue.take(snapshots);
@@ -176,11 +134,31 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps watching", (it
     }),
   );
 
+  it.effect("still publishes a map change made among many unrelated writes", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeProject;
+      yield* writeText(cwd, ".scratch/noise/000.txt", "x");
+      const { snapshots } = yield* subscribe(cwd);
+
+      yield* Effect.forEach(
+        Array.from({ length: 300 }, (_, index) => index),
+        (index) => writeText(cwd, `.scratch/noise/${String(index).padStart(3, "0")}.txt`, "y"),
+        { concurrency: 16, discard: true },
+      );
+      yield* writeText(cwd, ".scratch/eff/issues/01-a.md", ticketMarkdown("A", "Done."));
+      const changed = yield* Queue.take(snapshots);
+
+      expect(
+        changed.maps.find((map) => map.id === "scratch/eff")?.nodes.map((node) => node.status),
+      ).toEqual(["resolved"]);
+    }),
+  );
+
   it.effect("publishes a change to the root map file", () =>
     Effect.gen(function* () {
       const cwd = yield* makeProject;
       yield* writeText(cwd, "wayfinder-map.md", mapMarkdown("Root before"));
-      const { snapshots, initial } = yield* subscribeAndSettle(cwd);
+      const { snapshots, initial } = yield* subscribe(cwd);
       expect(initial.maps.find((map) => map.id === "wayfinder-map")?.title).toBe("Root before");
 
       yield* writeText(cwd, "wayfinder-map.md", mapMarkdown("Root after"));
@@ -188,5 +166,27 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps watching", (it
 
       expect(changed.maps.find((map) => map.id === "wayfinder-map")?.title).toBe("Root after");
     }),
+  );
+
+  it.effect(
+    "publishes a change to a root map whose name discovery matched in another case",
+    (context) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-wayfinder-case-" });
+        yield* writeText(cwd, "WAYFINDER-MAP.MD", mapMarkdown("Upper before"));
+        // Discovery reads `wayfinder-map.md`; only a case-insensitive file system finds this one.
+        if (!(yield* fileSystem.exists(path.join(cwd, "wayfinder-map.md")).pipe(Effect.orDie))) {
+          return context.skip("the file system is case-sensitive, so discovery does not read it");
+        }
+        const { snapshots, initial } = yield* subscribe(cwd);
+        expect(initial.maps.map((map) => map.title)).toEqual(["Upper before"]);
+
+        yield* writeText(cwd, "WAYFINDER-MAP.MD", mapMarkdown("Upper after"));
+        const changed = yield* Queue.take(snapshots);
+
+        expect(changed.maps.map((map) => map.title)).toEqual(["Upper after"]);
+      }),
   );
 });

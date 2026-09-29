@@ -8,6 +8,8 @@ function failureContext(error: WayfinderMaps.WayfinderMapsError): {
   readonly detail?: string;
 } {
   switch (error._tag) {
+    case "WayfinderMapsCapacityError":
+      return { failure: "capacity_reached" };
     case "WorkspaceRootNotExistsError":
       return {
         failure: "workspace_root_not_found",
