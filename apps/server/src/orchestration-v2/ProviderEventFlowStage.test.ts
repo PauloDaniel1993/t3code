@@ -19,6 +19,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -82,6 +83,85 @@ function terminal(): ProviderAdapterV2Event {
 }
 
 describe("provider event flow stage", () => {
+  it.effect("warns once for aggregate session backlog and delivers every final in order", () => {
+    const messages: unknown[] = [];
+    const logger = Logger.make(({ message }) => {
+      messages.push(message);
+    });
+    return Effect.gen(function* () {
+      const pressure = { items: 0, bytes: 0, warned: false };
+      const a = yield* makeProviderEventFlowStage({
+        ...options,
+        pressure,
+        maxItems: 2,
+        maxBytes: 8_388_608,
+      });
+      const b = yield* makeProviderEventFlowStage({
+        ...options,
+        pressure,
+        maxItems: 2,
+        maxBytes: 8_388_608,
+      });
+      yield* a.offer(progress(1, "a", "completed"));
+      yield* b.offer(progress(2, "b", "completed"));
+      expect(messages).toEqual([]);
+      yield* a.offer(progress(3, "c", "completed"));
+      yield* b.offer(progress(4, "d", "completed"));
+      expect(messages).toHaveLength(1);
+      const bytes =
+        Buffer.byteLength(testJson(progress(1, "a", "completed"))) +
+        Buffer.byteLength(testJson(progress(2, "b", "completed"))) +
+        Buffer.byteLength(testJson(progress(3, "c", "completed")));
+      expect(messages[0]).toEqual([
+        "orchestration-v2.provider-event-backlog",
+        { driver, providerSessionId, items: 3, bytes, maxItems: 2, maxBytes: 8_388_608 },
+      ]);
+      yield* a.end;
+      yield* b.end;
+      expect(yield* a.events.pipe(Stream.runCollect)).toEqual([
+        progress(1, "a", "completed"),
+        progress(3, "c", "completed"),
+      ]);
+      expect(yield* b.events.pipe(Stream.runCollect)).toEqual([
+        progress(2, "b", "completed"),
+        progress(4, "d", "completed"),
+      ]);
+      expect(pressure.items).toBe(0);
+      expect(pressure.bytes).toBe(0);
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
+
+  it.effect("uses the byte threshold independently of the event threshold", () => {
+    const messages: unknown[] = [];
+    const logger = Logger.make(({ message }) => {
+      messages.push(message);
+    });
+    return Effect.gen(function* () {
+      const stage = yield* makeProviderEventFlowStage({
+        ...options,
+        maxItems: 1_000,
+        maxBytes: 100,
+      });
+      yield* stage.offer(progress(1, "byte", "completed"));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual([
+        "orchestration-v2.provider-event-backlog",
+        {
+          driver,
+          providerSessionId,
+          items: 1,
+          bytes: Buffer.byteLength(testJson(progress(1, "byte", "completed"))),
+          maxItems: 1_000,
+          maxBytes: 100,
+        },
+      ]);
+      yield* stage.end;
+      expect(yield* stage.events.pipe(Stream.runCollect)).toEqual([
+        progress(1, "byte", "completed"),
+      ]);
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
+
   it.effect("drains accepted finals before reporting a provider stream failure", () =>
     Effect.gen(function* () {
       const stage = yield* makeProviderEventFlowStage(options);

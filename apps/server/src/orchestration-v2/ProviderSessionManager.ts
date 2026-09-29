@@ -46,7 +46,11 @@ import {
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 
-import { attachProviderEventFlow, closeProviderEventFlow } from "./ProviderEventFlowRuntime.ts";
+import {
+  attachProviderEventFlow,
+  closeProviderEventFlow,
+  failProviderEventFlow,
+} from "./ProviderEventFlowRuntime.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -741,6 +745,10 @@ export const layerWithOptions = (
                     yield* closeProviderEventFlow(entry.exposedRuntime);
                     yield* closeSubscribers(entry);
                   } else {
+                    yield* failProviderEventFlow(
+                      entry.exposedRuntime,
+                      input.detail ?? `Provider session released: ${input.reason}.`,
+                    );
                     yield* failSubscribers(
                       entry,
                       input.detail ?? `Provider session released: ${input.reason}.`,

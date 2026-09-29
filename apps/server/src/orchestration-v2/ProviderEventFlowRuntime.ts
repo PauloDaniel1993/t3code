@@ -21,6 +21,10 @@ import {
 
 const subscriptions = new WeakMap<ProviderAdapterV2EventSubscription, ProviderEventFlowStage>();
 const closures = new WeakMap<ProviderAdapterV2SessionRuntime, Effect.Effect<void>>();
+const failures = new WeakMap<
+  ProviderAdapterV2SessionRuntime,
+  (detail: string) => Effect.Effect<void>
+>();
 
 /** One attachment at session creation; raw events never enter an upstream subscriber queue. */
 export const attachProviderEventFlow = Effect.fnUntraced(function* (
@@ -29,6 +33,7 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
   scope: Scope.Closeable,
 ) {
   const stages = new Set<ProviderEventFlowStage>();
+  const pressure = { items: 0, bytes: 0, warned: false };
   let ended = false;
   let stoppedByProvider = false;
   let failure: Cause.Cause<ProviderAdapterEventStreamError> | undefined;
@@ -49,7 +54,7 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
     stages.clear();
   });
   const subscribeEvents = Effect.gen(function* () {
-    const stage = yield* makeProviderEventFlowStage(runtime);
+    const stage = yield* makeProviderEventFlowStage({ ...runtime, pressure });
     stages.add(stage);
     if (ended) yield* failure === undefined ? stage.end : stage.fail(failure);
     const unregister = stage.close.pipe(
@@ -113,6 +118,21 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
     events: Stream.unwrap(subscribeEvents.pipe(Effect.map((subscription) => subscription.events))),
   };
   closures.set(exposedRuntime, close);
+  failures.set(exposedRuntime, (detail) =>
+    Effect.suspend(() =>
+      ended
+        ? Effect.void
+        : seal(
+            Cause.fail(
+              new ProviderAdapterEventStreamError({
+                driver: runtime.driver,
+                providerSessionId: runtime.providerSessionId,
+                cause: detail,
+              }),
+            ),
+          ),
+    ),
+  );
   // Non-graceful release is a fence too. Shutdown explicitly closes below.
   yield* Scope.addFinalizer(
     scope,
@@ -138,6 +158,14 @@ export function closeProviderEventFlow(
   runtime: ProviderAdapterV2SessionRuntime,
 ): Effect.Effect<void> {
   return closures.get(runtime) ?? Effect.void;
+}
+
+/** Seal retained events with upstream's specific session-release reason. */
+export function failProviderEventFlow(
+  runtime: ProviderAdapterV2SessionRuntime,
+  detail: string,
+): Effect.Effect<void> {
+  return failures.get(runtime)?.(detail) ?? Effect.void;
 }
 
 /** Admission and consumption use independent copies of the authoritative V2 router. */

@@ -1023,6 +1023,46 @@ it.effect(
     }),
 );
 
+it.effect("ProviderSessionManagerV2 passes the release reason to event subscribers", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSinkV2;
+      const idAllocator = yield* IdAllocatorV2;
+      const manager = yield* ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("release-reason-thread");
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      for (const input of [
+        { reason: "idle_timeout" as const },
+        { reason: "runtime_error" as const, detail: "provider pipe failed" },
+      ]) {
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const subscription = yield* runtime.subscribeEvents!;
+        yield* manager.release({ providerSessionId, ...input });
+        const result = yield* subscription.events.pipe(Stream.runDrain, Effect.exit);
+        assert.isTrue(result._tag === "Failure");
+        if (result._tag === "Failure")
+          assert.include(
+            Cause.pretty(result.cause),
+            input.detail ?? "Provider session released: idle_timeout.",
+          );
+      }
+    }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
+  }),
+);
+
 it.effect(
   "ProviderSessionManagerV2 retains lossless traffic without stalling another subscriber",
   () =>

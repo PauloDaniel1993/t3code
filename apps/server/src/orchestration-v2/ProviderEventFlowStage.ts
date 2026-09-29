@@ -1,9 +1,10 @@
 /**
  * One non-blocking lane per run, routed before retention. Only superseded
  * in-progress snapshots are replaced; finals, errors, requests, routing changes
- * and each entity's last state remain ordered and lossless. 1,000 entries/8 MiB
- * are pressure targets, not correctness-breaking hard caps: an irreducible tail
- * of distinct entities or finals is retained even above them. Pressure never
+ * and each entity's last state remain ordered and lossless. Above 1,000 retained
+ * events or 8 MiB per session, warn once with the sizes; keep upstream's unbounded
+ * irreducible tail. Pausing these streams cannot reach the provider pipe through
+ * upstream's unbounded adapter queues. Pressure never
  * fails a run or leaves an unobserved native turn running. A finite hard bound
  * on arbitrary lossless traffic would require disk spooling or backpressure.
  * Provider failure seals admission and drains accepted events before failing;
@@ -73,7 +74,7 @@ function replacementKey(event: ProviderAdapterV2Event): string | undefined {
       return undefined;
   }
 }
-type Entry = { event: ProviderAdapterV2Event; key: string | undefined };
+type Entry = { event: ProviderAdapterV2Event; key: string | undefined; bytes: number };
 const sizes = new WeakMap<ProviderAdapterV2Event, number>();
 function eventBytes(event: ProviderAdapterV2Event): number {
   const cached = sizes.get(event);
@@ -88,6 +89,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
   readonly providerSessionId: ProviderSessionId;
   readonly maxItems?: number;
   readonly maxBytes?: number;
+  readonly pressure?: { items: number; bytes: number; warned: boolean };
 }) {
   const wake = yield* Queue.unbounded<void, Cause.Done>();
   const pending = new Map<number, Entry>();
@@ -99,12 +101,37 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
   let ended = false;
   let failure: Cause.Cause<ProviderAdapterV2Error> | undefined;
   let notified = false;
+  const pressure = input.pressure ?? { items: 0, bytes: 0, warned: false };
+  const budget = {
+    items: input.maxItems ?? PROVIDER_EVENT_BACKLOG_MAX_ITEMS,
+    bytes: input.maxBytes ?? PROVIDER_EVENT_BACKLOG_MAX_BYTES,
+  };
+  let retainedBytes = 0;
+  const adjust = (items: number, bytes: number) => {
+    retainedBytes += bytes;
+    pressure.items += items;
+    pressure.bytes += bytes;
+  };
+  const warn = Effect.suspend(() => {
+    if (pressure.warned || (pressure.items <= budget.items && pressure.bytes <= budget.bytes))
+      return Effect.void;
+    pressure.warned = true;
+    return Effect.logWarning("orchestration-v2.provider-event-backlog", {
+      driver: input.driver,
+      providerSessionId: input.providerSessionId,
+      items: pressure.items,
+      bytes: pressure.bytes,
+      maxItems: budget.items,
+      maxBytes: budget.bytes,
+    });
+  });
   const notify = () => {
     if (notified) return;
     notified = true;
     Queue.offerUnsafe(wake, undefined);
   };
   const clear = () => {
+    adjust(-pending.size - (inFlight === undefined ? 0 : 1), -retainedBytes);
     pending.clear();
     replaceable.clear();
     inFlight = undefined;
@@ -115,7 +142,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
       if (ended || !admit(raw)) return;
       const event = sanitizeProviderEvent(raw);
       if (pending.size === 0) lookupReady = false;
-      // A consumer keeping up never needs a replacement key or JSON byte count.
+      // A consumer keeping up never needs a replacement key.
       // Materialize lookup only when another snapshot is actually waiting.
       if (pending.size > 0 && !lookupReady) {
         for (const entry of pending.values()) {
@@ -127,15 +154,20 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
       }
       const key = pending.size === 0 ? undefined : replacementKey(event);
       const previous = key === undefined ? undefined : replaceable.get(key);
-      if (previous) previous.event = event;
-      else {
-        const entry = { event, key };
+      const bytes = eventBytes(event);
+      if (previous) {
+        adjust(0, bytes - previous.bytes);
+        previous.event = event;
+        previous.bytes = bytes;
+      } else {
+        const entry = { event, key, bytes };
+        adjust(1, bytes);
         pending.set(nextId++, entry);
         if (key === undefined) replaceable.clear();
         else replaceable.set(key, entry);
       }
       notify();
-    });
+    }).pipe(Effect.andThen(warn));
   const end = Effect.sync(() => {
     ended = true;
     notify();
@@ -146,6 +178,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
     Queue.endUnsafe(wake);
   });
   const take = Effect.fnUntraced(function* () {
+    if (inFlight !== undefined) adjust(-1, -inFlight.bytes);
     inFlight = undefined;
     while (true) {
       const first = pending.entries().next().value;
@@ -184,6 +217,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
         replaceable.clear();
         for (const [id, entry] of pending) {
           if (!admit(entry.event)) {
+            adjust(-1, -entry.bytes);
             pending.delete(id);
             continue;
           }
@@ -193,17 +227,10 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
         }
       }),
     events: Stream.fromEffectRepeat(take()).pipe(Stream.ensuring(close)),
-    budget: {
-      items: input.maxItems ?? PROVIDER_EVENT_BACKLOG_MAX_ITEMS,
-      bytes: input.maxBytes ?? PROVIDER_EVENT_BACKLOG_MAX_BYTES,
-    },
-    // Serialization is diagnostic work only, never on the no-pressure pump path.
+    budget,
     usage: Effect.sync(() => ({
       items: pending.size + (inFlight === undefined ? 0 : 1),
-      bytes: [...pending.values(), ...(inFlight === undefined ? [] : [inFlight])].reduce(
-        (total, entry) => total + eventBytes(entry.event),
-        0,
-      ),
+      bytes: retainedBytes,
     })),
   };
 });
