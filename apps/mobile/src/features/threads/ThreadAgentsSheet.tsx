@@ -27,6 +27,7 @@ import { resolveSubagentRowPresentation } from "./threadAgentsPresentation";
 import { SubagentStatusDot } from "./SubagentStatusDot";
 import { NativeAgentOutcomeSummary } from "./NativeAgentOutcomeSummary";
 import { useNativeAgentRollup } from "./use-native-agent-rollup";
+import { deriveThreadAgentsSheetSections } from "./threadAgentsSheetSections";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
@@ -46,14 +47,9 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
     environmentThreadDetails.threadAtom(target),
     (thread) => thread?.projection.runs.find((run) => run.id === turn?.runId)?.status,
   );
-  const subagents = turnRunStatus === "rolled_back" ? [] : (turn?.subagents ?? []);
-  const hasLiveAgent = (turn?.liveCount ?? 0) > 0;
   const rollup = useNativeAgentRollup(target);
-  const currentAgentIds = new Set(subagents.map((agent) => agent.id));
-  const nativeHistory = rollup.groups.filter((group) =>
-    group.agents.some((agent) => !currentAgentIds.has(agent.id)),
-  );
-  const currentNativeAgents = subagents.filter((agent) => agent.origin === "provider_native");
+  const { subagents, hasLiveAgent, nativeHistory, currentNativeAgents, hiddenHistoryCount } =
+    deriveThreadAgentsSheetSections({ turn, turnRunStatus, rollup });
 
   const openChildThread = (childThreadId: ThreadId) => {
     void Haptics.selectionAsync();
@@ -115,9 +111,9 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
           ))}
         </View>
       ) : null}
-      {rollup.hiddenSettledCount > 0 ? (
+      {hiddenHistoryCount > 0 ? (
         <Text className="pt-3 text-xs text-foreground-muted">
-          {rollup.hiddenSettledCount} older settled agents remain in the transcript.
+          {hiddenHistoryCount} older inactive agents remain in the transcript.
         </Text>
       ) : null}
     </ScrollView>
