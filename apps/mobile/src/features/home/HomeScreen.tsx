@@ -56,6 +56,7 @@ import type { TaskPeekAgentRouteParams } from "../threads/task-agent-surface/tas
 import type { TaskDestination } from "../threads/task-agent-surface/taskAgentNavigation";
 import {
   buildTaskAgentSurfaceRows,
+  taskAgentPresentationStatesEqual,
   type TaskAgentListPresentationState,
   type TaskAgentRowViewModel,
   type TaskAgentSurfaceViewModel,
@@ -131,6 +132,24 @@ interface HomeScreenProps {
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
   readonly onNewThreadOnBranch: (thread: EnvironmentThreadShell) => void;
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
+}
+
+/** A v2 thread row with its task presentation captured in list data, so a
+    minute tick re-renders only rows whose task text changed. */
+type HomeListItem =
+  | (Extract<ThreadListV2ListItem, { readonly type: "v2-thread" }> & {
+      readonly taskAgentPresentationState: TaskAgentListPresentationState | undefined;
+    })
+  | Exclude<ThreadListV2ListItem, { readonly type: "v2-thread" }>;
+
+function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem): boolean {
+  if (!threadListV2ListItemsAreEqual(previous, item)) return false;
+  return previous.type !== "v2-thread" || item.type !== "v2-thread"
+    ? true
+    : taskAgentPresentationStatesEqual(
+        previous.taskAgentPresentationState,
+        item.taskAgentPresentationState,
+      );
 }
 
 type TaskAgentPeekParamsByRow = ReadonlyMap<TaskAgentRowViewModel, TaskPeekAgentRouteParams>;
@@ -871,7 +890,7 @@ export function HomeScreen(props: HomeScreenProps) {
     [props.pendingTasks, props.selectedEnvironmentId, v2ScopedProjectKeys, v2SearchQuery],
   );
   const threadListV2Items = useMemo(
-    () =>
+    (): HomeListItem[] =>
       buildThreadListV2ListItems({
         items: threadListV2Layout.items,
         pendingTasks: v2PendingTasks,
@@ -886,10 +905,20 @@ export function HomeScreen(props: HomeScreenProps) {
         queuedThreadKeys,
         moveAvailability: threadMoveAvailability,
         shelfPreferencesLoading: !shelfPreferencesLoaded,
-      }),
+      }).map((item) =>
+        item.type === "v2-thread"
+          ? {
+              ...item,
+              taskAgentPresentationState: taskAgentPresentationByThreadKey?.get(
+                scopedThreadKey(item.item.thread.environmentId, item.item.thread.id),
+              ),
+            }
+          : item,
+      ),
     [
       nowMinute,
       queuedThreadKeys,
+      taskAgentPresentationByThreadKey,
       threadMoveAvailability,
       settledShelfExpanded,
       shelfPreferencesLoaded,
@@ -906,7 +935,7 @@ export function HomeScreen(props: HomeScreenProps) {
   }, [activateVisibleRows, swipeEnabled, threadListV2Items]);
 
   const renderV2Item = useCallback(
-    ({ item }: { readonly item: ThreadListV2ListItem }) => {
+    ({ item }: { readonly item: HomeListItem }) => {
       if (item.type === "v2-pending") {
         const pendingScopeKey = scopedProjectKey(
           item.pendingTask.environmentId,
@@ -952,9 +981,7 @@ export function HomeScreen(props: HomeScreenProps) {
         );
       }
       const thread = item.item.thread;
-      const taskAgentPresentation = taskAgentPresentationByThreadKey?.get(
-        scopedThreadKey(thread.environmentId, thread.id),
-      );
+      const taskAgentPresentation = item.taskAgentPresentationState;
       return (
         <ThreadListV2Row
           onNewThreadOnBranch={props.onNewThreadOnBranch}
@@ -1059,7 +1086,6 @@ export function HomeScreen(props: HomeScreenProps) {
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
       threadSearchMatchByKey,
-      taskAgentPresentationByThreadKey,
       titleRegenerationEnvironmentIds,
       toggleSettledShelf,
       toggleSnoozedShelf,
@@ -1080,7 +1106,6 @@ export function HomeScreen(props: HomeScreenProps) {
       serverConfigs,
       savedConnectionsById: props.savedConnectionsById,
       searchQuery: props.searchQuery,
-      taskAgentPresentationByThreadKey,
       threadSearchMatchByKey,
     }),
     [
@@ -1088,7 +1113,6 @@ export function HomeScreen(props: HomeScreenProps) {
       props.searchQuery,
       props.savedConnectionsById,
       serverConfigs,
-      taskAgentPresentationByThreadKey,
       threadSearchMatchByKey,
       v2ProjectTitleByProjectKey,
     ],
@@ -1228,7 +1252,7 @@ export function HomeScreen(props: HomeScreenProps) {
             renderItem={renderV2Item}
             keyExtractor={v2KeyExtractor}
             getItemType={(item) => item.type}
-            itemsAreEqual={threadListV2ListItemsAreEqual}
+            itemsAreEqual={homeListItemsAreEqual}
             estimatedItemSize={ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT}
             drawDistance={THREAD_LIST_V2_DRAW_DISTANCE}
             recycleItems

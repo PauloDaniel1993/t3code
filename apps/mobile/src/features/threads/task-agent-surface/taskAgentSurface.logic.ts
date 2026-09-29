@@ -471,3 +471,13 @@ export function taskAgentListPresentationStateEqual(
     previous.expanded === next.expanded && taskAgentThreadRowsRenderEqual(previous.row, next.row)
   );
 }
+
+/** Compares the presentation a list item carries; rows without tasks carry none. */
+export function taskAgentPresentationStatesEqual(
+  previous: TaskAgentListPresentationState | undefined,
+  next: TaskAgentListPresentationState | undefined,
+): boolean {
+  if (previous === next) return true;
+  if (previous === undefined || next === undefined) return false;
+  return taskAgentListPresentationStateEqual(previous, next);
+}

@@ -71,7 +71,7 @@ import type { TaskPeekAgentRouteParams } from "./task-agent-surface/taskAgentPee
 import type { TaskDestination } from "./task-agent-surface/taskAgentNavigation";
 import {
   buildTaskAgentSurfaceRows,
-  taskAgentListPresentationStateEqual,
+  taskAgentPresentationStatesEqual,
   type TaskAgentListPresentationState,
   type TaskAgentRowViewModel,
   type TaskAgentSurfaceViewModel,
@@ -99,14 +99,6 @@ type SidebarListItem =
   | Exclude<ThreadListV2ListItem, { readonly type: "v2-thread" }>
   | { readonly type: "v2-show-more"; readonly key: string; readonly hiddenCount: number };
 
-function taskAgentPresentationStatesEqual(
-  previous: TaskAgentListPresentationState | undefined,
-  next: TaskAgentListPresentationState | undefined,
-): boolean {
-  if (previous === next) return true;
-  if (previous === undefined || next === undefined) return false;
-  return taskAgentListPresentationStateEqual(previous, next);
-}
 const SIDEBAR_STICKY_HEADER_HEIGHT = 106;
 
 interface ThreadNavigationSidebarProps {
