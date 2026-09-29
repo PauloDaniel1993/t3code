@@ -135,7 +135,7 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
+import { useClientSettings } from "../hooks/useSettings";
 import {
   createSidebarTaskGrouper,
   isSidebarTaskThread,
@@ -2313,7 +2313,6 @@ export default function Sidebar() {
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const threadTasksEnabled = useClientSettings((s) => s.threadTasksEnabled);
-  const updateClientSettings = useUpdateClientSettings();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
@@ -4812,19 +4811,6 @@ export default function Sidebar() {
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
-            <div className="flex justify-end">
-              <Button
-                size="xs"
-                variant="ghost-muted"
-                aria-pressed={threadTasksEnabled}
-                onClick={() => {
-                  closeSidebarTaskPeek();
-                  void updateClientSettings({ threadTasksEnabled: !threadTasksEnabled });
-                }}
-              >
-                Task subthreads {threadTasksEnabled ? "on" : "off"}
-              </Button>
-            </div>
           </SidebarGroup>
         }
       >

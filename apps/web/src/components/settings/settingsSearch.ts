@@ -281,6 +281,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["combine matching repositories environments sidebar"],
   },
   {
+    id: "task-subthreads",
+    title: "Task subthreads",
+    to: "/settings/general",
+    searchTerms: ["thread list sidebar delegated tasks children nesting sub-threads"],
+  },
+  {
     id: "snooze-limited-threads",
     title: "Snooze limited threads",
     to: "/settings/general",

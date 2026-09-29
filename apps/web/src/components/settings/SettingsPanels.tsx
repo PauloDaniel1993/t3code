@@ -2230,6 +2230,31 @@ export function GeneralSettingsPanel() {
       <ProjectDefaultsSettings category="general" />
       <SettingsSection id="organization" title="Organization">
         <SettingsRow
+          {...searchableSetting("task-subthreads")}
+          description="Show delegated tasks beneath their parent threads in the sidebar."
+          resetAction={
+            settings.threadTasksEnabled !== DEFAULT_UNIFIED_SETTINGS.threadTasksEnabled ? (
+              <SettingResetButton
+                label="task subthreads"
+                onClick={() =>
+                  updateSettings({
+                    threadTasksEnabled: DEFAULT_UNIFIED_SETTINGS.threadTasksEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.threadTasksEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ threadTasksEnabled: Boolean(checked) })
+              }
+              aria-label="Task subthreads"
+            />
+          }
+        />
+        <SettingsRow
           {...searchableSetting("project-grouping")}
           description="Combine matching repositories across environments."
           resetAction={
