@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - another connection changes a fixture's schema.
+import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -18,7 +20,6 @@ import {
   type OrchestrationV2StoredEvent,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
-import * as Fiber from "effect/Fiber";
 import { vi } from "vite-plus/test";
 import {
   SqlitePersistenceMemory,
@@ -36,6 +37,7 @@ import {
   rebuildAttachmentReferenceIndexPass,
   requireCompleteAttachmentReferenceIndex,
   startAttachmentReferenceIndex,
+  awaitAttachmentReferenceIndex,
 } from "./AttachmentReferenceIndex.ts";
 import attachmentReferenceMigration from "../persistence/ForkMigrations/010_AttachmentReferenceIndex.ts";
 import {
@@ -83,6 +85,44 @@ const smallFixture = Effect.gen(function* () {
 });
 
 describe("attachment reference index", () => {
+  it.effect(
+    "repairs runtime damage from another connection when the deletion gate notices it",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        const dbPath = path.join(directory, "runtime.sqlite");
+        yield* Effect.gen(function* () {
+          yield* smallFixture;
+          const sql = yield* SqlClient.SqlClient;
+          yield* startAttachmentReferenceIndex();
+          yield* awaitAttachmentReferenceIndex();
+          const external = yield* Effect.acquireRelease(
+            Effect.sync(() => new NodeSqlite.DatabaseSync(dbPath)),
+            (db) => Effect.sync(() => db.close()),
+          );
+          external.exec("DROP TRIGGER fork_v2_attachment_message_insert");
+          external.exec(`INSERT INTO orchestration_v2_projection_messages SELECT 'new-external-message', thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
+          FROM orchestration_v2_projection_messages WHERE message_id = 'message-005'`);
+          expect(
+            yield* sql`SELECT row_id FROM fork_v2_attachment_references WHERE row_id = 'new-external-message'`,
+          ).toEqual([]);
+          yield* requireCompleteAttachmentReferenceIndex().pipe(Effect.flip);
+          yield* awaitAttachmentReferenceIndex();
+          yield* requireCompleteAttachmentReferenceIndex();
+          expect(
+            yield* sql`SELECT row_id FROM fork_v2_attachment_references WHERE row_id = 'new-external-message'`,
+          ).toEqual([{ row_id: "new-external-message" }]);
+          expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
+          // A reset by a CLI is also noticed by a read gate, without another startup.
+          yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+          expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
+          yield* awaitAttachmentReferenceIndex();
+          yield* requireCompleteAttachmentReferenceIndex();
+        }).pipe(Effect.provide(makeSqlitePersistenceLive(dbPath)));
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
   it.effect("measures a partial-index hit and remaining-row misses on 300,000 live messages", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -117,7 +157,10 @@ describe("attachment reference index", () => {
         });
         const report = process.env.T3_ATTACHMENT_BENCHMARK_REPORT;
         if (report !== undefined)
-          yield* fs.writeFileString(report, encodeBenchmark({ indexedReadMs, timings }));
+          yield* fs.writeFileString(
+            `${report}.rebuild`,
+            encodeBenchmark({ indexedReadMs, timings }),
+          );
       }).pipe(Effect.provide(makeSqlitePersistenceLive(path.join(directory, "cost.sqlite"))));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -212,8 +255,8 @@ describe("attachment reference index", () => {
         expect(yield* sql`SELECT count(*) AS count FROM fork_v2_attachment_references`).toEqual([
           { count: 1 },
         ]);
-        const rebuild = yield* startAttachmentReferenceIndex();
-        if (rebuild !== undefined) yield* Fiber.join(rebuild);
+        yield* startAttachmentReferenceIndex();
+        yield* awaitAttachmentReferenceIndex();
         yield* requireCompleteAttachmentReferenceIndex();
         expect(yield* sql`SELECT count(*) AS count FROM fork_v2_attachment_references`).toEqual([
           { count: 200 },
@@ -343,7 +386,7 @@ describe("attachment reference index", () => {
               }
             : Reflect.get(target, key, receiver),
       });
-      const rebuild = yield* startAttachmentReferenceIndex().pipe(
+      yield* startAttachmentReferenceIndex().pipe(
         Effect.provideService(SqlClient.SqlClient, gated),
       );
       expect(yield* Queue.take(attempts)).toBe(1);
@@ -353,7 +396,9 @@ describe("attachment reference index", () => {
         yield* TestClock.adjust(1);
         if (i < 7) expect(yield* Queue.take(attempts)).toBe(i + 2);
       }
-      if (rebuild !== undefined) yield* Fiber.join(rebuild);
+      yield* awaitAttachmentReferenceIndex().pipe(
+        Effect.provideService(SqlClient.SqlClient, gated),
+      );
       yield* requireCompleteAttachmentReferenceIndex();
       expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
     }).pipe(Effect.provide(testLayer)),
@@ -502,7 +547,9 @@ describe("attachment reference index", () => {
         { complete: 0 },
       ]);
       yield* Deferred.succeed(release, undefined);
-      if (rebuild !== undefined) yield* Fiber.join(rebuild);
+      yield* awaitAttachmentReferenceIndex().pipe(
+        Effect.provideService(SqlClient.SqlClient, gated),
+      );
       yield* requireCompleteAttachmentReferenceIndex();
     }).pipe(Effect.provide(testLayer)),
   );

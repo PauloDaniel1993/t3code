@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
   increment,
@@ -18,7 +19,10 @@ import {
 } from "../observability/Metrics.ts";
 import { RunFinalizationService } from "./RunFinalizationService.ts";
 import { ResourceCleanupService, ResourceCleanupError } from "./ResourceCleanupService.ts";
-import { AttachmentReferenceIndexUnavailable } from "./AttachmentReferenceIndex.ts";
+import {
+  AttachmentReferenceIndexUnavailable,
+  deferAttachmentCleanup,
+} from "./AttachmentReferenceIndex.ts";
 import {
   EffectOutboxV2,
   EffectOutboxError,
@@ -521,6 +525,7 @@ export const layerWithOptions = (
     OrchestrationEffectWorkerV2,
     Effect.gen(function* () {
       const outbox = yield* EffectOutboxV2;
+      const attachmentSql = yield* Effect.serviceOption(SqlClient.SqlClient);
       const executor = yield* OrchestrationEffectExecutorV2;
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
@@ -694,15 +699,16 @@ export const layerWithOptions = (
                 isIndexUnavailable(reason.error.cause.cause),
             );
           if (waitingForAttachmentIndex) {
-            const rescheduled = yield* outbox
-              .retry({
+            if (Option.isNone(attachmentSql))
+              return yield* new OrchestrationEffectWorkerError({
+                operation: "reschedule",
                 effectId: effect.id,
-                workerId,
-                error,
-                delayMs: 1000,
-                consumeAttempt: false,
-              })
-              .pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
+                cause: "Attachment cleanup requires persistence.",
+              });
+            const rescheduled = yield* deferAttachmentCleanup(effect.id, workerId, error).pipe(
+              Effect.provideService(SqlClient.SqlClient, attachmentSql.value),
+              Effect.onError((cause) => requeueClaim(effect, cause)),
+            );
             if (!rescheduled && !(yield* wasCancelled(effect.id)))
               return yield* new OrchestrationEffectWorkerError({
                 operation: "reschedule",

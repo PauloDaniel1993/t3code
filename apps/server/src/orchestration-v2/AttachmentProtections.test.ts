@@ -43,6 +43,8 @@ import {
   initializeAttachmentReferenceIndex,
   rebuildAttachmentReferenceIndex,
   rebuildAttachmentReferenceIndexPass,
+  startAttachmentReferenceIndex,
+  awaitAttachmentReferenceIndex,
 } from "./AttachmentReferenceIndex.ts";
 import { referencedAttachmentPaths } from "./AttachmentReferences.ts";
 import {
@@ -601,52 +603,60 @@ describe("attachment pruning through the effect outbox", () => {
       }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("keeps cleanup pending without spending attempts, then deletes after rebuilding", () =>
-    Effect.gen(function* () {
-      const { file } = yield* seedAttachment();
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
-      yield* initializeAttachmentReferenceIndex();
-      yield* (yield* EventSinkV2).write({ events: [yield* messageEvent("rebuild:removed", [])] });
-      const cleanup = yield* ResourceCleanup.ResourceCleanupService;
-      const executor = OrchestrationEffectExecutorV2.of({
-        execute: (effect) =>
-          effect.request.type === "attachment.cleanup"
-            ? cleanup
-                .cleanupAttachments(effect.request.attachmentIds, effect.request.relativePaths)
-                .pipe(
-                  Effect.asVoid,
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationEffectExecutionError({
-                        effectId: effect.id,
-                        effectType: effect.request.type,
-                        cause,
-                      }),
-                  ),
-                )
-            : Effect.void,
-      });
-      const worker = yield* OrchestrationEffectWorkerV2.pipe(
-        Effect.provide(workerLayer({ maxAttempts: 1 })),
-        Effect.provideService(OrchestrationEffectExecutorV2, executor),
-      );
-      for (let n = 0; n < 10; n++) {
-        expect(yield* worker.runOnce).toBe(true);
+  for (const completion of ["startup signal", "before parking"] as const) {
+    it.effect(`keeps cleanup pending without spending attempts and resumes on ${completion}`, () =>
+      Effect.gen(function* () {
+        const { file } = yield* seedAttachment();
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+        yield* initializeAttachmentReferenceIndex();
+        yield* (yield* EventSinkV2).write({ events: [yield* messageEvent("rebuild:removed", [])] });
+        const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+        const executor = OrchestrationEffectExecutorV2.of({
+          execute: (effect) =>
+            effect.request.type === "attachment.cleanup"
+              ? cleanup
+                  .cleanupAttachments(effect.request.attachmentIds, effect.request.relativePaths)
+                  .pipe(
+                    Effect.asVoid,
+                    Effect.tapError(() =>
+                      completion === "before parking"
+                        ? rebuildAttachmentReferenceIndex()
+                        : Effect.void,
+                    ),
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationEffectExecutionError({
+                          effectId: effect.id,
+                          effectType: effect.request.type,
+                          cause,
+                        }),
+                    ),
+                  )
+              : Effect.void,
+        });
+        const worker = yield* OrchestrationEffectWorkerV2.pipe(
+          Effect.provide(workerLayer({ maxAttempts: 1 })),
+          Effect.provideService(OrchestrationEffectExecutorV2, executor),
+        );
+        for (let n = 0; n < (completion === "startup signal" ? 10 : 1); n++) {
+          expect(yield* worker.runOnce).toBe(n === 0);
+          expect(
+            yield* sql`SELECT status, attempt_count FROM orchestration_v2_effect_outbox WHERE effect_type = 'attachment.cleanup'`,
+          ).toEqual([{ status: "pending", attempt_count: 0 }]);
+          expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(true);
+          yield* TestClock.adjust("1 day");
+        }
+        yield* startAttachmentReferenceIndex();
+        yield* awaitAttachmentReferenceIndex();
+        expect(yield* worker.drain()).toBe(1);
+        expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(false);
         expect(
           yield* sql`SELECT status, attempt_count FROM orchestration_v2_effect_outbox WHERE effect_type = 'attachment.cleanup'`,
-        ).toEqual([{ status: "pending", attempt_count: 0 }]);
-        expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(true);
-        yield* TestClock.adjust(1000);
-      }
-      yield* rebuildAttachmentReferenceIndex();
-      expect(yield* worker.drain()).toBe(1);
-      expect(yield* (yield* FileSystem.FileSystem).exists(file)).toBe(false);
-      expect(
-        yield* sql`SELECT status, attempt_count FROM orchestration_v2_effect_outbox WHERE effect_type = 'attachment.cleanup'`,
-      ).toEqual([{ status: "succeeded", attempt_count: 1 }]);
-    }).pipe(Effect.provide(testLayer)),
-  );
+        ).toEqual([{ status: "succeeded", attempt_count: 1 }]);
+      }).pipe(Effect.provide(testLayer)),
+    );
+  }
 
   it.effect("retains an imported V2 document descriptor independently of later type mapping", () =>
     Effect.gen(function* () {

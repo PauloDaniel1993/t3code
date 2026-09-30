@@ -5,9 +5,14 @@
  * Triggers cover background transcript imports and writes between rebuild passes.
  */
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { EffectOutboxV2 } from "./EffectOutbox.ts";
 
 export const ATTACHMENT_REFERENCE_TABLE = "fork_v2_attachment_references";
 export const ATTACHMENT_REFERENCE_VERSION = 3;
@@ -154,7 +159,7 @@ interface RebuildState {
   cursor: string | null;
 }
 
-export const readAttachmentReferenceIndexState = Effect.fnUntraced(function* () {
+const readState = Effect.fnUntraced(function* () {
   if (!(yield* hasExpectedSchema())) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const rows =
@@ -166,6 +171,28 @@ export const readAttachmentReferenceIndexState = Effect.fnUntraced(function* () 
     state.source_index <= sources.length
     ? state
     : undefined;
+});
+
+const rebuilders = new WeakMap<
+  SqlClient.SqlClient,
+  {
+    requests: Queue.Queue<void>;
+    completion: Deferred.Deferred<void>;
+    running: boolean;
+  }
+>();
+
+/** Gates wake the server's repair loop; CLI persistence never starts one. */
+export const readAttachmentReferenceIndexState = Effect.fnUntraced(function* () {
+  const state = yield* readState();
+  const sql = yield* SqlClient.SqlClient;
+  const rebuilder = rebuilders.get(sql);
+  if (state?.complete !== 1 && rebuilder !== undefined) {
+    const finished = Deferred.isDoneUnsafe(rebuilder.completion);
+    if (finished) rebuilder.completion = Deferred.makeUnsafe();
+    if (finished || !rebuilder.running) yield* Queue.offer(rebuilder.requests, undefined);
+  }
+  return state;
 });
 
 export class AttachmentReferenceIndexUnavailable extends Schema.TaggedError<AttachmentReferenceIndexUnavailable>()(
@@ -220,7 +247,7 @@ export const initializeAttachmentReferenceIndex = Effect.fnUntraced(function* ()
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
-        const state = yield* readAttachmentReferenceIndexState();
+        const state = yield* readState();
         if (state !== undefined) return state.complete === 1;
         // A missing trigger may have missed both inserts and deletes. Trust no old rows.
         for (const definition of definitions.toReversed())
@@ -252,7 +279,7 @@ export const rebuildAttachmentReferenceIndexPass = Effect.fnUntraced(function* (
     .withTransaction(
       Effect.gen(function* () {
         yield* initializeAttachmentReferenceIndex();
-        const state = yield* readAttachmentReferenceIndexState();
+        const state = yield* readState();
         if (state === undefined) return yield* new AttachmentReferenceIndexUnavailable();
         if (state.complete === 1) return true;
         const source = sources[state.source_index];
@@ -306,10 +333,92 @@ export const rebuildAttachmentReferenceIndex = Effect.fnUntraced(function* () {
     ))
   )
     yield* Effect.yieldNow;
+  yield* resumeAttachmentCleanup();
+  const sql = yield* SqlClient.SqlClient;
+  const rebuilder = rebuilders.get(sql);
+  if (rebuilder !== undefined) {
+    rebuilder.running = false;
+    yield* Deferred.succeed(rebuilder.completion, undefined);
+  }
 });
 
-/** Run after base and fork migrations. Rebuilding existing data never holds startup. */
+// A durable wait marker, not a retry deadline. Startup also releases these rows.
+const waitingForIndex = "9999-12-31T23:59:59.999Z";
+
+const resumeAttachmentCleanup = Effect.fnUntraced(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if ((yield* readState())?.complete !== 1) return [];
+      const now = DateTime.formatIso(yield* DateTime.now);
+      return yield* sql`UPDATE orchestration_v2_effect_outbox SET available_at = ${now}, updated_at = ${now}
+      WHERE status = 'pending' AND effect_type = 'attachment.cleanup' AND available_at = ${waitingForIndex}
+      RETURNING effect_id`;
+    }),
+  );
+  const outbox = yield* Effect.serviceOption(EffectOutboxV2);
+  if (rows.length > 0 && Option.isSome(outbox)) yield* outbox.value.notifyAvailable(rows.length);
+});
+
+/** Park without spending an attempt, atomically checking for completion that raced the failure. */
+export const deferAttachmentCleanup = Effect.fnUntraced(function* (
+  effectId: string,
+  workerId: string,
+  error: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const complete = (yield* readAttachmentReferenceIndexState())?.complete === 1;
+      const now = DateTime.formatIso(yield* DateTime.now);
+      return yield* sql`UPDATE orchestration_v2_effect_outbox
+      SET status = 'pending', attempt_count = MAX(0, attempt_count - 1),
+        available_at = ${complete ? now : waitingForIndex}, lease_owner = NULL, lease_expires_at = NULL,
+        updated_at = ${now}, last_error = ${error}
+      WHERE effect_id = ${effectId} AND status = 'running' AND lease_owner = ${workerId}
+      RETURNING effect_id`;
+    }),
+  );
+  const outbox = yield* Effect.serviceOption(EffectOutboxV2);
+  if (rows.length > 0 && Option.isSome(outbox)) yield* outbox.value.notifyAvailable();
+  return rows.length === 1;
+});
+
+/** Drain signal for the current rebuild, including the durable cleanup wakeup. */
+export const awaitAttachmentReferenceIndex = Effect.fnUntraced(function* () {
+  const state = yield* readAttachmentReferenceIndexState();
+  const rebuilder = rebuilders.get(yield* SqlClient.SqlClient);
+  if (rebuilder !== undefined) return yield* Deferred.await(rebuilder.completion);
+  if (state?.complete !== 1) return yield* new AttachmentReferenceIndexUnavailable();
+});
+
+/** Run after migrations. Only gate notifications wake this long-lived server fibre. */
 export const startAttachmentReferenceIndex = Effect.fnUntraced(function* () {
-  if (yield* initializeAttachmentReferenceIndex()) return;
-  return yield* rebuildAttachmentReferenceIndex().pipe(Effect.forkScoped);
+  yield* initializeAttachmentReferenceIndex();
+  const sql = yield* SqlClient.SqlClient;
+  if (rebuilders.has(sql)) return;
+  const rebuilder = {
+    requests: yield* Queue.dropping<void>(1),
+    completion: Deferred.makeUnsafe<void>(),
+    running: false,
+  };
+  rebuilders.set(sql, rebuilder);
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      rebuilders.delete(sql);
+    }),
+  );
+  yield* Queue.offer(rebuilder.requests, undefined);
+  return yield* Effect.gen(function* () {
+    while (true) {
+      yield* Queue.take(rebuilder.requests);
+      rebuilder.running = true;
+      yield* rebuildAttachmentReferenceIndex().pipe(
+        Effect.retry(
+          Schedule.min([Schedule.exponential("100 millis"), Schedule.spaced("5 seconds")]),
+        ),
+      );
+      rebuilder.running = false;
+    }
+  }).pipe(Effect.forkScoped);
 });
