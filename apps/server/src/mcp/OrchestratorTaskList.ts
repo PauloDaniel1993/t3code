@@ -1,5 +1,6 @@
 import {
   OrchestratorMcpFailure,
+  TASK_TITLE_MAX_LENGTH,
   type ForkTaskStatus,
   type ForkTaskSummary,
   NodeId,
@@ -87,7 +88,7 @@ export function summarizeForkTask(
   return {
     threadId: status.childThreadId,
     taskId: status.taskId,
-    title: (task.title ?? task.prompt).slice(0, 120),
+    title: (task.title ?? task.prompt).slice(0, TASK_TITLE_MAX_LENGTH),
     status: forkTaskStatus(status.status),
     createdBy: task.createdBy === "user" ? "user" : "agent",
     context: { kind: "none" },
@@ -203,7 +204,7 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
       item = {
         threadId: task.childThreadId!,
         taskId: task.id,
-        title: (task.title ?? task.prompt).slice(0, 120),
+        title: (task.title ?? task.prompt).slice(0, TASK_TITLE_MAX_LENGTH),
         status: "unreadable",
         createdBy: task.createdBy === "user" ? "user" : "agent",
         context: { kind: "none" },

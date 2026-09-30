@@ -40,7 +40,10 @@ import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
   description: "Complete task or message text for the target agent.",
 });
-const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512)).annotate({
+export const TASK_TITLE_MAX_LENGTH = 512;
+const OrchestratorMcpTitle = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(TASK_TITLE_MAX_LENGTH),
+).annotate({
   description: "Optional concise display title.",
 });
 const OrchestratorMcpClientRequestId = TrimmedNonEmptyString.check(

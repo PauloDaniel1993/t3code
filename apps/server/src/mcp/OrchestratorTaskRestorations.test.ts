@@ -1187,7 +1187,11 @@ for (const driver of ["codex", "claudeCode"] as const) {
 it.effect(
   "accepts exact fork calls through MCP while retaining native delegation and cancellation",
   () => {
-    const child = task("created", { result: null, status: "running" });
+    const child = task("created", {
+      result: null,
+      status: "running",
+      title: "x".repeat(512),
+    });
     const records = recordsFor([child]);
     records.set(parentId, { ...records.get(parentId)!, runs: [run(parentId, "running")] });
     const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
@@ -1250,7 +1254,7 @@ it.effect(
         models.structuredContent,
       );
       const input = {
-        title: "Implement feature",
+        title: "x".repeat(512),
         prompt: "Implement the feature.",
         context: "none",
         model: { instanceId, model: "custom-model" },
