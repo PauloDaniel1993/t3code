@@ -2,6 +2,9 @@
 
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import { useNewThreadTaskAvailability } from "../hooks/useNewThreadTaskAvailability";
+import { openNewThreadTaskDialog } from "../newThreadTaskBus";
+import { NewThreadTaskHost } from "./NewThreadTaskHost";
 
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -48,6 +51,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   LinkIcon,
+  ListPlusIcon,
   MessageSquareIcon,
   MonitorIcon,
   MoonIcon,
@@ -591,6 +595,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
 
   return (
     <ComposerHandleContext value={composerHandleRef}>
+      <NewThreadTaskHost />
       <CommandDialog
         open={state.open}
         onOpenChange={(open, eventDetails) => {
@@ -715,6 +720,9 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
+  const { problem: newTaskProblem } = useNewThreadTaskAvailability(
+    pathname === "/pull-requests" ? null : referenceThreadRef,
+  );
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
@@ -1768,6 +1776,24 @@ function OpenCommandPaletteDialog(props: {
       icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
+    });
+  }
+
+  if (activeThread !== null && pathname !== "/pull-requests") {
+    actionItems.push({
+      kind: "action",
+      value: "action:new-task",
+      searchTerms: ["new task", "delegate", "child", "agent"],
+      title: "New task",
+      description: newTaskProblem ?? "Ask this thread's agent to delegate",
+      icon: <ListPlusIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.newTask",
+      disabled: newTaskProblem !== null,
+      run: async () => {
+        openNewThreadTaskDialog({
+          threadRef: scopeThreadRef(activeThread.environmentId, activeThread.id),
+        });
+      },
     });
   }
 
