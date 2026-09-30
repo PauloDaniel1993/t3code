@@ -5,9 +5,26 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { recordForkImportWarning } from "./ForkImportDiagnostics.ts";
 
-/** Sanitize only the copied V1 project baseline, preserving bad JSON for recovery. */
+/**
+ * Sanitize only the copied V1 project baseline, preserving bad JSON for recovery.
+ * Upstream's migration 055 turns each project row into an immutable baseline
+ * event, so this runs just before upstream's migrations. It only acts on a V1
+ * database already at migration 54: earlier migrations still rewrite these
+ * columns (canonical model selections, the icon column), and after 055 the
+ * baseline exists.
+ */
 export const prepareForkLegacyProjects = Effect.fn("prepareForkLegacyProjects")(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const ledger = yield* sql`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `;
+  if (ledger.length === 0) return;
+  const ready = yield* sql`
+    SELECT 1 FROM effect_sql_migrations
+    WHERE migration_id = 54 AND name = 'ProjectionThreadsAutoSettleDisabledAt'
+      AND NOT EXISTS (SELECT 1 FROM effect_sql_migrations WHERE name = 'OrchestrationV2')
+  `;
+  if (ready.length === 0) return;
   const fields = [
     [
       "scripts_json",

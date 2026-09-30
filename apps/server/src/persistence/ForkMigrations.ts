@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { prepareForkLegacyProjects } from "./ForkLegacyProjects.ts";
 import Settled from "./Migrations/033_ProjectionThreadsSettled.ts";
 import Snoozed from "./Migrations/034_ProjectionThreadsSnoozed.ts";
 
@@ -61,7 +62,9 @@ export interface RunForkMigrationsOptions {
 }
 
 /**
- * Remove only legacy fork-owned base-ledger rows.
+ * Prepare a copied V1 database for upstream's migrations: remove only legacy
+ * fork-owned base-ledger rows, then give invalid project JSON safe defaults
+ * before migration 055 publishes the project baseline.
  *
  * Matching both id and name preserves upstream migrations that reuse the same
  * ids. The table is intentionally kept; only stale fork rows are removed
@@ -114,6 +117,7 @@ export const reconcileBaseMigrationLedger = Effect.fn("reconcileBaseMigrationLed
       }
     }),
   );
+  yield* prepareForkLegacyProjects();
 });
 
 const assertLedger = Effect.fn("assertForkMigrationLedger")(function* (

@@ -6,6 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "../Migrations.ts";
+// fork(ticket-28:ledger): the fork's own migration ledger and V1 preparation.
 import { reconcileBaseMigrationLedger, runForkMigrations } from "../ForkMigrations.ts";
 import { initializeV2Database } from "../initializeV2Database.ts";
 import { ServerConfig } from "../../config.ts";
@@ -23,8 +24,10 @@ const setup = Layer.effectDiscard(
     // PASSIVE checkpoints never shrink the -wal file, so it otherwise keeps its
     // largest size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
+    // fork(ticket-28:ledger): clear old fork ledger rows and bad project JSON before upstream's migrations.
     yield* reconcileBaseMigrationLedger();
     yield* runMigrations();
+    // fork(ticket-28:ledger): fork migrations run after upstream's, in their own ledger.
     yield* runForkMigrations();
   }),
 );
