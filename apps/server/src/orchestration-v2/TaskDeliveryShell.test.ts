@@ -87,6 +87,12 @@ const task: OrchestrationV2Subagent = {
   },
 };
 
+it("shells without a subagent collection have no task delivery watermark", () => {
+  assert.deepEqual(taskDeliveryFromSubagents(undefined), {});
+  assert.deepEqual(taskDeliveryFromSubagents(null), {});
+  assert.deepEqual(taskDeliveryFromSubagents([]), {});
+});
+
 it.effect(
   "cold shell list and individual reads see deliveries, including acknowledged records outside detail windows",
   () =>

@@ -13,9 +13,11 @@ export function taskDeliveryShellFields(fields: object) {
   };
 }
 
-export function taskDeliveryFromSubagents(subagents: ReadonlyArray<OrchestrationV2Subagent>) {
+export function taskDeliveryFromSubagents(
+  subagents: ReadonlyArray<OrchestrationV2Subagent> | null | undefined,
+) {
   let latestTaskDeliveredAt: string | undefined;
-  for (const task of subagents) {
+  for (const task of subagents ?? []) {
     const delivered =
       task.origin === "app_owned" ? task.completionDelivery?.deliveredAt : undefined;
     if (
