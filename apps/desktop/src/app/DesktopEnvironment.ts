@@ -17,8 +17,10 @@ import { resolveLinuxDesktopEntryName } from "./DesktopEarlyElectronStartup.ts";
 import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePaths.ts";
 import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
 import type { OtlpProtocol } from "@t3tools/shared/observability";
+import { LOCAL_DESKTOP_IDENTITY } from "../../../../scripts/lib/local-desktop-identity.ts";
 
 export interface MakeDesktopEnvironmentInput {
+  readonly isLocalIdentity?: boolean;
   readonly dirname: string;
   readonly homeDirectory: string;
   readonly platform: NodeJS.Platform;
@@ -39,6 +41,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly processArch: string;
     readonly isPackaged: boolean;
     readonly isDevelopment: boolean;
+    readonly isLocalIdentity: boolean;
     readonly appVersion: string;
     readonly appPath: string;
     readonly resourcesPath: string;
@@ -156,35 +159,44 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
-  const appDataDirectory =
-    input.platform === "win32"
+  const isLocalIdentity = input.isLocalIdentity ?? false;
+  const t3Home = isLocalIdentity
+    ? Option.orElse(config.t3Home, () =>
+        Option.some(path.join(homeDirectory, LOCAL_DESKTOP_IDENTITY.homeName)),
+      )
+    : config.t3Home;
+  const baseDir = resolveDesktopBaseDir({ homeDirectory, joinPath: path.join, t3Home });
+  const appDataDirectory = isLocalIdentity
+    ? path.join(baseDir, "appdata")
+    : input.platform === "win32"
       ? Option.getOrElse(config.appDataDirectory, () =>
           path.join(homeDirectory, "AppData", "Roaming"),
         )
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
-  const baseDir = resolveDesktopBaseDir({
-    homeDirectory,
-    joinPath: path.join,
-    t3Home: config.t3Home,
-  });
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
   const serverRoot =
     input.isPackaged && input.platform === "win32"
       ? path.join(input.resourcesPath, "server.asar")
       : appRoot;
-  const branding = resolveDesktopAppBranding({
+  const standardBranding = resolveDesktopAppBranding({
     isDevelopment,
     appVersion: input.appVersion,
   });
-  const displayName = branding.displayName;
+  const displayName = isLocalIdentity
+    ? Option.getOrElse(
+        yield* DesktopConfig.localDisplayNameOverride,
+        () => LOCAL_DESKTOP_IDENTITY.productName,
+      )
+    : standardBranding.displayName;
+  const branding = { ...standardBranding, displayName };
   const stateDir = resolveDesktopStateDir({
     baseDir,
     isDevelopment,
     joinPath: path.join,
-    t3Home: config.t3Home,
+    t3Home,
   });
   const linuxApplicationsDir = path.join(
     Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
@@ -199,6 +211,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     processArch: input.processArch,
     isPackaged: input.isPackaged,
     isDevelopment,
+    isLocalIdentity,
     appVersion: input.appVersion,
     appPath: input.appPath,
     resourcesPath,
@@ -235,11 +248,17 @@ const make = Effect.fn("desktop.environment.make")(function* (
     otlpProtocol: config.otlpProtocol,
     branding,
     displayName,
-    appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
-    ),
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    appUserModelId: isLocalIdentity
+      ? LOCAL_DESKTOP_IDENTITY.appId
+      : Option.getOrElse(config.appUserModelIdOverride, () =>
+          isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+        ),
+    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, isLocalIdentity),
+    linuxWmClass: isLocalIdentity
+      ? LOCAL_DESKTOP_IDENTITY.packageName
+      : isDevelopment
+        ? "t3code-dev"
+        : "t3code",
     linuxApplicationsDir,
     appImagePath: config.appImagePath,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),

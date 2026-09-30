@@ -34,6 +34,7 @@ import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
 import * as DesktopAppActivation from "./app/DesktopAppActivation.ts";
 import * as DesktopAppIdentity from "./app/DesktopAppIdentity.ts";
+import { applyInstalledDesktopBootstrap } from "./app/DesktopInstallBootstrap.ts";
 import * as DesktopConnectionCatalogStore from "./app/DesktopConnectionCatalogStore.ts";
 import * as DesktopClerk from "./app/DesktopClerk.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
@@ -69,6 +70,19 @@ import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
 
+const isLocalIdentity = applyInstalledDesktopBootstrap({
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Synchronous installed identity boundary before desktop layers.
+  platform: process.platform,
+  isPackaged: Electron.app.isPackaged,
+  appPath: Electron.app.getAppPath(),
+  executablePath: process.execPath,
+  // The bootstrap reads this only after confirming the packaged local identity.
+  get homeDirectory() {
+    return NodeOS.userInfo().homedir;
+  },
+  env: process.env,
+});
+
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
     const metadata = yield* Effect.service(ElectronApp.ElectronApp).pipe(
@@ -77,8 +91,9 @@ const desktopEnvironmentLayer = Layer.unwrap(
     const platform = yield* HostProcessPlatform;
     const processArch = yield* HostProcessArchitecture;
     return DesktopEnvironment.layer({
+      isLocalIdentity,
       dirname: __dirname,
-      homeDirectory: NodeOS.homedir(),
+      homeDirectory: isLocalIdentity ? NodeOS.userInfo().homedir : NodeOS.homedir(),
       platform,
       processArch,
       ...metadata,
@@ -226,7 +241,7 @@ const desktopRuntimeLayer = desktopClerkLayer.pipe(
   Layer.flatMap((clerkContext) =>
     desktopApplicationRuntimeLayer.pipe(Layer.provideMerge(Layer.succeedContext(clerkContext))),
   ),
-  Layer.provideMerge(DesktopPreReadyPlatform.layer),
+  Layer.provideMerge(DesktopPreReadyPlatform.layerWithIdentity(isLocalIdentity)),
 );
 
 DesktopApp.program.pipe(Effect.provide(desktopRuntimeLayer), NodeRuntime.runMain);

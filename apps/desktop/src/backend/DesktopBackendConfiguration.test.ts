@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Exercise the backend's environment in a real descendant agent shell.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -10,6 +11,10 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
@@ -30,6 +35,8 @@ const PersistedServerObservabilitySettingsDocument = Schema.Struct({
 const encodePersistedServerObservabilitySettingsDocument = Schema.encodeEffect(
   Schema.fromJsonString(PersistedServerObservabilitySettingsDocument),
 );
+const encodeShellCommand = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
+const encodeShellArgs = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 const isDesktopBackendObservabilitySettingsReadError = Schema.is(
   DesktopBackendConfiguration.DesktopBackendObservabilitySettingsReadError,
@@ -61,6 +68,7 @@ function makeEnvironmentLayer(
     readonly resourcesPath?: string;
     readonly appVersion?: string;
     readonly processArch?: NodeJS.Architecture;
+    readonly localIdentity?: boolean;
     readonly otlpTracesUrl?: string;
     readonly otlpMetricsUrl?: string;
     readonly otlpLogsUrl?: string;
@@ -76,6 +84,7 @@ function makeEnvironmentLayer(
     isPackaged: options?.isPackaged ?? true,
     resourcesPath: options?.resourcesPath ?? "/missing/resources",
     runningUnderArm64Translation: false,
+    isLocalIdentity: options?.localIdentity ?? false,
   }).pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -112,6 +121,7 @@ const withHarness = <A, E, R>(
     | FileSystem.FileSystem
     | DesktopBackendConfiguration.DesktopBackendConfiguration
   >,
+  options?: Parameters<typeof makeEnvironmentLayer>[1],
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -126,7 +136,7 @@ const withHarness = <A, E, R>(
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(DesktopWslEnvironment.layerTest()),
           Layer.provideMerge(DesktopWslServerTree.layerTest()),
-          Layer.provideMerge(makeEnvironmentLayer(baseDir)),
+          Layer.provideMerge(makeEnvironmentLayer(baseDir, options)),
         ),
       ),
     );
@@ -150,6 +160,7 @@ const withPackagedWslHarness = <A, E, R>(
     readonly forbidFallback?: string;
     readonly cleanupLegacy?: Effect.Effect<void>;
     readonly forbidCleanup?: string;
+    readonly localIdentity?: boolean;
   },
   effect: (
     context: PackagedWslHarnessContext,
@@ -217,6 +228,7 @@ const withPackagedWslHarness = <A, E, R>(
               appPath: baseDir,
               platform: "win32",
               resourcesPath: baseDir,
+              localIdentity: input.localIdentity ?? false,
             }),
           ),
         ),
@@ -225,6 +237,181 @@ const withPackagedWslHarness = <A, E, R>(
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 describe("DesktopBackendConfiguration", () => {
+  for (const isPackaged of [false, true]) {
+    it.effect(`preserves V2's ordinary ${isPackaged ? "release" : "dev"} backend environment`, () =>
+      withHarness(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const expected = {
+            T3CODE_HOME: environment.baseDir,
+            HOME: "custom-git-home",
+            APPDATA: "custom-roaming",
+            LOCALAPPDATA: "custom-local",
+            USERPROFILE: "custom-profile",
+            TEMP: "custom-temp",
+            TMP: "custom-tmp",
+            T3CODE_DESKTOP_DISPLAY_NAME: "ordinary-display",
+            T3CODE_DESKTOP_LOCAL_IDENTITY: "inherited-flag",
+          };
+          const names = Object.keys(expected);
+          const previous = names.map((name) => [name, process.env[name]] as const);
+          try {
+            Object.assign(process.env, expected);
+            const previousPath = process.env.PATH;
+            process.env.PATH = "";
+            let config;
+            try {
+              config = yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration)
+                .resolvePrimary;
+            } finally {
+              restoreEnv("PATH", previousPath);
+            }
+            assert.isTrue(config.extendEnv);
+            assert.equal(config.bootstrap.t3Home, environment.baseDir);
+            assert.equal(
+              environment.stateDir,
+              environment.path.join(environment.baseDir, "userdata"),
+            );
+            const encodedNames = yield* encodeShellArgs(names);
+            const probe = `process.stdout.write(${encodedNames}.map(name => process.env[name] ?? '').join('|'))`;
+            const output = NodeChildProcess.execFileSync(process.execPath, ["-e", probe], {
+              env: { ...process.env, ...config.env },
+              encoding: "utf8",
+              windowsHide: true,
+            });
+            assert.equal(output, Object.values(expected).join("|"));
+          } finally {
+            for (const [name, value] of previous) restoreEnv(name, value);
+          }
+        }),
+        {
+          platform: "win32",
+          isPackaged,
+          ...(!isPackaged ? { devServerUrl: "http://localhost:5173" } : {}),
+        },
+      ),
+    );
+  }
+
+  it.effect("keeps installed identity out of an agent shell started by its backend", () =>
+    Effect.gen(function* () {
+      const testHostPlatform = yield* HostProcessPlatform;
+      return yield* withHarness(
+        Effect.gen(function* () {
+          const names = [
+            "T3CODE_DESKTOP_LOCAL_IDENTITY",
+            "T3CODE_HOME",
+            "APPDATA",
+            "T3CODE_DESKTOP_DISPLAY_NAME",
+            "T3CODE_DESKTOP_APP_USER_MODEL_ID",
+            "T3CODE_DISABLE_AUTO_UPDATE",
+          ];
+          const previous = names.map((name) => [name, process.env[name]] as const);
+          try {
+            Object.assign(process.env, {
+              T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
+              T3CODE_HOME: "C:\\Users\\alice\\.t3.local",
+              APPDATA: "C:\\Users\\alice\\.t3.local\\appdata",
+              T3CODE_DESKTOP_DISPLAY_NAME: "T3 v2.local",
+              T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code.v2.local",
+              T3CODE_DISABLE_AUTO_UPDATE: "true",
+            });
+            const previousPath = process.env.PATH;
+            process.env.PATH = "";
+            let config;
+            try {
+              config = yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration)
+                .resolvePrimary;
+            } finally {
+              restoreEnv("PATH", previousPath);
+            }
+            assert.isFalse(config.extendEnv);
+            assert.isNotEmpty(config.bootstrap.t3Home);
+            if (testHostPlatform === "win32") {
+              assert.equal(config.env.HOME, NodeOS.userInfo().homedir);
+              assert.equal(
+                config.env.APPDATA,
+                NodePath.win32.join(NodeOS.userInfo().homedir, "AppData", "Roaming"),
+              );
+            }
+            const env = Object.fromEntries(
+              Object.entries(config.env).filter(
+                (entry): entry is [string, string] => entry[1] !== undefined,
+              ),
+            );
+            // A backend-shaped Node process starts the same kind of ordinary shell
+            // used by providers/terminals, without booting a server or an app.
+            const shell =
+              testHostPlatform === "win32"
+                ? NodePath.win32.join(
+                    process.env.SystemRoot ?? "C:\\Windows",
+                    "System32",
+                    "WindowsPowerShell",
+                    "v1.0",
+                    "powershell.exe",
+                  )
+                : "/bin/sh";
+            const shellArgs =
+              testHostPlatform === "win32"
+                ? [
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "[Console]::Write($env:T3CODE_DESKTOP_LOCAL_IDENTITY + '|' + $env:T3CODE_HOME + '|' + $env:T3CODE_DESKTOP_DISPLAY_NAME)",
+                  ]
+                : [
+                    "-c",
+                    'printf "%s|%s|%s" "$T3CODE_DESKTOP_LOCAL_IDENTITY" "$T3CODE_HOME" "$T3CODE_DESKTOP_DISPLAY_NAME"',
+                  ];
+            const shellJson = yield* encodeShellCommand(shell);
+            const argsJson = yield* encodeShellArgs(shellArgs);
+            const probe = `const cp = require('node:child_process'); process.stdout.write(cp.execFileSync(${shellJson}, ${argsJson}, {encoding:'utf8', windowsHide:true}));`;
+            const output = NodeChildProcess.execFileSync(process.execPath, ["-e", probe], {
+              env,
+              encoding: "utf8",
+              windowsHide: true,
+            });
+            assert.equal(output, "||");
+          } finally {
+            for (const [name, value] of previous) restoreEnv(name, value);
+          }
+        }),
+        { platform: testHostPlatform, localIdentity: true },
+      );
+    }),
+  );
+  it.effect("local WSL uses the selected distro's V2 home and refuses an unknown home", () =>
+    Effect.gen(function* () {
+      for (const home of [Option.some("/home/alice"), Option.none<string>()]) {
+        yield* withPackagedWslHarness(
+          {
+            archiveHash: "b".repeat(64),
+            localIdentity: true,
+            wsl: () => ({
+              prepareRuntime: () => ({
+                ok: true,
+                linuxAppRoot: "/home/alice/.t3.v2/wsl-runtime/fixture",
+              }),
+              getUserHome: () => home,
+            }),
+          },
+          () =>
+            Effect.gen(function* () {
+              const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+              const config = yield* configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
+              if (Option.isSome(home)) {
+                assert.equal(config.bootstrap.t3Home, "/home/alice/.t3.v2");
+                assert.isTrue(Option.isNone(config.preflightFailure));
+              } else {
+                const failure = Option.getOrThrow(config.preflightFailure);
+                assert.isTrue(failure.fatal);
+                assert.include(failure.reason, "isolated T3 v2.local home");
+              }
+            }),
+        );
+      }
+    }),
+  );
   it.effect("resolvePrimary produces a stable scoped bootstrap token", () =>
     withHarness(
       Effect.gen(function* () {

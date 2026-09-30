@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -267,6 +269,40 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
   });
+
+  it.effect("packages local builds with a distinct identity and no official update feed", () =>
+    Effect.gen(function* () {
+      for (const version of [
+        "0.0.43",
+        "0.0.43-nightly.20260929.1",
+        "0.0.43-preview.20260928.2413",
+      ]) {
+        const config = yield* createBuildConfig(
+          "win",
+          "dir",
+          version,
+          false,
+          true,
+          3000,
+          undefined,
+          false,
+          "x64",
+          true,
+        );
+        assert.equal(config.appId, "com.t3tools.t3code.v2.local");
+        assert.equal(config.productName, "T3 v2.local");
+        assert.equal(config.executableName, "T3 v2.local");
+        assert.equal(config.artifactName, "T3-Code-v2-local-${version}-${arch}.${ext}");
+        assert.notProperty(config, "publish");
+      }
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
+        ),
+      ),
+    ),
+  );
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17"), {
@@ -1054,6 +1090,118 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.include(error.message, "Visual Studio Build Tools components");
       }),
     ),
+  );
+
+  it.effect(
+    "selects a Visual Studio instance with installable Spectre runtimes for each Windows architecture",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-windows-selector-" });
+          const pythonPath = path.join(tempDir, "python.exe");
+          const rustLibDir = path.join(tempDir, "rust-lib");
+          yield* fs.writeFileString(pythonPath, "python");
+          yield* fs.makeDirectory(rustLibDir);
+          yield* fs.writeFileString(path.join(rustLibDir, "libstd-test.rlib"), "rust");
+          const commands: Array<{
+            readonly command: string;
+            readonly args: ReadonlyArray<string>;
+          }> = [];
+          const spawner = Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) => {
+              const childProcess = command as unknown as {
+                readonly command: string;
+                readonly args: ReadonlyArray<string>;
+              };
+              commands.push(childProcess);
+              return Effect.succeed(
+                mockProcess(0, childProcess.command === "rustc" ? `${rustLibDir}\n` : ""),
+              );
+            }),
+          );
+          const config = ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { npm_config_python: pythonPath } }),
+          );
+          for (const arch of ["x64", "arm64"] as const) {
+            yield* preflightWindowsDesktopBuild({ arch, bundlesWslRuntime: false }).pipe(
+              Effect.provide(Layer.merge(spawner, config)),
+            );
+          }
+          const scripts = commands
+            .filter((command) => command.command === "powershell.exe")
+            .map((command) => command.args.at(-1)!);
+          assert.lengthOf(scripts, 2);
+          assert.include(
+            scripts[0],
+            "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
+          );
+          assert.include(scripts[1], "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre");
+          assert.notInclude(scripts.join("\n"), ".VC.Tools.x86.x64.Spectre");
+          assert.notInclude(scripts.join("\n"), ".VC.Tools.ARM64.Spectre");
+
+          // oxlint-disable-next-line t3code/no-global-process-runtime -- Real PowerShell selector fixture runs only on its host OS.
+          if (NodeOS.platform() !== "win32") return;
+          // Run the emitted selector against a fixture vswhere with a newer tools-only
+          // instance and an older complete instance. No machine toolchain is changed.
+          const installerDir = path.join(tempDir, "Microsoft Visual Studio", "Installer");
+          const kits = path.join(tempDir, "kits");
+          const older = path.join(tempDir, "older-complete");
+          const selection = path.join(tempDir, "selection.txt");
+          yield* fs.makeDirectory(installerDir, { recursive: true });
+          yield* fs.makeDirectory(path.join(kits, "Lib"), { recursive: true });
+          for (const arch of ["x64", "arm64"]) {
+            yield* fs.makeDirectory(
+              path.join(older, "VC", "Tools", "MSVC", "14.43.0", "lib", "spectre", arch),
+              { recursive: true },
+            );
+          }
+          const stub = path.join(installerDir, "vswhere.mjs");
+          yield* fs.writeFileString(
+            stub,
+            `import fs from 'node:fs'; import path from 'node:path';
+const root = process.env['ProgramFiles(x86)'];
+const args = process.argv.slice(2);
+const required = args.slice(args.indexOf('-requires') + 1, args.indexOf('-property'));
+const tools = ['Microsoft.VisualStudio.Component.VC.Tools.x86.x64', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64'];
+const runtimes = ['Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre', 'Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre'];
+const instances = [{ name: 'newer-tools-only', components: tools }, { name: 'older-complete', components: [...tools, ...runtimes] }];
+const selected = instances.find(instance => required.every(component => instance.components.includes(component)));
+if (selected) { fs.writeFileSync(path.join(root, 'selection.txt'), selected.name); console.log(path.join(root, selected.name)); }
+`,
+          );
+          yield* fs.writeFileString(
+            path.join(installerDir, "vswhere.cmd"),
+            `@echo off\r\n"${process.execPath}" "${stub}" %*\r\n`,
+          );
+          const psQuote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+          for (const script of scripts) {
+            NodeChildProcess.execFileSync(
+              "powershell.exe",
+              [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                `function Get-ItemPropertyValue { ${psQuote(kits)} }; ${script.replace("vswhere.exe", "vswhere.cmd")}`,
+              ],
+              {
+                env: {
+                  ...Object.fromEntries(
+                    Object.entries(process.env).filter(
+                      ([name]) => name.toUpperCase() !== "PROGRAMFILES(X86)",
+                    ),
+                  ),
+                  "ProgramFiles(x86)": tempDir,
+                },
+                windowsHide: true,
+              },
+            );
+            assert.equal(yield* fs.readFileString(selection), "older-complete");
+          }
+        }),
+      ),
   );
 
   it.effect("does not require MSVC when reusing a prebuilt Windows resource monitor", () =>
@@ -2225,39 +2373,46 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("resolves default platform and architecture from host references", () =>
     Effect.gen(function* () {
-      const resolved = yield* resolveBuildOptions({
-        platform: Option.none(),
-        target: Option.none(),
-        arch: Option.none(),
-        buildVersion: Option.none(),
-        outputDir: Option.none(),
-        skipBuild: Option.none(),
-        keepStage: Option.none(),
-        signed: Option.none(),
-        verbose: Option.none(),
-        mockUpdates: Option.none(),
-        mockUpdateServerPort: Option.none(),
-        wslRuntime: Option.none(),
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            Layer.succeed(HostProcessPlatform, "win32"),
-            Layer.succeed(HostProcessArchitecture, "x64"),
-            ConfigProvider.layer(
-              ConfigProvider.fromEnv({
-                env: {
-                  PROCESSOR_ARCHITECTURE: "AMD64",
-                  PROCESSOR_ARCHITEW6432: "ARM64",
-                },
-              }),
+      for (const localIdentity of [false, true]) {
+        const resolved = yield* resolveBuildOptions({
+          localIdentity: localIdentity ? Option.some(true) : Option.none(),
+          platform: Option.none(),
+          target: Option.none(),
+          arch: Option.none(),
+          buildVersion: Option.none(),
+          outputDir: Option.none(),
+          skipBuild: Option.none(),
+          keepStage: Option.none(),
+          signed: Option.none(),
+          verbose: Option.none(),
+          mockUpdates: Option.none(),
+          mockUpdateServerPort: Option.none(),
+          wslRuntime: Option.none(),
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(HostProcessPlatform, "win32"),
+              Layer.succeed(HostProcessArchitecture, "x64"),
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: {
+                    T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
+                    T3CODE_HOME: "C:\\Users\\alice\\.t3.local",
+                    APPDATA: "C:\\Users\\alice\\.t3.local\\appdata",
+                    PROCESSOR_ARCHITECTURE: "AMD64",
+                    PROCESSOR_ARCHITEW6432: "ARM64",
+                  },
+                }),
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      assert.equal(resolved.platform, "win");
-      assert.equal(resolved.target, "nsis");
-      assert.equal(resolved.arch, "arm64");
+        assert.equal(resolved.platform, "win");
+        assert.equal(resolved.target, "nsis");
+        assert.equal(resolved.arch, "arm64");
+        assert.equal(resolved.localIdentity, localIdentity);
+      }
     }),
   );
 

@@ -40,6 +40,55 @@ const makeEnvironment = (
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("gives the local build its own home, profile parent and app identity", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        { platform: "win32", isPackaged: true, isLocalIdentity: true },
+        {
+          APPDATA: "/official/profiles",
+          T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code",
+        },
+      );
+      assert.equal(environment.baseDir, "/Users/alice/.t3.v2");
+      assert.equal(environment.stateDir, "/Users/alice/.t3.v2/userdata");
+      assert.equal(environment.appDataDirectory, "/Users/alice/.t3.v2/appdata");
+      assert.equal(environment.appUserModelId, "com.t3tools.t3code.v2.local");
+      assert.equal(environment.branding.displayName, "T3 v2.local");
+      assert.equal(environment.linuxWmClass, "t3code-v2-local");
+    }),
+  );
+  it.effect("ignores an inherited local identity flag in an ordinary development run", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {},
+        {
+          T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
+          T3CODE_DESKTOP_DISPLAY_NAME: "T3 alpha.local",
+          VITE_DEV_SERVER_URL: "http://localhost:5173",
+        },
+      );
+      assert.isFalse(environment.isLocalIdentity);
+      assert.equal(environment.displayName, "T3 Code (Dev)");
+      assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
+      assert.equal(environment.stateDir, "/Users/alice/.t3/dev");
+    }),
+  );
+  it.effect(
+    "keeps release branding despite an inherited display name, and reads the override only for local builds",
+    () =>
+      Effect.gen(function* () {
+        const release = yield* makeEnvironment(
+          { isPackaged: true },
+          { T3CODE_DESKTOP_DISPLAY_NAME: "T3 alpha.local" },
+        );
+        assert.equal(release.displayName, "T3 Code (Alpha)");
+        const local = yield* makeEnvironment(
+          { isPackaged: true, isLocalIdentity: true },
+          { T3CODE_DESKTOP_DISPLAY_NAME: " T3 v2.local " },
+        );
+        assert.equal(local.displayName, "T3 v2.local");
+      }),
+  );
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
