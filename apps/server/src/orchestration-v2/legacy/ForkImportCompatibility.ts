@@ -31,10 +31,13 @@ export type ForkImportInspection =
 
 /**
  * Compare stored import evidence with the fork's mapping. An unpatched importer
- * leaves three recognisable signatures: reasoning missing from a completed
- * transcript whose other items it wrote, ordinals counted without reasoning,
- * and known sources dropped from items it did write. Any other disagreement is
- * "unknown" (for example an upstream change to import ids or compaction).
+ * writes nothing for reasoning, neither its event nor its reserved position, and
+ * no source tags. Only a thread showing that whole omission is positive
+ * evidence, and then only with one of its effects: reasoning missing from a
+ * completed transcript whose other items it wrote, ordinals counted without
+ * reasoning, or known sources dropped from items it did write. A thread holding
+ * anything only the fork writes, or any other disagreement, is "unknown"
+ * (for example compaction, or an upstream change to import ids or ordinals).
  *
  * The passed check is recorded once every legacy transcript is imported. After
  * that no importer, patched or not, writes another `migration:v1:*` item: every
@@ -79,18 +82,23 @@ export const inspectForkImport = Effect.fn("inspectForkImport")(function* () {
     ), judged AS (
       SELECT evidence.*,
         -- The thread's user/assistant items use the id scheme this check expects.
-        MAX(evidence.has_event AND evidence.role != 'reasoning')
-          OVER (PARTITION BY evidence.thread_id) AS recognized
+        MAX(evidence.has_event AND evidence.role != 'reasoning') OVER thread AS recognized,
+        MAX(evidence.role = 'reasoning') OVER thread AS has_reasoning,
+        -- Only the fork's importer writes these, so the thread was not imported unpatched.
+        MAX((evidence.role = 'reasoning'
+            AND (evidence.has_event OR evidence.position_ordinal IS NOT NULL))
+          OR evidence.event_source IS NOT NULL) OVER thread AS fork_written
       FROM evidence
+      WINDOW thread AS (PARTITION BY evidence.thread_id)
     )
     SELECT thread_id, message_id,
-      CASE WHEN
-        (role = 'reasoning' AND NOT has_event AND transcript_imported_at IS NOT NULL AND recognized)
+      CASE WHEN has_reasoning AND NOT fork_written AND (
+        (role = 'reasoning' AND transcript_imported_at IS NOT NULL AND recognized)
         OR (has_event AND event_ordinal = unpatched_ordinal AND unpatched_ordinal != ordinal)
         OR (position_ordinal = unpatched_ordinal AND unpatched_ordinal != ordinal)
         OR (has_event AND known_source AND event_source IS NULL
           AND event_ordinal IN (ordinal, unpatched_ordinal))
-      THEN 'unpatched' ELSE 'unknown' END AS verdict,
+      ) THEN 'unpatched' ELSE 'unknown' END AS verdict,
       json_object('role', role, 'source', source, 'ordinal', ordinal,
         'hasEvent', has_event, 'eventOrdinal', event_ordinal, 'eventSource', event_source,
         'positionOrdinal', position_ordinal,

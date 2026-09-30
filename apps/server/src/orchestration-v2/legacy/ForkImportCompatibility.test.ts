@@ -12,7 +12,7 @@ import {
   inspectForkImport,
 } from "./ForkImportCompatibility.ts";
 import { forkLegacyMessageRoles } from "./ForkLegacyMessages.ts";
-import { TestLayer, seedThreads, stamp } from "./ForkDataCarryOver.testkit.ts";
+import { TestLayer, seedThreads, seedUnpatchedImport, stamp } from "./ForkDataCarryOver.testkit.ts";
 
 const seedHealthy = Effect.gen(function* () {
   yield* seedThreads([
@@ -39,6 +39,17 @@ const importEverything = Effect.gen(function* () {
   yield* importer.importPendingTranscripts;
 });
 
+/** Rewrite the imported thread as an unpatched importer leaves it: no reasoning, no sources. */
+const unpatchThread = (sql: SqlClient.SqlClient) =>
+  Effect.gen(function* () {
+    yield* sql`DELETE FROM orchestration_events WHERE event_id = ${`${FORK_IMPORT_TURN_ITEM_PREFIX}2-r`}`;
+    yield* sql`DELETE FROM orchestration_v2_turn_item_positions
+      WHERE turn_item_id = ${`${FORK_IMPORT_TURN_ITEM_PREFIX}2-r`}`;
+    yield* sql`UPDATE orchestration_events
+      SET payload_json = json_remove(payload_json, '$.legacyMessageSource')
+      WHERE event_id LIKE ${`${FORK_IMPORT_TURN_ITEM_PREFIX}%`}`;
+  });
+
 const warnings = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<{ entity_id: string }>`
@@ -61,9 +72,7 @@ it.effect("checks every start until the import is complete, then reads one marke
       1,
     );
     // Evidence a check would refuse no longer matters: the check is skipped.
-    yield* sql`UPDATE orchestration_events
-      SET payload_json = json_remove(payload_json, '$.legacyMessageSource')
-      WHERE event_id = ${`${FORK_IMPORT_TURN_ITEM_PREFIX}4-u`}`;
+    yield* unpatchThread(sql);
     assert.equal((yield* inspectForkImport())._tag, "skipped");
     yield* importer.reconcileShells;
     // Without the marker the check runs again and refuses the same evidence.
@@ -79,6 +88,32 @@ for (const [change, mutate] of [
     (sql: SqlClient.SqlClient) => sql`UPDATE orchestration_events
       SET event_id = replace(event_id, ${FORK_IMPORT_TURN_ITEM_PREFIX}, 'migration:v1:timeline:')
       WHERE event_id LIKE ${`${FORK_IMPORT_TURN_ITEM_PREFIX}%`}`,
+  ],
+  [
+    // The verification's compacted-reasoning-item: the reserved position remains.
+    "compaction drops one reasoning event",
+    (sql: SqlClient.SqlClient) =>
+      sql`DELETE FROM orchestration_events WHERE event_id = ${`${FORK_IMPORT_TURN_ITEM_PREFIX}2-r`}`,
+  ],
+  [
+    // The verification's renamed-single-reasoning-id: one id changes, the rest do not.
+    "one reasoning event id changes",
+    (sql: SqlClient.SqlClient) => sql`UPDATE orchestration_events
+      SET event_id = ${"changed:" + FORK_IMPORT_TURN_ITEM_PREFIX + "2-r"}
+      WHERE event_id = ${`${FORK_IMPORT_TURN_ITEM_PREFIX}2-r`}`,
+  ],
+  [
+    // Payload rewriting would look the same as an unpatched importer's dropped tag.
+    "one source tag is missing while the thread keeps its reasoning",
+    (sql: SqlClient.SqlClient) => sql`UPDATE orchestration_events
+      SET payload_json = json_remove(payload_json, '$.legacyMessageSource')
+      WHERE event_id = ${`${FORK_IMPORT_TURN_ITEM_PREFIX}4-u`}`,
+  ],
+  [
+    "one ordinal matches the unpatched count while the thread keeps its reasoning",
+    (sql: SqlClient.SqlClient) => sql`UPDATE orchestration_events
+      SET payload_json = json_set(payload_json, '$.ordinal', 2)
+      WHERE event_id = ${`${FORK_IMPORT_TURN_ITEM_PREFIX}3-a`}`,
   ],
   [
     "an ordinal matches neither mapping",
@@ -102,6 +137,29 @@ for (const [change, mutate] of [
   );
 }
 
+it.effect("refuses a thread whose reasoning and sources an importer omitted", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seedHealthy;
+    yield* importEverything;
+    yield* sql`DELETE FROM fork_v1_import_state`;
+    yield* unpatchThread(sql);
+    assert.equal((yield* inspectForkImport())._tag, "unpatched");
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("starts with a warning when a thread without reasoning lost its source tag", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    // Nothing but the missing field tells an unpatched importer from a payload rewrite.
+    yield* seedUnpatchedImport(true, false);
+    yield* sql`DELETE FROM fork_v1_import_state`;
+    assert.equal((yield* inspectForkImport())._tag, "unknown");
+    yield* (yield* LegacyV1ThreadImporter).reconcileShells;
+    assert.deepEqual(yield* warnings, [{ entity_id: "4-u" }]);
+  }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("starts and records a warning when the evidence cannot be read", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -119,6 +177,28 @@ it.effect("starts and records a warning when the evidence cannot be read", () =>
 it.effect("upstream still provides what the fork's import check reads", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    // Before seeding, so a dropped column is named here rather than failing a fixture insert.
+    for (const [table, columns] of [
+      ["projection_threads", ["thread_id", "parent_thread_id", "task_json"]],
+      ["projection_thread_sessions", ["thread_id", "provider_name"]],
+      [
+        "projection_thread_messages",
+        ["thread_id", "message_id", "role", "source", "created_at", "updated_at"],
+      ],
+      ["orchestration_v2_legacy_imports", ["thread_id", "transcript_imported_at"]],
+    ] as const) {
+      const present = new Set(
+        (yield* sql<{ name: string }>`SELECT name FROM pragma_table_info(${table})`).map(
+          (row) => row.name,
+        ),
+      );
+      for (const column of columns) {
+        assert.isTrue(
+          present.has(column),
+          `Upstream dropped the legacy column ${table}.${column}, which the fork's import check and task-link repair read on every start until the import is verified.`,
+        );
+      }
+    }
     yield* seedHealthy;
     yield* importEverything;
     yield* repairForkTaskLinks();
@@ -145,13 +225,15 @@ it.effect("upstream still provides what the fork's import check reads", () =>
       expected,
       `Upstream's importer no longer writes each legacy message as a turn-item.updated event with id ${FORK_IMPORT_TURN_ITEM_PREFIX}<messageId> and payload $.ordinal. Update ForkImportCompatibility before merging.`,
     );
+    const positions = sql`SELECT turn_item_id, ordinal FROM orchestration_v2_turn_item_positions
+      WHERE turn_item_id LIKE ${`${FORK_IMPORT_TURN_ITEM_PREFIX}%`} ORDER BY ordinal`;
+    const reserved = expected.map(([id, ordinal]) => ({
+      turn_item_id: `${FORK_IMPORT_TURN_ITEM_PREFIX}${id}`,
+      ordinal,
+    }));
     assert.deepEqual(
-      yield* sql`SELECT turn_item_id, ordinal FROM orchestration_v2_turn_item_positions
-        WHERE turn_item_id LIKE ${`${FORK_IMPORT_TURN_ITEM_PREFIX}%`} ORDER BY ordinal`,
-      expected.map(([id, ordinal]) => ({
-        turn_item_id: `${FORK_IMPORT_TURN_ITEM_PREFIX}${id}`,
-        ordinal,
-      })),
+      yield* positions,
+      reserved,
       "Upstream no longer reserves legacy timeline positions in orchestration_v2_turn_item_positions.",
     );
     yield* (yield* ProjectionMaintenanceV2).compactEventStore;
@@ -160,27 +242,11 @@ it.effect("upstream still provides what the fork's import check reads", () =>
       expected,
       "Upstream compaction now removes legacy turn-item.updated events; ForkImportCompatibility would read a healthy compacted install as incomplete.",
     );
-    for (const [table, columns] of [
-      ["projection_threads", ["thread_id", "parent_thread_id", "task_json"]],
-      ["projection_thread_sessions", ["thread_id", "provider_name"]],
-      [
-        "projection_thread_messages",
-        ["thread_id", "message_id", "role", "source", "created_at", "updated_at"],
-      ],
-      ["orchestration_v2_legacy_imports", ["thread_id", "transcript_imported_at"]],
-    ] as const) {
-      const present = new Set(
-        (yield* sql<{ name: string }>`SELECT name FROM pragma_table_info(${table})`).map(
-          (row) => row.name,
-        ),
-      );
-      for (const column of columns) {
-        assert.isTrue(
-          present.has(column),
-          `Upstream dropped the legacy column ${table}.${column}, which the fork's import check and task-link repair read on every start until the import is verified.`,
-        );
-      }
-    }
+    assert.deepEqual(
+      yield* positions,
+      reserved,
+      "Upstream compaction now removes reserved legacy positions; ForkImportCompatibility reads a reasoning item with neither event nor position as omitted.",
+    );
     const inspection = yield* inspectForkImport();
     assert.equal(
       inspection._tag,

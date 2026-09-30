@@ -64,7 +64,7 @@ export const seedUnpatchedImport = Effect.fnUntraced(function* (
   if (includeReasoning)
     yield* sql`UPDATE projection_thread_messages SET role = 'reasoning' WHERE role = 'system'`;
   // The partial case has no source tags: only incompatible ordinals expose it.
-  // The source-only case has no reasoning: only lost provenance exposes it.
+  // Without reasoning only lost provenance shows, which the check cannot tell from a payload rewrite.
   if (complete)
     yield* sql`UPDATE projection_thread_messages SET source = 'task-result' WHERE message_id = '4-u'`;
 });

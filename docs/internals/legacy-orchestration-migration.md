@@ -39,12 +39,14 @@ The named `fork(ticket-28:...)` hooks must survive upstream importer rewrites. B
 [ForkImportCompatibility](../../apps/server/src/orchestration-v2/legacy/ForkImportCompatibility.ts) compares
 stored import events and position reservations with the fork mapping, including unfinished imports: an
 unpatched importer can omit reasoning/provenance or reserve incompatible ordinals without completing a
-transcript. It refuses only those recognised signatures. Anything else it cannot read or place starts the
-server with a warning, because a wrong refusal locks the owner out of every thread. Once every legacy
+transcript. It refuses only a thread showing the whole omission (no reasoning event or position, no source
+tag) together with one of those effects. A thread holding anything only the fork writes, or anything else it
+cannot read or place, starts the server with a warning, because a wrong refusal locks the owner out of every
+thread. Once every legacy
 transcript is imported and the check passes, it records a row in `fork_v1_import_state` and later starts skip
 the scan: after that no importer, patched or not, writes another `migration:v1:*` item. The check and the
 task-link repair rely on upstream's `migration:v1:turn-item:<message-id>` ids and payload ordinals, on
-compaction keeping `turn-item.updated` events, and on the legacy tables staying; `ForkImportCompatibility.test.ts`
+compaction keeping `turn-item.updated` events and position reservations, and on the legacy tables staying; `ForkImportCompatibility.test.ts`
 names whichever of these a merge changes. To recover from a refusal, stop the server and preserve/move `statev2.sqlite`, `statev2.sqlite-wal`, and `statev2.sqlite-shm` aside
 (siblings may be absent), then restart to seed from untouched `state.sqlite`. Keep the moved files for any
 V2-native work; that work will not appear in the fresh import. Never delete or reset individual import markers.

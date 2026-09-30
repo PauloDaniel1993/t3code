@@ -74,7 +74,6 @@ for (const failure of [
   "bad-message",
   "partial-unpatched",
   "complete-unpatched",
-  "source-only-unpatched",
 ] as const) {
   it.effect(`real startup ${failure}: repair precedes recovery and command admission`, () =>
     Effect.gen(function* () {
@@ -83,10 +82,7 @@ for (const failure of [
       const hydration = yield* Deferred.make<void>();
       let recovered = false;
       if (failure.endsWith("unpatched"))
-        yield* seedUnpatchedImport(
-          failure !== "partial-unpatched",
-          failure !== "source-only-unpatched",
-        );
+        yield* seedUnpatchedImport(failure !== "partial-unpatched");
       else {
         yield* seedThreads([
           ["root", null],
