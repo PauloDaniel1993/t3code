@@ -13,7 +13,8 @@
  * Inputs retain 16 KiB of encoded JSON at every status; oversized inputs keep
  * label fields (256 bytes each) beside a preview of the remaining redacted data.
  * Running output keeps 16 KiB, including JSON escaping, with the latest command
- * text at the tail. Final results retain upstream's shape and output bounds.
+ * text at the tail. Final results retain their shape here; the event-flow stage
+ * applies its 64 KiB output bound before persistence and live fan-out.
  */
 import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
