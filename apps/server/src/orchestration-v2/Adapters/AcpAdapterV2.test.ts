@@ -107,6 +107,7 @@ const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
 const testLayer = Layer.mergeAll(NodeServices.layer, idAllocatorLayer, serverConfigLayer);
 const ACP_TEST_DRIVER = ProviderDriverKind.make("acp-test");
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 describe("acpProjectedCommandExitCode", () => {
   const successOutput = { type: "Bash", exit_code: 0 };
@@ -604,6 +605,282 @@ function makeTurnInput(input: {
 }
 
 describe("AcpAdapterV2", () => {
+  for (const flush of ["timer", "settlement"] as const) {
+    it.effect(`keeps one assistant reply across a held tool-progress projection on ${flush}`, () =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("acp-held-progress");
+        const threadId = ThreadId.make("thread-acp-held-progress");
+        const path = yield* Path.Path;
+        const textStarted = yield* Deferred.make<void>();
+        const progressProjected = yield* Deferred.make<void>();
+        const continueText = yield* Deferred.make<void>();
+        type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+        let handler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+        const adapter = makeAcpAdapterV2({
+          crypto: yield* Crypto.Crypto,
+          instanceId,
+          fileSystem: yield* FileSystem.FileSystem,
+          idAllocator: yield* IdAllocatorV2,
+          serverConfig: yield* ServerConfig,
+          selfInvocation: yield* resolveSelfInvocation(),
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            extractBackgroundTaskId: (toolCall) =>
+              toolCall.toolCallId === "held" ? "persistent-held" : undefined,
+            isPersistentBackgroundTool: () => true,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+              mockAgentPath: yield* path.fromFileUrl(
+                new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+              ),
+              wrapRuntime: (runtime) => ({
+                ...runtime,
+                handleSessionUpdate: (next) =>
+                  Effect.sync(() => {
+                    handler = next;
+                  }).pipe(Effect.andThen(runtime.handleSessionUpdate(next))),
+                prompt: () =>
+                  Effect.gen(function* () {
+                    if (handler === undefined) return yield* Effect.die("Missing session handler");
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "tool_call",
+                        toolCallId: "held",
+                        kind: "execute",
+                        status: "inProgress",
+                        title: "First progress",
+                        rawInput: { command: "long command" },
+                        rawOutput: "initial progress",
+                      },
+                    });
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "tool_call_update",
+                        toolCallId: "held",
+                        status: "inProgress",
+                        title: "Held progress",
+                        rawOutput: `${"old output ".repeat(3_000)}\nlatest progress`,
+                      },
+                    });
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "agent_message_chunk",
+                        content: { type: "text", text: "Hello " },
+                      },
+                    });
+                    yield* Deferred.succeed(textStarted, undefined);
+                    yield* Deferred.await(continueText);
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "agent_message_chunk",
+                        content: { type: "text", text: "world." },
+                      },
+                    });
+                    if (flush === "timer") {
+                      yield* handler({
+                        sessionId: "mock-session-1",
+                        update: {
+                          sessionUpdate: "tool_call_update",
+                          toolCallId: "held",
+                          status: "completed",
+                          rawOutput: "done",
+                        },
+                      });
+                    }
+                    return { stopReason: "end_turn" } as const;
+                  }),
+              }),
+            }),
+          },
+        });
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("session-acp-held-progress"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const items: Array<
+          Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }>["turnItem"]
+        > = [];
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              if (event.type !== "turn_item.updated") return;
+              items.push(event.turnItem);
+              if (event.turnItem.title === "Held progress" && event.turnItem.status === "running")
+                yield* Deferred.succeed(progressProjected, undefined);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+          }),
+        );
+        yield* Deferred.await(textStarted);
+        if (flush === "timer") {
+          yield* TestClock.adjust("100 millis");
+          yield* Deferred.await(progressProjected);
+        }
+        yield* Deferred.succeed(continueText, undefined);
+        yield* Fiber.join(collected);
+        const replies = items.filter((item) => item.type === "assistant_message");
+        assert.equal(new Set(replies.map((item) => item.id)).size, 1);
+        const reply = replies.at(-1);
+        assert.equal(reply?.type === "assistant_message" ? reply.text : undefined, "Hello world.");
+        assert.equal(reply?.status, "completed");
+        const tools = items.filter((item) => item.type === "command_execution");
+        assert.equal(tools.at(-1)?.status, flush === "timer" ? "completed" : "running");
+        assert.equal(tools.at(-1)?.title, "Held progress");
+        assert.equal(tools[0]?.output, "initial progress");
+        const live = tools.find(
+          (item) => item.title === "Held progress" && item.status === "running",
+        );
+        assert.include(live?.output ?? "", "latest progress");
+        assert.isAtMost(Buffer.byteLength(yield* encodeUnknownJson(live?.output)), 16 * 1024);
+        if (flush === "timer") assert.equal(tools.at(-1)?.output, "done");
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+    );
+  }
+
+  it.effect("coalesces ACP tool floods before projection and retains secret-safe completion", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("acp-hardening-flood");
+      const threadId = ThreadId.make("thread-acp-hardening-flood");
+      const path = yield* Path.Path;
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let handler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+      const adapter = makeAcpAdapterV2({
+        crypto: yield* Crypto.Crypto,
+        instanceId,
+        fileSystem: yield* FileSystem.FileSystem,
+        idAllocator: yield* IdAllocatorV2,
+        serverConfig: yield* ServerConfig,
+        selfInvocation: yield* resolveSelfInvocation(),
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              handleSessionUpdate: (next) =>
+                Effect.sync(() => {
+                  handler = next;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(next))),
+              prompt: () =>
+                Effect.gen(function* () {
+                  if (handler === undefined) return yield* Effect.die("Missing session handler");
+                  yield* handler({
+                    sessionId: "mock-session-1",
+                    update: {
+                      sessionUpdate: "tool_call",
+                      toolCallId: "flood",
+                      title: "custom tool",
+                      kind: "other",
+                      status: "inProgress",
+                      rawInput: { apiKey: "private-input-key", command: "identity" },
+                    },
+                  });
+                  for (let update = 0; update < 5_000; update++) {
+                    yield* handler({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "tool_call_update",
+                        toolCallId: "flood",
+                        status: "inProgress",
+                        rawOutput: { result: String(update), token: "private-output-token" },
+                      },
+                    });
+                  }
+                  yield* handler({
+                    sessionId: "mock-session-1",
+                    update: {
+                      sessionUpdate: "tool_call_update",
+                      toolCallId: "flood",
+                      status: "completed",
+                      rawOutput: { result: "final result", token: "private-output-token" },
+                    },
+                  });
+                  return { stopReason: "end_turn" } as const;
+                }),
+            }),
+          }),
+        },
+      });
+      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-acp-hardening-flood"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+        }),
+      );
+      const events = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      );
+      const tools = events.flatMap((event) =>
+        event.type === "turn_item.updated" && event.turnItem.type === "dynamic_tool"
+          ? [event.turnItem]
+          : [],
+      );
+      assert.equal(tools.length, 2);
+      assert.equal(tools[0]!.status, "running");
+      assert.deepEqual(tools[0]!.input, { apiKey: "[REDACTED]", command: "identity" });
+      assert.deepEqual(tools[1]!.input, tools[0]!.input);
+      assert.notProperty(tools[0]!, "output");
+      assert.deepEqual(tools[1]!.output, { result: "final result", token: "[REDACTED]" });
+      assert.equal(tools[1]!.status, "completed");
+      const serializedEvents = yield* encodeUnknownJson(events);
+      assert.notInclude(serializedEvents, "private-input-key");
+      assert.notInclude(serializedEvents, "private-output-token");
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
   for (const outcome of ["failed", "recovered", "completed", "cancelled"] as const) {
     it.live(`projects Mistral retry notices and their ${outcome} outcome`, () =>
       Effect.gen(function* () {
@@ -1069,7 +1346,7 @@ describe("AcpAdapterV2", () => {
                       title: "Tool",
                       kind: "execute",
                       status: "in_progress",
-                      rawInput: { command: "pwd" },
+                      rawInput: { command: "pwd", apiKey: "child-private-key" },
                       _meta: {
                         "cognition.ai/inferenceToolName": "exec",
                         "cognition.ai/subagent_context": { parentAgentId: "child-a" },
@@ -1191,6 +1468,18 @@ describe("AcpAdapterV2", () => {
         ),
       );
       assert.deepEqual([...childMessages.values()], ["Checking the code.", "ONE"]);
+      const childTools = items.filter(
+        (item) => item.threadId === task?.childThreadId && item.type === "dynamic_tool",
+      );
+      assert.isAtLeast(childTools.length, 2);
+      for (const item of childTools.filter((item) =>
+        item.nativeItemRef?.nativeId?.endsWith(":tool:child-pwd"),
+      )) {
+        if (item.type === "dynamic_tool")
+          assert.deepEqual(item.input, { command: "pwd", apiKey: "[REDACTED]" });
+      }
+      const serializedItems = yield* encodeUnknownJson(childTools);
+      assert.notInclude(serializedItems, "child-private-key");
       assert.equal(task?.prompt, "Run pwd, then reply ONE.");
       assert.isTrue(
         items.some(
@@ -7228,10 +7517,15 @@ describe("AcpAdapterV2", () => {
         const instanceId = ProviderInstanceId.make("acp-test");
         const childSessionId = "mock-child-session-pending-continuation";
         const bufferedAssistantText = "POST_SETTLE_BUFFERED_ASSISTANT_TEXT";
+        const promptSettled = yield* Deferred.make<void>();
         let subagentPhase: "spawn" | "complete" = "spawn";
         type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
         let sessionUpdateHandler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
         const adapter = makeAcpAdapterV2({
+          testHooks: {
+            afterPromptSettledWithBackgroundWork: () =>
+              Deferred.succeed(promptSettled, undefined).pipe(Effect.asVoid),
+          },
           crypto: yield* Crypto.Crypto,
           instanceId,
           flavor: {
@@ -7331,13 +7625,12 @@ describe("AcpAdapterV2", () => {
           ),
           Stream.runHead,
         );
-        yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
 
         const firstProviderTurnId = idAllocator.derive.providerTurn({
           driver: ACP_TEST_DRIVER,
           nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:1"),
         });
+        yield* Deferred.await(promptSettled);
         const interruptFiber = yield* runtime
           .interruptTurn({ providerThread, providerTurnId: firstProviderTurnId })
           .pipe(Effect.forkScoped);

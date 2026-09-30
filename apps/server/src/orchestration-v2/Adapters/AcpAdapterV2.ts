@@ -93,6 +93,7 @@ import {
   resolveEmbeddedTerminalContent,
   type AcpClientTerminals,
 } from "../../provider/acp/AcpClientTerminals.ts";
+import { makeAcpToolActivity } from "../../provider/acp/AcpToolActivity.ts";
 import { ACP_SESSION_MODE_OPTION_ID } from "../../provider/acp/AcpSessionConfig.ts";
 import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
 import {
@@ -1993,8 +1994,14 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             }
           });
 
-        const emitProviderEvent = (event: ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        const toolActivity = yield* makeAcpToolActivity({
+          activeTurn,
+          permit: runtimeCallbackPermit,
+          scope: sessionScope,
+        });
+        const emitProviderEvent = Effect.fnUntraced(function* (event: ProviderAdapterV2Event) {
+          yield* Queue.offer(events, toolActivity.normalize(event));
+        });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 
@@ -3137,6 +3144,18 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             }
           }
           const status = projectedStatus ?? toolStatus(toolCall.status);
+          const projection = projectTool(context, toolCall, status);
+          if (yield* toolActivity.hold(context, `root:${toolCall.toolCallId}`, status, projection))
+            return;
+          yield* projection;
+        });
+
+        // A delayed snapshot must not repeat stream boundaries or monitor hydration.
+        const projectTool = Effect.fnUntraced(function* (
+          context: ActiveAcpTurn,
+          toolCall: AcpToolCallState,
+          status: ProjectedToolStatus,
+        ) {
           const now = yield* DateTime.now;
           const nativeItemId = `${context.nativeThreadId}:tool:${toolCall.toolCallId}`;
           const ordinal = yield* resolveItemOrdinal(context, nativeItemId);
@@ -4290,7 +4309,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 const startedAt = context.toolStartedAt.get(key) ?? now;
                 context.toolStartedAt.set(key, startedAt);
                 const ordinal = resolveSubagentChildOrdinal(subagent, key);
-                yield* emitProviderEvent({
+                const projectTool = emitProviderEvent({
                   type: "turn_item.updated",
                   driver,
                   turnItem: {
@@ -4314,6 +4333,16 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                     output: merged.data.rawOutput ?? merged.data.content ?? null,
                   },
                 });
+                if (
+                  yield* toolActivity.hold(
+                    context,
+                    `child:${key}`,
+                    toolStatus(merged.status),
+                    projectTool,
+                  )
+                )
+                  continue;
+                yield* projectTool;
               }
               return;
             }
@@ -6383,6 +6412,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           failure?: OrchestrationV2ProviderFailure,
         ) {
           if (context.finalized) return;
+          yield* toolActivity.flush(context, true);
           const settledStatus = context.interrupted ? "interrupted" : status;
           context.finalizedStatus = settledStatus;
           context.finalized = true;
