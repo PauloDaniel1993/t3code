@@ -19,6 +19,12 @@ const legacyReaders = ["orchestration-v2/legacy/", "persistence/Migrations/"] as
 const legacyReaderFiles: Record<string, string> = {
   // Provider history for settings migration reads V1 thread sessions once at load.
   "serverSettings.ts": "one-time provider history for settings migration",
+  // Ticket 28: historical DDL must keep its separate fork-ledger identities and paths.
+  "persistence/ForkMigrations/002_ProjectionThreadSessionRecovery.ts": "legacy recovery column DDL",
+  "persistence/ForkMigrations/004_ProjectionThreadTasks.ts": "legacy task columns and index DDL",
+  "persistence/ForkMigrations/005_ProjectionThreadMessageSource.ts": "legacy source column DDL",
+  "persistence/ForkMigrations/006_ProjectionThreadNativeAgents.ts":
+    "legacy native-agent column DDL",
 };
 const retiredPaths = [
   "orchestration",
@@ -85,6 +91,8 @@ it("keeps the legacy importer out of reach of new code", () => {
   assert.deepEqual(importers, [
     // Ticket 36: the existing attachment index facade protects unhydrated legacy bytes.
     "orchestration-v2/AttachmentReferenceIndex.ts",
+    // Ticket 28: compaction must check that legacy task-link repair has finished.
+    "orchestration-v2/ProjectionMaintenance.ts",
     "orchestration-v2/ThreadManagementService.ts",
     "orchestration-v2/runtimeLayer.ts",
     "project/ProjectService.ts",
