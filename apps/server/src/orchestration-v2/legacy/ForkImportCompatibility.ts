@@ -39,9 +39,10 @@ export type ForkImportInspection =
  * anything only the fork writes, or any other disagreement, is "unknown"
  * (for example compaction, or an upstream change to import ids or ordinals).
  *
- * The passed check is recorded once every legacy transcript is imported. After
- * that no importer, patched or not, writes another `migration:v1:*` item: every
- * shell exists, nothing is left to hydrate, and upstream's metadata repair
+ * The passed check is recorded once every legacy transcript is imported, here
+ * or with the last transcript (see `recordForkImportVerifiedWhenComplete`).
+ * After that no importer, patched or not, writes another `migration:v1:*` item:
+ * every shell exists, nothing is left to hydrate, and upstream's metadata repair
  * writes only thread metadata. Later starts read that one row and stop.
  */
 export const inspectForkImport = Effect.fn("inspectForkImport")(function* () {
@@ -115,26 +116,43 @@ export const inspectForkImport = Effect.fn("inspectForkImport")(function* () {
   if (mismatch !== undefined) {
     return { _tag: mismatch.verdict, mismatch } satisfies ForkImportInspection;
   }
+  return (yield* recordForkImportVerifiedWhenComplete())
+    ? ({ _tag: "verified" } satisfies ForkImportInspection)
+    : ({ _tag: "unfinished" } satisfies ForkImportInspection);
+});
+
+/**
+ * Record the passed check once no legacy transcript is left to import. The
+ * importer calls this with the last transcript, in the same transaction, when
+ * this start's check found nothing wrong: everything imported since came from
+ * this build, so the next start skips the scan.
+ */
+export const recordForkImportVerifiedWhenComplete = Effect.fn(
+  "recordForkImportVerifiedWhenComplete",
+)(function* () {
+  const sql = yield* SqlClient.SqlClient;
   const unfinished = yield* sql`
     SELECT 1 FROM projection_threads AS thread
     LEFT JOIN orchestration_v2_legacy_imports AS imported ON imported.thread_id = thread.thread_id
     WHERE imported.transcript_imported_at IS NULL
     LIMIT 1
   `;
-  if (unfinished.length > 0) return { _tag: "unfinished" } satisfies ForkImportInspection;
+  if (unfinished.length > 0) return false;
+  yield* initializeForkImportDiagnostics;
   const now = DateTime.formatIso(yield* DateTime.now);
   yield* sql`
     INSERT INTO fork_v1_import_state (key, recorded_at)
     VALUES (${FORK_IMPORT_VERIFIED_KEY}, ${now})
     ON CONFLICT(key) DO NOTHING
   `;
-  return { _tag: "verified" } satisfies ForkImportInspection;
+  return true;
 });
 
 /**
  * Refuse only on positive evidence that an unpatched importer ran first. When
  * the evidence is unrecognised or unreadable, start and record a warning: a
- * wrong refusal locks the owner out of every thread.
+ * wrong refusal locks the owner out of every thread. Returns whether the
+ * evidence was confirmed, which lets the importer record the pass later.
  */
 export const assertForkImportCompatible = Effect.fn("assertForkImportCompatible")(function* () {
   const inspection = yield* inspectForkImport().pipe(
@@ -161,5 +179,7 @@ export const assertForkImportCompatible = Effect.fn("assertForkImportCompatible"
       "Stored V1 import evidence is not in a recognised form; the server started without the compatibility check.",
       detail,
     ).pipe(Effect.ignore);
+    return false;
   }
+  return true;
 });

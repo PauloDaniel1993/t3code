@@ -44,7 +44,9 @@ tag) together with one of those effects. A thread holding anything only the fork
 cannot read or place, starts the server with a warning, because a wrong refusal locks the owner out of every
 thread. Once every legacy
 transcript is imported and the check passes, it records a row in `fork_v1_import_state` and later starts skip
-the scan: after that no importer, patched or not, writes another `migration:v1:*` item. The check and the
+the scan: after that no importer, patched or not, writes another `migration:v1:*` item. When the start's own
+check found nothing wrong, the importer commits that row with the last transcript, on the background or the
+on-demand path, since everything imported after the check came from this build. The check and the
 task-link repair rely on upstream's `migration:v1:turn-item:<message-id>` ids and payload ordinals, on
 compaction keeping `turn-item.updated` events and position reservations, and on the legacy tables staying; `ForkImportCompatibility.test.ts`
 names whichever of these a merge changes. To recover from a refusal, stop the server and preserve/move `statev2.sqlite`, `statev2.sqlite-wal`, and `statev2.sqlite-shm` aside

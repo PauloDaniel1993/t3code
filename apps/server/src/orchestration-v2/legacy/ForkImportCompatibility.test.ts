@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -32,11 +33,12 @@ const seedHealthy = Effect.gen(function* () {
   }
 });
 
-/** A patched first start, then background hydration of every transcript. */
+/** A finished import whose pass was not recorded, so the next start checks its evidence. */
 const importEverything = Effect.gen(function* () {
   const importer = yield* LegacyV1ThreadImporter;
   yield* importer.reconcileShells;
   yield* importer.importPendingTranscripts;
+  yield* (yield* SqlClient.SqlClient)`DELETE FROM fork_v1_import_state`;
 });
 
 /** Rewrite the imported thread as an unpatched importer leaves it: no reasoning, no sources. */
@@ -57,21 +59,25 @@ const warnings = Effect.gen(function* () {
   `;
 });
 
-it.effect("checks every start until the import is complete, then reads one marker row", () =>
+const marker = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql`SELECT 1 FROM fork_v1_import_state WHERE key = ${FORK_IMPORT_VERIFIED_KEY}`;
+});
+
+it.effect("records the pass with the last imported transcript, then reads one marker row", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const importer = yield* LegacyV1ThreadImporter;
     yield* seedHealthy;
     // First start: the check runs; nothing is imported yet, so no marker.
-    assert.equal((yield* inspectForkImport())._tag, "unfinished");
-    yield* importEverything;
-    // The next start checks the finished import once and records the pass.
     yield* importer.reconcileShells;
-    assert.lengthOf(
-      yield* sql`SELECT 1 FROM fork_v1_import_state WHERE key = ${FORK_IMPORT_VERIFIED_KEY}`,
-      1,
-    );
-    // Evidence a check would refuse no longer matters: the check is skipped.
+    assert.lengthOf(yield* marker, 0);
+    // Background hydration imports the last transcript and records the pass with it.
+    yield* importer.ensureTranscript(ThreadId.make("child"));
+    assert.lengthOf(yield* marker, 0);
+    yield* importer.importPendingTranscripts;
+    assert.lengthOf(yield* marker, 1);
+    // Evidence a check would refuse no longer matters: the next start skips the check.
     yield* unpatchThread(sql);
     assert.equal((yield* inspectForkImport())._tag, "skipped");
     yield* importer.reconcileShells;
@@ -79,6 +85,21 @@ it.effect("checks every start until the import is complete, then reads one marke
     yield* sql`DELETE FROM fork_v1_import_state`;
     const refused = yield* Effect.flip(importer.reconcileShells);
     assert.include(String(refused.cause), "Incompatible V1 import in statev2.sqlite");
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("records no pass when this start could not confirm the evidence", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const importer = yield* LegacyV1ThreadImporter;
+    yield* seedHealthy;
+    yield* importer.reconcileShells;
+    // Shell evidence this check cannot place: the start warns and continues.
+    yield* sql`UPDATE orchestration_v2_turn_item_positions SET ordinal = ordinal + 100`;
+    yield* importer.reconcileShells;
+    assert.lengthOf(yield* warnings, 1);
+    yield* importer.importPendingTranscripts;
+    assert.lengthOf(yield* marker, 0);
   }).pipe(Effect.provide(TestLayer)),
 );
 
@@ -142,7 +163,6 @@ it.effect("refuses a thread whose reasoning and sources an importer omitted", ()
     const sql = yield* SqlClient.SqlClient;
     yield* seedHealthy;
     yield* importEverything;
-    yield* sql`DELETE FROM fork_v1_import_state`;
     yield* unpatchThread(sql);
     assert.equal((yield* inspectForkImport())._tag, "unpatched");
   }).pipe(Effect.provide(TestLayer)),
@@ -150,10 +170,8 @@ it.effect("refuses a thread whose reasoning and sources an importer omitted", ()
 
 it.effect("starts with a warning when a thread without reasoning lost its source tag", () =>
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
     // Nothing but the missing field tells an unpatched importer from a payload rewrite.
     yield* seedUnpatchedImport(true, false);
-    yield* sql`DELETE FROM fork_v1_import_state`;
     assert.equal((yield* inspectForkImport())._tag, "unknown");
     yield* (yield* LegacyV1ThreadImporter).reconcileShells;
     assert.deepEqual(yield* warnings, [{ entity_id: "4-u" }]);

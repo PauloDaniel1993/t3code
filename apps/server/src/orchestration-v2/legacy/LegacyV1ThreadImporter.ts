@@ -36,7 +36,10 @@ import { randomUuidV4 } from "../RandomUuid.ts";
 // fork(ticket-28:messages): source/reasoning/attachment mapping stays in a fork-owned wrapper.
 import { makeForkLegacyMessageEvents, forkLegacyMessageRoles } from "./ForkLegacyMessages.ts";
 // fork(ticket-28:compatibility): refuse incompatible prior imports before shell/hydration work.
-import { assertForkImportCompatible } from "./ForkImportCompatibility.ts";
+import {
+  assertForkImportCompatible,
+  recordForkImportVerifiedWhenComplete,
+} from "./ForkImportCompatibility.ts";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
 const TRANSCRIPT_EVENT_BATCH_SIZE = 100;
@@ -360,6 +363,8 @@ const make = Effect.gen(function* () {
   const transcriptImports = yield* makeKeyedSerialExecutor<ThreadId>();
   // fork(ticket-28:messages): capture persistence for per-entry import diagnostics.
   const forkMessageEvents = yield* makeForkLegacyMessageEvents<LegacyMessageRow>(messageEvents);
+  // fork(ticket-28:compatibility): whether this start's check confirmed the stored evidence.
+  let forkImportConfirmed = false;
 
   const listMessages = (threadId: ThreadId) =>
     sql<LegacyMessageRow>`
@@ -464,7 +469,9 @@ const make = Effect.gen(function* () {
 
   const reconcileShellsBase = Effect.gen(function* () {
     // fork(ticket-28:compatibility): completed omissions and partial ordinal collisions need a fresh seed.
-    yield* assertForkImportCompatible().pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    forkImportConfirmed = yield* assertForkImportCompatible().pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
     const now = DateTime.formatIso(yield* DateTime.now);
     const repairRows = yield* sql<LegacyRepairRow>`
       SELECT
@@ -775,14 +782,24 @@ const make = Effect.gen(function* () {
           yield* Effect.yieldNow;
         }
         const now = DateTime.formatIso(yield* DateTime.now);
-        yield* sql`
-          UPDATE orchestration_v2_legacy_imports
-          SET
-            transcript_imported_at = ${now},
-            imported_message_count = ${messages.length},
-            last_error = NULL
-          WHERE thread_id = ${threadId}
-        `;
+        // fork(ticket-28:compatibility): the last transcript and the recorded pass commit together.
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              UPDATE orchestration_v2_legacy_imports
+              SET
+                transcript_imported_at = ${now},
+                imported_message_count = ${messages.length},
+                last_error = NULL
+              WHERE thread_id = ${threadId}
+            `;
+            if (forkImportConfirmed) {
+              yield* recordForkImportVerifiedWhenComplete().pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+            }
+          }),
+        );
         confirmedTranscriptThreadIds.add(threadId);
         return {
           importedThreadCount: 1,

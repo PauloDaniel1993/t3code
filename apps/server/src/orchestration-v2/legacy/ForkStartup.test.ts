@@ -67,6 +67,39 @@ const hostLayer = Layer.mergeAll(
   }),
 );
 
+const databaseLayer = Layer.mergeAll(
+  TestLayer,
+  configLayer(process.cwd(), { prefix: "t3-fork-startup-" }),
+).pipe(Layer.provideMerge(NodeServices.layer));
+
+/** The real startup service; `hydration` resolves when background import completes. */
+const startupLayer = (
+  config: ServerConfig["Service"],
+  recover: ProviderRuntimeRecoveryService["Service"]["recover"],
+  hydration: Deferred.Deferred<void>,
+) =>
+  layerWithOptions().pipe(
+    Layer.provide(hostLayer),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.succeed(ServerConfig, { ...config, mode: "desktop", noBrowser: true }),
+        Layer.mock(ProviderRuntimeRecoveryService)({
+          recover,
+          prepareForShutdown: Effect.void,
+          reconcile: () => Effect.succeed(summary),
+        }),
+        Layer.mock(ServerLifecycleEvents)({
+          publish: (event) =>
+            Effect.gen(function* () {
+              if (event.type === "legacyThreadMigration" && event.payload.status === "complete")
+                yield* Deferred.succeed(hydration, undefined);
+              return { ...event, sequence: 1 };
+            }),
+        }),
+      ),
+    ),
+  );
+
 for (const failure of [
   "none",
   "orphan",
@@ -153,41 +186,34 @@ for (const failure of [
             1,
           );
         }
-      }).pipe(
-        Effect.provide(
-          layerWithOptions().pipe(
-            Layer.provide(hostLayer),
-            Layer.provide(
-              Layer.mergeAll(
-                Layer.succeed(ServerConfig, { ...config, mode: "desktop", noBrowser: true }),
-                Layer.mock(ProviderRuntimeRecoveryService)({
-                  recover,
-                  prepareForShutdown: Effect.void,
-                  reconcile: () => Effect.succeed(summary),
-                }),
-                Layer.mock(ServerLifecycleEvents)({
-                  publish: (event) =>
-                    Effect.gen(function* () {
-                      if (
-                        event.type === "legacyThreadMigration" &&
-                        event.payload.status === "complete"
-                      )
-                        yield* Deferred.succeed(hydration, undefined);
-                      return { ...event, sequence: 1 };
-                    }),
-                }),
-              ),
-            ),
-          ),
-        ),
-      );
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(TestLayer, configLayer(process.cwd(), { prefix: "t3-fork-startup-" })).pipe(
-          Layer.provideMerge(NodeServices.layer),
-        ),
-      ),
-      Effect.scoped,
-    ),
+      }).pipe(Effect.provide(startupLayer(config, recover, hydration)));
+    }).pipe(Effect.provide(databaseLayer), Effect.scoped),
   );
 }
+
+it.effect("a background import records the pass, so the second start skips the check", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const config = yield* ServerConfig;
+    yield* seedThreads([["root", null]]);
+    yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, source, is_streaming, created_at, updated_at)
+      VALUES ('reasoning', 'root', 'reasoning', 'thinking', 'provider', 0, ${stamp}, ${stamp})`;
+    const start = (awaitHydration: boolean) =>
+      Effect.gen(function* () {
+        const hydration = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          const startup = yield* ServerRuntimeStartup;
+          yield* startup.markHttpListening;
+          yield* startup.awaitCommandReady;
+          if (awaitHydration) yield* Deferred.await(hydration);
+        }).pipe(Effect.provide(startupLayer(config, Effect.succeed(summary), hydration)));
+      });
+    // First start: nothing is imported when the check runs; hydration finishes in the background.
+    yield* start(true);
+    assert.lengthOf(yield* sql`SELECT 1 FROM fork_v1_import_state`, 1);
+    // A scan would now warn about this event; the second start reads the marker instead.
+    yield* sql`DELETE FROM orchestration_events WHERE event_id = 'migration:v1:turn-item:reasoning'`;
+    yield* start(false);
+    assert.lengthOf(yield* sql`SELECT 1 FROM fork_v1_import_warnings`, 0);
+  }).pipe(Effect.provide(databaseLayer), Effect.scoped),
+);

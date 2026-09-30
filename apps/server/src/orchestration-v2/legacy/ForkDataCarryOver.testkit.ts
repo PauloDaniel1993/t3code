@@ -67,4 +67,6 @@ export const seedUnpatchedImport = Effect.fnUntraced(function* (
   // Without reasoning only lost provenance shows, which the check cannot tell from a payload rewrite.
   if (complete)
     yield* sql`UPDATE projection_thread_messages SET source = 'task-result' WHERE message_id = '4-u'`;
+  // An unpatched build records no pass.
+  yield* sql`DELETE FROM fork_v1_import_state`;
 });
