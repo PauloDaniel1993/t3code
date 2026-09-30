@@ -35,7 +35,7 @@ export interface WayfinderDirectoryListing {
 export interface WayfinderFiles {
   /**
    * Real path of an existing directory inside the project, or null when it is absent or
-   * resolves outside the root. The watchers use this so they never follow a link out.
+   * reached through a link. The watchers use this so they never follow a link.
    */
   readonly resolveDirectory: (
     relativePath: string,
@@ -101,15 +101,17 @@ export const watchDirectory = (
 
 /**
  * Every file and directory the Wayfinder reader touches goes through here. A path is only
- * usable when its real location (symlinks and Windows junctions resolved) is inside the real
- * project root. Anything else reads exactly as a missing file does and is logged on the
- * server only, so a client cannot learn whether something exists outside the project.
+ * usable when its real location (symlinks and Windows junctions resolved) is the path itself
+ * under the real project root, ignoring letter case: nothing is read through a link, even one
+ * that stays inside the project, because the watches do not follow links and a map read
+ * through one would go stale. Anything else reads exactly as a missing file does and is logged
+ * on the server only, so a client cannot learn whether something exists outside the project.
  *
  * What a file read guarantees:
  * - A link that exists while the file is read, or one swapped in once between the check and
- *   the open, is never followed out of the project.
- * - On Linux the check is made on the open descriptor, so the bytes read come from a file
- *   inside the project whatever happens to the path.
+ *   the open, is never followed.
+ * - On Linux the check is made on the open descriptor, so the bytes read come from the file
+ *   that was checked, whatever happens to the path.
  * - Windows and macOS have no Node call that names an open handle. There the path is
  *   resolved again after the open and must still name the same file. A process that renames
  *   a folder inside the project away, back and away again within one read can still have an
@@ -136,16 +138,7 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
   const logPlatformFailure = (operation: string, relativePath: string, cause: PlatformError) =>
     logProbeFailure(operation, relativePath, cause.reason._tag);
 
-  const isInsideRealRoot = (realPath: string) => {
-    const relative = path.relative(realRoot, realPath);
-    return !(
-      relative === ".." ||
-      relative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(relative)
-    );
-  };
-
-  /** Lexical relative path plus the contained real path, or null when absent or escaping. */
+  /** Lexical relative path plus its real path, or null when absent or reached by a link. */
   const contain = Effect.fn("WayfinderFiles.contain")(function* (
     relativePath: string,
     quiet: boolean,
@@ -168,9 +161,10 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
     if (Option.isNone(realPath)) {
       return null;
     }
-    if (!isInsideRealRoot(realPath.value)) {
+    // Lower case on both sides: discovery's fixed names match any case the disk uses.
+    if (realPath.value.toLowerCase() !== path.join(realRoot, target.relativePath).toLowerCase()) {
       if (!quiet) {
-        yield* Effect.logWarning("Wayfinder refused a path that resolves outside the project", {
+        yield* Effect.logWarning("Wayfinder refused a path that goes through a link", {
           relativePath: target.relativePath,
         });
       }
@@ -255,11 +249,11 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
       if (!target) {
         return null;
       }
-      // True when the open handle is a file inside the project; see the guarantees above.
+      // True when the open handle is the file that was checked; see the guarantees above.
       const heldInsideRoot = (handle: NodeFSP.FileHandle, held: NodeFS.BigIntStats) =>
         platform === "linux"
           ? nodeCall(() => NodeFSP.readlink(`/proc/self/fd/${handle.fd}`)).pipe(
-              Effect.map(isInsideRealRoot),
+              Effect.map((heldPath) => heldPath === target.absolutePath),
             )
           : Effect.gen(function* () {
               const again = yield* contain(relativePath, true);

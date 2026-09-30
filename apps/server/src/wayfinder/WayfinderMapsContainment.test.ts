@@ -142,26 +142,26 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps containment", 
     }),
   );
 
-  it.effect("keeps a directory link that stays inside the project", () =>
+  // The watches do not follow links, so a map read through one would never update.
+  it.effect("shows no map or ticket reached through a link, even one inside the project", () =>
     Effect.gen(function* () {
       const { path, project } = yield* makeSandbox;
       yield* writeText(path.join(project, "shared", "map.md"), mapMarkdown("Shared"));
       yield* writeText(path.join(project, "shared", "issues", "01-a.md"), ticketMarkdown("A"));
-      yield* writeText(path.join(project, ".scratch", "keep.txt"), "x");
-      expect(
-        yield* tryLink(
-          path.join(project, "shared"),
-          path.join(project, ".scratch", "alias"),
-          directoryLinkType,
-        ),
-      ).toBe(true);
+      yield* writeText(path.join(project, ".scratch", "own", "map.md"), mapMarkdown("Own"));
+      for (const [target, link] of [
+        ["shared", ".scratch/alias"],
+        ["shared/issues", ".scratch/own/issues"],
+      ] as const) {
+        expect(
+          yield* tryLink(path.join(project, target), path.join(project, link), directoryLinkType),
+        ).toBe(true);
+      }
 
       const snapshot = yield* snapshotOf(project);
 
-      expect(snapshot.maps.map((map) => map.id)).toEqual(["scratch/alias"]);
-      expect(snapshot.maps[0]?.nodes.map((node) => node.relativePath)).toEqual([
-        ".scratch/alias/issues/01-a.md",
-      ]);
+      expect(snapshot.maps.map((map) => map.id)).toEqual(["scratch/own"]);
+      expect(snapshot.maps[0]?.nodes).toEqual([]);
     }),
   );
 

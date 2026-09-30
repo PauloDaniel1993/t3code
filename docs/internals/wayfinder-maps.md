@@ -14,9 +14,11 @@ Discovery uses four bounded top-level probes rather than walking the workspace t
 - a file stat for `wayfinder-map.md`
 
 Every path goes through `WayfinderFiles.ts`, which resolves its real location (symlinks and Windows
-junctions followed) and only reads it when that is inside the real project root. Anything that
-leaves the root reads exactly as a missing file does. The lexical check in `WorkspacePaths` alone is
-not enough for this.
+junctions followed) and only reads it when that is the path itself under the real project root.
+Nothing is read through a link, even one that stays inside the project: the watches do not follow
+links, so a map read through one would never update. Watching link targets would need a changing
+set of extra watches, which a map behind a link is not worth. A path that goes through a link reads
+exactly as a missing file does. The lexical check in `WorkspacePaths` alone is not enough for this.
 
 A link swapped in while a file is read is the hard case, because Node has no `openat` and no call
 that names an open handle. On Linux the check is made on the descriptor, through `/proc/self/fd`.

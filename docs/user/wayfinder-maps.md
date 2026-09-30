@@ -76,8 +76,12 @@ wayfinder map in this project** until an agent creates one.
 
 If T3 Code finds a map whose markdown it cannot make sense of, the surface shows the parsing
 warnings instead of the no-map message. If only part of a map can be read, the usable tickets still
-appear and the warnings remain available. A map or ticket file that cannot be opened at all, or one
-that is a link to somewhere outside the project, is skipped rather than reported.
+appear and the warnings remain available. A map or ticket file that cannot be opened at all is skipped rather
+than reported.
+
+Maps behind links are not shown. A map or ticket reached through a symbolic link or a Windows
+junction is skipped, even when the link points to another folder in the same project. Keep maps in
+real folders under `.plan` or `.scratch`.
 
 Each connected app can keep a limited number of maps open at once. If the Map surface says that
 limit is reached, close map panels you no longer need and try again.
