@@ -108,10 +108,7 @@ describe("provider event flow stage", () => {
       yield* a.offer(progress(3, "c", "completed"));
       yield* b.offer(progress(4, "d", "completed"));
       expect(messages).toHaveLength(1);
-      const bytes =
-        Buffer.byteLength(testJson(progress(1, "a", "completed"))) +
-        Buffer.byteLength(testJson(progress(2, "b", "completed"))) +
-        Buffer.byteLength(testJson(progress(3, "c", "completed")));
+      const bytes = Buffer.byteLength(testJson(progress(3, "c", "completed")));
       expect(messages[0]).toEqual([
         "orchestration-v2.provider-event-backlog",
         { driver, providerSessionId, items: 3, bytes, maxItems: 2, maxBytes: 8_388_608 },
@@ -143,14 +140,16 @@ describe("provider event flow stage", () => {
         maxBytes: 100,
       });
       yield* stage.offer(progress(1, "byte", "completed"));
+      expect(messages).toEqual([]);
+      yield* stage.offer(progress(2, "byte", "completed"));
       expect(messages).toHaveLength(1);
       expect(messages[0]).toEqual([
         "orchestration-v2.provider-event-backlog",
         {
           driver,
           providerSessionId,
-          items: 1,
-          bytes: Buffer.byteLength(testJson(progress(1, "byte", "completed"))),
+          items: 2,
+          bytes: Buffer.byteLength(testJson(progress(2, "byte", "completed"))),
           maxItems: 1_000,
           maxBytes: 100,
         },
@@ -158,6 +157,7 @@ describe("provider event flow stage", () => {
       yield* stage.end;
       expect(yield* stage.events.pipe(Stream.runCollect)).toEqual([
         progress(1, "byte", "completed"),
+        progress(2, "byte", "completed"),
       ]);
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });

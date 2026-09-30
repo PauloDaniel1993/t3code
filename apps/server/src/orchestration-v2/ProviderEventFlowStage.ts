@@ -2,9 +2,12 @@
  * One non-blocking lane per run, routed before retention. Only superseded
  * in-progress snapshots are replaced; finals, errors, requests, routing changes
  * and each entity's last state remain ordered and lossless. Above 1,000 retained
- * events or 8 MiB per session, warn once with the sizes; keep upstream's unbounded
- * irreducible tail. Pausing these streams cannot reach the provider pipe through
- * upstream's unbounded adapter queues. Pressure never
+ * events or 8 MiB per session, warn once with the sizes. This stage does not bound
+ * memory: irreducible traffic remains unbounded as upstream, by developer choice,
+ * to preserve every final and control event without spooling. Pausing these streams
+ * cannot reach the provider pipe through upstream's unbounded adapter queues. Byte
+ * counting starts only with a backlog; the first event of each episode is omitted.
+ * Pressure never
  * fails a run or leaves an unobserved native turn running. A finite hard bound
  * on arbitrary lossless traffic would require disk spooling or backpressure.
  * Provider failure seals admission and drains accepted events before failing;
@@ -154,7 +157,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
       }
       const key = pending.size === 0 ? undefined : replacementKey(event);
       const previous = key === undefined ? undefined : replaceable.get(key);
-      const bytes = eventBytes(event);
+      const bytes = pending.size === 0 ? 0 : eventBytes(event);
       if (previous) {
         adjust(0, bytes - previous.bytes);
         previous.event = event;

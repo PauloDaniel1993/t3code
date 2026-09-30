@@ -49,7 +49,8 @@ if (process.argv[2] === "payload") {
     ),
   );
 }
-// Neither usage nor output encoding may flatten the string before this sample.
+// Stage mode guards the owned copy: no backlog byte count or output encoding may
+// flatten the preview before sampling, hiding retention of its 64 MiB source.
 const held = sample();
 if (preview === undefined) {
   const [event] = await Effect.runPromise(stage.events.pipe(Stream.take(1), Stream.runCollect));
