@@ -12,6 +12,8 @@ remain shared.
 The V2 desktop app uses a separate browser profile, so browser cookies and caches do not carry
 over from V1. You may need to sign in again to websites opened inside the app.
 
+<!-- fork(ticket-28:docs) -->
+
 The migrated thread keeps its title, project, provider and model selection, permission and
 interaction modes, branch or worktree, archive state, settlement state, snooze and pin state, and
 linked pull request. T3 Code also brings over user and assistant messages, reasoning traces, their
@@ -38,7 +40,15 @@ handoff is also a good choice when the old conversation contains conflicting ins
 
 ## Keeping a recovery copy
 
-If startup reports an incompatible V1 import, stop the server. Preserve and move `statev2.sqlite` and its
+<!-- fork(ticket-28:docs) -->
+
+T3 Code will not start on a data directory that an older V2 build already imported without reasoning
+traces and message sources. From a terminal, the server prints "Incompatible V1 import" with these steps.
+The desktop app does not open and keeps restarting its server in the background; the message is in its
+server log, `~/.t3/userdata/logs/server-child.log` for a default install
+(`%USERPROFILE%\.t3\userdata\logs\server-child.log` on Windows).
+
+To recover, quit the app or stop the server. Preserve and move `statev2.sqlite` and its
 `statev2.sqlite-wal` and `statev2.sqlite-shm` siblings (if present) out of the data directory, then start
 again. T3 Code will make a fresh copy from the untouched `state.sqlite`. Keep the moved files: work you
 did in V2 after the earlier import remains there and will not appear in the fresh import. Preserve the
@@ -70,6 +80,7 @@ ORDER BY updated_at DESC;
 ```
 
 Then print one transcript, replacing `<thread-id>` with the value from the first query:
+<!-- fork(ticket-28:docs) -->
 
 ```sql
 SELECT role, text, created_at

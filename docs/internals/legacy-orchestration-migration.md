@@ -1,5 +1,7 @@
 # Legacy orchestration migration
 
+<!-- fork(ticket-28:docs) -->
+
 Orchestration v2 snapshots `state.sqlite` into `statev2.sqlite` before opening writable persistence
 on its first launch. Only the copy receives v2 migrations; the original remains available to v1.
 Subsequent launches reuse the copy without refreshing it from v1. It creates v2 thread shell events first and imports
@@ -16,6 +18,8 @@ times, settlement override and timestamps, snooze timestamps, pin timestamp and 
 pull request. The metadata repair path fills snooze, pin order, `unsettledAt`, and linked pull request
 fields for threads imported before those fields were covered.
 
+<!-- fork(ticket-28:docs) -->
+
 Transcript import reads user, assistant, and reasoning rows from `projection_thread_messages`.
 Reasoning becomes V2 reasoning turn items whose `migration:v1:turn-item:<message-id>` identity retains the original message identifier. Fork message
 source tags survive in the event payloads; task-result messages keep their user role for provider
@@ -23,17 +27,25 @@ compatibility but have system authorship. A message that was still streaming bec
 turn item.
 
 Fork startup reconciles the old fork ledger entries before upstream migrations, then runs the separate
-fork migration chain. After shell import, [ForkTaskLinkRepair](../../apps/server/src/orchestration-v2/legacy/ForkTaskLinkRepair.ts)
+fork migration chain. The same pre-migration step gives invalid copied project JSON safe defaults, because
+migration 055 turns project rows into immutable baseline events; it acts only on a V1 ledger at migration 54,
+since earlier upstream migrations still rewrite those columns. After shell import, [ForkTaskLinkRepair](../../apps/server/src/orchestration-v2/legacy/ForkTaskLinkRepair.ts)
 commits task ancestry and native subagent records through the event sink before recovery or command admission.
 Its versioned command receipts also gate event compaction. Invalid edges are explicitly accounted for in
 `fork_v1_import_warnings`; an orphan stays top-level and a cycle loses the edge from its smallest thread ID.
 Do not create replacement task shells before the importer: doing so prevents transcript hydration.
 
-The named `fork(ticket-28:...)` hooks must survive upstream importer rewrites. The compatibility check
-inspects stored import events and position reservations, including unfinished imports, before hydration.
-An earlier importer can omit reasoning/provenance or reserve incompatible ordinals even without completing
-a transcript. Such a destination is refused; a new migration-ledger marker alone cannot establish compatibility.
-Stop the server and preserve/move `statev2.sqlite`, `statev2.sqlite-wal`, and `statev2.sqlite-shm` aside
+The named `fork(ticket-28:...)` hooks must survive upstream importer rewrites. Before shell import,
+[ForkImportCompatibility](../../apps/server/src/orchestration-v2/legacy/ForkImportCompatibility.ts) compares
+stored import events and position reservations with the fork mapping, including unfinished imports: an
+unpatched importer can omit reasoning/provenance or reserve incompatible ordinals without completing a
+transcript. It refuses only those recognised signatures. Anything else it cannot read or place starts the
+server with a warning, because a wrong refusal locks the owner out of every thread. Once every legacy
+transcript is imported and the check passes, it records a row in `fork_v1_import_state` and later starts skip
+the scan: after that no importer, patched or not, writes another `migration:v1:*` item. The check and the
+task-link repair rely on upstream's `migration:v1:turn-item:<message-id>` ids and payload ordinals, on
+compaction keeping `turn-item.updated` events, and on the legacy tables staying; `ForkImportCompatibility.test.ts`
+names whichever of these a merge changes. To recover from a refusal, stop the server and preserve/move `statev2.sqlite`, `statev2.sqlite-wal`, and `statev2.sqlite-shm` aside
 (siblings may be absent), then restart to seed from untouched `state.sqlite`. Keep the moved files for any
 V2-native work; that work will not appear in the fresh import. Never delete or reset individual import markers.
 Attachment bytes need their own preserved copy; database reseeding cannot restore deleted files.
@@ -76,6 +88,8 @@ There is no supported whole-thread export API. Recovery uses an untouched copy o
 `userdata` directory and opens that copy with SQLite's read-only mode. The user guide documents the
 queries against `projection_threads` and `projection_thread_messages`. Never start a server against
 the recovery copy because startup can run migrations and write new state.
+
+<!-- fork(ticket-28:docs) -->
 
 Import warnings identify the row and field in the server log and retain the rejected value and reason in
 `statev2.sqlite`'s `fork_v1_import_warnings` table. Inspect a stopped recovery copy with
