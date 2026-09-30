@@ -6,7 +6,7 @@ Orchestration v2 snapshots `state.sqlite` into `statev2.sqlite` before opening w
 on its first launch. Only the copy receives v2 migrations; the original remains available to v1.
 Subsequent launches reuse the copy without refreshing it from v1. It creates v2 thread shell events first and imports
 the complete user, assistant, and reasoning transcript lazily when a client reads or continues the thread. The
-v1 projection tables remain the import source. Invalid project JSON is normalized only in the V2
+v1 projection tables remain the import source. Invalid project values are normalized only in the V2
 copy; its original value is kept in `fork_v1_import_warnings`. The untouched V1 file remains the
 recovery source if an import needs investigation.
 
@@ -27,9 +27,9 @@ compatibility but have system authorship. A message that was still streaming bec
 turn item.
 
 Fork startup reconciles the old fork ledger entries before upstream migrations, then runs the separate
-fork migration chain. The same pre-migration step gives invalid copied project JSON safe defaults, because
-migration 055 turns project rows into immutable baseline events; it acts only on a V1 ledger at migration 54,
-since earlier upstream migrations still rewrite those columns. After shell import, [ForkTaskLinkRepair](../../apps/server/src/orchestration-v2/legacy/ForkTaskLinkRepair.ts)
+fork migration chain. The same pre-migration step gives invalid copied project values safe defaults, because
+migration 055 turns project rows into immutable baseline events; it first brings a V1 ledger of any age to
+migration 54, since earlier upstream migrations still rewrite those columns. After shell import, [ForkTaskLinkRepair](../../apps/server/src/orchestration-v2/legacy/ForkTaskLinkRepair.ts)
 commits task ancestry and native subagent records through the event sink before recovery or command admission.
 Its versioned command receipts also gate event compaction. Invalid edges are explicitly accounted for in
 `fork_v1_import_warnings`; an orphan stays top-level and a cycle loses the edge from its smallest thread ID.

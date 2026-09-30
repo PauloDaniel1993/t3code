@@ -63,8 +63,9 @@ export interface RunForkMigrationsOptions {
 
 /**
  * Prepare a copied V1 database for upstream's migrations: remove only legacy
- * fork-owned base-ledger rows, then give invalid project JSON safe defaults
- * before migration 055 publishes the project baseline.
+ * fork-owned base-ledger rows, then bring a V1 history to migration 54 and give
+ * invalid project values safe defaults before migration 055 publishes the
+ * project baseline.
  *
  * Matching both id and name preserves upstream migrations that reuse the same
  * ids. The table is intentionally kept; only stale fork rows are removed
