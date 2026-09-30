@@ -20,6 +20,7 @@ import {
   type OrchestrationV2DomainEvent,
   OrchestrationV2TurnItemJson,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -62,11 +63,19 @@ const encodeMessage = Schema.encodeEffect(
 );
 const encodeTurnItem = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2TurnItemJson));
 
-const parseJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-const sameJson = (stored: string | null, encoded: string) =>
-  stored !== null && NodeUtil.isDeepStrictEqual(parseJson(stored), parseJson(encoded));
+/** Whether a stored projection equals this build's; unreadable stored JSON fails its thread. */
+const sameJson = (messageId: string, stored: string | null, encoded: string) =>
+  stored === null
+    ? Effect.succeed(false)
+    : Effect.all([
+        decodeJson(stored).pipe(
+          Effect.mapError(() => `stored projection of item ${messageId} is not valid JSON`),
+        ),
+        decodeJson(encoded),
+      ]).pipe(Effect.map(([left, right]) => NodeUtil.isDeepStrictEqual(left, right)));
 
 /** `messageEvents` is the importer's fork mapping, so repaired items equal hydrated ones. */
 export const makeForkShellPreviewRepair = Effect.fn("makeForkShellPreviewRepair")(function* <E>(
@@ -88,9 +97,17 @@ export const makeForkShellPreviewRepair = Effect.fn("makeForkShellPreviewRepair"
         let matches = true;
         for (const event of mapped) {
           if (event.type === "message.updated")
-            matches &&= sameJson(row.message_json, yield* encodeMessage(event.payload));
+            matches &&= yield* sameJson(
+              row.message_id,
+              row.message_json,
+              yield* encodeMessage(event.payload),
+            );
           else if (event.type === "turn-item.updated")
-            matches &&= sameJson(row.item_json, yield* encodeTurnItem(event.payload));
+            matches &&= yield* sameJson(
+              row.message_id,
+              row.item_json,
+              yield* encodeTurnItem(event.payload),
+            );
         }
         if (row.position_ordinal !== row.ordinal) moves.push(row);
         if (matches) continue;
@@ -113,15 +130,15 @@ export const makeForkShellPreviewRepair = Effect.fn("makeForkShellPreviewRepair"
           }
           if (events.length > 0) yield* eventSink.write({ events });
           yield* clearForkImportWarning(threadId, "shell_preview_repair_failed");
+          yield* recordForkImportWarning(
+            threadId,
+            "shell_preview_repair",
+            "An earlier V2 import wrote this thread's timeline items with another mapping; they were rewritten with this build's before hydration.",
+            yield* encodeJson(
+              moves.map((row) => ({ messageId: row.message_id, ordinal: row.position_ordinal })),
+            ),
+          );
         }),
-      );
-      yield* recordForkImportWarning(
-        threadId,
-        "shell_preview_repair",
-        "An earlier V2 import wrote this thread's timeline items with another mapping; they were rewritten with this build's before hydration.",
-        yield* encodeJson(
-          moves.map((row) => ({ messageId: row.message_id, ordinal: row.position_ordinal })),
-        ),
       );
       return true;
     });
@@ -173,15 +190,19 @@ export const makeForkShellPreviewRepair = Effect.fn("makeForkShellPreviewRepair"
     const byThread = Map.groupBy(rows, (row) => row.thread_id);
     let repairedThreadCount = 0;
     for (const [threadId, threadRows] of byThread) {
-      // One thread's failure leaves it to fail hydration as before, recorded, and retried next start.
+      // One thread's failure, including a defect from upstream's mapping of a bad
+      // V1 row, rolls back only its writes and leaves it to fail hydration as
+      // before, recorded, and retried next start.
       const repaired = yield* repairThread(threadId, threadRows).pipe(
-        Effect.catch((cause) =>
-          recordForkImportWarning(
-            threadId,
-            "shell_preview_repair_failed",
-            "Timeline items an earlier V2 import wrote could not be rewritten; hydration may fail for this thread.",
-            String(cause),
-          ).pipe(Effect.as(false)),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            recordForkImportWarning(
+              threadId,
+              "shell_preview_repair_failed",
+              "Timeline items an earlier V2 import wrote could not be rewritten; hydration may fail for this thread.",
+              String(Cause.squash(cause)),
+            ).pipe(Effect.ignore({ log: true }), Effect.as(false)),
         ),
       );
       if (repaired) repairedThreadCount += 1;

@@ -28,6 +28,7 @@ import { OrchestrationEffectWorkerV2 } from "../EffectWorker.ts";
 import { ProviderSessionManagerV2 } from "../ProviderSessionManager.ts";
 import { ProviderRuntimeRecoveryService } from "../ProviderRuntimeRecoveryService.ts";
 import { ProjectionStoreV2 } from "../ProjectionStore.ts";
+import { LegacyV1ThreadImporter } from "./LegacyV1ThreadImporter.ts";
 import { TestLayer, seedThreads, seedUnpatchedImport, stamp } from "./ForkDataCarryOver.testkit.ts";
 
 const summary = {
@@ -219,3 +220,114 @@ it.effect("a background import records the pass, so the second start skips the c
     assert.lengthOf(yield* sql`SELECT 1 FROM fork_v1_import_warnings`, 0);
   }).pipe(Effect.provide(databaseLayer), Effect.scoped),
 );
+
+/**
+ * `root` and `second` need the shell repair; `bad`'s pending preview is either
+ * malformed JSON or stale with its rewrite rejected by the database. With a
+ * damage, an unpatched build imports the shells first, as in
+ * ForkShellPreviewRepair.test.ts; without one, this is the fresh import.
+ */
+const seedDamagedPreview = (damage: "malformed" | "write" | null) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seedThreads([
+      ["root", null],
+      ["bad", null],
+      ["second", null],
+    ]);
+    for (const [id, thread, role, source] of [
+      ["1-u", "root", "user", null],
+      ["2-r", "root", "reasoning", null],
+      ["3-a", "root", "assistant", "provider"],
+      ["4-u", "root", "user", null],
+      ["5-r", "root", "reasoning", null],
+      ["6-a", "root", "assistant", null],
+      ["b1-u", "bad", "user", null],
+      ["b2-r", "bad", "reasoning", null],
+      ["b3-a", "bad", "assistant", null],
+      ["s1-u", "second", "user", null],
+      ["s2-r", "second", "reasoning", null],
+      ["s3-a", "second", "assistant", null],
+    ] as const) {
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id, thread_id, role, source, text, is_streaming, created_at, updated_at)
+        VALUES (${id}, ${thread}, ${damage !== null && role === "reasoning" ? "system" : role},
+          ${source}, ${id}, 0, ${stamp}, ${stamp})`;
+    }
+    if (damage === null) return;
+    yield* (yield* LegacyV1ThreadImporter).reconcileShells;
+    yield* sql`UPDATE projection_thread_messages SET role = 'reasoning' WHERE role = 'system'`;
+    yield* sql`DELETE FROM fork_v1_import_state`;
+    if (damage === "malformed") {
+      yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = '{' WHERE message_id = 'b3-a'`;
+    } else {
+      yield* sql`UPDATE orchestration_v2_projection_messages
+        SET payload_json = json_set(payload_json, '$.text', 'stale') WHERE message_id = 'b3-a'`;
+      yield* sql`CREATE TRIGGER reject_bad_repair BEFORE INSERT ON orchestration_events
+        WHEN NEW.event_id LIKE 'migration:v1:%:b3-a:fork-shell-repair'
+        BEGIN SELECT RAISE(ABORT, 'rejected repair write'); END`;
+    }
+  });
+
+const parseJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+
+/** Every healthy thread's projected items, messages and positions, by identity. */
+const healthyThreads = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const payloads = (rows: ReadonlyArray<{ id: string; payload_json: string }>) =>
+    rows.map((row) => [row.id, parseJson(row.payload_json)]);
+  return {
+    items: payloads(
+      yield* sql<{ id: string; payload_json: string }>`SELECT turn_item_id AS id, payload_json
+        FROM orchestration_v2_projection_turn_items WHERE thread_id <> 'bad' ORDER BY id`,
+    ),
+    messages: payloads(
+      yield* sql<{ id: string; payload_json: string }>`SELECT message_id AS id, payload_json
+        FROM orchestration_v2_projection_messages WHERE thread_id <> 'bad' ORDER BY id`,
+    ),
+    positions:
+      yield* sql`SELECT thread_id, turn_item_id, ordinal FROM orchestration_v2_turn_item_positions
+      WHERE thread_id <> 'bad' ORDER BY thread_id, ordinal`,
+    imported: yield* sql`SELECT thread_id FROM orchestration_v2_legacy_imports
+      WHERE thread_id <> 'bad' AND (transcript_imported_at IS NULL OR last_error IS NOT NULL)`,
+  };
+});
+
+const startWithDamagedPreview = (damage: "malformed" | "write" | null) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const config = yield* ServerConfig;
+    const hydration = yield* Deferred.make<void>();
+    yield* seedDamagedPreview(damage);
+    yield* Effect.gen(function* () {
+      const startup = yield* ServerRuntimeStartup;
+      yield* startup.markHttpListening;
+      yield* startup.awaitCommandReady;
+      yield* Deferred.await(hydration);
+    }).pipe(Effect.provide(startupLayer(config, Effect.succeed(summary), hydration)));
+    return {
+      healthy: yield* healthyThreads,
+      failures: yield* sql<{ entity_id: string; original_value: string }>`
+        SELECT entity_id, original_value FROM fork_v1_import_warnings
+        WHERE field = 'shell_preview_repair_failed'`,
+    };
+  }).pipe(Effect.provide(databaseLayer), Effect.scoped);
+
+for (const damage of ["malformed", "write"] as const) {
+  it.effect(`real startup isolates a ${damage} preview repair to its own thread`, () =>
+    Effect.gen(function* () {
+      const expected = yield* startWithDamagedPreview(null);
+      const actual = yield* startWithDamagedPreview(damage);
+      assert.deepStrictEqual(actual.healthy.imported, []);
+      assert.deepStrictEqual(actual.healthy, expected.healthy);
+      assert.deepStrictEqual(
+        actual.failures.map((failure) => failure.entity_id),
+        ["bad"],
+      );
+      assert.include(
+        actual.failures[0]!.original_value,
+        damage === "malformed" ? "item b3-a is not valid JSON" : "EventSinkWriteError",
+      );
+    }),
+  );
+}
