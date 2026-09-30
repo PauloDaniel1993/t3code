@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
   increment,
@@ -17,9 +18,14 @@ import {
   orchestrationEffectQueueWait,
 } from "../observability/Metrics.ts";
 import { RunFinalizationService } from "./RunFinalizationService.ts";
-import { ResourceCleanupService } from "./ResourceCleanupService.ts";
+import { ResourceCleanupService, ResourceCleanupError } from "./ResourceCleanupService.ts";
+import {
+  AttachmentReferenceIndexUnavailable,
+  deferAttachmentCleanup,
+} from "./AttachmentReferenceIndex.ts";
 import {
   EffectOutboxV2,
+  EffectOutboxError,
   REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS,
   type OrchestrationEffectV2,
 } from "./EffectOutbox.ts";
@@ -41,6 +47,9 @@ export class OrchestrationEffectExecutionError extends Schema.TaggedError<Orches
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
+const isExecutionError = Schema.is(OrchestrationEffectExecutionError);
+const isCleanupError = Schema.is(ResourceCleanupError);
+const isIndexUnavailable = Schema.is(AttachmentReferenceIndexUnavailable);
 
 /**
  * Pure interrupt races with hard process teardown or a dead session produce
@@ -99,6 +108,7 @@ export const executorLayer: Layer.Layer<
   Effect.gen(function* () {
     const runFinalization = yield* RunFinalizationService;
     const resourceCleanup = yield* ResourceCleanupService;
+    const cleanupOutbox = yield* Effect.serviceOption(EffectOutboxV2);
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManagerV2;
     const providerTurnControl = yield* ProviderTurnControlServiceV2;
@@ -411,16 +421,43 @@ export const executorLayer: Layer.Layer<
               ),
             );
           case "attachment.cleanup":
-            return resourceCleanup.cleanupAttachments(effect.request.attachmentIds).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationEffectExecutionError({
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    cause,
-                  }),
-              ),
-            );
+            return resourceCleanup
+              .cleanupAttachments(effect.request.attachmentIds, effect.request.relativePaths)
+              .pipe(
+                Effect.flatMap((remaining) =>
+                  remaining === undefined
+                    ? Effect.void
+                    : Option.match(cleanupOutbox, {
+                        onNone: () =>
+                          Effect.fail(
+                            new EffectOutboxError({
+                              operation: "continue-attachment-cleanup",
+                              effectId: effect.id,
+                              cause: "Attachment cleanup continuation requires the effect outbox.",
+                            }),
+                          ),
+                        onSome: (outbox) =>
+                          outbox
+                            .enqueue([
+                              {
+                                id: `${effect.id}:next`,
+                                commandId: effect.commandId,
+                                threadId: effect.threadId,
+                                request: { type: "attachment.cleanup", ...remaining },
+                              },
+                            ])
+                            .pipe(Effect.andThen(outbox.notifyAvailable(1))),
+                      }),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
           case "thread-title.generate":
             return threadTitleRegeneration
               .execute({
@@ -488,6 +525,7 @@ export const layerWithOptions = (
     OrchestrationEffectWorkerV2,
     Effect.gen(function* () {
       const outbox = yield* EffectOutboxV2;
+      const attachmentSql = yield* Effect.serviceOption(SqlClient.SqlClient);
       const executor = yield* OrchestrationEffectExecutorV2;
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
@@ -651,6 +689,34 @@ export const layerWithOptions = (
           }
 
           const error = Cause.pretty(exit.cause);
+          const waitingForAttachmentIndex =
+            effect.request.type === "attachment.cleanup" &&
+            exit.cause.reasons.some(
+              (reason) =>
+                Cause.isFailReason(reason) &&
+                isExecutionError(reason.error) &&
+                isCleanupError(reason.error.cause) &&
+                isIndexUnavailable(reason.error.cause.cause),
+            );
+          if (waitingForAttachmentIndex) {
+            if (Option.isNone(attachmentSql))
+              return yield* new OrchestrationEffectWorkerError({
+                operation: "reschedule",
+                effectId: effect.id,
+                cause: "Attachment cleanup requires persistence.",
+              });
+            const rescheduled = yield* deferAttachmentCleanup(effect.id, workerId, error).pipe(
+              Effect.provideService(SqlClient.SqlClient, attachmentSql.value),
+              Effect.provideService(EffectOutboxV2, outbox),
+              Effect.onError((cause) => requeueClaim(effect, cause)),
+            );
+            if (!rescheduled && !(yield* wasCancelled(effect.id)))
+              return yield* new OrchestrationEffectWorkerError({
+                operation: "reschedule",
+                effectId: effect.id,
+              });
+            return true;
+          }
           const nonRetryable = isNonRetryableProviderTurnControlFailure(effect.request.type, error);
           yield* Effect.logWarning("Orchestration effect execution failed", {
             effectId: effect.id,
