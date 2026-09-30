@@ -452,12 +452,36 @@ export function buildBoundedThreadProjection(input: {
     }
     return reserve;
   })();
+  // fork(ticket-34): reserve only page-independent control state and charge each
+  // node and subagent record once, to the first (newest) row that brings it onto
+  // the page; the selection walk costs each row once. Reserving the whole
+  // candidate window's graph up front left an imported thread with ~200 task
+  // records no room for rows, so its first page held a single row.
+  const pageIndependentControl = retainProviderHistoryGraph(controlProjection, []);
   const controlBytes = bytesOfJson({
-    ...controlProjection,
+    ...pageIndependentControl,
     messages: messagesForBoundedProjection(controlProjection, []),
     turnItems: [],
     visibleTurnItems: [],
   });
+  const pageIndependentNodeIds = new Set<string>([
+    ...pageIndependentControl.nodes.map((node) => String(node.id)),
+    ...pageIndependentControl.subagents.map((subagent) => String(subagent.id)),
+  ]);
+  const onPageGraphBytes = new Map<string, number>();
+  for (const record of [...controlProjection.nodes, ...controlProjection.subagents]) {
+    const id = String(record.id);
+    if (pageIndependentNodeIds.has(id)) continue;
+    onPageGraphBytes.set(id, (onPageGraphBytes.get(id) ?? 0) + bytesOfJson(record));
+  }
+  const chargedNodeIds = new Set<string>();
+  const rowWithGraphBytes = (row: OrchestrationV2ProjectedTurnItem) => {
+    const bytes = projectedRowBoundedSnapshotEncodedBytes(row, threadId);
+    const nodeId = row.item.nodeId;
+    if (nodeId === null || chargedNodeIds.has(nodeId)) return bytes;
+    chargedNodeIds.add(nodeId);
+    return bytes + (onPageGraphBytes.get(nodeId) ?? 0);
+  };
   const windowBudget = Math.max(
     0,
     policy.maxEncodedBytes - dependencyReserve - controlBytes - 1_024,
@@ -473,7 +497,7 @@ export function buildBoundedThreadProjection(input: {
     items: controlProjection.visibleTurnItems,
     snapshotSequence: input.snapshotSequence,
     policy: windowPolicy,
-    rowEncodedBytes: (row) => projectedRowBoundedSnapshotEncodedBytes(row, threadId),
+    rowEncodedBytes: rowWithGraphBytes,
   });
   const assemble = (visibleTurnItems: OrchestrationV2ProjectedTurnItem[]) => {
     const windowTurnItems = localTurnItemsForVisibleWindow(controlProjection, visibleTurnItems);
