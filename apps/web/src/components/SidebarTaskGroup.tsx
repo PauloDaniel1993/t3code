@@ -6,7 +6,6 @@ import {
   resolveSidebarTaskState,
   sidebarTaskWasReturned,
   sidebarTaskCountLabel,
-  sidebarHasUnreadTaskResults,
 } from "@t3tools/client-runtime/state/sidebar-task-subthreads";
 import * as DateTime from "effect/DateTime";
 import type { OrchestrationV2Subagent, ScopedThreadRef } from "@t3tools/contracts";
@@ -36,6 +35,11 @@ type GroupProps = {
   nativeThreads?: ReadonlyArray<EnvironmentThreadShell>;
 };
 
+function taskTimestamp(value: string | null | undefined): number {
+  const timestamp = Date.parse(value ?? "");
+  return Number.isFinite(timestamp) ? timestamp : -Infinity;
+}
+
 function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: GroupProps) {
   const parentRef = useMemo(
     () => scopeThreadRef(parent.environmentId, parent.id),
@@ -48,11 +52,29 @@ function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: Gr
   const override = useUiStateStore((state) => state.sidebarTaskGroupsExpandedById[key]);
   const setExpanded = useUiStateStore((state) => state.setSidebarTaskGroupExpanded);
   const visitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[key]);
-  const delivered = Date.parse(parent.source.latestTaskDeliveredAt ?? "");
-  const unread =
-    sidebarHasUnreadTaskResults(subagents, visitedAt) ||
-    (Number.isFinite(delivered) &&
-      (!Number.isFinite(Date.parse(visitedAt ?? "")) || delivered > Date.parse(visitedAt!)));
+  // Revisit the remembered roster only when it changes, never on visit/clock renders.
+  const knownDeliveredAt = useMemo(
+    () =>
+      subagents.reduce(
+        (latest, task) =>
+          task.origin === "app_owned"
+            ? Math.max(latest, taskTimestamp(task.completionDelivery?.deliveredAt))
+            : latest,
+        -Infinity,
+      ),
+    [subagents],
+  );
+  const delivered = Math.max(knownDeliveredAt, taskTimestamp(parent.source.latestTaskDeliveredAt));
+  // Read the same server visit watermark as the parent row, alongside local
+  // navigation. Imported history predating shell import starts seen.
+  const seen = Math.max(
+    taskTimestamp(visitedAt),
+    taskTimestamp(parent.lastVisitedAt),
+    taskTimestamp(
+      parent.source.historyOrigin === "v1_import" ? parent.source.legacyImportedAt : undefined,
+    ),
+  );
+  const unread = Number.isFinite(delivered) && delivered > seen;
   const defaultOpen =
     unread ||
     tasks.some((thread) => {

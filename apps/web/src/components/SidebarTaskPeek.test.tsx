@@ -7,8 +7,10 @@ import {
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
   type ScopedThreadRef,
+  type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { makeThreadFixture } from "../test-fixtures";
@@ -103,6 +105,47 @@ it("hydrates only after hover dwell, skips flicked rows and retains detail throu
   act(() => clock.advance(1));
   expect(subscriptions.closed).toHaveBeenCalledTimes(2);
 });
+
+for (const imported of [false, true]) {
+  it.each([
+    ["user", "you"],
+    ["agent", "✦ agent"],
+    ["system", "system"],
+  ] as const)(
+    `labels ${imported ? "imported" : "live"} tasks by their %s author`,
+    (createdBy, label) => {
+      const now = DateTime.makeUnsafe("2026-09-29T00:00:00Z");
+      const thread = task("authored");
+      const record: OrchestrationV2Subagent = {
+        id: NodeId.make("authored-task"),
+        threadId: parentId,
+        runId: imported ? null : RunId.make("live-parent-run"),
+        parentNodeId: NodeId.make("root"),
+        origin: "app_owned",
+        createdBy,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerThreadId: null,
+        childThreadId: thread.id,
+        nativeTaskRef: null,
+        prompt: "Work",
+        title: "Authored task",
+        model: null,
+        status: "completed",
+        result: "Done",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        completionDelivery: { state: imported ? "disposed" : "pending", observedByRunId: null },
+      };
+      act(() => openSidebarTaskPeek({ anchor, thread, task: record }));
+      act(() => clock.advance(260));
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+        `${label}prompt-only context`,
+      );
+    },
+  );
+}
 
 it("explains the native roster as all active agents plus the newest 12 inactive agents", () => {
   const now = DateTime.makeUnsafe("2026-09-29T00:00:00Z");

@@ -295,7 +295,9 @@ export type ChatWidth = typeof ChatWidth.Type;
 export const ClientSettingsSchema = Schema.Struct({
   // Ticket 32: sidebar task subthreads and delivery state.
   /** On by default; disabling hides delegated threads from the sidebar. */
-  threadTasksEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  sidebarTaskSubthreadsEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
   ),
@@ -1716,7 +1718,7 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
   // Ticket 32: sidebar task subthreads and delivery state.
-  threadTasksEnabled: Schema.optionalKey(Schema.Boolean),
+  sidebarTaskSubthreadsEnabled: Schema.optionalKey(Schema.Boolean),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   diffColorScheme: Schema.optionalKey(DiffColorScheme),

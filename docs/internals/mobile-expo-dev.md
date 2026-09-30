@@ -182,14 +182,13 @@ concluding anything.
 
 ## Feature flags hide things
 
-Some surfaces are behind device-local beta preferences in Settings → Beta (for
-example **Thread List v2** and **Thread Tasks**), and they default to **off**. An
-invisible feature is far more often a flag than a bug. Check the toggles before
-debugging the code.
+Web task subthreads default to **on**, under Settings → General → Organization.
+Check the preference before debugging missing task threads. The V2 key is
+`sidebarTaskSubthreadsEnabled`; the old V1 grouping preference is ignored.
 
-Web-side flags are not shared: `threadTasksEnabled` on web lives in browser
-`localStorage` under `t3code:client-settings:v1`, which does not exist in React
-Native. Mobile has its own preference store.
+Web-side preferences live in browser `localStorage` under
+`t3code:client-settings:v1`, which does not exist in React Native. Mobile has its
+own preference store and does not read the web task-subthreads preference.
 
 ## Related
 

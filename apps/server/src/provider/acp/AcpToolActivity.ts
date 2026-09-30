@@ -37,10 +37,19 @@ export const makeAcpToolActivity = Effect.fnUntraced(function* <
   ) {
     // Agent-terminal output can arrive while deferred finalization clears the turn.
     if (context.finalized) return false;
-    if (progressForTurn(context).offer(key, projection, status, yield* Clock.currentTimeMillis))
-      return false;
-    yield* Queue.offer(wake, undefined);
-    return true;
+    const ready = progressForTurn(context).offer(
+      key,
+      projection,
+      status,
+      yield* Clock.currentTimeMillis,
+    );
+    if (ready.length === 0) {
+      yield* Queue.offer(wake, undefined);
+      return true;
+    }
+    // A released held update precedes this one; the caller delivers this one.
+    for (const held of ready.slice(0, -1)) yield* held;
+    return false;
   });
   const flush = Effect.fnUntraced(function* (context: A, all = false) {
     for (const projection of progressForTurn(context).flush(yield* Clock.currentTimeMillis, all)) {

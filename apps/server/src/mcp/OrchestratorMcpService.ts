@@ -1070,17 +1070,16 @@ const make = Effect.gen(function* () {
         messages: [...childControls.messages, ...resultRecords.messages],
         turnItems: resultRecords.turnItems,
       };
-      const workState = task.result !== null ? "result_available" : progress.state;
-      const status =
-        task.result !== null
-          ? taskStatusForRun(
-              task.status === "completed" ||
-                task.status === "failed" ||
-                task.status === "cancelled" ||
-                task.status === "interrupted"
-                ? { status: task.status }
-                : childRun,
-            )
+      const settled =
+        task.status === "completed" ||
+        task.status === "failed" ||
+        task.status === "cancelled" ||
+        task.status === "interrupted";
+      const workState = settled || task.result !== null ? "result_available" : progress.state;
+      const status = settled
+        ? taskStatusForRun({ status: task.status })
+        : task.result !== null
+          ? taskStatusForRun(childRun)
           : workState === "result_available"
             ? taskStatusForRun(progress.resultRun ?? childRun)
             : taskStatusForRun(childRun) === "queued"
@@ -1513,7 +1512,8 @@ const make = Effect.gen(function* () {
           (task) => task.id === input.taskId && task.origin === "app_owned",
         );
         const disposeCompletionDelivery =
-          parentTask?.completionDelivery?.state === "disposed"
+          parentTask?.completionDelivery?.state === "disposed" ||
+          parentTask?.completionDelivery?.state === "delivered"
             ? Effect.void
             : threadManagement
                 .dispatch({

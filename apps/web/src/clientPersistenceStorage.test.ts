@@ -38,6 +38,22 @@ afterEach(() => {
 });
 
 describe("clientPersistenceStorage", () => {
+  it("leaves V2 task subthreads visible when saved V1 settings disabled grouping", async () => {
+    const testWindow = getTestWindow();
+    testWindow.localStorage.setItem(
+      "t3code:client-settings:v1",
+      JSON.stringify({ threadTasksEnabled: false, timestampFormat: "24-hour" }),
+    );
+    const { readBrowserClientSettings, writeBrowserClientSettings } =
+      await import("./clientPersistenceStorage");
+    const settings = readBrowserClientSettings()!;
+    expect(settings.sidebarTaskSubthreadsEnabled).toBe(true);
+    expect(settings.timestampFormat).toBe("24-hour");
+    expect(settings).not.toHaveProperty("threadTasksEnabled");
+    writeBrowserClientSettings({ ...settings, sidebarTaskSubthreadsEnabled: false });
+    expect(readBrowserClientSettings()?.sidebarTaskSubthreadsEnabled).toBe(false);
+  });
+
   it("persists client settings in browser storage", async () => {
     getTestWindow();
     const { readBrowserClientSettings, writeBrowserClientSettings } =

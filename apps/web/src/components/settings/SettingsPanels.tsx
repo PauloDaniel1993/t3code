@@ -2234,12 +2234,14 @@ export function GeneralSettingsPanel() {
           {...searchableSetting("task-subthreads")}
           description="Show delegated tasks beneath their parent threads in the sidebar."
           resetAction={
-            settings.threadTasksEnabled !== DEFAULT_UNIFIED_SETTINGS.threadTasksEnabled ? (
+            settings.sidebarTaskSubthreadsEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.sidebarTaskSubthreadsEnabled ? (
               <SettingResetButton
                 label="task subthreads"
                 onClick={() =>
                   updateSettings({
-                    threadTasksEnabled: DEFAULT_UNIFIED_SETTINGS.threadTasksEnabled,
+                    sidebarTaskSubthreadsEnabled:
+                      DEFAULT_UNIFIED_SETTINGS.sidebarTaskSubthreadsEnabled,
                   })
                 }
               />
@@ -2247,9 +2249,9 @@ export function GeneralSettingsPanel() {
           }
           control={
             <Switch
-              checked={settings.threadTasksEnabled}
+              checked={settings.sidebarTaskSubthreadsEnabled}
               onCheckedChange={(checked) =>
-                updateSettings({ threadTasksEnabled: Boolean(checked) })
+                updateSettings({ sidebarTaskSubthreadsEnabled: Boolean(checked) })
               }
               aria-label="Task subthreads"
             />

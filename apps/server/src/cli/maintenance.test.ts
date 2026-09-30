@@ -13,7 +13,7 @@ import { Command } from "effect/unstable/cli";
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 
 import { maintenanceCommand } from "./maintenance.ts";
-import { createMaintenanceFixture } from "../persistence/DatabaseMaintenanceFixture.test-support.ts";
+import { createMaintenanceFixture } from "../orchestration-v2/legacy/DatabaseMaintenanceFixture.test-support.ts";
 import { compactDatabase } from "../persistence/DatabasePhysicalMaintenance.ts";
 import { readMaintenanceJournal } from "../persistence/DatabaseMaintenanceJournal.ts";
 

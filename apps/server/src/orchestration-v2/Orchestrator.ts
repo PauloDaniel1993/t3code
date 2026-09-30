@@ -9130,8 +9130,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const plan = yield* dispatchOnce(command).pipe(
       // Ticket 32: add child plans to the parent's single durable receipt.
-      Effect.flatMap(withTaskThreadLifecycle(command, projectionStore, idAllocator, dispatchOnce)),
-      mapDispatchError(command),
+      Effect.flatMap((planned) =>
+        withTaskThreadLifecycle(
+          command,
+          projectionStore,
+          idAllocator,
+          dispatchOnce,
+        )(planned).pipe(mapDispatchError(command)),
+      ),
       Effect.flatMap((planned) =>
         // A Stop can race with terminal provider events. Its empty plan is an
         // accepted idempotent outcome; every other command must still mutate.

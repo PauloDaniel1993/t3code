@@ -2833,6 +2833,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 "codex",
                 "cursor",
                 "grok",
+                "kimi", // Ticket 29: Kimi is a built-in provider, disabled by default.
                 "opencode",
                 "pi",
               ]);

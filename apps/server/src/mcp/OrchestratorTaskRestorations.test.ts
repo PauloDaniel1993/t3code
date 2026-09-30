@@ -281,6 +281,136 @@ function listFixture(
 }
 
 describe("task restorations on orchestration v2", () => {
+  for (const status of ["completed", "cancelled", "failed"] as const) {
+    for (const result of [null, "Imported task result."]) {
+      it.effect(
+        `reads imported ${status} tasks ${result === null ? "without" : "with"} results as settled`,
+        () => {
+          const imported = task(`imported-${status}-${result === null ? "empty" : "result"}`, {
+            runId: null,
+            status,
+            result,
+            completionDelivery: { state: "disposed", observedByRunId: null },
+          });
+          const records = recordsFor([imported]);
+          const childId = imported.childThreadId!;
+          const child = records.get(childId)!;
+          records.set(childId, {
+            ...child,
+            thread: { ...child.thread, historyOrigin: "v1_import" },
+            runs: [],
+          });
+          return Effect.gen(function* () {
+            const service = yield* OrchestratorMcpService;
+            const expected = status === "completed" ? "finished" : status;
+            const listed = yield* service.listTasks(scope, {});
+            expect(listed.tasks).toMatchObject([{ taskId: imported.id, status: expected }]);
+            expect((yield* service.listTasks(scope, { status: expected })).tasks).toHaveLength(1);
+            expect((yield* service.listTasks(scope, { status: "running" })).tasks).toEqual([]);
+            expect(yield* service.taskStatus(scope, imported.id)).toMatchObject({
+              status,
+              workState: "result_available",
+              summary: result,
+              childRunId: null,
+            });
+            expect(yield* service.cancelTask(scope, { taskId: imported.id })).toEqual({
+              taskId: imported.id,
+              status,
+            });
+            expect(records.get(parentId)!.subagents).toEqual([imported]);
+          }).pipe(Effect.provide(makeLayer(records)));
+        },
+      );
+    }
+  }
+
+  it.effect("cancels a finished task's pending hand-back without interrupting a follow-up", () => {
+    const finished = task("finished-pending", { result: null });
+    const records = recordsFor([finished]);
+    const childId = finished.childThreadId!;
+    records.set(childId, {
+      ...records.get(childId)!,
+      runs: [run(childId, "completed"), run(childId, "running", 2)],
+    });
+    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService;
+      expect(yield* service.cancelTask(scope, { taskId: finished.id })).toEqual({
+        taskId: finished.id,
+        status: "completed",
+      });
+      expect(commands).toMatchObject([
+        {
+          type: "delegated_task.completion-delivery.dispose",
+          parentThreadId: parentId,
+          taskId: finished.id,
+        },
+      ]);
+      expect(commands).toHaveLength(1);
+    }).pipe(
+      Effect.provide(
+        makeLayer(records, {
+          dispatch: (command) =>
+            Effect.sync(() => {
+              commands.push(command);
+              return { sequence: 1, storedEvents: [] };
+            }),
+        }),
+      ),
+    );
+  });
+
+  it.effect("leaves a finished task's delivered hand-back and later child run alone", () => {
+    const finished = task("finished-delivered", {
+      result: null,
+      completionDelivery: {
+        state: "delivered",
+        observedByRunId: null,
+        deliveredAt: DateTime.formatIso(now),
+      },
+    });
+    const records = recordsFor([finished]);
+    const childId = finished.childThreadId!;
+    records.set(childId, {
+      ...records.get(childId)!,
+      runs: [run(childId, "completed"), run(childId, "running", 2)],
+    });
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService;
+      expect(yield* service.cancelTask(scope, { taskId: finished.id })).toEqual({
+        taskId: finished.id,
+        status: "completed",
+      });
+      expect(records.get(parentId)!.subagents).toEqual([finished]);
+    }).pipe(Effect.provide(makeLayer(records)));
+  });
+
+  it.effect("cancels an already settled task without changing delivered completion state", () => {
+    const imported = task("imported-delivered", {
+      runId: null,
+      status: "cancelled",
+      result: null,
+      completionDelivery: {
+        state: "delivered",
+        observedByRunId: null,
+        deliveredAt: DateTime.formatIso(now),
+      },
+    });
+    const records = recordsFor([imported]);
+    const childId = imported.childThreadId!;
+    records.set(childId, { ...records.get(childId)!, runs: [] });
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService;
+      expect(yield* service.cancelTask(scope, { taskId: imported.id })).toEqual({
+        taskId: imported.id,
+        status: "cancelled",
+      });
+      expect(records.get(parentId)!.subagents[0]!.completionDelivery).toEqual(
+        imported.completionDelivery,
+      );
+    }).pipe(Effect.provide(makeLayer(records)));
+  });
+
   it.effect(
     "recovers direct tasks across turns and finished results without acknowledging delivery",
     () => {
@@ -1118,7 +1248,11 @@ for (const driver of ["codex", "claudeCode"] as const) {
 it.effect(
   "accepts exact fork calls through MCP while retaining native delegation and cancellation",
   () => {
-    const child = task("created", { result: null, status: "running" });
+    const child = task("created", {
+      result: null,
+      status: "running",
+      title: "x".repeat(512),
+    });
     const records = recordsFor([child]);
     records.set(parentId, { ...records.get(parentId)!, runs: [run(parentId, "running")] });
     const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
@@ -1181,7 +1315,7 @@ it.effect(
         models.structuredContent,
       );
       const input = {
-        title: "Implement feature",
+        title: "x".repeat(512),
         prompt: "Implement the feature.",
         context: "none",
         model: { instanceId, model: "custom-model" },

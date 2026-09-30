@@ -6,7 +6,7 @@ import * as NodeSqlite from "node:sqlite";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-import { runMigrations } from "./Migrations.ts";
+import { runMigrations } from "../../persistence/Migrations.ts";
 
 export async function createMaintenanceFixture() {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-maintenance-"));

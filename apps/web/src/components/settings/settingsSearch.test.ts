@@ -45,6 +45,12 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
 ];
 
 describe("searchSettings", () => {
+  it.each(["kimi", "KIMI"])("finds Kimi provider settings and update checks for %s", (query) => {
+    expect(searchSettings(query).map((item) => item.id)).toEqual(
+      expect.arrayContaining(["providers", "provider-update-checks"]),
+    );
+  });
+
   it.each(["send shortcut", "multiline", "new line"])("finds Send shortcut for %s", (query) => {
     expect(searchSettings(query).map((item) => item.id)).toContain("send-shortcut");
   });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
+import { OrchestratorMcpDelegateTaskInput } from "./orchestratorMcp.ts";
 
 import {
   ForkTaskCancelInput,
@@ -39,7 +40,7 @@ describe("delegated task list input", () => {
         reasoning: "xhigh",
       }),
     ).toMatchObject({ reasoning: "xhigh" });
-    expect(() => create({ title: "x".repeat(121), prompt: "Review", context: "none" })).toThrow();
+    expect(() => create({ title: "x".repeat(513), prompt: "Review", context: "none" })).toThrow();
     expect(() =>
       create({ title: "Review", prompt: "x".repeat(100_001), context: "none" }),
     ).toThrow();
@@ -49,6 +50,27 @@ describe("delegated task list input", () => {
     expect(() => cancel({})).toThrow();
     expect(() => decode({ status: "completed" })).toThrow();
   });
+});
+
+it.each([121, 512])("allows a %s-character task title in both delegation tools", (length) => {
+  const title = "x".repeat(length);
+  expect(
+    Schema.decodeUnknownSync(ForkTaskCreateInput)({ title, prompt: "Review", context: "none" })
+      .title,
+  ).toBe(title);
+  expect(
+    Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput)({ title, task: "Review" }).title,
+  ).toBe(title);
+});
+
+it("rejects task titles over 512 characters in both delegation tools", () => {
+  const title = "x".repeat(513);
+  expect(() =>
+    Schema.decodeUnknownSync(ForkTaskCreateInput)({ title, prompt: "Review", context: "none" }),
+  ).toThrow();
+  expect(() =>
+    Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput)({ title, task: "Review" }),
+  ).toThrow();
 });
 
 it("represents an unreadable task explicitly in list results", () => {

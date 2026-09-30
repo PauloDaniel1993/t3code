@@ -421,6 +421,99 @@ it("cold collapsed parents show a shell delivery dot without loading detail, and
   );
   expect(hooks.projection).not.toHaveBeenCalled();
 });
+describe.each(["cold shell", "remembered roster"] as const)(
+  "task unread state from %s",
+  (source) => {
+    const importedAt = "2026-09-29T00:10:00.000Z";
+    const deliveredBeforeImport = "2026-09-29T00:08:00.000Z";
+    const deliveredAfterImport = "2026-09-29T00:11:00.000Z";
+
+    function view(deliveredAt: string, lastVisitedAt: string | null = null, taskCount = 1) {
+      const children = Array.from({ length: taskCount }, (_, index) => ({
+        ...task(`imported-${index}`),
+        latestRun: null,
+      }));
+      if (source === "remembered roster") {
+        sidebarTaskPresentationStore.getState().remember("local:parent", {
+          runs: [],
+          subagents: children.map((child) => ({
+            ...completedTaskRecord(child),
+            runId: null,
+            completionDelivery: { state: "delivered", observedByRunId: null, deliveredAt },
+          })),
+        });
+      }
+      return (
+        <SidebarTaskDisclosure
+          parent={{
+            ...parent,
+            lastVisitedAt,
+            source: {
+              ...parent.source,
+              historyOrigin: "v1_import",
+              legacyImportedAt: importedAt,
+              ...(source === "cold shell" ? { latestTaskDeliveredAt: deliveredAt } : {}),
+            },
+          }}
+          tasks={children}
+        />
+      );
+    }
+
+    const unreadDots = () =>
+      renderer!.root.findAllByProps({ role: "img", "aria-label": "New task results" });
+
+    it("shows no dots for 501 historical imported deliveries in a fresh browser profile", () => {
+      act(() => {
+        renderer = create(view(deliveredBeforeImport, null, 501));
+      });
+      expect(useUiStateStore.getState().threadLastVisitedAtById).toEqual({});
+      expect(unreadDots()).toHaveLength(0);
+      expect(renderer!.root.findByType("button").props["aria-expanded"]).toBe(false);
+      expect(hooks.projection).not.toHaveBeenCalled();
+    });
+
+    it("shows a dot when a new result is delivered after import", () => {
+      act(() => {
+        renderer = create(view(deliveredBeforeImport));
+      });
+      expect(unreadDots()).toHaveLength(0);
+      act(() => renderer!.update(view(deliveredAfterImport)));
+      expect(unreadDots()).toHaveLength(1);
+      expect(renderer!.root.findByType("button").props["aria-expanded"]).toBe(true);
+    });
+
+    it("clears the dot when only the server records a parent visit", () => {
+      act(() => {
+        renderer = create(view(deliveredAfterImport));
+      });
+      expect(unreadDots()).toHaveLength(1);
+      act(() => renderer!.update(view(deliveredAfterImport, "2026-09-29T00:12:00.000Z")));
+      expect(unreadDots()).toHaveLength(0);
+      expect(useUiStateStore.getState().threadLastVisitedAtById).toEqual({});
+      // A stale browser visit cannot override the later visit from another device.
+      act(() =>
+        useUiStateStore.getState().markThreadVisited("local:parent", deliveredBeforeImport),
+      );
+      expect(unreadDots()).toHaveLength(0);
+    });
+
+    it("clears the dot when only the browser records a parent visit", () => {
+      act(() => {
+        renderer = create(view(deliveredAfterImport));
+      });
+      expect(unreadDots()).toHaveLength(1);
+      act(() =>
+        useUiStateStore.getState().markThreadVisited("local:parent", "2026-09-29T00:12:00.000Z"),
+      );
+      expect(unreadDots()).toHaveLength(0);
+      // A stale server visit cannot override the browser's later navigation.
+      act(() => renderer!.update(view(deliveredAfterImport, deliveredBeforeImport)));
+      expect(unreadDots()).toHaveLength(0);
+    });
+  },
+);
+
 it("collapsed native counts include new child shells absent from the remembered roster", () => {
   const known = { ...task("known"), latestRun: null };
   const record = { ...completedTaskRecord(known), origin: "provider_native" as const };

@@ -10,7 +10,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { OrchestratorMcpTaskCancelInput } from "./orchestratorMcp.ts";
+import { OrchestratorMcpTaskCancelInput, TASK_TITLE_MAX_LENGTH } from "./orchestratorMcp.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const ForkTaskStatus = Schema.Literals([
@@ -24,7 +24,7 @@ export type ForkTaskStatus = typeof ForkTaskStatus.Type;
 
 // Keep the fork's task-tool inputs, independently of V2's native delegation API.
 export const ForkTaskCreateInput = Schema.Struct({
-  title: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(120)),
+  title: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(TASK_TITLE_MAX_LENGTH)),
   prompt: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(100_000)),
   context: Schema.Literals(["full-thread", "selected-messages", "none"]).annotate({
     description: "Only 'none' is supported on V2; conversation slices return an explicit error.",

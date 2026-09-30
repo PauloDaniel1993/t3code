@@ -3,6 +3,7 @@ import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/thre
 import {
   isProviderNativeSubagentThread,
   CommandId,
+  TASK_TITLE_MAX_LENGTH,
   type MessageId,
   type ModelSelection,
   type OrchestrationV2AppThread,
@@ -15,7 +16,7 @@ import { getComposerPromptLengthValidationMessage } from "./chat/composerSubmiss
 // The parent must repeat this text in tool arguments. Leave room in its output for the wrapper.
 export const TASK_PROMPT_MAX_LENGTH = 12_000;
 export const TASK_CONTEXT_SUMMARY_MAX_LENGTH = 4_000;
-export const TASK_TITLE_MAX_LENGTH = 512;
+export { TASK_TITLE_MAX_LENGTH };
 
 export interface NewThreadTaskDraft {
   readonly title: string;
@@ -33,7 +34,7 @@ export function validateNewThreadTaskDraft(draft: NewThreadTaskDraft): string | 
     return "The task prompt exceeds 12,000 characters. The parent must repeat it in a tool call; put longer context in files the task can read.";
   }
   if (draft.title.trim().length > TASK_TITLE_MAX_LENGTH) {
-    return "The task title must be at most 512 characters.";
+    return `The task title must be at most ${TASK_TITLE_MAX_LENGTH} characters.`;
   }
   return null;
 }

@@ -5,7 +5,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeSqlite from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 
-import { createMaintenanceFixture } from "./DatabaseMaintenanceFixture.test-support.ts";
+import { createMaintenanceFixture } from "../orchestration-v2/legacy/DatabaseMaintenanceFixture.test-support.ts";
 import {
   maintenanceJournalPath,
   maintenanceIncompleteSnapshotPath,
