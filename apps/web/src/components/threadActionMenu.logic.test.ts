@@ -35,6 +35,7 @@ function allIds(state: ThreadActionMenuState): string[] {
 }
 
 describe("buildThreadActionMenuItems", () => {
+  // Ticket 32: sidebar task subthreads and delivery state.
   it("limits tasks to safe actions, with stale pin cleanup only on capable servers", () => {
     const task = { ...baseState, isTask: true, branch: "main", isPinned: true };
     expect(allIds(task)).toEqual(["unpin", "rename", "copy-thread-id", "delete"]);

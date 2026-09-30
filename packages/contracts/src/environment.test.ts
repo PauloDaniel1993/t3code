@@ -14,6 +14,7 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  // Ticket 32: sidebar task subthreads and delivery state.
   it("keeps task nesting off for a server that does not advertise task support", () => {
     expect(decodeDescriptor(descriptor).capabilities.threadTasks).toBeUndefined();
     expect(

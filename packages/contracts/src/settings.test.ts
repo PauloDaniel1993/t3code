@@ -20,6 +20,7 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+// Ticket 32: sidebar task subthreads and delivery state.
 describe("task sidebar preference", () => {
   it("defaults on and round-trips an explicit local opt-out", () => {
     expect(decodeClientSettings({}).threadTasksEnabled).toBe(true);

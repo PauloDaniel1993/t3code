@@ -8,6 +8,7 @@
       "default": "./src/state/subagentRetention.ts"
     },
     "./state/sidebar-task-subthreads": {
+      "//": "Ticket 32: fork-owned sidebar task exports.",
       "types": "./src/state/sidebarTaskSubthreads.ts",
       "default": "./src/state/sidebarTaskSubthreads.ts"
     },

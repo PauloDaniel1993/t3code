@@ -89,6 +89,7 @@ export const ServerSelfUpdateCapability = Schema.Literals([
 export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  // Ticket 32: sidebar task subthreads and delivery state.
   /** Server supplies orchestration-v2 delegated task lineage and lifecycle records. */
   threadTasks: Schema.optionalKey(Schema.Boolean),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),

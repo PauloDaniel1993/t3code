@@ -20,6 +20,7 @@ import {
 
 function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
+    // Ticket 32: sidebar task subthreads and delivery state.
     sidebarTaskGroupsExpandedById: {},
     sidebarTaskGroupsExpandedAtById: {},
     threadVisitEditsAtById: {},
@@ -197,6 +198,7 @@ describe("parsePersistedState", () => {
     });
 
     expect(parsed).toEqual({
+      // Ticket 32: sidebar task subthreads and delivery state.
       sidebarTaskGroupsExpandedById: {},
       sidebarTaskGroupsExpandedAtById: {},
       threadVisitEditsAtById: {},
@@ -323,6 +325,7 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(persisted).toEqual({
+      // Ticket 32: sidebar task subthreads and delivery state.
       sidebarTaskGroupsExpandedById: {},
       sidebarTaskGroupsExpandedAtById: {},
       threadVisitEditsAtById: {},

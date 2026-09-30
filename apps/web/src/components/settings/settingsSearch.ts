@@ -280,6 +280,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
     searchTerms: ["combine matching repositories environments sidebar"],
   },
+  // Ticket 32: sidebar task subthreads and delivery state.
   {
     id: "task-subthreads",
     title: "Task subthreads",

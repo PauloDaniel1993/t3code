@@ -533,6 +533,7 @@ describe("settings sidebar scope", () => {
     expect(isSettingsOverviewVisible({ project: "project", checkout: "checkout" })).toBe(true);
   });
 });
+// Ticket 32: sidebar task subthreads and delivery state.
 
 it.each(["task subthreads", "delegated tasks", "nesting"])(
   "finds the device-local task setting for %s",

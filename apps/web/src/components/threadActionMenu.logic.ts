@@ -31,6 +31,7 @@ export type ThreadActionMenuId =
   | "delete";
 
 export interface ThreadActionMenuState {
+  // Ticket 32: sidebar task subthreads and delivery state.
   readonly isTask?: boolean;
   readonly branch: string | null;
   /**
@@ -70,6 +71,7 @@ export interface ThreadActionMenuState {
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,
 ): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> {
+  // Ticket 32: sidebar task subthreads and delivery state.
   if (state.isTask)
     return [
       ...(state.isPinned && state.supports.pinning

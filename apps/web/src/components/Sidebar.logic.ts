@@ -426,6 +426,7 @@ type LogicalSidebarProject = SidebarProject & {
 
 export type ThreadTraversalDirection = "previous" | "next";
 
+// Ticket 32: sidebar task subthreads and delivery state.
 /** Bulk actions resolve only rows in the collection the user currently sees. */
 export function selectRenderedSidebarThreads<T>(
   selectedKeys: ReadonlyArray<string>,
