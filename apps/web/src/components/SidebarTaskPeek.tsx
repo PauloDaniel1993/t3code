@@ -357,7 +357,9 @@ function TaskPeek({
       <h2 className="mt-2 text-sm font-semibold">{shell.title}</h2>
       {task ? (
         <div className="mt-2 flex gap-2 text-xs text-muted-foreground">
-          <span>{task.createdBy === "agent" ? "✦ agent" : "you"}</span>
+          <span>
+            {task.createdBy === "agent" ? "✦ agent" : task.createdBy === "user" ? "you" : "system"}
+          </span>
           <span>prompt-only context</span>
         </div>
       ) : null}
