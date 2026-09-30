@@ -4,6 +4,8 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/models";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { ThreadRouteTarget } from "../threadRoutes";
 
 const sidebarHarness = vi.hoisted(() => ({
   threads: [] as ReadonlyArray<EnvironmentThreadShell>,
@@ -12,6 +14,10 @@ const sidebarHarness = vi.hoisted(() => ({
   menu: vi.fn(async (_items: unknown, _position: unknown) => "delete"),
   remove: vi.fn(async () => ({ _tag: "Success" as const })),
   archive: vi.fn(async () => ({ _tag: "Success" as const })),
+  settle: vi.fn(async (_ref: ScopedThreadRef) => ({ _tag: "Success" as const })),
+  navigate: vi.fn((_options: unknown) => {}),
+  newThread: vi.fn((_project: unknown) => {}),
+  routeTarget: null as ThreadRouteTarget | null,
   selection: [] as Array<{ threadKey: string; thread: EnvironmentThreadShell }>,
 }));
 vi.mock("./Sidebar.logic", async (importOriginal) => {
@@ -31,7 +37,10 @@ vi.mock("../state/entities", () => ({
   useThreadShells: () => sidebarHarness.threads,
   useProjects: () => sidebarHarness.projects,
   useAllEnvironmentProjectSnapshotsReady: () => false,
-  readThreadShell: () => null,
+  readThreadShell: (ref: ScopedThreadRef) =>
+    sidebarHarness.threads.find(
+      (thread) => thread.environmentId === ref.environmentId && thread.id === ref.threadId,
+    ) ?? null,
 }));
 vi.mock("../state/server", () => ({
   environmentServerConfigsAtom: "configs",
@@ -42,7 +51,14 @@ vi.mock("@effect/atom-react", () => ({
     atom === "configs" ? config : atom === "bindings" ? [] : snapshots,
 }));
 const config = new Map([
-  ["local", { environment: { capabilities: { threadTasks: true } }, providers: [], settings: {} }],
+  [
+    "local",
+    {
+      environment: { capabilities: { threadTasks: true, threadSettlement: true } },
+      providers: [],
+      settings: {},
+    },
+  ],
 ]);
 const snapshots = new Map();
 vi.mock("../hooks/useSettings", async () => {
@@ -78,7 +94,7 @@ vi.mock("../hooks/useThreadActions", () => ({ useThreadActions: () => actions })
 const actions = {
   archiveThread: sidebarHarness.archive,
   deleteThread: sidebarHarness.remove,
-  settleThread: noop,
+  settleThread: sidebarHarness.settle,
   unsettleThread: noop,
   snoozeThread: noop,
   unsnoozeThread: noop,
@@ -91,7 +107,7 @@ const actions = {
   markThreadUnread: noop,
 };
 vi.mock("../hooks/useHandleNewThread", () => ({
-  useHandleNewThread: () => ({ handleNewThread: noop }),
+  useHandleNewThread: () => ({ handleNewThread: sidebarHarness.newThread }),
 }));
 vi.mock("../hooks/useCopyToClipboard", () => ({
   useCopyToClipboard: () => ({ copyToClipboard: noop }),
@@ -118,8 +134,11 @@ const drafts = {
   clearComposerContent: noop,
   clearDraftThread: noop,
 };
-vi.mock("@tanstack/react-router", () => ({ useParams: () => null, useRouter: () => router }));
-const router = { navigate: noop, state: { location: { pathname: "/" } } };
+vi.mock("@tanstack/react-router", () => ({
+  useParams: () => sidebarHarness.routeTarget,
+  useRouter: () => router,
+}));
+const router = { navigate: sidebarHarness.navigate, state: { location: { pathname: "/" } } };
 vi.mock("../localApi", () => ({
   readLocalApi: () => ({
     contextMenu: { show: sidebarHarness.menu },

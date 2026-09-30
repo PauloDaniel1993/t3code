@@ -1,4 +1,4 @@
-// Ticket 32: shell watermarks are derived in fork-owned code, without a migration.
+// Ticket 32: fork-owned shell watermarks read the task delivery expression index.
 import * as TaskDeliveryShell from "./TaskDeliveryShell.ts";
 import {
   latestRootProviderFailure,

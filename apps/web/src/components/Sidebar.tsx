@@ -2962,6 +2962,7 @@ export default function Sidebar() {
       ),
     [orderedThreads],
   );
+  // Ticket 32: task menus and bulk actions use separate shell lookups.
   const taskThreadByKey = useMemo(
     () =>
       new Map(
@@ -2992,8 +2993,10 @@ export default function Sidebar() {
   // identities would give every row a fresh callback prop on each shell
   // event and defeat row memoization during streaming.
   const threadByKeyRef = useRef(threadByKey);
+  threadByKeyRef.current = threadByKey;
   // Ticket 32: bulk handlers see only rendered rows, including the search filter.
-  threadByKeyRef.current = bulkThreadByKey;
+  const bulkThreadByKeyRef = useRef(bulkThreadByKey);
+  bulkThreadByKeyRef.current = bulkThreadByKey;
   // handleNewThread is inherently unstable (depends on the projects list);
   // a ref keeps it out of attemptSettle's dependency array.
   const handleNewThreadRef = useRef(newThreadContext.handleNewThread);
@@ -4022,7 +4025,10 @@ export default function Sidebar() {
       // the actions will touch.
       const selectedThreadKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
       // Ticket 32: exclude collapsed tasks and filtered parents from bulk actions.
-      const selection = selectRenderedSidebarThreads(selectedThreadKeys, threadByKeyRef.current);
+      const selection = selectRenderedSidebarThreads(
+        selectedThreadKeys,
+        bulkThreadByKeyRef.current,
+      );
       const threadKeys = selection.map((entry) => entry.threadKey);
       if (threadKeys.length === 0) return;
       const count = threadKeys.length;
@@ -4166,7 +4172,7 @@ export default function Sidebar() {
         // clears the pin as part of settling, so they park like the rest.
         const coSettlingKeys = new Set(threadKeys);
         for (const threadKey of threadKeys) {
-          const thread = threadByKeyRef.current.get(threadKey);
+          const thread = bulkThreadByKeyRef.current.get(threadKey);
           if (!thread || thread.settledOverride === "settled") continue;
           attemptSettle(scopeThreadRef(thread.environmentId, thread.id), { coSettlingKeys });
         }
@@ -4175,7 +4181,7 @@ export default function Sidebar() {
       }
       if (clicked.value === "mark-unread") {
         for (const threadKey of threadKeys) {
-          const thread = threadByKeyRef.current.get(threadKey);
+          const thread = bulkThreadByKeyRef.current.get(threadKey);
           if (thread) markThreadUnread(scopeThreadRef(thread.environmentId, thread.id));
         }
         clearSelection();
@@ -4197,7 +4203,7 @@ export default function Sidebar() {
       const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
         entries: threadKeys.map((threadKey) => ({ threadKey })),
         delete: async ({ threadKey }, deletedThreadKeys) => {
-          const thread = threadByKeyRef.current.get(threadKey);
+          const thread = bulkThreadByKeyRef.current.get(threadKey);
           if (!thread) return null;
           return deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
             deletedThreadKeys,

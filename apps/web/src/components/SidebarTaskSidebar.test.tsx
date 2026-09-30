@@ -18,6 +18,10 @@ beforeEach(() => {
   sidebarHarness.menu.mockClear();
   sidebarHarness.remove.mockClear();
   sidebarHarness.archive.mockClear();
+  sidebarHarness.settle.mockReset();
+  sidebarHarness.navigate.mockClear();
+  sidebarHarness.newThread.mockClear();
+  sidebarHarness.routeTarget = null;
   sidebarHarness.selection = [];
   sidebarHarness.projects = ["shown", "hidden"].map((id) => ({
     id: ProjectId.make(id),
@@ -36,6 +40,81 @@ beforeEach(() => {
   });
   useThreadSelectionStore.getState().clearSelection();
 });
+
+it.each(["Current thread", "No matching thread"])(
+  "settling the current thread during search for %s opens the next thread",
+  async (query) => {
+    const current = makeThreadFixture({
+      environmentId,
+      projectId: ProjectId.make("shown"),
+      id: ThreadId.make("current"),
+      title: "Current thread",
+      settledOverride: "active",
+      activeOrderKey: "a0",
+    });
+    const next = makeThreadFixture({
+      environmentId,
+      projectId: current.projectId,
+      id: ThreadId.make("next"),
+      title: "Next thread",
+      settledOverride: "active",
+      activeOrderKey: "a1",
+    });
+    sidebarHarness.threads = [current, next];
+    sidebarHarness.routeTarget = {
+      kind: "server",
+      threadRef: { environmentId, threadId: current.id },
+    };
+    sidebarHarness.settle.mockImplementation(async () => {
+      sidebarHarness.threads = [{ ...current, settledOverride: "settled" }, next];
+      return { _tag: "Success" };
+    });
+    let resolveMenuChoice!: (choice: string) => void;
+    sidebarHarness.menu.mockReturnValueOnce(
+      new Promise<string>((resolve) => {
+        resolveMenuChoice = resolve;
+      }),
+    );
+    act(() => {
+      tree = create(<Sidebar />, {
+        createNodeMock: (element) =>
+          document.createElement(typeof element.type === "string" ? element.type : "div"),
+      });
+    });
+    const currentRow = tree!.root.find(
+      (node) =>
+        typeof node.type === "string" &&
+        node.props["aria-current"] === "page" &&
+        node.props.onContextMenu !== undefined,
+    );
+    // Choose Settle from the open menu after search has replaced the normal rows.
+    act(() =>
+      currentRow.props.onContextMenu({
+        preventDefault() {},
+        stopPropagation() {},
+        clientX: 0,
+        clientY: 0,
+      }),
+    );
+    expect(sidebarHarness.menu).toHaveBeenCalledOnce();
+    act(() =>
+      tree!.root.findByProps({ "aria-label": "Search threads" }).props.onChange({
+        target: { value: query },
+      }),
+    );
+    expect(tree!.root.findAllByProps({ title: next.title })).toHaveLength(0);
+    await act(async () => resolveMenuChoice("settle"));
+    expect(sidebarHarness.settle).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      threadId: current.id,
+    });
+    expect(sidebarHarness.navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId, threadId: next.id },
+    });
+    expect(sidebarHarness.newThread).not.toHaveBeenCalled();
+  },
+);
 afterEach(() => {
   act(() => tree?.unmount());
   tree = undefined;
