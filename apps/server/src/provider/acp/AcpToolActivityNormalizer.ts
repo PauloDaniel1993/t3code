@@ -17,11 +17,9 @@
  */
 import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
+import { sensitiveField as isSensitiveAcpField } from "../../orchestration-v2/ProviderEventPayload.ts";
 
-export const ACP_SENSITIVE_FIELD_WORDS =
-  /(?:^|_)(?:authorizations?|cookies?|credentials?|passwords?|passwds?|secrets?|tokens?|(?:api|private|secret|access)_keys?)$/;
-const QUANTITY_FIELD_WORDS =
-  /(?:^|_)(?:max|min|total|num|count)_(?:authorizations|cookies|credentials|passwords|passwds|secrets|tokens)$/;
+export { isSensitiveAcpField };
 export const ACP_TOOL_INPUT_BYTES = 16 * 1024;
 export const ACP_TOOL_OUTPUT_BYTES = 16 * 1024;
 export const ACP_TOOL_LABEL_BYTES = 256;
@@ -57,16 +55,6 @@ const LABEL_FIELDS = new Set([
   "cwd",
   "root",
 ]);
-
-export function isSensitiveAcpField(key: string): boolean {
-  const words = key
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/[^a-z0-9]+/gi, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase();
-  return ACP_SENSITIVE_FIELD_WORDS.test(words) && !QUANTITY_FIELD_WORDS.test(words);
-}
 
 export function secretSafeAcpActivity(
   value: unknown,
