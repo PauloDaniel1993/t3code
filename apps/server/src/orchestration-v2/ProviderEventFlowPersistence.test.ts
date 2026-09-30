@@ -114,7 +114,11 @@ it.effect(
         yield* stage.offer({
           type: "turn_item.updated",
           driver,
-          turnItem: { ...item, title: `Tool ${index}` },
+          turnItem: {
+            ...item,
+            title: `Tool ${index}`,
+            output: { ...item.output, rawOutput: `step ${index + 1} of 10000` },
+          },
         });
       }
       yield* stage.offer({
@@ -144,7 +148,7 @@ it.effect(
           status: "running",
           title: "Tool 9999",
           input: { api_key: "[REDACTED]" },
-          output: { rawOutput: "step 1 of 10", password: "[REDACTED]" },
+          output: { rawOutput: "step 10000 of 10000", password: "[REDACTED]" },
         },
       });
       const final = stored[1]?.event;

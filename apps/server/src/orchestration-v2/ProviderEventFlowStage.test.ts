@@ -84,6 +84,29 @@ function terminal(): ProviderAdapterV2Event {
 }
 
 describe("provider event flow stage", () => {
+  it.effect("keeps an unpressured assistant event unchanged without counting bytes", () =>
+    Effect.gen(function* () {
+      const { input: _input, output, ...detail } = progress(1).turnItem;
+      const event = {
+        type: "turn_item.updated",
+        driver,
+        turnItem: {
+          ...detail,
+          type: "assistant_message",
+          messageId: MessageId.make("message"),
+          text: output,
+          attachments: [],
+          streaming: true,
+        },
+      } satisfies ProviderAdapterV2Event;
+      const stage = yield* makeProviderEventFlowStage(options);
+      yield* stage.offer(event);
+      expect(yield* stage.usage).toEqual({ items: 1, bytes: 0 });
+      yield* stage.end;
+      expect(yield* stage.events.pipe(Stream.runCollect)).toEqual([event]);
+      expect(yield* stage.usage).toEqual({ items: 0, bytes: 0 });
+    }),
+  );
   it.effect("warns once for aggregate session backlog and delivers every final in order", () => {
     const messages: unknown[] = [];
     const logger = Logger.make(({ message }) => {
@@ -208,7 +231,13 @@ describe("provider event flow stage", () => {
       const after = yield* stage.events.pipe(Stream.runCollect);
       const afterBytes = after.reduce((sum, event) => sum + Buffer.byteLength(testJson(event)), 0);
       expect(after).toHaveLength(2);
-      expect(after[0]).toMatchObject({ turnItem: { title: "Progress 9999", status: "running" } });
+      expect(after[0]).toMatchObject({
+        turnItem: {
+          title: "Progress 9999",
+          status: "running",
+          output: progress(9999).turnItem.output,
+        },
+      });
       expect(after[1]).toEqual(final);
       expect(peakItems).toBe(2);
       expect(peakBytes).toBe(afterBytes);

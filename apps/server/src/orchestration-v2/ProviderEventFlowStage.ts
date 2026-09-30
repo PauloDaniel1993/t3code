@@ -115,7 +115,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
     pressure.items += items;
     pressure.bytes += bytes;
   };
-  const warn = Effect.suspend(() => {
+  const warn = () => {
     if (pressure.warned || (pressure.items <= budget.items && pressure.bytes <= budget.bytes))
       return Effect.void;
     pressure.warned = true;
@@ -127,7 +127,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
       maxItems: budget.items,
       maxBytes: budget.bytes,
     });
-  });
+  };
   const notify = () => {
     if (notified) return;
     notified = true;
@@ -141,8 +141,8 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
     lookupReady = false;
   };
   const offer = (raw: ProviderAdapterV2Event) =>
-    Effect.sync(() => {
-      if (ended || !admit(raw)) return;
+    Effect.suspend(() => {
+      if (ended || !admit(raw)) return Effect.void;
       const event = sanitizeProviderEvent(raw);
       if (pending.size === 0) lookupReady = false;
       // A consumer keeping up never needs a replacement key.
@@ -170,7 +170,8 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
         else replaceable.set(key, entry);
       }
       notify();
-    }).pipe(Effect.andThen(warn));
+      return warn();
+    });
   const end = Effect.sync(() => {
     ended = true;
     notify();
