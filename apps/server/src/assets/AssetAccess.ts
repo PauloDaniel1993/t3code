@@ -657,7 +657,9 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         path.isAbsolute(input.projectFaviconPath) &&
         path.normalize(faviconPath) === path.normalize(input.projectFaviconPath);
       const relativePath =
-        faviconPath && !isExternalOverride ? path.relative(workspaceRoot, faviconPath) : null;
+        faviconPath && !isExternalOverride
+          ? path.relative(workspaceRoot, faviconPath).replaceAll("\\", "/")
+          : null;
       const sourceFaviconPath = isExternalOverride ? faviconPath : relativePath;
       if (sourceFaviconPath && !isWorkspaceImagePreviewPath(sourceFaviconPath)) {
         return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
@@ -780,7 +782,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   const encodedPayload = base64UrlEncode(encodeAssetClaims(claims));
   const token = `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
   return {
-    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(fileName)}`,
+    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(fileName.toWellFormed())}`,
     expiresAt,
     ...(sourcePath !== undefined ? { sourcePath } : {}),
     ...(imageDimensions !== null ? { imageDimensions } : {}),

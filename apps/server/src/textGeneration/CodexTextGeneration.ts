@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -130,7 +131,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     );
 
   const materializeImageAttachments = Effect.fn("materializeImageAttachments")(function* (
-    _operation:
+    operation:
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
@@ -152,12 +153,29 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         attachment,
       });
       if (!resolvedPath || !path.isAbsolute(resolvedPath)) {
-        continue;
+        return yield* new TextGenerationError({
+          operation,
+          detail: `Image attachment '${attachment.name}' could not be resolved for Codex text generation.`,
+        });
       }
-      const fileInfo = yield* fileSystem.stat(resolvedPath).pipe(Effect.orElseSucceed(() => null));
-      if (!fileInfo || fileInfo.type !== "File") {
-        continue;
+      const unreadableImageError = (cause: PlatformError.PlatformError) =>
+        new TextGenerationError({
+          operation,
+          detail: `Image attachment '${attachment.name}' could not be read for Codex text generation.`,
+          cause,
+        });
+      const fileInfo = yield* fileSystem
+        .stat(resolvedPath)
+        .pipe(Effect.mapError(unreadableImageError));
+      if (fileInfo.type !== "File") {
+        return yield* new TextGenerationError({
+          operation,
+          detail: `Image attachment '${attachment.name}' is not a file for Codex text generation.`,
+        });
       }
+      yield* fileSystem
+        .access(resolvedPath, { readable: true })
+        .pipe(Effect.mapError(unreadableImageError));
       imagePaths.push(resolvedPath);
     }
     return { imagePaths };
