@@ -44,9 +44,11 @@ export function snapshotV2Database(
   };
   try {
     NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
-    // Reserve exclusively; VACUUM INTO accepts an empty file. Only a file this call created is removed.
-    NodeFS.closeSync(NodeFS.openSync(partial, "wx"));
+    // Reserve exclusively; VACUUM INTO accepts an empty file. The exclusive open succeeding is the
+    // moment the file becomes this run's own, so record that before anything else can fail.
+    const descriptor = NodeFS.openSync(partial, "wx");
     reserved = true;
+    NodeFS.closeSync(descriptor);
     database.prepare("VACUUM INTO ?").run(partial);
     const snapshot = new NodeSqlite.DatabaseSync(partial, { readOnly: true });
     try {

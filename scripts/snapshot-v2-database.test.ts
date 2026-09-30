@@ -201,6 +201,43 @@ it("names the surviving temporary file and the untouched destination when a fail
   }
 });
 
+it("removes and reports its own temporary file when closing the reserved file fails", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-snapshot-close-"));
+  try {
+    const home = NodePath.join(root, "user");
+    await NodeFSP.mkdir(home);
+    const source = NodePath.join(root, "source.sqlite");
+    const db = new NodeSqlite.DatabaseSync(source);
+    db.exec("CREATE TABLE evidence (value TEXT);");
+    db.close();
+    const destination = NodePath.join(root, "out", "state.sqlite");
+    // The child fails the close of the descriptor it opened for the `.partial` name, after really closing it.
+    const preload = NodePath.join(root, "refuse-close.cjs");
+    await NodeFSP.writeFile(
+      preload,
+      `const os = require('node:os'); const userInfo = os.userInfo; os.userInfo = (...args) => ({ ...userInfo(...args), homedir: ${JSON.stringify(home)} });
+const fs = require('node:fs'); const openSync = fs.openSync; const closeSync = fs.closeSync; let owned;
+fs.openSync = (path, ...rest) => { const fd = openSync(path, ...rest); if (String(path).endsWith('.partial')) owned = fd; return fd; };
+fs.closeSync = (fd) => { closeSync(fd); if (fd === owned) throw Object.assign(new Error('EIO: injected close failure'), { code: 'EIO' }); };
+require('node:module').syncBuiltinESMExports();`,
+    );
+    const script = NodeURL.fileURLToPath(new URL("./snapshot-v2-database.ts", import.meta.url));
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      ["--require", preload, script, source, destination],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.include(result.stderr, "EIO: injected close failure");
+    assert.include(result.stderr, `No snapshot was written to ${destination}.`);
+    assert.match(result.stderr, /Removed its own temporary file, .*\.partial\./);
+    assert.notInclude(result.stderr, "No temporary file was created");
+    assert.deepEqual(await NodeFSP.readdir(NodePath.dirname(destination)), []);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
 it("resolves a relative destination against the working directory, then refuses live homes", async () => {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Windows-only path fixture.
   if (NodeOS.platform() !== "win32") return;
@@ -245,6 +282,17 @@ it("resolves a relative destination against the working directory, then refuses 
     assert.deepEqual(await NodeFSP.readdir(NodePath.join(home, ".t3.local")), []);
     assert.deepEqual(await NodeFSP.readdir(NodePath.join(home, ".t3")), []);
 
+    // Segments that resolving would cancel out are refused as typed, before anything is written.
+    for (const relative of [
+      "bad.\\..\\new-home\\state.sqlite",
+      "bad \\..\\new-home\\state.sqlite",
+    ]) {
+      const refused = run(relative);
+      assert.notEqual(refused.status, 0);
+      assert.include(refused.stderr, "trailing dots and spaces");
+    }
+    assert.deepEqual(await NodeFSP.readdir(cwd), ["link-to-pretend-home"]);
+
     const accepted = run(`.\\new-v2-home\\state.sqlite`);
     assert.equal(accepted.status, 0, accepted.stderr);
     const full = NodePath.join(cwd, "new-v2-home", "state.sqlite");
@@ -260,9 +308,8 @@ it("resolves a relative destination against the working directory, then refuses 
   }
 });
 
-it("runs the file command in Windows PowerShell 5.1 and PowerShell 7 without inline JavaScript", async () => {
-  // oxlint-disable-next-line t3code/no-global-process-runtime -- Native PowerShell compatibility fixture.
-  if (NodeOS.platform() !== "win32") return;
+// Run the file command from a `.ps1` script in `shell`, which must not need inline JavaScript quoting.
+async function snapshotFromShell(shell: "powershell.exe" | "pwsh.exe") {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-snapshot-shell-"));
   try {
     const home = NodePath.join(root, "fixture home");
@@ -279,33 +326,55 @@ it("runs the file command in Windows PowerShell 5.1 and PowerShell 7 without inl
       `const os = require('node:os'); const userInfo = os.userInfo; os.userInfo = (...args) => ({ ...userInfo(...args), homedir: ${JSON.stringify(home)} }); require('node:module').syncBuiltinESMExports();`,
     );
     const script = NodeURL.fileURLToPath(new URL("./snapshot-v2-database.ts", import.meta.url));
-    for (const shell of ["powershell.exe", "pwsh.exe"]) {
-      const destination = NodePath.join(root, `${shell} snapshot.sqlite`);
-      const command = NodePath.join(root, `${shell}.ps1`);
-      await NodeFSP.writeFile(
-        command,
-        "$ErrorActionPreference = 'Stop'\nnode $env:T3_SNAPSHOT_SCRIPT $env:T3_SNAPSHOT_SOURCE $env:T3_SNAPSHOT_DESTINATION\nexit $LASTEXITCODE\n",
-      );
-      const output = NodeChildProcess.execFileSync(shell, ["-NoProfile", "-File", command], {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          NODE_OPTIONS: `--require "${preload.replaceAll("\\", "/")}"`,
-          T3_SNAPSHOT_SCRIPT: script,
-          T3_SNAPSHOT_SOURCE: source,
-          T3_SNAPSHOT_DESTINATION: destination,
-        },
-      });
-      assert.include(output, "Snapshot quick_check: ok");
-      const copy = new NodeSqlite.DatabaseSync(destination, { readOnly: true });
-      try {
-        assert.equal(copy.prepare("SELECT value FROM evidence").get()?.value, "shell fixture");
-      } finally {
-        copy.close();
-      }
+    const destination = NodePath.join(root, `${shell} snapshot.sqlite`);
+    const command = NodePath.join(root, `${shell}.ps1`);
+    await NodeFSP.writeFile(
+      command,
+      "$ErrorActionPreference = 'Stop'\nnode $env:T3_SNAPSHOT_SCRIPT $env:T3_SNAPSHOT_SOURCE $env:T3_SNAPSHOT_DESTINATION\nexit $LASTEXITCODE\n",
+    );
+    const output = NodeChildProcess.execFileSync(shell, ["-NoProfile", "-File", command], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `--require "${preload.replaceAll("\\", "/")}"`,
+        T3_SNAPSHOT_SCRIPT: script,
+        T3_SNAPSHOT_SOURCE: source,
+        T3_SNAPSHOT_DESTINATION: destination,
+      },
+    });
+    assert.include(output, "Snapshot quick_check: ok");
+    const copy = new NodeSqlite.DatabaseSync(destination, { readOnly: true });
+    try {
+      assert.equal(copy.prepare("SELECT value FROM evidence").get()?.value, "shell fixture");
+    } finally {
+      copy.close();
     }
     assert.deepEqual(await NodeFSP.readFile(source), before);
   } finally {
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
+}
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Native PowerShell compatibility fixtures.
+const onWindows = NodeOS.platform() === "win32";
+// PowerShell 7 is optional: a machine with only Windows PowerShell 5.1 skips its test, one that has it runs.
+const pwshAvailable =
+  onWindows &&
+  NodeChildProcess.spawnSync("pwsh.exe", ["-NoProfile", "-Command", "exit 0"], {
+    stdio: "ignore",
+  }).status === 0;
+
+it("runs the file command in Windows PowerShell 5.1 without inline JavaScript", async () => {
+  if (!onWindows) return;
+  await snapshotFromShell("powershell.exe");
+});
+
+it("runs the file command in PowerShell 7 without inline JavaScript", async (context) => {
+  if (!pwshAvailable)
+    context.skip(
+      onWindows
+        ? "PowerShell 7 (pwsh.exe) is not on PATH."
+        : "PowerShell 7 fixtures run on Windows only.",
+    );
+  await snapshotFromShell("pwsh.exe");
 });
