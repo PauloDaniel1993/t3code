@@ -868,13 +868,16 @@ describe("AcpAdapterV2", () => {
           ? [event.turnItem]
           : [],
       );
-      assert.equal(tools.length, 2);
+      // First, the latest held progress released by the terminal, then the terminal.
+      assert.equal(tools.length, 3);
       assert.equal(tools[0]!.status, "running");
       assert.deepEqual(tools[0]!.input, { apiKey: "[REDACTED]", command: "identity" });
-      assert.deepEqual(tools[1]!.input, tools[0]!.input);
       assert.notProperty(tools[0]!, "output");
-      assert.deepEqual(tools[1]!.output, { result: "final result", token: "[REDACTED]" });
-      assert.equal(tools[1]!.status, "completed");
+      assert.equal(tools[1]!.status, "running");
+      assert.deepEqual(tools[1]!.output, { result: "4999", token: "[REDACTED]" });
+      assert.deepEqual(tools[2]!.input, tools[0]!.input);
+      assert.deepEqual(tools[2]!.output, { result: "final result", token: "[REDACTED]" });
+      assert.equal(tools[2]!.status, "completed");
       const serializedEvents = yield* encodeUnknownJson(events);
       assert.notInclude(serializedEvents, "private-input-key");
       assert.notInclude(serializedEvents, "private-output-token");

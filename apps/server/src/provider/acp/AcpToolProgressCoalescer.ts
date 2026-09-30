@@ -1,5 +1,14 @@
+const isTerminal = (status: string | undefined) =>
+  status === "completed" ||
+  status === "failed" ||
+  status === "interrupted" ||
+  status === "cancelled";
+
 /**
  * Retains one latest update per tool; first, status changes, and terminals pass.
+ * A later update of the same status supersedes the held one; a status change or
+ * terminal releases it first, so a burst never hides the last progress shown
+ * before the tool moved on.
  * State lasts for the owning turn: evicting pending values loses last states,
  * and evicting terminal tombstones lets stale updates reopen completed tools.
  */
@@ -18,36 +27,23 @@ export function makeAcpToolProgressCoalescer<A>(
     }
   >();
 
-  const offer = (key: string, value: A, status: string | undefined, now: number): boolean => {
+  /** Returns what to deliver now, in order: nothing while held or stale. */
+  const offer = (key: string, value: A, status: string | undefined, now: number): Array<A> => {
     const previous = entries.get(key);
+    if (!isTerminal(status) && isTerminal(previous?.status)) return [];
     if (
-      status === "completed" ||
-      status === "failed" ||
-      status === "interrupted" ||
-      status === "cancelled"
+      previous !== undefined &&
+      !isTerminal(status) &&
+      previous.status === status &&
+      now - previous.lastEmittedAt < intervalMs
     ) {
-      entries.delete(key);
-      entries.set(key, { lastEmittedAt: now, status });
-      return true;
+      previous.pending = value;
+      return [];
     }
-    if (
-      previous?.status === "completed" ||
-      previous?.status === "failed" ||
-      previous?.status === "interrupted" ||
-      previous?.status === "cancelled"
-    )
-      return false;
-    if (
-      previous === undefined ||
-      previous.status !== status ||
-      now - previous.lastEmittedAt >= intervalMs
-    ) {
-      entries.delete(key);
-      entries.set(key, { lastEmittedAt: now, status });
-      return true;
-    }
-    previous.pending = value;
-    return false;
+    const held = previous?.status !== status ? previous?.pending : undefined;
+    entries.delete(key);
+    entries.set(key, { lastEmittedAt: now, status });
+    return held === undefined ? [value] : [held, value];
   };
 
   const flush = (now: number, all = false): Array<A> => {
