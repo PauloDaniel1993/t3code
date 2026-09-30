@@ -42,7 +42,12 @@ transcripts or shell previews should, by the V1 data, hold reasoning or source t
 none of the run-less reasoning items, source tags or task-link receipts only this build writes. Upstream's ids,
 ordinals and positions are never grounds for refusal; a disagreement there, or evidence it cannot read, starts
 the server with a warning, because a wrong refusal locks the owner out of every thread. Its header lists
-what this cannot tell apart. Once every legacy
+what this cannot tell apart. Between the refusal and that comparison,
+[ForkShellPreviewRepair](../../apps/server/src/orchestration-v2/legacy/ForkShellPreviewRepair.ts) rewrites
+the items and positions an earlier import left for threads not yet hydrated with this build's mapping:
+hydrating around an unpatched shell import's reasoning-free reservations hits the unique `(thread_id, ordinal)`
+and loses the thread's transcript. It must run before task-link repair, which places task items after the
+highest reserved position. Once every legacy
 transcript is imported and the check passes, it records a row in `fork_v1_import_state` and later starts skip
 the scan: after that no importer, patched or not, writes another `migration:v1:*` item. When the start's own
 check found nothing wrong, the importer commits that row with the last transcript, on the background or the

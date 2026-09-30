@@ -141,8 +141,11 @@ it.effect("records no pass when this start could not confirm the evidence", () =
     const importer = yield* LegacyV1ThreadImporter;
     yield* seedHealthy;
     yield* importer.reconcileShells;
-    // Shell evidence this check cannot place: the start warns and continues.
-    yield* sql`UPDATE orchestration_v2_turn_item_positions SET ordinal = ordinal + 100`;
+    // Shell evidence this check cannot place, in the event log only, so the
+    // preview repair has nothing to rewrite: the start warns and continues.
+    yield* sql`UPDATE orchestration_events
+      SET payload_json = json_set(payload_json, '$.ordinal', json_extract(payload_json, '$.ordinal') + 100)
+      WHERE event_id LIKE ${`${FORK_IMPORT_TURN_ITEM_PREFIX}%`}`;
     yield* importer.reconcileShells;
     assert.lengthOf(yield* warnings, 1);
     yield* importer.importPendingTranscripts;

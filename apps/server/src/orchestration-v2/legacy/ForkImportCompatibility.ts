@@ -11,14 +11,15 @@
  * with the fork's mapping there starts the server with a warning. A thread
  * without reasoning or sources in V1 is never evidence of anything.
  *
+ * A shell-only unpatched import whose previews carry no reasoning or source is
+ * not refused: before the ordinal check, `ForkShellPreviewRepair` rewrites the
+ * items of every thread still to hydrate with this build's mapping, which makes
+ * the result that of a fresh import. The three real unpatched databases the
+ * verification used each have tagged previews and are refused.
+ *
  * Limits, recorded rather than fixed:
  * - The decision is per directory. One this build imported and an unpatched build
  *   extended later starts with a warning.
- * - A shell-only unpatched import whose previews carry no reasoning or source
- *   differs from this build's only in upstream's positions, so it starts with a
- *   warning. Its hydration is then expected to hit upstream's unique ordinal and
- *   keep failing for the affected threads. The three real unpatched databases
- *   the verification used each have tagged previews and are refused.
  * - The verified marker is trusted. A hand-written
  *   `import-compatibility-verified` row skips the check, even on an unpatched
  *   import; no build writes it except this one after a passed check. Recover by
@@ -38,6 +39,7 @@ import {
   recordForkImportWarning,
 } from "../../persistence/ForkImportDiagnostics.ts";
 import { forkLegacyMessageRoles, forkLegacyMessageSources } from "./ForkLegacyMessages.ts";
+import { FORK_SHELL_REPAIR_EVENT_SUFFIX } from "./ForkShellPreviewRepair.ts";
 import { REPAIR_COMMAND as TASK_LINK_REPAIR_COMMAND } from "./ForkTaskLinkRepair.ts";
 
 export class ForkImportCompatibilityError extends Schema.TaggedError<ForkImportCompatibilityError>()(
@@ -71,8 +73,11 @@ export type ForkImportInspection =
  * After that no importer, patched or not, writes another `migration:v1:*` item:
  * every shell exists, nothing is left to hydrate, and upstream's metadata repair
  * writes only thread metadata. Later starts read that one row and stop.
+ * `repairPending` runs between the two, once refusal is ruled out.
  */
-export const inspectForkImport = Effect.fn("inspectForkImport")(function* () {
+export const inspectForkImport = Effect.fn("inspectForkImport")(function* <E = never>(
+  repairPending: Effect.Effect<void, E> = Effect.void,
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* initializeForkImportDiagnostics;
   const verified = yield* sql`
@@ -117,6 +122,7 @@ export const inspectForkImport = Effect.fn("inspectForkImport")(function* () {
   if (omission !== undefined) {
     return { _tag: "unpatched", omission } satisfies ForkImportInspection;
   }
+  yield* repairPending;
   const mismatches = yield* sql<Mismatch>`
     WITH legacy AS (
       SELECT message.thread_id, message.message_id, message.role, message.source,
@@ -129,14 +135,19 @@ export const inspectForkImport = Effect.fn("inspectForkImport")(function* () {
       WHERE ${sql.in("message.role", forkLegacyMessageRoles)}
     ), evidence AS (
       SELECT legacy.*,
-        event.event_id IS NOT NULL AS has_event,
-        json_extract(event.payload_json, '$.ordinal') AS event_ordinal,
-        json_extract(event.payload_json, '$.legacyMessageSource') AS event_source,
+        (event.event_id IS NOT NULL OR repaired.event_id IS NOT NULL) AS has_event,
+        -- A repaired item's latest word is its repair event.
+        json_extract(COALESCE(repaired.payload_json, event.payload_json), '$.ordinal') AS event_ordinal,
+        json_extract(COALESCE(repaired.payload_json, event.payload_json), '$.legacyMessageSource')
+          AS event_source,
         position.ordinal AS position_ordinal,
         legacy.source IN ${sql.in(forkLegacyMessageSources)} AS known_source
       FROM legacy
       LEFT JOIN orchestration_events AS event
         ON event.event_id = ${FORK_IMPORT_TURN_ITEM_PREFIX} || legacy.message_id
+      LEFT JOIN orchestration_events AS repaired
+        ON repaired.event_id = ${FORK_IMPORT_TURN_ITEM_PREFIX} || legacy.message_id
+          || ${FORK_SHELL_REPAIR_EVENT_SUFFIX}
       LEFT JOIN orchestration_v2_turn_item_positions AS position
         ON position.thread_id = legacy.thread_id
         AND position.turn_item_id = ${FORK_IMPORT_TURN_ITEM_PREFIX} || legacy.message_id
@@ -195,8 +206,10 @@ export const recordForkImportVerifiedWhenComplete = Effect.fn(
  * wrong refusal locks the owner out of every thread. Returns whether the
  * evidence was confirmed, which lets the importer record the pass later.
  */
-export const assertForkImportCompatible = Effect.fn("assertForkImportCompatible")(function* () {
-  const inspection = yield* inspectForkImport().pipe(
+export const assertForkImportCompatible = Effect.fn("assertForkImportCompatible")(function* <
+  E = never,
+>(repairPending: Effect.Effect<void, E> = Effect.void) {
+  const inspection = yield* inspectForkImport(repairPending).pipe(
     Effect.catch((cause) => Effect.succeed({ _tag: "unreadable" as const, detail: String(cause) })),
   );
   if (inspection._tag === "unpatched") {

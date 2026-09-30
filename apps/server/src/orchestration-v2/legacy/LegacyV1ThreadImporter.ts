@@ -40,6 +40,8 @@ import {
   assertForkImportCompatible,
   recordForkImportVerifiedWhenComplete,
 } from "./ForkImportCompatibility.ts";
+// fork(ticket-28:compatibility): rewrite an earlier import's items before hydration.
+import { makeForkShellPreviewRepair } from "./ForkShellPreviewRepair.ts";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
 const TRANSCRIPT_EVENT_BATCH_SIZE = 100;
@@ -363,6 +365,7 @@ const make = Effect.gen(function* () {
   const transcriptImports = yield* makeKeyedSerialExecutor<ThreadId>();
   // fork(ticket-28:messages): capture persistence for per-entry import diagnostics.
   const forkMessageEvents = yield* makeForkLegacyMessageEvents<LegacyMessageRow>(messageEvents);
+  const forkShellRepair = yield* makeForkShellPreviewRepair(forkMessageEvents);
   // fork(ticket-28:compatibility): whether this start's check confirmed the stored evidence.
   let forkImportConfirmed = false;
 
@@ -469,7 +472,7 @@ const make = Effect.gen(function* () {
 
   const reconcileShellsBase = Effect.gen(function* () {
     // fork(ticket-28:compatibility): completed omissions and partial ordinal collisions need a fresh seed.
-    forkImportConfirmed = yield* assertForkImportCompatible().pipe(
+    forkImportConfirmed = yield* assertForkImportCompatible(forkShellRepair).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     const now = DateTime.formatIso(yield* DateTime.now);
