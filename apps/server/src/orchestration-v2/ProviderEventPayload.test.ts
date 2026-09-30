@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 
 import * as DateTime from "effect/DateTime";
 
@@ -120,9 +120,8 @@ describe("provider payload preservation", () => {
           ...(isError ? { isError: true } : {}),
         });
         expect(item.output).toMatchObject({ isError });
-        expect(
-          Buffer.byteLength(JSON.stringify({ input: item.input, output: item.output })),
-        ).toBeLessThanOrEqual(65_536);
+        expect(Buffer.byteLength(JSON.stringify(item.output))).toBeLessThanOrEqual(65_536);
+        expect(Buffer.byteLength(JSON.stringify(item.input))).toBeLessThanOrEqual(16_384);
       }
     },
   );
@@ -132,7 +131,7 @@ describe("provider payload preservation", () => {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ padding: "o".repeat(50_000), threadId: "child", taskId: "task" }),
+          text: JSON.stringify({ padding: "o".repeat(70_000), threadId: "child", taskId: "task" }),
         },
       ],
       isError: false,
@@ -147,9 +146,116 @@ describe("provider payload preservation", () => {
     if (item.type !== "dynamic_tool") throw new Error("Expected dynamic tool");
     expect(compactDynamicToolOutput(item.output)).toEqual({ threadId: "child", taskId: "task" });
     expect(item.output).toMatchObject({ isError: false });
-    expect(
-      Buffer.byteLength(JSON.stringify({ input: item.input, output: item.output })),
-    ).toBeLessThanOrEqual(65_536);
+    expect(Buffer.byteLength(JSON.stringify(item.output))).toBeLessThanOrEqual(65_536);
+    expect(Buffer.byteLength(JSON.stringify(item.input))).toBeLessThanOrEqual(16_384);
+  });
+
+  it("preserves a small completed result with one content read and no metadata pass", () => {
+    let reads = 0;
+    const text = JSON.stringify({ body: "x".repeat(1024), threadId: "child", taskId: "task" });
+    const output = {
+      content: [
+        new Proxy(
+          { type: "text", text },
+          {
+            get(target, key, receiver) {
+              if (key === "text") reads++;
+              return Reflect.get(target, key, receiver);
+            },
+          },
+        ),
+      ],
+      isError: false,
+    };
+    const event = decodeEvent({
+      type: "turn_item.updated",
+      driver: "codex",
+      turnItem: {
+        ...base,
+        type: "dynamic_tool",
+        toolName: "task_create",
+        input: {},
+        output: null,
+      },
+    });
+    if (event.type !== "turn_item.updated" || event.turnItem.type !== "dynamic_tool")
+      throw new Error("Expected dynamic tool");
+    const result = sanitizeProviderEvent({ ...event, turnItem: { ...event.turnItem, output } });
+    expect(result).toMatchObject({
+      turnItem: { output: { content: [{ type: "text", text }], isError: false } },
+    });
+    expect(reads).toBe(1);
+  });
+
+  it("bounds reads of 200,000 content blocks while retaining the known links and flag", () => {
+    let reads = 0;
+    const content = new Proxy(
+      Array.from({ length: 200_000 }, (_, index) => ({
+        type: "text",
+        text: index === 0 ? '{"threadId":"child","taskId":"task"}' : '{"a":1}',
+      })),
+      {
+        get(target, key, receiver) {
+          if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    const event = decodeEvent({
+      type: "turn_item.updated",
+      driver: "codex",
+      turnItem: {
+        ...base,
+        type: "dynamic_tool",
+        toolName: "task_create",
+        input: {},
+        output: null,
+      },
+    });
+    if (event.type !== "turn_item.updated" || event.turnItem.type !== "dynamic_tool")
+      throw new Error("Expected dynamic tool");
+    const result = sanitizeProviderEvent({
+      ...event,
+      turnItem: { ...event.turnItem, output: { content, isError: true } },
+    });
+    if (result.type !== "turn_item.updated" || result.turnItem.type !== "dynamic_tool")
+      throw new Error("Expected dynamic tool");
+    expect(reads).toBeLessThan(4096);
+    expect(compactDynamicToolOutput(result.turnItem.output)).toEqual({
+      threadId: "child",
+      taskId: "task",
+      isError: true,
+    });
+    expect(Buffer.byteLength(JSON.stringify(result.turnItem.output))).toBeLessThanOrEqual(65_536);
+  });
+
+  it("skips parsing huge JSON text and retains its envelope metadata ahead of the preview", () => {
+    const output = {
+      content: [{ type: "text", text: JSON.stringify({ padding: "x".repeat(16 * 1024 * 1024) }) }],
+      threadId: "child",
+      taskId: "task",
+      isError: true,
+    };
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      const item = sanitize({
+        ...base,
+        type: "dynamic_tool",
+        toolName: "task_create",
+        input: {},
+        output,
+      });
+      if (item.type !== "dynamic_tool") throw new Error("Expected dynamic tool");
+      expect(parse).not.toHaveBeenCalled();
+      expect(compactDynamicToolOutput(item.output)).toEqual({
+        threadId: "child",
+        taskId: "task",
+        isError: true,
+      });
+      expect(Buffer.byteLength(JSON.stringify(item.output))).toBeLessThanOrEqual(65_536);
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   it("marks nesting beyond the persistence-safe depth and preserves the shallow result", () => {

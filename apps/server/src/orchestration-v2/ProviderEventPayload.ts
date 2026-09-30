@@ -21,9 +21,12 @@ import type { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
  * searched for secrets. A secret inside a command line is stored as written.
  * Redaction is idempotent and preserves ACP's already-redacted values.
  *
- * Final tool data has a shared 64 KiB encoded JSON budget, including keys and
- * escaping, with output before input. Task/thread links and the error flag take
- * priority over a large result preview. Nesting beyond 128 containers becomes
+ * Final tool output has its own 64 KiB encoded JSON budget, including keys and
+ * escaping; input retains its own 16 KiB at every status. Only a truncated output
+ * needs metadata recovery: at most 64 content blocks, 128 envelope nodes, four
+ * levels and 1 MiB of JSON text are inspected. Larger text is never parsed whole.
+ * Task/thread links and the error flag take priority over a large result preview.
+ * Nesting beyond 128 containers becomes
  * "[TRUNCATED: depth limit]" so the store's native JSON encoder can persist it.
  * Titles/names/paths use 4 KiB; command arguments use 16 KiB. Running
  * dynamic input uses 16 KiB to match ACP, with no output.
@@ -70,12 +73,13 @@ function boundedString(value: string, maxBytes: number): string {
 }
 
 /** Iterative cloning preserves JSON within the byte and persistence-safe depth limits. */
-export function boundProviderToolResult(
+function boundToolResult(
   value: unknown,
   maxBytes = PROVIDER_TOOL_RESULT_BYTES,
-): unknown {
+): { value: unknown; truncated: boolean } {
   let remaining = maxBytes;
   let inspected = maxBytes;
+  let truncated = false;
   const ancestors = new WeakSet<object>();
   type Container = unknown[] | Record<string, unknown>;
   type Frame = {
@@ -96,6 +100,7 @@ export function boundProviderToolResult(
   const visit = (current: unknown): unknown => {
     if (Predicate.isString(current)) {
       const text = boundedString(current, remaining);
+      if (text !== current) truncated = true;
       remaining -= Buffer.byteLength(JSON.stringify(text));
       return text;
     }
@@ -104,10 +109,14 @@ export function boundProviderToolResult(
       return current;
     }
     if ((!Array.isArray(current) && !Predicate.isObject(current)) || ancestors.has(current)) {
+      truncated = true;
       remaining -= 4;
       return null;
     }
-    if (stack.length >= PROVIDER_TOOL_RESULT_MAX_DEPTH) return visit("[TRUNCATED: depth limit]");
+    if (stack.length >= PROVIDER_TOOL_RESULT_MAX_DEPTH) {
+      truncated = true;
+      return visit("[TRUNCATED: depth limit]");
+    }
     const target: Container = Array.isArray(current) ? [] : {};
     remaining -= 2;
     ancestors.add(current);
@@ -124,13 +133,14 @@ export function boundProviderToolResult(
   const result = visit(value);
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
-    if (remaining < 1 || inspected <= 0) {
+    const next = frame.keys.next();
+    if (next.done) {
       stack.pop();
       ancestors.delete(frame.source);
       continue;
     }
-    const next = frame.keys.next();
-    if (next.done) {
+    if (remaining < 1 || inspected <= 0) {
+      truncated = true;
       stack.pop();
       ancestors.delete(frame.source);
       continue;
@@ -141,6 +151,7 @@ export function boundProviderToolResult(
     const isArray = Array.isArray(frame.target);
     // An oversized key exhausts this collection's allowance without reading its value.
     if (!isArray && key.length > remaining) {
+      truncated = true;
       stack.pop();
       ancestors.delete(frame.source);
       continue;
@@ -148,6 +159,7 @@ export function boundProviderToolResult(
     const cost =
       (frame.count > 0 ? 1 : 0) + (isArray ? 0 : Buffer.byteLength(JSON.stringify(key)) + 1);
     if (cost + 1 > remaining) {
+      truncated = true;
       stack.pop();
       ancestors.delete(frame.source);
       continue;
@@ -164,6 +176,7 @@ export function boundProviderToolResult(
           ? 4
           : Buffer.byteLength(JSON.stringify(current));
     if (cost + minimum > remaining) {
+      truncated = true;
       stack.pop();
       ancestors.delete(frame.source);
       continue;
@@ -178,24 +191,44 @@ export function boundProviderToolResult(
     });
     frame.count += 1;
   }
-  return result;
+  return { value: result, truncated };
 }
 
-/** Read only the result envelope used by T3's tool summaries; never redact JSON text. */
-function criticalToolResult(value: unknown, depth = 0): Record<string, unknown> | undefined {
-  if (depth >= PROVIDER_TOOL_RESULT_MAX_DEPTH) return undefined;
+/** Iterative cloning within the encoded byte and persistence-safe depth limits. */
+export function boundProviderToolResult(
+  value: unknown,
+  maxBytes = PROVIDER_TOOL_RESULT_BYTES,
+): unknown {
+  return boundToolResult(value, maxBytes).value;
+}
+
+/** Only recover known summary fields after truncation, within one shared read budget. */
+function criticalToolResult(
+  value: unknown,
+  budget = { bytes: 1024 * 1024, nodes: 128, blocks: 64 },
+  depth = 0,
+): Record<string, unknown> | undefined {
+  if (depth > 4 || budget.nodes-- <= 0) return undefined;
   if (Predicate.isString(value)) {
+    // Length rejects large text without encoding or parsing its full allocation.
+    if (value.length > budget.bytes) return undefined;
+    const bytes = Buffer.byteLength(value);
+    if (bytes > budget.bytes) return undefined;
+    budget.bytes -= bytes;
     try {
-      return criticalToolResult(JSON.parse(value), depth + 1);
+      return criticalToolResult(JSON.parse(value), budget, depth + 1);
     } catch {
       return undefined;
     }
   }
   if (Array.isArray(value)) {
     let result: Record<string, unknown> | undefined;
-    for (const block of value) {
+    for (let index = 0; index < value.length && budget.blocks > 0 && budget.nodes > 0; index++) {
+      budget.blocks -= 1;
+      const block: unknown = value[index];
       const child = criticalToolResult(
         Predicate.isObject(block) ? block.text : undefined,
+        budget,
         depth + 1,
       );
       if (child !== undefined) {
@@ -208,7 +241,7 @@ function criticalToolResult(value: unknown, depth = 0): Record<string, unknown> 
   }
   if (!Predicate.isObject(value)) return undefined;
   const content = value.structuredContent ?? value.content;
-  const nested = content === undefined ? undefined : criticalToolResult(content, depth + 1);
+  const nested = content === undefined ? undefined : criticalToolResult(content, budget, depth + 1);
   const compact = compactDynamicToolOutput({
     threadId: value.threadId,
     messageId: value.messageId,
@@ -251,34 +284,19 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
   switch (item.type) {
     case "dynamic_tool": {
       const { input, output, ...detail } = item;
-      // Reserve the required input:null field if output consumes the whole allowance.
-      const bytes = final ? PROVIDER_TOOL_RESULT_BYTES - 13 : PROVIDER_TOOL_INPUT_BYTES;
-      let result = boundProviderToolResult(
-        { ...(final && output !== undefined ? { output } : {}), input },
-        bytes,
-      );
-      const critical = final ? criticalToolResult(output) : undefined;
-      if (
-        critical !== undefined &&
-        Predicate.isObject(result) &&
-        (JSON.stringify(criticalToolResult(result.output)) !== JSON.stringify(critical) ||
-          JSON.stringify(compactDynamicToolOutput(result.output)) !==
-            JSON.stringify(compactDynamicToolOutput(critical)))
-      ) {
-        result = boundProviderToolResult(
-          { output: { ...critical, preview: output }, input },
-          bytes,
-        );
+      let result = final && output !== undefined ? boundToolResult(output) : undefined;
+      if (result?.truncated) {
+        const critical = criticalToolResult(output);
+        if (critical !== undefined)
+          result = boundToolResult({ ...critical, preview: result.value });
       }
       return {
         ...detail,
         title,
         toolName:
           item.toolName === null ? null : boundedString(item.toolName, PROVIDER_TOOL_DETAIL_BYTES),
-        input: Predicate.isObject(result) ? (result.input ?? null) : null,
-        ...(final && Predicate.isObject(result) && "output" in result
-          ? { output: result.output }
-          : {}),
+        input: boundProviderToolResult(input, PROVIDER_TOOL_INPUT_BYTES) ?? null,
+        ...(result === undefined ? {} : { output: result.value }),
       };
     }
     case "command_execution": {
