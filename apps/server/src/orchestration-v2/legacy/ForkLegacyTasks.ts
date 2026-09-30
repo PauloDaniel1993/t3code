@@ -7,12 +7,14 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { recordForkImportWarning } from "../../persistence/ForkImportDiagnostics.ts";
+import { forkLegacyMessageRoles } from "./ForkLegacyMessages.ts";
 
 const LegacyTask = Schema.Struct({
   title: Schema.String,
@@ -26,7 +28,11 @@ const LegacyTask = Schema.Struct({
     Schema.Struct({ summary: Schema.String, completedAt: Schema.DateTimeUtcFromString }),
   ),
   delivery: Schema.NullOr(
-    Schema.Struct({ state: Schema.Literals(["pending", "delivered", "skipped"]) }),
+    Schema.Struct({
+      state: Schema.Literals(["pending", "delivered", "skipped"]),
+      // When the result reached the parent. Kept loose so a bad value loses only this time.
+      updatedAt: Schema.optional(Schema.String),
+    }),
   ),
 });
 const decodeTask = Schema.decodeUnknownOption(Schema.fromJsonString(LegacyTask));
@@ -34,7 +40,9 @@ const decodeTask = Schema.decodeUnknownOption(Schema.fromJsonString(LegacyTask))
 /**
  * Native subagent/node/timeline records, with no invented run or pending delivery.
  * task_summary_json is a parent aggregate; derive each task from task_json instead
- * of assigning the parent's latest delivery time to every child.
+ * of assigning the parent's latest delivery time to every child. A delivered
+ * task's own delivery time becomes `deliveredAt`, the watermark V2 stamps when a
+ * provider accepts a result; the sidebar compares it with the parent's visits.
  */
 export const forkLegacyTaskEvents = Effect.fn("forkLegacyTaskEvents")(function* (
   child: OrchestrationV2AppThread,
@@ -62,6 +70,10 @@ export const forkLegacyTaskEvents = Effect.fn("forkLegacyTaskEvents")(function* 
         ? "failed"
         : "cancelled";
   const updatedAt = legacy?.finishedAt ?? legacy?.result?.completedAt ?? child.updatedAt;
+  const delivered = legacy?.delivery?.state === "delivered";
+  const deliveredAt = delivered
+    ? DateTime.make(legacy?.delivery?.updatedAt ?? "").pipe(Option.map(DateTime.formatIso))
+    : Option.none();
   const task: OrchestrationV2Subagent = {
     id,
     threadId: parent.id,
@@ -83,8 +95,9 @@ export const forkLegacyTaskEvents = Effect.fn("forkLegacyTaskEvents")(function* 
     completedAt: updatedAt,
     updatedAt,
     completionDelivery: {
-      state: legacy?.delivery?.state === "delivered" ? "delivered" : "disposed",
+      state: delivered ? "delivered" : "disposed",
       observedByRunId: null,
+      ...(Option.isSome(deliveredAt) ? { deliveredAt: deliveredAt.value } : {}),
     },
   };
   const events: OrchestrationV2DomainEvent[] = [];
@@ -144,7 +157,7 @@ export const forkLegacyTaskEvents = Effect.fn("forkLegacyTaskEvents")(function* 
   // Shell previews reserve only a few positions. Place task items after the FULL
   // legacy transcript so later background hydration can fill its original slots.
   const positions = yield* sql<{ ordinal: number }>`SELECT MAX(
-    (SELECT COUNT(*) FROM projection_thread_messages WHERE thread_id = ${parent.id} AND role IN ('user', 'assistant', 'reasoning')),
+    (SELECT COUNT(*) FROM projection_thread_messages WHERE thread_id = ${parent.id} AND ${sql.in("role", forkLegacyMessageRoles)}),
     COALESCE((SELECT MAX(ordinal) FROM orchestration_v2_turn_item_positions WHERE thread_id = ${parent.id} AND ordinal < 1000000), 0)
   ) + 1 AS ordinal`;
   events.push({

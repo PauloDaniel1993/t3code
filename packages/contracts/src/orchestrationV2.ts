@@ -471,6 +471,8 @@ export type OrchestrationV2DelegatedCompletionTaskDeliveryState =
 export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Struct({
   state: OrchestrationV2DelegatedCompletionTaskDeliveryState,
   observedByRunId: Schema.NullOr(RunId),
+  /** Last actual provider acceptance; independent of later task/status updates. */
+  deliveredAt: Schema.optional(IsoDateTime),
 });
 export type OrchestrationV2DelegatedCompletionTaskDelivery =
   typeof OrchestrationV2DelegatedCompletionTaskDelivery.Type;

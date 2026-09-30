@@ -17,6 +17,15 @@ import { repairForkTaskLinks } from "./ForkTaskLinkRepair.ts";
 import { TestLayer, seedThreads, stamp } from "./ForkDataCarryOver.testkit.ts";
 
 const end = "2026-01-01T00:08:00.000Z";
+const delivered = "2026-01-01T00:09:00Z";
+// The fork's per-task delivery; "failed" was delivered by a build that kept no time.
+const deliveries = {
+  finished: { state: "delivered", updatedAt: delivered },
+  failed: { state: "delivered" },
+  cancelled: { state: "skipped", updatedAt: delivered },
+  queued: null,
+  running: null,
+} as const;
 const statuses = ["finished", "failed", "cancelled", "queued", "running"] as const;
 const runtime = makeOrchestratorV2ReplayLayerWithRegistry(
   { name: "fork-task-records" },
@@ -40,7 +49,7 @@ it.effect(
           startedAt: stamp,
           finishedAt: status === "queued" || status === "running" ? null : end,
           result: status === "finished" ? { summary: "Result", completedAt: end } : null,
-          delivery: status === "finished" ? { state: "delivered" } : null,
+          delivery: deliveries[status],
         };
         yield* sql`UPDATE projection_threads SET task_json = ${yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(task)}, updated_at = ${end} WHERE thread_id = ${status}`;
       }
@@ -62,7 +71,12 @@ it.effect(
         assert.equal(DateTime.formatIso(task.completedAt!), end);
         assert.equal(
           task.completionDelivery?.state,
-          status === "finished" ? "delivered" : "disposed",
+          deliveries[status]?.state === "delivered" ? "delivered" : "disposed",
+        );
+        // Same ISO form V2's delegation writes; no time is invented where the fork had none.
+        assert.equal(
+          task.completionDelivery?.deliveredAt,
+          status === "finished" ? "2026-01-01T00:09:00.000Z" : undefined,
         );
         assert.isNull(task.runId);
         assert.isTrue(parent.nodes.some((node) => node.id === task.parentNodeId));
