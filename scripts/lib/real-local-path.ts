@@ -14,6 +14,24 @@ function existingRealPath(filePath: string): string {
   }
 }
 
+/**
+ * The one rule for Windows path segments, shared by the full-path guard and the relative-path
+ * check so the two cannot drift apart: Windows folds trailing dots and spaces away and treats a
+ * colon or `~1` as a stream or short name, so the spelling the user typed must not contain them.
+ */
+function assertPlainWindowsSegments(segments: ReadonlyArray<string>, filePath: string): void {
+  if (segments.some((segment) => /[. ]$/.test(segment))) {
+    throw new Error(
+      `Windows ignores trailing dots and spaces in ${filePath}. Use the real directory name.`,
+    );
+  }
+  if (segments.some((segment) => segment.includes(":") || /~\d/i.test(segment))) {
+    throw new Error(
+      `Refusing Windows short names or alternate data streams in ${filePath}. Use the real directory name.`,
+    );
+  }
+}
+
 function directoryIdentity(filePath: string): string | undefined {
   try {
     const stat = NodeFS.statSync(filePath, { bigint: true });
@@ -29,7 +47,9 @@ function directoryIdentity(filePath: string): string | undefined {
  * relative to the current directory, so make it a full path before the guard sees it. Only
  * `resolveRealLocalPath` decides whether that full path is acceptable; it stays strict so nothing
  * inside the app can pass it a relative path. Spellings that are not plainly relative (`/`
- * separators, `C:name`, `\name`, `\\?\`) are returned unchanged for the guard to refuse.
+ * separators, `C:name`, `\name`, `\\?\`) are returned unchanged for the guard to refuse. Resolving
+ * folds segments away, so the segments as typed are checked first; `.` and `..` are the ordinary
+ * relative forms, and the resolved result is still judged by the guard.
  */
 export function resolveCommandLinePath(
   value: string,
@@ -39,6 +59,10 @@ export function resolveCommandLinePath(
 ): string {
   if (platform !== "win32") return NodePath.posix.resolve(cwd, value);
   if (value.includes("/") || /^[a-z]:|^\\/i.test(value)) return value;
+  assertPlainWindowsSegments(
+    value.split("\\").filter((segment) => segment !== "." && segment !== ".."),
+    value,
+  );
   return NodePath.win32.resolve(cwd, value);
 }
 
@@ -61,17 +85,7 @@ export function resolveRealLocalPath(
         `A full path is required, not ${filePath}. Start it with a drive such as C:\\.`,
       );
     }
-    const segments = filePath.replace(/^[a-z]:/i, "").split("\\");
-    if (segments.some((segment) => /[. ]$/.test(segment))) {
-      throw new Error(
-        `Windows ignores trailing dots and spaces in ${filePath}. Use the real directory name.`,
-      );
-    }
-    if (segments.some((segment) => segment.includes(":") || /~\d/i.test(segment))) {
-      throw new Error(
-        `Refusing Windows short names or alternate data streams in ${filePath}. Use the real directory name.`,
-      );
-    }
+    assertPlainWindowsSegments(filePath.replace(/^[a-z]:/i, "").split("\\"), filePath);
   }
   // Filesystem aliases can only be resolved for the host platform.
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Only the current OS can resolve its filesystem aliases.

@@ -532,10 +532,47 @@ it("resolves relative directories against the working directory, then guards the
     assert.equal(viaEnvironment.stateDir, homeDir);
     await expect(assertCanonicalInstallPaths(viaEnvironment, homeDir)).rejects.toThrow(/live home/);
 
-    // A trailing dot or space in a segment stays refused, and the message names the full path.
-    for (const spelling of [".\\home.", ".\\home ", "sub.\\home"]) {
-      const fullPath = NodePath.join(cwd, spelling.replace(/^\.\\/, ""));
-      assert.throws(() => parse(spelling), Error, `trailing dots and spaces in ${fullPath}`);
+    // Segments Windows would fold away are refused as typed, including ones that `..` would cancel
+    // out of the resolved path, and the message names the path as typed.
+    for (const spelling of [
+      ".\\home.",
+      ".\\home ",
+      "sub.\\home",
+      "bad.\\..\\new-home",
+      "bad \\..\\new-home",
+      "T3LOCA~1\\..\\new-home",
+      "stream:name\\..\\new-home",
+    ]) {
+      assert.throws(() => parse(spelling), Error, `in ${spelling}.`);
+      assert.throws(() => parse("", { T3CODE_DESKTOP_LOCAL_STATE_DIR: spelling }));
+      const fromFlag = (flag: string) =>
+        parseInstallDesktopBuildArgs(
+          ["--install-dir", "installed", "--output-dir", "release", flag, spelling],
+          {},
+          cwd,
+          "win32",
+          homeDir,
+        );
+      assert.throws(() => fromFlag("--install-dir"));
+      assert.throws(() => fromFlag("--output-dir"));
+      assert.throws(() =>
+        parseInstallDesktopBuildArgs(
+          ["--output-dir", "release"],
+          { T3CODE_DESKTOP_INSTALL_DIR: spelling },
+          cwd,
+          "win32",
+          homeDir,
+        ),
+      );
+      assert.throws(() =>
+        parseInstallDesktopBuildArgs(
+          ["--install-dir", "installed"],
+          { T3CODE_DESKTOP_INSTALL_OUTPUT_DIR: spelling },
+          cwd,
+          "win32",
+          homeDir,
+        ),
+      );
     }
     // Spellings that are not plainly relative are still refused rather than reinterpreted.
     assert.throws(() => parse("I:home"), /full path is required/);

@@ -102,11 +102,35 @@ it("makes a relative command line path a full path against the working directory
   assert.equal(resolveCommandLinePath("D:\\full\\path", "win32", cwd), "D:\\full\\path");
   const unc = "\\\\server\\share\\home";
   assert.equal(resolveCommandLinePath(unc, "win32", cwd), unc);
-  // Segments the guard must still see are kept, not folded away.
-  assert.equal(resolveCommandLinePath("home.\\x", "win32", cwd), "C:\\work\\here\\home.\\x");
   // Not plainly relative: left for the guard to refuse.
   for (const candidate of ["I:home", "\\home", "sub/home", "\\\\?\\C:\\home"])
     assert.equal(resolveCommandLinePath(candidate, "win32", cwd), candidate);
+});
+
+it("refuses relative spellings the guard refuses, even when resolving would cancel them out", () => {
+  const cwd = "C:\\work\\here";
+  for (const candidate of [
+    "bad.\\child",
+    "bad \\child",
+    "bad.\\..\\new-home",
+    "bad \\..\\new-home",
+    ".\\bad.\\..\\new-home",
+    "trailing.",
+    "T3LOCA~1\\..\\new-home",
+    "short~1\\child",
+    "stream:name\\..\\new-home",
+    "dir\\file::$DATA\\..\\..\\new-home",
+    "...\\new-home",
+  ])
+    assert.throws(
+      () => resolveCommandLinePath(candidate, "win32", cwd),
+      /trailing dots and spaces|short names or alternate data streams/,
+      candidate,
+    );
+  // `.` and `..` as whole segments are the ordinary relative forms.
+  assert.equal(resolveCommandLinePath(".\\.\\a\\..\\b", "win32", cwd), "C:\\work\\here\\b");
+  assert.equal(resolveCommandLinePath("", "win32", cwd), cwd);
+  assert.equal(resolveCommandLinePath("..", "win32", cwd), "C:\\work");
 });
 
 it("keeps the guard strict about relative paths on Windows", () => {
