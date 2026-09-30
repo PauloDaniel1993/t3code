@@ -12,6 +12,7 @@ import {
   selectThreadPanelOpen,
   selectThreadPanelVisibility,
   selectThreadRightPanelState,
+  type ThreadRightPanelState,
   useRightPanelStore,
 } from "./rightPanelStore";
 
@@ -523,6 +524,82 @@ describe("rightPanelStore", () => {
         { id: "device", kind: "device" },
       ],
     });
+  });
+
+  it("opens the map as a singleton surface that reopening activates instead of duplicating", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    useRightPanelStore.getState().open(refA, "diff");
+    useRightPanelStore.getState().open(refA, "map");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "map",
+      surfaces: [
+        { id: "map", kind: "map" },
+        { id: "diff", kind: "diff" },
+      ],
+    });
+  });
+
+  it("closes the map like any other singleton and keeps it through persistence migration", () => {
+    useRightPanelStore.getState().open(refA, "map");
+    const persisted = JSON.parse(
+      JSON.stringify({ byThreadKey: useRightPanelStore.getState().byThreadKey }),
+    );
+    expect(
+      migratePersistedRightPanelState(persisted).byThreadKey["env-1:thread-A"]?.surfaces,
+    ).toEqual([{ id: "map", kind: "map" }]);
+
+    useRightPanelStore.getState().closeSurface(refA, "map");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
+  });
+
+  describe("hydrating a layout saved by another build", () => {
+    // Writes what the persist middleware would have stored, then hydrates from it, so the
+    // version-changing migration and the same-version path are the real ones.
+    const hydrateFrom = async (version: number, state: unknown) => {
+      const options = useRightPanelStore.persist.getOptions();
+      await options.storage?.setItem(options.name ?? "", { version, state: state as never });
+      await useRightPanelStore.persist.rehydrate();
+    };
+    const savedSurfaces = async (threadKey: string) => {
+      const options = useRightPanelStore.persist.getOptions();
+      const saved = (await options.storage?.getItem(options.name ?? ""))?.state as
+        | { byThreadKey: Record<string, ThreadRightPanelState> }
+        | undefined;
+      return saved?.byThreadKey[threadKey]?.surfaces;
+    };
+
+    // Version 13 is the fork's V1 build, which goes through `migrate`; 14 is this build's own.
+    it.each([13, 14])(
+      "keeps a surface this build does not know in what it saves (version %i)",
+      async (version) => {
+        await hydrateFrom(version, {
+          byThreadKey: {
+            "env-1:thread-A": {
+              isOpen: true,
+              activeSurfaceId: "map",
+              surfaces: [
+                { id: "future-tool", kind: "future-tool" },
+                { id: "map", kind: "map" },
+              ],
+            },
+          },
+        });
+
+        // Any later change saves the whole layout again.
+        useRightPanelStore.getState().open(refB, "diff");
+
+        expect(await savedSurfaces("env-1:thread-A")).toEqual([
+          { id: "future-tool", kind: "future-tool" },
+          { id: "map", kind: "map" },
+        ]);
+      },
+    );
   });
 
   it("keeps files as a singleton surface", () => {

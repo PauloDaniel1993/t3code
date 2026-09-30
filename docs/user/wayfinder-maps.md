@@ -27,11 +27,8 @@ Choose a map, then choose a star or list item to open its ticket. Use **Back** t
 Pressing `Escape` also moves back one level instead of closing the right panel. When a ticket names
 a blocker, choose that blocker to open its ticket.
 
-From a ticket, choose **Open as file** to open its source in the Files surface. Choose **Open as
-task** to start the task dialog with the ticket title and context already filled in. You can edit
-the brief, choose the model and reasoning level, and decide how much of the current thread the task
-should receive before creating it. The task action is available on top-level threads when thread
-tasks are enabled and supported by the connected environment.
+From a ticket, choose **Open as file** to open its source in the Files surface. **Open as task** is
+shown but not available yet.
 
 ## Read the Dependency Flow
 
@@ -77,6 +74,14 @@ in that mode the map remains static and does not animate.
 You can open the Map surface even when the current project has no wayfinder map. It shows **No
 wayfinder map in this project** until an agent creates one.
 
-If T3 Code finds a map but cannot read it, the surface shows the parsing warnings instead of the
-no-map message. If only part of a map can be read, the usable tickets still appear and the warnings
-remain available.
+If T3 Code finds a map whose markdown it cannot make sense of, the surface shows the parsing
+warnings instead of the no-map message. If only part of a map can be read, the usable tickets still
+appear and the warnings remain available. A map or ticket file that cannot be opened at all is skipped rather
+than reported.
+
+Maps behind links are not shown. A map or ticket reached through a symbolic link or a Windows
+junction is skipped, even when the link points to another folder in the same project. Keep maps in
+real folders under `.plan` or `.scratch`.
+
+Each connected app can keep a limited number of maps open at once. If the Map surface says that
+limit is reached, close map panels you no longer need and try again.

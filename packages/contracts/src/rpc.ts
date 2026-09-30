@@ -322,6 +322,7 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import { WAYFINDER_WS_METHODS, WayfinderRpcs } from "./wayfinderRpc.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -334,6 +335,8 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
   projectsMutate: "projects.mutate",
+
+  ...WAYFINDER_WS_METHODS,
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -1731,6 +1734,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
+  ...WayfinderRpcs,
   WsSubscribeWorktreeSetupRpc,
   WsWorktreeSetupCancelRpc,
   WsVcsPullRpc,
