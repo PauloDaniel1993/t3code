@@ -52,6 +52,8 @@ class Probe extends Context.Service<
     readonly held: Ref.Ref<HeldScans | null>;
     readonly heldCount: Ref.Ref<number>;
     readonly slowStat: Ref.Ref<SlowStat | null>;
+    /** The length, in milliseconds, of every sleep anything starts. */
+    readonly sleeps: Queue.Queue<number>;
   }
 >()("t3/wayfinder/WayfinderMapsRefresh.test/Probe") {
   static readonly layer = Layer.effect(
@@ -65,6 +67,7 @@ class Probe extends Context.Service<
         held: yield* Ref.make<HeldScans | null>(null),
         heldCount: yield* Ref.make(0),
         slowStat: yield* Ref.make<SlowStat | null>(null),
+        sleeps: yield* Queue.unbounded<number>(),
       };
     }),
   );
@@ -122,10 +125,29 @@ const observedFileSystem = Layer.effect(
   }),
 );
 
-// The observed FileSystem replaces the plain one for everything built on top of it.
+/** The test clock, reporting each sleep so a test knows when a scan waits on its interval. */
+const observedClock = Layer.effect(
+  Clock.Clock,
+  Effect.gen(function* () {
+    const clock = yield* Clock.Clock;
+    const probe = yield* Probe;
+    return {
+      ...clock,
+      sleep: (duration: Duration.Duration) =>
+        Queue.offer(probe.sleeps, Duration.toMillis(duration)).pipe(
+          Effect.andThen(clock.sleep(duration)),
+        ),
+    };
+  }),
+);
+
+// The observed FileSystem and Clock replace the plain ones for everything built on top.
 const platform = Layer.provideMerge(
   observedFileSystem,
-  Layer.mergeAll(NodeServices.layer, TestClock.layer(), Probe.layer),
+  Layer.provideMerge(
+    observedClock,
+    Layer.mergeAll(NodeServices.layer, TestClock.layer(), Probe.layer),
+  ),
 );
 const workspace = Layer.merge(platform, WorkspacePaths.layer.pipe(Layer.provide(platform)));
 const TestLayer = Layer.merge(workspace, WayfinderMaps.layer.pipe(Layer.provide(workspace)));
@@ -350,6 +372,40 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps refresh work",
       yield* Ref.set(probe.held, null);
 
       // Only the subscriber's scan and the one it was running when it left.
+      const scans = (yield* Ref.get(probe.scanStarts)).filter((scan) => scan.root === cwd);
+      expect(scans.map((scan) => scan.time - start)).toEqual([0, interval]);
+    }),
+  );
+
+  it.effect("keeps a folder's scans an interval apart when it is closed and reopened", () =>
+    Effect.gen(function* () {
+      const maps = yield* WayfinderMaps.WayfinderMaps;
+      const probe = yield* Probe;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem
+        .makeTempDirectoryScoped({ prefix: "t3code-wayfinder-reopen-" })
+        .pipe(Effect.flatMap((directory) => fileSystem.realPath(directory)));
+      // Both watched folders exist, so no watch sleeps between attempts to arm.
+      yield* writeText(cwd, ".plan/one/map.md", mapMarkdown("Reopen"));
+      yield* writeText(cwd, ".scratch/keep.txt", "x");
+      const interval = Duration.toMillis(WayfinderMaps.WAYFINDER_MAPS_DEFAULT_MIN_SCAN_INTERVAL);
+      const start = yield* Clock.currentTimeMillis;
+      // Closes the root, watches and all, once the first snapshot is in.
+      const openAndClose = maps.stream(cwd).pipe(Stream.runHead);
+
+      yield* openAndClose;
+      yield* Queue.clear(probe.sleeps);
+      const reopened = yield* Effect.forkChild(openAndClose);
+      const waitsOutInterval = Effect.gen(function* () {
+        while ((yield* Queue.take(probe.sleeps)) !== interval) {}
+        return true;
+      });
+      expect(
+        yield* Effect.raceFirst(waitsOutInterval, Fiber.join(reopened).pipe(Effect.as(false))),
+      ).toBe(true);
+      yield* TestClock.adjust(Duration.millis(interval));
+      yield* Fiber.join(reopened);
+
       const scans = (yield* Ref.get(probe.scanStarts)).filter((scan) => scan.root === cwd);
       expect(scans.map((scan) => scan.time - start)).toEqual([0, interval]);
     }),

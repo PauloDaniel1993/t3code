@@ -51,7 +51,10 @@ A scan is bounded in what it looks at as well as in what it keeps. Directory lis
 fixed number of entries, at most 128 candidate maps are probed, and a ticket folder is read up to a
 fixed entry count; reaching any of them marks the snapshot truncated. Scans of one root are
 coalesced and start at least a second apart, measured from when a scan actually starts, and two
-scans run at once across all roots.
+scans run at once across all roots. The last start is kept by real path outside the root, so
+closing and reopening a folder does not reset the spacing. That record holds only starts younger
+than the interval and at most 256 of them, so the spacing can lapse for a folder only when 256
+others start scans within that second.
 
 Roots are keyed by real path, so every spelling of a folder shares one root. A root lives only
 while a subscription holds it: it closes, watches and all, when its last subscriber leaves or that

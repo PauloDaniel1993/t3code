@@ -43,6 +43,8 @@ export const WAYFINDER_MAPS_MAX_CONCURRENT_SCANS = 2;
 // Admission: a root lives only while a subscription holds it, so this bounds what one
 // connection keeps watched and scanned.
 export const WAYFINDER_MAPS_MAX_SUBSCRIPTIONS_PER_CONNECTION = 16;
+// Scan starts remembered across a root's close and reopen; see `recordScanStart`.
+export const WAYFINDER_MAPS_MAX_RECENT_SCAN_STARTS = 256;
 export const WAYFINDER_MAPS_BOOTSTRAP_PROBE_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_MIN_SCAN_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_WATCH_DEBOUNCE = Duration.millis(100);
@@ -70,14 +72,34 @@ class WayfinderShared extends Context.Service<
      * so it never holds one: a root is here only while a subscription holds it.
      */
     readonly roots: Map<string, WayfinderMapsRootService>;
+    /**
+     * When each root's last scan started, by key, so closing and reopening a folder does not
+     * reset its spacing. Oldest first; see `recordScanStart` for the bound.
+     */
+    readonly lastScanStarts: Map<string, number>;
   }
 >()("t3/wayfinder/WayfinderMaps/WayfinderShared") {
   static readonly layer = Layer.effect(
     WayfinderShared,
     Semaphore.make(WAYFINDER_MAPS_MAX_CONCURRENT_SCANS).pipe(
-      Effect.map((scanGate) => ({ scanGate, roots: new Map() })),
+      Effect.map((scanGate) => ({ scanGate, roots: new Map(), lastScanStarts: new Map() })),
     ),
   );
+}
+
+/**
+ * Records that a scan of `key` started at `now`. A start older than `interval` no longer
+ * delays anything, so each call first drops those from the oldest end, and then the oldest
+ * until at most `WAYFINDER_MAPS_MAX_RECENT_SCAN_STARTS` remain. A root dropped while still
+ * recent can scan again sooner, which takes that many other roots scanning within one interval.
+ */
+function recordScanStart(starts: Map<string, number>, key: string, now: number, interval: number) {
+  starts.delete(key);
+  for (const [other, start] of starts) {
+    if (start + interval > now && starts.size < WAYFINDER_MAPS_MAX_RECENT_SCAN_STARTS) break;
+    starts.delete(other);
+  }
+  starts.set(key, now);
 }
 
 /** A new subscription was refused because its connection holds as many as it may. */
@@ -371,9 +393,9 @@ const rootLayer = (workspaceRoot: string) =>
       // Held only to swap the snapshot and publish it, and to subscribe against it.
       const publishMutex = yield* Semaphore.make(1);
       const scanMutex = yield* Semaphore.make(1);
+      const minScanIntervalMillis = Duration.toMillis(tuning.minScanInterval);
       const pendingScanRef = yield* Ref.make(Option.none<ScanDeferred>());
       const runningScanRef = yield* Ref.make(Option.none<ScanDeferred>());
-      const lastScanStartRef = yield* Ref.make(Option.none<number>());
       const watcherScope = yield* Scope.make("sequential");
       yield* Effect.addFinalizer(() =>
         Scope.close(watcherScope, Exit.void).pipe(Effect.andThen(PubSub.shutdown(changes))),
@@ -401,19 +423,18 @@ const rootLayer = (workspaceRoot: string) =>
       // the scan queue exactly one more, and that one waits a full interval from this start.
       const runPendingScan = scanMutex.withPermits(1)(
         Effect.gen(function* () {
-          const lastStart = yield* Ref.get(lastScanStartRef);
+          const lastStart = shared.lastScanStarts.get(workspaceRoot);
           const now = yield* Clock.currentTimeMillis;
-          const waitMillis = Option.match(lastStart, {
-            onNone: () => 0,
-            onSome: (start) => Math.max(0, start + Duration.toMillis(tuning.minScanInterval) - now),
-          });
+          const waitMillis =
+            lastStart === undefined ? 0 : Math.max(0, lastStart + minScanIntervalMillis - now);
           if (waitMillis > 0) {
             yield* Effect.sleep(Duration.millis(waitMillis));
           }
           yield* shared.scanGate.withPermits(1)(
             Effect.gen(function* () {
               yield* Ref.set(runningScanRef, yield* Ref.getAndSet(pendingScanRef, Option.none()));
-              yield* Ref.set(lastScanStartRef, Option.some(yield* Clock.currentTimeMillis));
+              const start = yield* Clock.currentTimeMillis;
+              recordScanStart(shared.lastScanStarts, workspaceRoot, start, minScanIntervalMillis);
               yield* scanAndPublish.pipe(Effect.ensuring(Ref.set(runningScanRef, Option.none())));
             }),
           );
