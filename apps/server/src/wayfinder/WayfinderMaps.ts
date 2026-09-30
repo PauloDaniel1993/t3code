@@ -44,7 +44,7 @@ export const WAYFINDER_MAPS_MAX_CONCURRENT_SCANS = 2;
 // Admission: what one server holds for all clients, and what one connection may hold of it.
 export const WAYFINDER_MAPS_MAX_LIVE_ROOTS = 32;
 export const WAYFINDER_MAPS_MAX_SUBSCRIPTIONS_PER_CONNECTION = 16;
-export const WAYFINDER_MAPS_DEFAULT_BOOTSTRAP_PROBE_INTERVAL = Duration.seconds(1);
+export const WAYFINDER_MAPS_BOOTSTRAP_PROBE_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_MIN_SCAN_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_WATCH_DEBOUNCE = Duration.millis(100);
 export const WAYFINDER_MAPS_IDLE_TIME_TO_LIVE = "1 minute";
@@ -84,10 +84,6 @@ export type WayfinderMapsError =
   | WorkspacePaths.WorkspaceRootNotDirectoryError
   | WorkspacePaths.WorkspacePathOutsideRootError;
 
-export interface WayfinderMapsStreamOptions {
-  readonly automaticBootstrapProbeInterval?: Effect.Effect<Duration.Duration, never>;
-}
-
 interface MapCandidate {
   readonly id: string;
   readonly mapRelativePath: string;
@@ -96,9 +92,10 @@ interface MapCandidate {
 
 interface WayfinderMapsRootService {
   readonly refresh: Effect.Effect<void, WorkspacePaths.WorkspacePathOutsideRootError>;
-  readonly stream: (
-    options?: WayfinderMapsStreamOptions,
-  ) => Stream.Stream<WayfinderMapsSnapshot, WorkspacePaths.WorkspacePathOutsideRootError>;
+  readonly stream: Stream.Stream<
+    WayfinderMapsSnapshot,
+    WorkspacePaths.WorkspacePathOutsideRootError
+  >;
 }
 
 class WayfinderMapsRoot extends Context.Service<WayfinderMapsRoot, WayfinderMapsRootService>()(
@@ -368,7 +365,6 @@ const rootLayer = (workspaceRoot: string) =>
       const pendingScanRef = yield* Ref.make(Option.none<ScanDeferred>());
       const runningScanRef = yield* Ref.make(Option.none<ScanDeferred>());
       const lastScanStartRef = yield* Ref.make(Option.none<number>());
-      const watcherStartedRef = yield* Ref.make(false);
       const watcherScope = yield* Scope.make("sequential");
       yield* Effect.addFinalizer(() =>
         Scope.close(watcherScope, Exit.void).pipe(Effect.andThen(PubSub.shutdown(changes))),
@@ -475,13 +471,9 @@ const rootLayer = (workspaceRoot: string) =>
        * Keeps one watch alive, re-arming it when its directory appears or the watch fails.
        * `armed` completes once the first attempt has either armed it or found nothing to watch.
        */
-      const superviseWatcher = (
-        spec: WatchSpec,
-        armed: Deferred.Deferred<void>,
-        sleepUntilNextProbe: Effect.Effect<void>,
-      ) => {
+      const superviseWatcher = (spec: WatchSpec, armed: Deferred.Deferred<void>) => {
         // After the first attempt, a new watch may have missed changes and must be followed
-        // by a scan. The first one precedes the subscriber's own first scan.
+        // by a scan. The first one precedes the root's first scan.
         let missedChanges = false;
         const attempt = Effect.gen(function* () {
           const directory = yield* spec.resolve;
@@ -513,7 +505,7 @@ const rootLayer = (workspaceRoot: string) =>
         return Effect.forever(
           attempt.pipe(
             Effect.andThen(Deferred.succeed(armed, undefined)),
-            Effect.andThen(sleepUntilNextProbe),
+            Effect.andThen(Effect.sleep(WAYFINDER_MAPS_BOOTSTRAP_PROBE_INTERVAL)),
           ),
         );
       };
@@ -533,47 +525,32 @@ const rootLayer = (workspaceRoot: string) =>
         ),
       );
 
-      /** Starts the watches once per root and returns when each has had its first attempt. */
-      const startWatcher = Effect.fn("WayfinderMaps.startWatcher")(function* (
-        options?: WayfinderMapsStreamOptions,
-      ) {
-        const shouldStart = yield* Ref.modify(watcherStartedRef, (started) => [!started, true]);
-        if (!shouldStart) {
-          return;
-        }
-        const probeInterval =
-          options?.automaticBootstrapProbeInterval ??
-          Effect.succeed(WAYFINDER_MAPS_DEFAULT_BOOTSTRAP_PROBE_INTERVAL);
-        const sleepUntilNextProbe = probeInterval.pipe(Effect.flatMap(Effect.sleep));
-        yield* scanOnChange.pipe(Effect.forkIn(watcherScope));
-        const armed = yield* Effect.forEach(watchSpecs, (spec) =>
-          Effect.gen(function* () {
-            const specArmed = yield* Deferred.make<void>();
-            yield* superviseWatcher(spec, specArmed, sleepUntilNextProbe).pipe(
-              Effect.forkIn(watcherScope),
-            );
-            return specArmed;
-          }),
-        );
-        yield* Effect.forEach(armed, Deferred.await, { discard: true });
-      });
+      // The root is built only once each watch has had its first attempt, so every subscriber
+      // and refresh reaches a root whose watches already exist and no change can fall between
+      // a watch and the first scan. Watch events turn into scans only from then on as well.
+      const armed = yield* Effect.forEach(watchSpecs, (spec) =>
+        Effect.gen(function* () {
+          const specArmed = yield* Deferred.make<void>();
+          yield* superviseWatcher(spec, specArmed).pipe(Effect.forkIn(watcherScope));
+          return specArmed;
+        }),
+      );
+      yield* Effect.forEach(armed, Deferred.await, { discard: true });
+      yield* scanOnChange.pipe(Effect.forkIn(watcherScope));
 
-      const stream: WayfinderMapsRootService["stream"] = (options) =>
-        Stream.unwrap(
-          Effect.gen(function* () {
-            // Watches exist before the first scan, so no change can fall between the two.
-            yield* startWatcher(options);
-            // The first scan must finish before the mutex is taken to subscribe: it publishes
-            // under the same mutex.
-            yield* latestSnapshot;
-            const subscription = yield* subscribeBeforeSnapshot(
-              changes,
-              Ref.get(snapshotRef).pipe(Effect.map(Option.getOrThrow)),
-              publishMutex,
-            );
-            return Stream.concat(Stream.make(subscription.latest), subscription.changes);
-          }),
-        );
+      const stream: WayfinderMapsRootService["stream"] = Stream.unwrap(
+        Effect.gen(function* () {
+          // The first scan must finish before the mutex is taken to subscribe: it publishes
+          // under the same mutex.
+          yield* latestSnapshot;
+          const subscription = yield* subscribeBeforeSnapshot(
+            changes,
+            Ref.get(snapshotRef).pipe(Effect.map(Option.getOrThrow)),
+            publishMutex,
+          );
+          return Stream.concat(Stream.make(subscription.latest), subscription.changes);
+        }),
+      );
 
       return WayfinderMapsRoot.of({ refresh: requestScan, stream });
     }),
@@ -592,10 +569,7 @@ export class WayfinderMaps extends Context.Service<
   WayfinderMaps,
   {
     readonly refresh: (cwd: string) => Effect.Effect<void, WayfinderMapsError>;
-    readonly stream: (
-      cwd: string,
-      options?: WayfinderMapsStreamOptions,
-    ) => Stream.Stream<WayfinderMapsSnapshot, WayfinderMapsError>;
+    readonly stream: (cwd: string) => Stream.Stream<WayfinderMapsSnapshot, WayfinderMapsError>;
   }
 >()("t3/wayfinder/WayfinderMaps") {}
 
@@ -639,11 +613,11 @@ export const make = Effect.gen(function* () {
     Effect.scoped,
   );
 
-  const stream: WayfinderMaps["Service"]["stream"] = (cwd, options) =>
+  const stream: WayfinderMaps["Service"]["stream"] = (cwd) =>
     Stream.unwrap(
       Effect.gen(function* () {
         const context = yield* acquireRoot(yield* rootKey(cwd));
-        return Context.get(context, WayfinderMapsRoot).stream(options);
+        return Context.get(context, WayfinderMapsRoot).stream;
       }),
     );
 

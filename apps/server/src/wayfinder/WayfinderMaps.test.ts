@@ -300,24 +300,20 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps", (it) => {
           const emissionsRef = yield* Ref.make<ReadonlyArray<WayfinderMapsSnapshot>>([]);
           const initialEmission = yield* Deferred.make<void>();
           const discoveredEmission = yield* Deferred.make<void>();
-          yield* maps
-            .stream(cwd, {
-              automaticBootstrapProbeInterval: Effect.succeed(Duration.seconds(1)),
-            })
-            .pipe(
-              Stream.runForEach((snapshot) =>
-                Ref.updateAndGet(emissionsRef, (emissions) => [...emissions, snapshot]).pipe(
-                  Effect.flatMap((emissions) =>
-                    emissions.length === 1
-                      ? Deferred.succeed(initialEmission, undefined).pipe(Effect.ignore)
-                      : emissions.length === 2
-                        ? Deferred.succeed(discoveredEmission, undefined).pipe(Effect.ignore)
-                        : Effect.void,
-                  ),
+          yield* maps.stream(cwd).pipe(
+            Stream.runForEach((snapshot) =>
+              Ref.updateAndGet(emissionsRef, (emissions) => [...emissions, snapshot]).pipe(
+                Effect.flatMap((emissions) =>
+                  emissions.length === 1
+                    ? Deferred.succeed(initialEmission, undefined).pipe(Effect.ignore)
+                    : emissions.length === 2
+                      ? Deferred.succeed(discoveredEmission, undefined).pipe(Effect.ignore)
+                      : Effect.void,
                 ),
               ),
-              Effect.forkScoped,
-            );
+            ),
+            Effect.forkScoped,
+          );
           yield* Deferred.await(initialEmission);
           yield* Effect.yieldNow;
 

@@ -39,17 +39,9 @@ export const makeWayfinderRpcHandlers = Effect.gen(function* () {
   );
 
   const subscribe = (input: WayfinderMapsInput) =>
-    Stream.unwrap(
-      takeSlot.pipe(
-        Effect.as(
-          wayfinderMaps.stream(input.cwd, {
-            automaticBootstrapProbeInterval: Effect.succeed(
-              WayfinderMaps.WAYFINDER_MAPS_DEFAULT_BOOTSTRAP_PROBE_INTERVAL,
-            ),
-          }),
-        ),
-      ),
-    ).pipe(Stream.mapError((cause) => toWayfinderMapsRpcError(input.cwd, cause)));
+    Stream.unwrap(takeSlot.pipe(Effect.as(wayfinderMaps.stream(input.cwd)))).pipe(
+      Stream.mapError((cause) => toWayfinderMapsRpcError(input.cwd, cause)),
+    );
 
   const refresh = (input: WayfinderMapsInput) =>
     wayfinderMaps.refresh(input.cwd).pipe(

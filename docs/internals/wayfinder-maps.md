@@ -43,8 +43,9 @@ Agents write thousands of unrelated files under `.scratch`, so the watches use N
 directly rather than `FileSystem.watch`, which stats every renamed path and queues every event
 before any filter runs. Each event is checked against `wayfinderPathKind`, the same rule discovery
 uses for names, and a relevant one fills a single pending slot per root. A folder's `change` events
-are ignored: on Windows they are timestamp updates caused by the files inside. The watches exist
-before a root's first scan, so no change can fall between the two.
+are ignored: on Windows they are timestamp updates caused by the files inside. A root is ready only
+once its watches are armed, and every subscriber and refresh waits for that, so no scan precedes the
+watches and no change can fall between them and the first scan.
 
 A scan is bounded in what it looks at as well as in what it keeps. Directory listings stop at a
 fixed number of entries, at most 128 candidate maps are probed, and a ticket folder is read up to a

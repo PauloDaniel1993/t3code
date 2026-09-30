@@ -27,6 +27,13 @@ interface HeldScans {
   readonly release: Deferred.Deferred<void>;
 }
 
+/** The next stat of `path` takes `delay` of virtual time, after signalling `entered`. */
+interface SlowStat {
+  readonly path: string;
+  readonly delay: Duration.Duration;
+  readonly entered: Deferred.Deferred<void>;
+}
+
 /**
  * What the observed file system has seen. A scan looks every candidate's `map.md` and
  * `.plan/maps` up through `realPath`, and each `refresh` call stats the real workspace root
@@ -44,6 +51,7 @@ class Probe extends Context.Service<
     readonly scanStarts: Ref.Ref<ReadonlyArray<{ readonly root: string; readonly time: number }>>;
     readonly held: Ref.Ref<HeldScans | null>;
     readonly heldCount: Ref.Ref<number>;
+    readonly slowStat: Ref.Ref<SlowStat | null>;
   }
 >()("t3/wayfinder/WayfinderMapsRefresh.test/Probe") {
   static readonly layer = Layer.effect(
@@ -56,6 +64,7 @@ class Probe extends Context.Service<
         scanStarts: yield* Ref.make<ReadonlyArray<{ root: string; time: number }>>([]),
         held: yield* Ref.make<HeldScans | null>(null),
         heldCount: yield* Ref.make(0),
+        slowStat: yield* Ref.make<SlowStat | null>(null),
       };
     }),
   );
@@ -92,8 +101,17 @@ const observedFileSystem = Layer.effect(
               )
             : fileSystem.realPath(path),
       stat: (path) =>
-        fileSystem
-          .stat(path)
+        Ref.getAndUpdate(probe.slowStat, (slow) => (slow?.path === path ? null : slow))
+          .pipe(
+            Effect.flatMap((slow) =>
+              slow?.path === path
+                ? Deferred.succeed(slow.entered, undefined).pipe(
+                    Effect.andThen(Effect.sleep(slow.delay)),
+                  )
+                : Effect.void,
+            ),
+            Effect.andThen(fileSystem.stat(path)),
+          )
           .pipe(
             Effect.tap(() =>
               Ref.get(probe.workspaceRoot).pipe(
@@ -280,6 +298,49 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps refresh work",
       for (let index = 1; index < victimStarts.length; index++) {
         expect(victimStarts[index]! - victimStarts[index - 1]!).toBeGreaterThanOrEqual(interval);
       }
+    }),
+  );
+
+  it.effect("starts no scan, for any subscriber, before the root's watches are armed", () =>
+    Effect.gen(function* () {
+      const maps = yield* WayfinderMaps.WayfinderMaps;
+      const probe = yield* Probe;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem
+        .makeTempDirectoryScoped({ prefix: "t3code-wayfinder-arm-" })
+        .pipe(Effect.flatMap((directory) => fileSystem.realPath(directory)));
+      yield* writeText(cwd, ".scratch/eff/map.md", mapMarkdown("Before"));
+      const armingTime = Duration.seconds(5);
+      const entered = yield* Deferred.make<void>();
+      // Arming the `.scratch` watch takes `armingTime` of virtual time.
+      yield* Ref.set(probe.slowStat, {
+        path: path.join(cwd, ".scratch"),
+        delay: armingTime,
+        entered,
+      });
+      yield* Ref.set(probe.workspaceRoot, cwd);
+      const start = yield* Clock.currentTimeMillis;
+      const firstTitles = maps.stream(cwd).pipe(
+        Stream.runHead,
+        Effect.map((snapshot) => Option.getOrThrow(snapshot).maps.map((map) => map.title)),
+        Effect.forkChild,
+      );
+
+      const first = yield* firstTitles;
+      yield* Deferred.await(entered);
+      yield* Queue.clear(probe.rootStatted);
+      const second = yield* firstTitles;
+      // The second subscriber's last file-system call before it asks for the root.
+      yield* Queue.take(probe.rootStatted);
+      // The edit lands before the watch exists, so only a scan made after it can see it.
+      yield* writeText(cwd, ".scratch/eff/map.md", mapMarkdown("After"));
+      yield* TestClock.adjust(armingTime);
+
+      expect(yield* Fiber.join(first)).toEqual(["After"]);
+      expect(yield* Fiber.join(second)).toEqual(["After"]);
+      const scans = (yield* Ref.get(probe.scanStarts)).filter((scan) => scan.root === cwd);
+      expect(scans.map((scan) => scan.time - start)).toEqual([Duration.toMillis(armingTime)]);
     }),
   );
 });
