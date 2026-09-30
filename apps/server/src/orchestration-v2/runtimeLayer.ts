@@ -25,6 +25,7 @@ import { layerFromStores as eventSinkLayer } from "./EventSink.ts";
 import { layerFromOrchestrationEventStore as eventStoreLayer } from "./EventStore.ts";
 import { layer as idAllocatorLayer } from "./IdAllocator.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
+// fork(ticket-28:task-links): restores V1 task parent links after the shell import.
 import * as ForkTaskLinkRepair from "./legacy/ForkTaskLinkRepair.ts";
 import { layer as orchestratorLayer } from "./Orchestrator.ts";
 import { layer as projectionStoreLayer } from "./ProjectionStore.ts";
@@ -292,6 +293,7 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
   providerRuntimeRecoveryProvided,
   projectionMaintenanceProvided,
   legacyV1ThreadImporterProvided,
+  // fork(ticket-28:task-links): shares the runtime's event sink and projection store.
   ForkTaskLinkRepair.layer.pipe(
     Layer.provide(Layer.merge(eventSinkProvided, projectionStoreLayer)),
   ),

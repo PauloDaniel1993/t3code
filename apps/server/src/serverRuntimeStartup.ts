@@ -32,6 +32,7 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
+// fork(ticket-28:task-links): repair runs between the shell import and recovery.
 import { ForkTaskLinkRepair } from "./orchestration-v2/legacy/ForkTaskLinkRepair.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -413,6 +414,7 @@ const make = (options?: StartupOptions) =>
     const serverConfig = yield* ServerConfig.ServerConfig;
     const keybindings = yield* Keybindings.Keybindings;
     const legacyV1ThreadImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+    // fork(ticket-28:task-links)
     const forkTaskLinkRepair = yield* ForkTaskLinkRepair;
     const providerRuntimeRecovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -510,6 +512,7 @@ const make = (options?: StartupOptions) =>
             ),
           ),
         ),
+        // fork(ticket-28:task-links): lineage must exist before recovery sees it; V2 treats it as immutable.
         recover: runStartupPhase(
           "orchestration-v2.fork-task-links",
           forkTaskLinkRepair.repair,
