@@ -12,8 +12,10 @@ import * as DateTime from "effect/DateTime";
 import { SqlError, ConnectionError } from "effect/unstable/sql/SqlError";
 import * as TestClock from "effect/testing/TestClock";
 import * as Queue from "effect/Queue";
+import * as Option from "effect/Option";
 import {
   EventId,
+  CommandId,
   MessageId,
   ThreadId,
   TurnItemId,
@@ -45,7 +47,7 @@ import {
   findReadableAttachment,
   referencedAttachmentPaths,
 } from "./AttachmentReferences.ts";
-import { layer as outboxLayer } from "./EffectOutbox.ts";
+import { EffectOutboxV2, layer as outboxLayer } from "./EffectOutbox.ts";
 
 const fixture = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -85,6 +87,32 @@ const smallFixture = Effect.gen(function* () {
 });
 
 describe("attachment reference index", () => {
+  it.effect(
+    "signals workers and releases parked cleanup on startup even with a complete index",
+    () =>
+      Effect.gen(function* () {
+        yield* smallFixture;
+        const outbox = yield* EffectOutboxV2;
+        yield* outbox.enqueue([
+          {
+            id: "parked-before-restart",
+            commandId: CommandId.make("cleanup"),
+            threadId: ThreadId.make("thread-0"),
+            availableAt: DateTime.makeUnsafe("9999-12-31T23:59:59.999Z"),
+            request: { type: "attachment.cleanup", attachmentIds: ["absent"] },
+          },
+        ]);
+        expect(
+          Option.isNone(yield* outbox.claimNext({ workerId: "worker", leaseDurationMs: 1000 })),
+        ).toBe(true);
+        yield* startAttachmentReferenceIndex();
+        yield* outbox.awaitAvailable;
+        yield* awaitAttachmentReferenceIndex();
+        const claimed = yield* outbox.claimNext({ workerId: "worker", leaseDurationMs: 1000 });
+        expect(Option.isSome(claimed)).toBe(true);
+        if (Option.isSome(claimed)) expect(claimed.value.id).toBe("parked-before-restart");
+      }).pipe(Effect.provide(testLayer)),
+  );
   it.effect(
     "repairs runtime damage from another connection when the deletion gate notices it",
     () =>

@@ -308,7 +308,7 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
 );
 
 export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
-  Layer.effectDiscard(startAttachmentReferenceIndex()),
+  Layer.effectDiscard(startAttachmentReferenceIndex()).pipe(Layer.provide(effectOutboxLayer)),
   OrchestrationV2LayerLive.pipe(Layer.provide(ProjectServiceLayerLive)),
   ProjectServiceLayerLive,
   threadLaunchProvided,

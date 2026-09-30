@@ -707,6 +707,7 @@ export const layerWithOptions = (
               });
             const rescheduled = yield* deferAttachmentCleanup(effect.id, workerId, error).pipe(
               Effect.provideService(SqlClient.SqlClient, attachmentSql.value),
+              Effect.provideService(EffectOutboxV2, outbox),
               Effect.onError((cause) => requeueClaim(effect, cause)),
             );
             if (!rescheduled && !(yield* wasCancelled(effect.id)))
