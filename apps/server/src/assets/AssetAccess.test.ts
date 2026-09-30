@@ -1009,7 +1009,7 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("issues project favicon capabilities for a saved override", () =>
+  it.effect("issues project favicon capabilities with forward-slash workspace paths", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -1025,8 +1025,14 @@ describe("AssetAccess", () => {
         projectFaviconPath: "brand/custom.svg",
       });
 
-      expect(result.sourcePath).toBe(path.join("brand", "custom.svg"));
+      expect(result.sourcePath).toBe("brand/custom.svg");
       expect(result.relativeUrl).toMatch(/\/v[0-9a-f]{64}-custom\.svg$/);
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separator = suffix.indexOf("/");
+      expect(yield* resolveAsset(suffix.slice(0, separator), suffix.slice(separator + 1))).toEqual({
+        kind: "file",
+        path: yield* fileSystem.realPath(path.join(root, "brand", "custom.svg")),
+      });
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -1084,7 +1090,7 @@ describe("AssetAccess", () => {
         projectFaviconPath: "brand/saved.svg",
       });
 
-      expect(result.sourcePath).toBe(path.join("brand", "saved.svg"));
+      expect(result.sourcePath).toBe("brand/saved.svg");
       expect(result.relativeUrl).toMatch(/\/v[0-9a-f]{64}-saved\.svg$/);
     }).pipe(Effect.provide(testLayer)),
   );
