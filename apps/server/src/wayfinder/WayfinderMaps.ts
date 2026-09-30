@@ -59,13 +59,24 @@ export class WayfinderMapsTuning extends Context.Reference<{
   }),
 }) {}
 
-/** Scans running at once across every root, so rotating `cwd` cannot fan out disk work. */
-class WayfinderScanGate extends Context.Service<WayfinderScanGate, Semaphore.Semaphore>()(
-  "t3/wayfinder/WayfinderMaps/WayfinderScanGate",
-) {
+/** What every root shares, server-wide. */
+class WayfinderShared extends Context.Service<
+  WayfinderShared,
+  {
+    /** Scans running at once across every root, so rotating `cwd` cannot fan out disk work. */
+    readonly scanGate: Semaphore.Semaphore;
+    /**
+     * Built roots by key. A refresh finds its root here rather than through the `LayerMap`,
+     * so it never holds one: a root is here only while a subscription holds it.
+     */
+    readonly roots: Map<string, WayfinderMapsRootService>;
+  }
+>()("t3/wayfinder/WayfinderMaps/WayfinderShared") {
   static readonly layer = Layer.effect(
-    WayfinderScanGate,
-    Semaphore.make(WAYFINDER_MAPS_MAX_CONCURRENT_SCANS),
+    WayfinderShared,
+    Semaphore.make(WAYFINDER_MAPS_MAX_CONCURRENT_SCANS).pipe(
+      Effect.map((scanGate) => ({ scanGate, roots: new Map() })),
+    ),
   );
 }
 
@@ -229,7 +240,7 @@ const rootLayer = (workspaceRoot: string) =>
       const path = yield* Path.Path;
       const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
       const tuning = yield* WayfinderMapsTuning;
-      const scanGate = yield* WayfinderScanGate;
+      const shared = yield* WayfinderShared;
       const files = yield* makeWayfinderFiles(workspaceRoot);
 
       const resolveRelativePath = (relativePath: string) =>
@@ -399,7 +410,7 @@ const rootLayer = (workspaceRoot: string) =>
           if (waitMillis > 0) {
             yield* Effect.sleep(Duration.millis(waitMillis));
           }
-          yield* scanGate.withPermits(1)(
+          yield* shared.scanGate.withPermits(1)(
             Effect.gen(function* () {
               yield* Ref.set(runningScanRef, yield* Ref.getAndSet(pendingScanRef, Option.none()));
               yield* Ref.set(lastScanStartRef, Option.some(yield* Clock.currentTimeMillis));
@@ -420,10 +431,10 @@ const rootLayer = (workspaceRoot: string) =>
           );
           const pending = Option.getOrElse(claimed, () => fresh);
           if (Option.isNone(claimed)) {
-            yield* runPendingScan.pipe(
-              Effect.onExit((exit) => Deferred.done(pending, exit)),
-              Effect.forkIn(watcherScope),
-            );
+            const scan = yield* runPendingScan.pipe(Effect.forkIn(watcherScope));
+            // An observer, unlike `onExit`, also sees a scan interrupted before it started,
+            // as one forked while the root closes is. Its waiters must not wait forever.
+            scan.addObserver((exit) => Deferred.doneUnsafe(pending, exit));
           }
           return yield* restore(Deferred.await(pending));
         }),
@@ -550,15 +561,23 @@ const rootLayer = (workspaceRoot: string) =>
         }),
       );
 
-      return WayfinderMapsRoot.of({ refresh: requestScan, stream });
+      const service = WayfinderMapsRoot.of({ refresh: requestScan, stream });
+      // Listed once built; delisted first on close, before the watches and scans stop.
+      shared.roots.set(workspaceRoot, service);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (shared.roots.get(workspaceRoot) === service) shared.roots.delete(workspaceRoot);
+        }),
+      );
+      return service;
     }),
   );
 
+// `WayfinderShared` is not among the dependencies: `make` needs the same instance.
 export class WayfinderMapsMap extends LayerMap.Service<WayfinderMapsMap>()(
   "t3/wayfinder/WayfinderMapsMap",
   {
     lookup: rootLayer,
-    dependencies: [WayfinderScanGate.layer],
     // No idle time-to-live: a root closes, watches and all, when its last subscription ends.
   },
 ) {}
@@ -574,6 +593,7 @@ export class WayfinderMaps extends Context.Service<
 export const make = Effect.gen(function* () {
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const maps = yield* WayfinderMapsMap;
+  const shared = yield* WayfinderShared;
 
   // Roots are keyed by real path, so every spelling of one folder (letter case, a link to
   // it) shares one set of watches, one throttle and one scan. A path that cannot be resolved
@@ -584,16 +604,20 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((root) => workspacePaths.normalizeWorkspaceRoot(root)),
     );
 
-  // A refresh only rescans a root someone is subscribed to: it never creates or revives one,
-  // and holds it only while its own scan runs.
+  // A refresh rescans only a root with a subscriber when it arrives, and never holds it. For
+  // a root with none, or one that closes during the scan, it does nothing and succeeds, as it
+  // does for a folder with no maps.
   const refresh: WayfinderMaps["Service"]["refresh"] = Effect.fn("WayfinderMaps.refresh")(
     function* (cwd) {
-      const context = yield* maps.contextEffectOption(yield* rootKey(cwd));
-      if (Option.isSome(context)) {
-        yield* Context.get(context.value, WayfinderMapsRoot).refresh;
+      const root = shared.roots.get(yield* rootKey(cwd));
+      if (root) {
+        yield* root.refresh.pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause) ? Effect.void : Effect.failCause(cause),
+          ),
+        );
       }
     },
-    Effect.scoped,
   );
 
   const stream: WayfinderMaps["Service"]["stream"] = (cwd) =>
@@ -607,4 +631,7 @@ export const make = Effect.gen(function* () {
   return WayfinderMaps.of({ refresh, stream });
 });
 
-export const layer = Layer.effect(WayfinderMaps, make).pipe(Layer.provide(WayfinderMapsMap.layer));
+export const layer = Layer.effect(WayfinderMaps, make).pipe(
+  Layer.provide(WayfinderMapsMap.layer),
+  Layer.provide(WayfinderShared.layer),
+);

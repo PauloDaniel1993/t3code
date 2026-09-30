@@ -309,6 +309,52 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps refresh work",
     }),
   );
 
+  it.effect("lets no refresh keep a root open once its last subscriber leaves", () =>
+    Effect.gen(function* () {
+      const maps = yield* WayfinderMaps.WayfinderMaps;
+      const probe = yield* Probe;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem
+        .makeTempDirectoryScoped({ prefix: "t3code-wayfinder-relay-" })
+        .pipe(Effect.flatMap((directory) => fileSystem.realPath(directory)));
+      yield* writeText(cwd, "wayfinder-map.md", mapMarkdown("Relay"));
+      const interval = Duration.toMillis(WayfinderMaps.WAYFINDER_MAPS_DEFAULT_MIN_SCAN_INTERVAL);
+      const start = yield* Clock.currentTimeMillis;
+      const first = yield* Deferred.make<void>();
+      const subscriber = yield* maps.stream(cwd).pipe(
+        Stream.runForEach(() => Deferred.succeed(first, undefined)),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(first);
+
+      // One refresh's scan is held while it runs; a second asks for the scan after it.
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Ref.set(probe.heldCount, 0);
+      yield* Ref.set(probe.held, { roots: [cwd], entered, release });
+      yield* TestClock.adjust(Duration.millis(interval));
+      const running = yield* Effect.forkChild(maps.refresh(cwd));
+      yield* Deferred.await(entered);
+      yield* Ref.set(probe.workspaceRoot, cwd);
+      yield* Queue.clear(probe.rootStatted);
+      const queued = yield* Effect.forkChild(maps.refresh(cwd));
+      yield* Queue.take(probe.rootStatted);
+
+      // The subscriber leaves while both refreshes wait, then a third refresh arrives.
+      yield* Fiber.interrupt(subscriber);
+      const late = yield* Effect.forkChild(maps.refresh(cwd));
+      yield* Deferred.succeed(release, undefined);
+      yield* TestClock.adjust(Duration.millis(10 * interval));
+      yield* Fiber.joinAll([running, queued, late]);
+      yield* maps.refresh(cwd);
+      yield* Ref.set(probe.held, null);
+
+      // Only the subscriber's scan and the one it was running when it left.
+      const scans = (yield* Ref.get(probe.scanStarts)).filter((scan) => scan.root === cwd);
+      expect(scans.map((scan) => scan.time - start)).toEqual([0, interval]);
+    }),
+  );
+
   it.effect("starts no scan, for any subscriber, before the root's watches are armed", () =>
     Effect.gen(function* () {
       const maps = yield* WayfinderMaps.WayfinderMaps;

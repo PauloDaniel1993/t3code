@@ -55,7 +55,9 @@ scans run at once across all roots.
 
 Roots are keyed by real path, so every spelling of a folder shares one root. A root lives only
 while a subscription holds it: it closes, watches and all, when its last subscriber leaves or that
-subscriber's connection closes, and a refresh never creates or revives one. A connection holds at
+subscriber's connection closes. A refresh never creates, revives or holds one: it rescans only a
+root that has a subscriber when it arrives, and one whose root closes during the scan ends as a
+refresh of a folder with no maps does. A connection holds at
 most 16 subscriptions; past that a subscription fails with `capacity_reached`, which the panel
 shows. There is deliberately no server-wide cap: roots are released promptly and the scan gate
 bounds disk work across clients, so a server cap would only let one client shut the others out.
