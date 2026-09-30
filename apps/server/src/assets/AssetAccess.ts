@@ -56,32 +56,6 @@ import { openMediaFile, readMediaFileHeader, type OpenMediaFile } from "./MediaF
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 
-export function toWellFormedUnicode(value: string): string {
-  const toWellFormed = String.prototype.toWellFormed;
-  if (typeof toWellFormed === "function") {
-    return toWellFormed.call(value);
-  }
-
-  let normalized = "";
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const nextCodeUnit = value.charCodeAt(index + 1);
-      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
-        normalized += value[index]! + value[index + 1]!;
-        index += 1;
-      } else {
-        normalized += "�";
-      }
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      normalized += "�";
-    } else {
-      normalized += value[index]!;
-    }
-  }
-  return normalized;
-}
-
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;
@@ -549,10 +523,11 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       const attachmentPath = resolveAttachmentPathById({
         attachmentsDir: config.attachmentsDir,
         attachmentId: input.resource.attachmentId,
-        ...(input.resource.threadId !== undefined ? { threadId: input.resource.threadId } : {}),
       });
       if (!attachmentPath) {
-        return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
+        return yield* new AssetAttachmentNotFoundError({
+          resource: input.resource,
+        });
       }
       // Generic files carry their extension inside the attachment id (that
       // shape resolves the on-disk path); images do not. Videos and images
@@ -615,9 +590,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         path.isAbsolute(input.projectFaviconPath) &&
         path.normalize(faviconPath) === path.normalize(input.projectFaviconPath);
       const relativePath =
-        faviconPath && !isExternalOverride
-          ? path.relative(workspaceRoot, faviconPath).replaceAll("\\", "/")
-          : null;
+        faviconPath && !isExternalOverride ? path.relative(workspaceRoot, faviconPath) : null;
       const sourceFaviconPath = isExternalOverride ? faviconPath : relativePath;
       if (sourceFaviconPath && !isWorkspaceImagePreviewPath(sourceFaviconPath)) {
         return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
@@ -740,7 +713,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   const encodedPayload = base64UrlEncode(encodeAssetClaims(claims));
   const token = `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
   return {
-    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(toWellFormedUnicode(fileName))}`,
+    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(fileName)}`,
     expiresAt,
     ...(sourcePath !== undefined ? { sourcePath } : {}),
     ...(imageDimensions !== null ? { imageDimensions } : {}),

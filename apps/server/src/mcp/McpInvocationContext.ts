@@ -8,7 +8,14 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview" | "tasks" | "device" | "pull-requests";
+const ALL_MCP_CAPABILITIES = [
+  "preview",
+  "orchestration",
+  "worktree",
+  "device",
+  "pull-requests",
+] as const;
+export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;
@@ -23,17 +30,6 @@ export class McpInvocationContext extends Context.Service<
   McpInvocationContext,
   McpInvocationScope
 >()("t3/mcp/McpInvocationContext") {}
-
-/**
- * Resolve the invocation scope, or `null` when it does not grant `capability`.
- * Callers may map the null case onto their own toolkit's failure schema.
- */
-export const scopeWithCapability = Effect.fn("mcp.scopeWithCapability")(function* (
-  capability: McpCapability,
-) {
-  const invocation = yield* McpInvocationContext;
-  return invocation.capabilities.has(capability) ? invocation : null;
-});
 
 /** The error a missing capability surfaces as; preview keeps its own so the broker can route it. */
 export type McpCapabilityError<C extends McpCapability> = C extends "preview"

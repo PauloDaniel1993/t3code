@@ -27,6 +27,7 @@ import {
   threadDropLifecycle,
 } from "../threads/threadOrder";
 import { getThreadListV2OrderedSection } from "../threads/threadListV2";
+import { threadCanArchive } from "./threadArchive";
 import { resolveThreadTitleRename } from "../threads/thread-title-rename";
 
 /** Version skew: never send settle/unsettle to a server that predates them
@@ -140,11 +141,7 @@ function useThreadActionExecutor(
         }
         // Archive keeps its original, narrower guard: never interrupt a
         // thread mid-turn.
-        if (
-          action === "archive" &&
-          thread.session?.status === "running" &&
-          thread.session.activeTurnId != null
-        ) {
+        if (action === "archive" && !threadCanArchive(thread.runtime)) {
           Alert.alert(
             actionFailureTitle(action),
             "This thread is working. Interrupt it first, then try again.",
@@ -386,10 +383,6 @@ export function useThreadListActions(): {
   );
   const pinThread = useCallback(
     async (thread: EnvironmentThreadShell) => {
-      // Task children belong to their parent's nested group. Pinning one can
-      // strand it in a second lifecycle/order, so only stale pins may be
-      // cleaned up through unpinThread.
-      if (thread.parentThreadId != null) return false;
       if (!environmentSupportsPinning(thread.environmentId)) {
         Alert.alert(
           "Could not pin thread",
@@ -405,9 +398,7 @@ export function useThreadListActions(): {
         const shells = appAtomRegistry.get(environmentThreadShells.threadShellsAtom);
         let firstKey: string | null = null;
         for (const shell of shells) {
-          if (shell.parentThreadId != null || shell.pinnedAt == null || shell.pinOrderKey == null) {
-            continue;
-          }
+          if (shell.pinnedAt == null || shell.pinOrderKey == null) continue;
           if (firstKey === null || shell.pinOrderKey < firstKey) firstKey = shell.pinOrderKey;
         }
         orderKey = pinOrderKeyBetween(null, firstKey) ?? undefined;
@@ -587,9 +578,6 @@ export function useThreadListActions(): {
         (row) => row.id === thread.id && row.environmentId === thread.environmentId,
       );
       if (!current || current.archivedAt !== null) return false;
-      // Persisted child tasks live in their parent's hierarchy and never
-      // participate in a top-level arranged section.
-      if (current.parentThreadId != null) return false;
       thread = current;
       const section =
         typeof direction === "object" && direction.section !== undefined
@@ -620,9 +608,8 @@ export function useThreadListActions(): {
         );
         return false;
       }
-      const topLevelShells = shells.filter((shell) => shell.parentThreadId == null);
       const ordered = getThreadListV2OrderedSection({
-        threads: topLevelShells,
+        threads: shells,
         section,
         now: new Date().toISOString(),
         queuedThreadKeys: appAtomRegistry.get(queuedThreadKeysAtom),
@@ -638,7 +625,7 @@ export function useThreadListActions(): {
         ),
       });
       const assignments = createThreadMovePlanner({
-        allThreads: topLevelShells,
+        allThreads: shells,
         ordered,
         section,
         reorderableEnvironmentIds: new Set([...configs.keys()].filter(supportsReorder)),

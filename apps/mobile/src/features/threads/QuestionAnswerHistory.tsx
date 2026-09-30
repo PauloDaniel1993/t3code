@@ -1,6 +1,5 @@
 import type {
   EnvironmentId,
-  ThreadId,
   UserInputAttachmentAnswerPayload,
   UserInputAttachments,
 } from "@t3tools/contracts";
@@ -11,13 +10,11 @@ import { useAssetUrl } from "../../state/assets";
 
 function AnswerFile(props: {
   environmentId: EnvironmentId;
-  threadId: ThreadId;
   attachment: UserInputAttachments[string][number];
 }) {
   const url = useAssetUrl(props.environmentId, {
     _tag: "attachment",
     attachmentId: props.attachment.id,
-    threadId: props.threadId,
   });
   return (
     <Pressable
@@ -39,7 +36,6 @@ function AnswerFile(props: {
 
 export function QuestionAnswerHistory(props: {
   environmentId: EnvironmentId;
-  threadId: ThreadId;
   answer: UserInputAttachmentAnswerPayload;
 }) {
   return (
@@ -66,7 +62,6 @@ export function QuestionAnswerHistory(props: {
             <AnswerFile
               key={attachment.id}
               environmentId={props.environmentId}
-              threadId={props.threadId}
               attachment={attachment}
             />
           ))}

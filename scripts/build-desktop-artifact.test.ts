@@ -51,7 +51,6 @@ import {
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
-  resolveDesktopExecutableBaseName,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
@@ -78,6 +77,7 @@ import {
   WindowsDesktopBuildPrerequisitesMissingError,
   WindowsPackagedPayloadValidationError,
   WINDOWS_NATIVE_ASAR_UNPACK_GLOB,
+  stageCursorSdkPlatformPackages,
   WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT,
   WINDOWS_SERVER_ASAR_IGNORE_GLOBS,
   WINDOWS_SERVER_EXTRA_RESOURCES,
@@ -266,24 +266,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
-    assert.equal(resolveDesktopProductName("0.0.17", true), "T3 alpha.local");
-  });
-
-  it("names the packaged executable after the local identity rather than the product", () => {
-    // A local-identity build overrides electron-builder's executableName, so the
-    // emitted exe stops matching the product name. The Windows payload probe stats
-    // this exact file, and looking for the product name there fails a build whose
-    // packaging is perfectly fine.
-    assert.equal(resolveDesktopExecutableBaseName("0.0.17"), "T3 Code (Alpha)");
-    assert.equal(
-      resolveDesktopExecutableBaseName("0.0.17-nightly.20260413.42"),
-      "T3 Code (Nightly)",
-    );
-    assert.equal(resolveDesktopExecutableBaseName("0.0.17", true), "T3 alpha.local");
-    assert.equal(
-      resolveDesktopExecutableBaseName("0.0.17-nightly.20260413.42", true),
-      "T3 alpha.local",
-    );
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -578,6 +560,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }
 
     assert.deepStrictEqual(DESKTOP_FILE_EXCLUSIONS, [
+      "!**/node_modules/@cursor/sdk-*/**/*",
+      "!apps/desktop/prod-resources/cursor-sdk",
+      "!apps/desktop/prod-resources/cursor-sdk/**/*",
       "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
       "!**/*.map",
       "!**/*.d.cts",
@@ -660,25 +645,21 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },
       ]);
       assert.deepStrictEqual(win.extraResources, [
-        {
-          from: "apps/desktop/prod-resources/resource-monitor",
-          to: "resource-monitor",
-        },
+        ...DESKTOP_EXTRA_RESOURCES,
         ...WINDOWS_SERVER_EXTRA_RESOURCES,
         ...WSL_RUNTIME_EXTRA_RESOURCES,
       ]);
       // No Linux CLI archive means staging never writes the runtime, so
       // listing it here would fail the build on a missing source file.
       assert.deepStrictEqual(winWithoutWslRuntime.extraResources, [
-        {
-          from: "apps/desktop/prod-resources/resource-monitor",
-          to: "resource-monitor",
-        },
+        ...DESKTOP_EXTRA_RESOURCES,
         ...WINDOWS_SERVER_EXTRA_RESOURCES,
       ]);
       assert.deepStrictEqual(win.nsis, { differentialPackage: true });
       // The Claude SDK platform packages and .bin shims never ship.
       assert.deepStrictEqual(WINDOWS_SERVER_ASAR_IGNORE_GLOBS, [
+        "**/node_modules/@cursor/sdk-*",
+        "**/node_modules/@cursor/sdk-*/**",
         "**/node_modules/@anthropic-ai/claude-agent-sdk-*",
         "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
         "**/node_modules/.bin",
@@ -759,6 +740,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       resolveMergedStageDependencies({
         platform: "mac",
         serverDependencies: {
+          "@cursor/sdk": "1.0.22",
           "@anthropic-ai/claude-agent-sdk": "^0.3.170",
           "@ff-labs/fff-node": "0.9.4",
           "@opencode-ai/sdk": "^1.3.15",
@@ -773,6 +755,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         fffNodeVersion: "0.9.4",
       }),
       {
+        "@cursor/sdk": "1.0.22",
         "@ff-labs/fff-node": "0.9.4",
         "node-pty": "1.1.0",
         "@napi-rs/keyring": "1.3.0",
@@ -798,6 +781,58 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       },
     );
   });
+
+  it.effect("ships Cursor platform assets outside asar for spawning and native loading", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cursor-helpers-" });
+        const nodeModules = path.join(root, "node_modules");
+        const destination = path.join(root, "resources/node_modules/@cursor");
+        const cursorDirectory = symlinksSupported
+          ? path.join(root, "store/@cursor")
+          : path.join(nodeModules, "@cursor");
+        yield* fs.makeDirectory(path.join(cursorDirectory, "sdk"), { recursive: true });
+        if (symlinksSupported) {
+          yield* fs.makeDirectory(path.join(nodeModules, "@cursor"), { recursive: true });
+          yield* fs.symlink(
+            path.join(cursorDirectory, "sdk"),
+            path.join(nodeModules, "@cursor/sdk"),
+          );
+        }
+        const helpers = [
+          "sdk-darwin-arm64/bin/rg",
+          "sdk-darwin-arm64/bin/cursorsandbox",
+          "sdk-darwin-arm64/vendor/tree-sitter/index.js",
+          "sdk-darwin-arm64/vendor/tree-sitter/binding.node",
+          "sdk-darwin-arm64/vendor/tree-sitter-bash/binding.node",
+          "sdk-darwin-arm64/package.json",
+          "sdk-win32-x64/bin/rg.exe",
+        ];
+        for (const helper of helpers) {
+          const source = path.join(cursorDirectory, helper);
+          yield* fs.makeDirectory(path.dirname(source), { recursive: true });
+          yield* fs.writeFileString(source, "fixture helper", { mode: 0o755 });
+        }
+        yield* stageCursorSdkPlatformPackages(nodeModules, destination);
+        for (const helper of helpers) {
+          assert.equal(yield* fs.readFileString(path.join(destination, helper)), "fixture helper");
+          const packagedPath = `node_modules/@cursor/${helper}`;
+          assert.isTrue(
+            DESKTOP_FILE_EXCLUSIONS.some((glob) =>
+              NodePath.matchesGlob(packagedPath, glob.slice(1)),
+            ),
+          );
+          assert.isTrue(
+            WINDOWS_SERVER_ASAR_IGNORE_GLOBS.some((glob) =>
+              NodePath.matchesGlob(packagedPath, glob),
+            ),
+          );
+        }
+      }),
+    ),
+  );
 
   it("excludes node-pty binaries for the other Windows architecture", () => {
     assert.deepStrictEqual(resolveWindowsServerAsarIgnoreGlobs("x64"), [
@@ -1021,60 +1056,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
-  it.effect("checks the installable Spectre runtime components for Windows builds", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-windows-preflight-" });
-        const pythonPath = path.join(tempDir, "python.exe");
-        const rustLibDir = path.join(tempDir, "rust-lib");
-        yield* fs.writeFileString(pythonPath, "python");
-        yield* fs.makeDirectory(rustLibDir);
-        yield* fs.writeFileString(path.join(rustLibDir, "libstd-test.rlib"), "rust");
-        const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
-          [];
-        const spawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make((command) => {
-            const childProcess = command as unknown as {
-              readonly command: string;
-              readonly args: ReadonlyArray<string>;
-            };
-            commands.push(childProcess);
-            return Effect.succeed(
-              mockProcess(0, childProcess.command === "rustc" ? `${rustLibDir}\n` : ""),
-            );
-          }),
-        );
-        const config = ConfigProvider.layer(
-          ConfigProvider.fromEnv({ env: { npm_config_python: pythonPath } }),
-        );
-
-        for (const arch of ["x64", "arm64"] as const) {
-          yield* preflightWindowsDesktopBuild({ arch, bundlesWslRuntime: false }).pipe(
-            Effect.provide(Layer.merge(spawner, config)),
-          );
-        }
-
-        const powershellScripts = commands
-          .filter((command) => command.command === "powershell.exe")
-          .map((command) => command.args.at(-1));
-        assert.lengthOf(powershellScripts, 2);
-        assert.include(
-          powershellScripts[0],
-          "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
-        );
-        assert.include(
-          powershellScripts[1],
-          "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre",
-        );
-        assert.notInclude(powershellScripts.join("\n"), ".VC.Tools.x86.x64.Spectre");
-        assert.notInclude(powershellScripts.join("\n"), ".VC.Tools.ARM64.Spectre");
-      }),
-    ),
-  );
-
   it.effect("does not require MSVC when reusing a prebuilt Windows resource monitor", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1169,7 +1150,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const hostPlatform = yield* HostProcessPlatform;
         const repoRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-kde-stage-test-" });
         const protocols = path.join(repoRoot, "native/hyprland-snap-shot/protocols");
         yield* fs.makeDirectory(protocols, { recursive: true });
@@ -1192,7 +1172,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
                 Effect.gen(function* () {
                   assert.equal(command._tag, "StandardCommand");
                   if (command._tag !== "StandardCommand") return mockProcess(1);
-                  assert.match(path.basename(command.command).toLowerCase(), /^cargo(?:\.exe)?$/);
+                  assert.equal(command.command, "cargo");
                   assert.deepEqual(command.args, [
                     "build",
                     "--locked",
@@ -1220,9 +1200,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
               `${backend}-capture/t3-${backend}-snap-shot`,
             );
             assert.equal(yield* fs.readFileString(installed), `helper-${arch}`);
-            if (hostPlatform !== "win32") {
-              assert.equal((yield* fs.stat(installed)).mode & 0o777, 0o755);
-            }
+            assert.equal((yield* fs.stat(installed)).mode & 0o777, 0o755);
             if (backend === "hyprland")
               assert.equal(
                 yield* fs.readFileString(
@@ -1500,9 +1478,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.equal(primaryProbe.options.env?.NODE_PATH, "");
       }),
     ).pipe(
-      Effect.provide(spawnerLayer),
-      Effect.provideService(HostProcessPlatform, "win32"),
-      Effect.provideService(HostProcessArchitecture, "x64"),
+      Effect.provide(
+        Layer.mergeAll(
+          spawnerLayer,
+          Layer.succeed(HostProcessPlatform, "win32"),
+          Layer.succeed(HostProcessArchitecture, "x64"),
+        ),
+      ),
     );
   });
 
@@ -1602,7 +1584,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
     return Effect.scoped(
       Effect.gen(function* () {
-        const path = yield* Path.Path;
         const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
         yield* validateWindowsPackagedPayload({
           stageDistDir: fixture.stageDistDir,
@@ -1612,10 +1593,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         });
 
         assert.isFalse(
-          commands.some(
-            (command) =>
-              command.command === path.join(fixture.packagedAppDir, fixture.appExecutableName),
-          ),
+          commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
         );
         assert.isTrue(
           commands.some(
@@ -1625,9 +1603,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
       }),
     ).pipe(
-      Effect.provide(spawnerLayer),
-      Effect.provideService(HostProcessPlatform, "win32"),
-      Effect.provideService(HostProcessArchitecture, "x64"),
+      Effect.provide(
+        Layer.mergeAll(
+          spawnerLayer,
+          Layer.succeed(HostProcessPlatform, "win32"),
+          Layer.succeed(HostProcessArchitecture, "x64"),
+        ),
+      ),
     );
   });
 
@@ -1996,19 +1978,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("adds passkey entitlements and both renderer protocols to signed macOS builds", () =>
     Effect.gen(function* () {
-      const config = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "1.2.3",
-        true,
-        false,
-        undefined,
-        {
-          entitlementsPath: "/tmp/entitlements.mac.plist",
-          provisioningProfilePath: "/tmp/t3code.provisionprofile",
-        },
-        false,
-      );
+      const config = yield* createBuildConfig("mac", "dmg", "1.2.3", true, false, undefined, {
+        entitlementsPath: "/tmp/entitlements.mac.plist",
+        provisioningProfilePath: "/tmp/t3code.provisionprofile",
+      });
 
       const mac = config.mac as Record<string, unknown>;
       assert.equal(config.appId, "com.t3tools.t3code");
@@ -2050,7 +2023,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         false,
         undefined,
         undefined,
-        false,
       );
 
       const win = config.win as Record<string, unknown>;
@@ -2062,6 +2034,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it("stages the resource monitor as an external executable resource", () => {
     assert.deepStrictEqual(DESKTOP_EXTRA_RESOURCES, [
+      {
+        from: "apps/desktop/prod-resources/cursor-sdk",
+        to: "node_modules/@cursor",
+      },
       {
         from: "apps/desktop/prod-resources/resource-monitor",
         to: "resource-monitor",
@@ -2080,34 +2056,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resourceMonitorExecutableName("mac"), "t3-resource-monitor");
     assert.equal(resourceMonitorExecutableName("win"), "t3-resource-monitor.exe");
   });
-
-  it.effect("uses a distinct product and executable name for local Windows builds", () =>
-    Effect.gen(function* () {
-      const config = yield* createBuildConfig(
-        "win",
-        "dir",
-        "1.2.3",
-        false,
-        false,
-        undefined,
-        undefined,
-        false,
-        "x64",
-        true,
-      );
-
-      assert.equal(config.appId, "com.t3tools.t3code.alpha.local");
-      assert.equal(config.productName, "T3 alpha.local");
-      assert.equal(config.executableName, "T3 alpha.local");
-      assert.notProperty(config, "publish");
-    }).pipe(
-      Effect.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
-        ),
-      ),
-    ),
-  );
 
   it("ships the Linux CLI release archive as the WSL runtime", () => {
     assert.equal(WSL_RUNTIME_ARCHIVE_NAME, "wsl-runtime.tar.gz");
@@ -2284,7 +2232,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         buildVersion: Option.none(),
         outputDir: Option.none(),
         skipBuild: Option.none(),
-        localIdentity: Option.none(),
         keepStage: Option.none(),
         signed: Option.none(),
         verbose: Option.none(),
@@ -2325,7 +2272,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             buildVersion: Option.none(),
             outputDir: Option.none(),
             skipBuild: Option.none(),
-            localIdentity: Option.none(),
             keepStage: Option.none(),
             signed: Option.none(),
             verbose: Option.none(),
@@ -2350,7 +2296,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         buildVersion: Option.none(),
         outputDir: Option.some("release-test"),
         skipBuild: Option.some(false),
-        localIdentity: Option.some(false),
         keepStage: Option.some(false),
         signed: Option.some(false),
         verbose: Option.some(false),

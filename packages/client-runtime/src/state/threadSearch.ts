@@ -27,8 +27,6 @@ export function makeThreadSearchKey(
   query: string,
 ): string {
   return JSON.stringify([
-    // .sort() on the spread copy, not .toSorted(): Hermes (mobile) doesn't ship
-    // the ES2023 change-by-copy array methods.
     [...environmentIds].sort((left, right) => left.localeCompare(right)),
     query,
   ]);

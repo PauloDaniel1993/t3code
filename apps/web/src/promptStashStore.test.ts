@@ -51,7 +51,6 @@ function resetPromptStashStore() {
 describe("partitionStashAttachments", () => {
   it("keeps attachments within the budget and reports dropped names in order", () => {
     const small = {
-      type: "image" as const,
       id: "a",
       name: "small.png",
       mimeType: "image/png",
@@ -59,7 +58,6 @@ describe("partitionStashAttachments", () => {
       dataUrl: "x".repeat(10),
     };
     const huge = {
-      type: "image" as const,
       id: "b",
       name: "huge.png",
       mimeType: "image/png",
@@ -67,7 +65,6 @@ describe("partitionStashAttachments", () => {
       dataUrl: "x".repeat(MAX_STASH_ENTRY_ATTACHMENT_CHARS),
     };
     const alsoSmall = {
-      type: "image" as const,
       id: "c",
       name: "also-small.png",
       mimeType: "image/png",
@@ -81,7 +78,6 @@ describe("partitionStashAttachments", () => {
 
   it("admits a single attachment that exactly fits the budget", () => {
     const exact = {
-      type: "image" as const,
       id: "a",
       name: "exact.png",
       mimeType: "image/png",

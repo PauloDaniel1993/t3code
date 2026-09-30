@@ -1,6 +1,5 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   EventId,
   IsoDateTime,
@@ -16,7 +15,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderUsageLimitsUpdate } from "./providerUsageLimits.ts";
-import { ProviderApprovalOption } from "./orchestration.ts";
+import { ProviderApprovalOption } from "./providerPolicy.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -278,6 +277,12 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   durationMs: Schema.optional(NonNegativeInt),
   compactsAutomatically: Schema.optional(Schema.Boolean),
   autoCompactThreshold: Schema.optional(PositiveInt),
+  cost: Schema.optional(
+    Schema.Struct({
+      amount: Schema.Number.check(Schema.isFinite()),
+      currency: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(32)),
+    }),
+  ),
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 
@@ -449,17 +454,6 @@ export const ItemLifecyclePayload = Schema.Struct({
 });
 export type ItemLifecyclePayload = typeof ItemLifecyclePayload.Type;
 
-export const TerminalToolDataTruncationEnvelope = Schema.TaggedStruct(
-  "T3TerminalToolDataTruncated",
-  {
-    encoding: Schema.Literal("json"),
-    value: Schema.String,
-    truncated: Schema.Literal(true),
-    originalBytes: NonNegativeInt,
-  },
-);
-export type TerminalToolDataTruncationEnvelope = typeof TerminalToolDataTruncationEnvelope.Type;
-
 const ContentDeltaPayload = Schema.Struct({
   streamKind: RuntimeContentStreamKind,
   delta: Schema.String,
@@ -514,75 +508,6 @@ const UserInputResolvedPayload = Schema.Struct({
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
-const TaskUsageSnapshotWire = Schema.Struct({
-  totalTokens: Schema.optional(NonNegativeInt),
-  toolUses: Schema.optional(NonNegativeInt),
-  durationMs: Schema.optional(NonNegativeInt),
-});
-
-// Claude SDK task events historically use snake_case usage counters. Decode
-// both wire shapes at this persisted-event boundary, retaining only counters
-// the provider actually supplied and exposing the canonical camelCase shape.
-const TaskUsageSnapshotSource = Schema.Struct({
-  totalTokens: Schema.optional(NonNegativeInt),
-  toolUses: Schema.optional(NonNegativeInt),
-  durationMs: Schema.optional(NonNegativeInt),
-  total_tokens: Schema.optional(NonNegativeInt),
-  tool_uses: Schema.optional(NonNegativeInt),
-  duration_ms: Schema.optional(NonNegativeInt),
-});
-type TaskUsageSnapshotWireEncoded = typeof TaskUsageSnapshotWire.Encoded;
-type TaskUsageSnapshotSourceType = typeof TaskUsageSnapshotSource.Type;
-
-export const TaskUsageSnapshot = TaskUsageSnapshotSource.pipe(
-  Schema.decodeTo(
-    TaskUsageSnapshotWire,
-    SchemaTransformation.transform<TaskUsageSnapshotWireEncoded, TaskUsageSnapshotSourceType>({
-      decode: (usage) => ({
-        ...(usage.totalTokens !== undefined
-          ? { totalTokens: usage.totalTokens }
-          : usage.total_tokens !== undefined
-            ? { totalTokens: usage.total_tokens }
-            : {}),
-        ...(usage.toolUses !== undefined
-          ? { toolUses: usage.toolUses }
-          : usage.tool_uses !== undefined
-            ? { toolUses: usage.tool_uses }
-            : {}),
-        ...(usage.durationMs !== undefined
-          ? { durationMs: usage.durationMs }
-          : usage.duration_ms !== undefined
-            ? { durationMs: usage.duration_ms }
-            : {}),
-      }),
-      encode: (usage) => ({
-        ...(usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
-        ...(usage.toolUses !== undefined ? { toolUses: usage.toolUses } : {}),
-        ...(usage.durationMs !== undefined ? { durationMs: usage.durationMs } : {}),
-      }),
-    }),
-  ),
-);
-export type TaskUsageSnapshot = typeof TaskUsageSnapshot.Type;
-
-/**
- * The canonical, provider-independent marker for "this `task.*` run is an
- * in-session agent".
- *
- * `task.*` is not a subagent channel: providers report backgrounded shells,
- * plan tasks, and other per-turn work through it too. Consumers therefore need
- * positive evidence before treating a task as an agent, and each provider
- * adapter asserts it at its own boundary — Claude from `subagent_type` /
- * `workflow_name`, Codex from a `collabAgentToolCall` receiver thread.
- *
- * It is carried on every task lifecycle payload rather than only on
- * `task.started`, so a progress, update, or completion event that arrives
- * before (or without) its start still identifies itself. Optional, so events
- * from older providers and replayed history decode unchanged; absent means
- * "no evidence", not "not an agent".
- */
-const NativeAgentMarker = Schema.optional(Schema.Boolean);
-
 /**
  * Typed per-task usage rollup. Field names match the orchestration-v2 subagent
  * usage vocabulary (#4779) so the eventual migration is a rename, not a remap.
@@ -616,43 +541,6 @@ export const TaskRunHandles = Schema.Struct({
 export type TaskRunHandles = typeof TaskRunHandles.Type;
 
 /**
- * Watch-loop task types: Monitor-tool tasks plus background shells (a shell
- * that outlives its turn is in practice a watch loop). Canonical single copy —
- * the server liveness registry, ingestion's agentKind stamp, and the client
- * fold's legacy fallback all classify with these sets.
- */
-export const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
-  "monitor",
-  "monitor_mcp",
-  "local_bash",
-  "shell",
-]);
-/** Task types that are neither agents nor watch loops (plan-mode bookkeeping). */
-export const INERT_TASK_TYPES: ReadonlySet<string> = new Set(["plan", "dream"]);
-
-/**
- * Agent-vs-background classification, stamped by ingestion as `agentKind` so
- * persisted rows are self-describing. A deliberate denylist: the SDK's
- * agent-flavored type names drift (subagent, local_agent, local_workflow, …)
- * and an allowlist silently dropped real subagents when "local_agent"
- * appeared. A task launched from inside a subagent (agentId set) is
- * agent-internal background work UNLESS it is itself agent-flavored — a
- * nested agent can outlive its parent and stays in the roster.
- */
-export function classifyTaskAgentKind(input: {
-  readonly taskType?: string | undefined;
-  readonly agentId?: string | undefined;
-}): "agent" | "background" {
-  const { taskType, agentId } = input;
-  const nonAgentType =
-    taskType !== undefined && (MONITOR_TASK_TYPES.has(taskType) || INERT_TASK_TYPES.has(taskType));
-  if (agentId !== undefined && agentId.trim().length > 0) {
-    return taskType === undefined || nonAgentType ? "background" : "agent";
-  }
-  return nonAgentType ? "background" : "agent";
-}
-
-/**
  * Optional agent-identity linkage carried on every task lifecycle payload.
  * Repeated on progress and terminal rows (not just start) so client folds can
  * reconstruct an agent even when its start row aged out of activity retention.
@@ -662,12 +550,8 @@ const taskAgentLinkageFields = {
   /** SDK task_type (subagent/shell/monitor/local_workflow/…), repeated on
    * every row so folds can classify without the start row. */
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
-  /** Provider-specific agent role retained for legacy activity consumers. */
-  subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
-  /** Positive provider evidence that this task is an in-session agent. */
-  nativeAgent: NativeAgentMarker,
   /**
-   * Server-stamped classification (classifyTaskAgentKind at ingestion).
+   * Server-stamped classification, set at ingestion.
    * Clients trust this stamp outright; rows without it (legacy, pre-stamp)
    * fall back to client-side heuristics.
    */
@@ -692,8 +576,7 @@ const taskAgentLinkageFields = {
   phases: Schema.optional(Schema.Array(TaskWorkflowPhase)),
   attempt: Schema.optional(NonNegativeInt),
   runHandles: Schema.optional(TaskRunHandles),
-  /** Provider-written task output path; empty legacy values remain decodable. */
-  outputFile: Schema.optional(Schema.String),
+  outputFile: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Codex agent hierarchy path, e.g. "/root/marlow". */
   agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
   /**
@@ -708,10 +591,7 @@ export type TaskAgentLinkage = typeof TaskAgentLinkage.Type;
 
 const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
-  retryOfTaskId: Schema.optional(RuntimeTaskId),
   description: Schema.optional(TrimmedNonEmptyStringSchema),
-  prompt: Schema.optional(Schema.String),
-  skipTranscript: Schema.optional(Schema.Boolean),
   ...taskAgentLinkageFields,
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
@@ -732,7 +612,7 @@ const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
-  usage: Schema.optional(TaskUsageSnapshot),
+  usage: Schema.optional(Schema.Unknown),
   typedUsage: Schema.optional(RuntimeTaskUsage),
   lastToolName: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Present on synthesized member/child progress rows that carry state. */
@@ -761,12 +641,8 @@ export type TaskUpdatedPayload = typeof TaskUpdatedPayload.Type;
 const TaskCompletedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   status: Schema.Literals(["completed", "failed", "stopped"]),
-  skipTranscript: Schema.optional(Schema.Boolean),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
-  error: Schema.optional(TrimmedNonEmptyStringSchema),
-  usage: Schema.optional(TaskUsageSnapshot),
-  /** Carried so a completion that outruns its start still names the row. */
-  description: Schema.optional(TrimmedNonEmptyStringSchema),
+  usage: Schema.optional(Schema.Unknown),
   typedUsage: Schema.optional(RuntimeTaskUsage),
   ...taskAgentLinkageFields,
 });
@@ -804,7 +680,7 @@ const ToolProgressPayload = Schema.Struct({
   elapsedSeconds: Schema.optional(Schema.Number),
   /** Owning task/agent when the tool ran inside a subagent. */
   taskId: Schema.optional(RuntimeTaskId),
-  parentToolUseId: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  parentToolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ToolProgressPayload = typeof ToolProgressPayload.Type;
 

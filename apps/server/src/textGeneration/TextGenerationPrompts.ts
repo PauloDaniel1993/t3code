@@ -9,7 +9,7 @@
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import { limitTitleMessage } from "./ThreadTitleContext.ts";
-import type { ChatAttachment } from "@t3tools/contracts";
+import type { BranchNamingOptions, ChatAttachment } from "@t3tools/contracts";
 
 import { limitSection } from "./TextGenerationUtils.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
@@ -144,6 +144,7 @@ export function buildPrContentPrompt(input: PrContentPromptInput) {
 // ---------------------------------------------------------------------------
 
 export interface BranchNamePromptInput {
+  naming?: BranchNamingOptions | undefined;
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
   policy?: TextGenerationPolicy | undefined;
@@ -158,37 +159,10 @@ interface PromptFromMessageInput {
   additionalInstructions?: string | undefined;
 }
 
-function preserveMessageEnd(message: string): string {
-  const alreadyTruncated = message.startsWith(EARLIER_CONTENT_TRUNCATION_MARKER);
-  const contents = alreadyTruncated
-    ? message.slice(EARLIER_CONTENT_TRUNCATION_MARKER.length)
-    : message;
-  if (!alreadyTruncated && contents.length <= 8_000) {
-    return contents;
-  }
-  return `${EARLIER_CONTENT_TRUNCATION_MARKER}${contents.slice(-8_000)}`;
-}
-
-function attachmentMetadataLine(attachment: ChatAttachment): string {
-  const metadata = `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`;
-  switch (attachment.type) {
-    case "image":
-    case "file":
-      return metadata;
-    default: {
-      const unknown = attachment as unknown as {
-        readonly type?: unknown;
-        readonly name?: unknown;
-        readonly mimeType?: unknown;
-        readonly sizeBytes?: unknown;
-      };
-      return `- ${String(unknown.name ?? "unnamed attachment")} (${String(unknown.mimeType ?? "unknown MIME")}, ${String(unknown.sizeBytes ?? "unknown")} bytes; unsupported attachment kind ${JSON.stringify(String(unknown.type))})`;
-    }
-  }
-}
-
 function buildPromptFromMessage(input: PromptFromMessageInput): string {
-  const attachmentLines = (input.attachments ?? []).map(attachmentMetadataLine);
+  const attachmentLines = (input.attachments ?? []).map(
+    (attachment) => `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
+  );
 
   const promptSections = [
     input.instruction,
@@ -217,13 +191,29 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
     responseShape: "Return a JSON object with key: branch.",
     rules: [
       "Branch should describe the requested work from the user message.",
-      "Keep it short and specific (2-6 words).",
-      "Use plain words only, no issue prefixes and no punctuation-heavy text.",
+      "Return a valid Git branch name without spaces.",
+      ...(input.naming?.mode === "custom"
+        ? [
+            "Return the complete branch name, following the user's naming instructions. No prefix or suffix will be added.",
+          ]
+        : [
+            "Keep it short and specific (2-6 words), in lowercase with hyphen-separated words.",
+            ...(input.naming?.mode === "semantic"
+              ? [
+                  "Include a semantic prefix and a slash in the branch name, for example feat/add-search, fix/login-error, refactor/auth, docs/setup, or chore/update-deps. Choose the prefix that best describes the work.",
+                ]
+              : [
+                  "Return only the descriptive branch fragment, without a prefix or namespace. The application adds the configured prefix.",
+                ]),
+          ]),
       "If images are attached, use them as primary context for visual/UI issues.",
     ],
     message: input.message,
     attachments: input.attachments,
-    additionalInstructions: input.policy?.branchInstructions,
+    additionalInstructions:
+      input.naming?.mode === "custom"
+        ? input.naming.instructions
+        : input.policy?.branchInstructions,
   });
   const outputSchema = Schema.Struct({
     branch: Schema.String,
@@ -307,6 +297,17 @@ Examples of the distinction:
 - A subagent-monitoring review that finds a Codex roster bug remains "Review Subagent Monitoring Risks," not "Codex Roster Bug Review."
 - A vague failing-test request later identified as a lazy thread-feed mismatch becomes "Fix Lazy Thread Feed Test," not "Prevent Mobile Feed Regressions."
 - A QR-sharing overhaul that ends with CI and merge work remains about QR sharing, not the PR lifecycle.`;
+}
+
+function preserveMessageEnd(message: string): string {
+  const alreadyTruncated = message.startsWith(EARLIER_CONTENT_TRUNCATION_MARKER);
+  const contents = alreadyTruncated
+    ? message.slice(EARLIER_CONTENT_TRUNCATION_MARKER.length)
+    : message;
+  if (!alreadyTruncated && contents.length <= 8_000) {
+    return contents;
+  }
+  return `${EARLIER_CONTENT_TRUNCATION_MARKER}${contents.slice(-8_000)}`;
 }
 
 function threadTitlePromptSuffix(input: ThreadTitlePromptInput): string {

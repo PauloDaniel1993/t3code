@@ -8,7 +8,6 @@ import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled"
  */
 export type ThreadActionMenuId =
   | "new-thread-on-branch"
-  | "new-task"
   | "filter-by-project"
   | "project-settings"
   | "pin"
@@ -33,8 +32,6 @@ export type ThreadActionMenuId =
 
 export interface ThreadActionMenuState {
   readonly branch: string | null;
-  readonly isTask: boolean;
-  readonly canCreateTask: boolean;
   /**
    * Project scoping for the thread list. Null on surfaces with no scoped
    * list behind the menu (the chat header), where the item must not show.
@@ -51,7 +48,7 @@ export interface ThreadActionMenuState {
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
-  /** Archive rejects a thread with an active turn, so disable it here rather than let the action fail. */
+  /** Archive rejects a thread with an attached provider, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
   readonly supports: {
     readonly settlement: boolean;
@@ -72,21 +69,6 @@ export interface ThreadActionMenuState {
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,
 ): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> {
-  // A task's lifecycle belongs to its parent. Branching, pinning, settling,
-  // or snoozing the child independently would strand it outside the nested
-  // task group. Legacy clients can leave a task pinned, so task rows expose
-  // unpin as a cleanup action when the environment supports it.
-  if (state.isTask) {
-    return [
-      ...(state.isPinned && state.supports.pinning
-        ? [{ id: "unpin" as const, label: "Unpin task" }]
-        : []),
-      { id: "rename", label: "Rename task" },
-      { id: "copy-thread-id", label: "Copy thread ID", icon: "copy" },
-      { id: "delete", label: "Delete", destructive: true, icon: "trash" },
-    ];
-  }
-
   return [
     ...(state.branch
       ? [
@@ -133,7 +115,6 @@ export function buildThreadActionMenuItems(
               },
         ]
       : []),
-    ...(state.canCreateTask ? [{ id: "new-task" as const, label: "New task…" }] : []),
     { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: true },
     ...(state.supports.titleRegeneration
       ? [

@@ -96,10 +96,6 @@ async function syncFile(filePath: string): Promise<void> {
 // has no directory fsync: the handle opens but sync fails with EPERM, and
 // NTFS journals the rename on its own.
 async function syncDirectory(directory: string): Promise<void> {
-  // Windows has no directory-fsync equivalent; NTFS commits rename metadata
-  // without a directory handle, and opening one fails outright.
-  // oxlint-disable-next-line t3code/no-global-process-runtime -- The standalone launcher only imports Node built-ins.
-  if (process.platform === "win32") return;
   const handle = await NodeFSP.open(directory, "r");
   try {
     await handle.sync();

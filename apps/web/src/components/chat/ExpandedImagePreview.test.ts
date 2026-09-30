@@ -1,63 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 
 import type { ComposerFileAttachment } from "../../composerDraftStore";
 import {
   wrapExpandedImageIndex,
   attachVideoThumbnail,
-  buildAttachmentVideoAsset,
   buildAttachmentVideoPreview,
   buildExpandedImagePreview,
   resolveMarkdownMediaPreview,
 } from "./ExpandedImagePreview";
-
-describe("buildAttachmentVideoAsset", () => {
-  it("scopes persisted video attachments to their owning thread", () => {
-    expect(
-      buildAttachmentVideoAsset(EnvironmentId.make("environment-1"), ThreadId.make("thread-1"), {
-        type: "file",
-        id: "attachment-1",
-        name: "demo.mp4",
-        mimeType: "video/mp4",
-        sizeBytes: 3,
-      }),
-    ).toEqual({
-      environmentId: "environment-1",
-      resource: {
-        _tag: "attachment",
-        attachmentId: "attachment-1",
-        threadId: "thread-1",
-        fileName: "demo.mp4",
-        mimeType: "video/mp4",
-      },
-    });
-  });
-
-  it("leaves a hydrated pending video attachment unscoped", () => {
-    const preview = buildAttachmentVideoPreview(
-      EnvironmentId.make("environment-1"),
-      ThreadId.make("thread-1"),
-      {
-        type: "file",
-        id: "pending-00000000-0000-0000-0000-000000000001-mp4",
-        name: "demo.mp4",
-        mimeType: "video/mp4",
-        sizeBytes: 3,
-      },
-    );
-
-    expect(preview?.images[0]?.actionsSource?.asset).toEqual({
-      environmentId: "environment-1",
-      resource: {
-        _tag: "attachment",
-        attachmentId: "pending-00000000-0000-0000-0000-000000000001-mp4",
-        fileName: "demo.mp4",
-        mimeType: "video/mp4",
-      },
-    });
-    expect(preview?.images[0]?.actionsSource?.asset?.resource).not.toHaveProperty("threadId");
-  });
-});
 
 describe("resolveMarkdownMediaPreview", () => {
   afterEach(() => {
@@ -94,30 +45,39 @@ describe("resolveMarkdownMediaPreview", () => {
 });
 
 describe("buildExpandedImagePreview", () => {
-  it("keeps window capture details with the expanded image", () => {
-    const source = {
-      kind: "snap-shot" as const,
-      capturedAt: "2026-09-01T00:00:00.000Z",
-      appName: "Editor",
-      windowTitle: "main.ts",
-      accessibleText: "const answer = 42;",
-    };
-    const preview = buildExpandedImagePreview(
-      [
+  it("builds a signed-asset preview for a persisted video attachment", () => {
+    const preview = buildAttachmentVideoPreview(EnvironmentId.make("environment-1"), {
+      type: "file",
+      id: "attachment-video-1",
+      name: "demo.mp4",
+      mimeType: "video/mp4",
+      sizeBytes: 42,
+    });
+
+    expect(preview).toEqual({
+      images: [
         {
-          type: "image",
-          id: "capture-1",
-          name: "window.png",
-          mimeType: "image/png",
-          sizeBytes: 3,
-          previewUrl: "data:image/png;base64,AQID",
-          source,
+          src: null,
+          name: "demo.mp4",
+          type: "video",
+          actionsSource: {
+            kind: "video",
+            name: "demo.mp4",
+            src: null,
+            asset: {
+              environmentId: "environment-1",
+              resource: {
+                _tag: "attachment",
+                attachmentId: "attachment-video-1",
+                fileName: "demo.mp4",
+                mimeType: "video/mp4",
+              },
+            },
+          },
         },
       ],
-      "capture-1",
-    );
-
-    expect(preview?.images[0]?.source).toEqual(source);
+      index: 0,
+    });
   });
 
   it("builds a video preview for a local video attachment", () => {

@@ -15,8 +15,6 @@ const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-export const ATTACHMENT_ID_THREAD_ID_CONSTRAINT_MESSAGE =
-  "Attachment staging requires a thread ID with only lowercase letters, digits, underscores, and single hyphens; it cannot begin or end with a separator and must be at most 80 characters.";
 const ATTACHMENT_ID_FILE_EXTENSION_PATTERN = "[a-z0-9]{1,10}";
 const ATTACHMENT_ID_PATTERN = new RegExp(
   `^(${ATTACHMENT_ID_THREAD_SEGMENT_PATTERN})-(${ATTACHMENT_ID_UUID_PATTERN})(?:-(${ATTACHMENT_ID_FILE_EXTENSION_PATTERN}))?$`,
@@ -74,11 +72,6 @@ export function parseAttachmentUuid(attachmentId: string): string | null {
   return normalizedId.match(ATTACHMENT_ID_PATTERN)?.[2]?.toLowerCase() ?? null;
 }
 
-export function toCanonicalThreadAttachmentSegment(threadId: string): string | null {
-  const segment = toSafeThreadAttachmentSegment(threadId);
-  return segment === threadId ? segment : null;
-}
-
 export function parseAttachmentFileExtension(attachmentId: string): string | null {
   const normalizedId = normalizeAttachmentRelativePath(attachmentId);
   if (!normalizedId || normalizedId.includes("/") || normalizedId.includes(".")) {
@@ -88,11 +81,25 @@ export function parseAttachmentFileExtension(attachmentId: string): string | nul
 }
 
 export function createAttachmentId(threadId: string, extension?: string): string | null {
-  const threadSegment = toCanonicalThreadAttachmentSegment(threadId);
+  const threadSegment = toSafeThreadAttachmentSegment(threadId);
   if (!threadSegment) {
     return null;
   }
   return `${threadSegment}-${NodeCrypto.randomUUID()}${attachmentIdExtensionSuffix(extension)}`;
+}
+
+export function createDeterministicAttachmentId(
+  threadId: string,
+  stableKey: string,
+): string | null {
+  const threadSegment = toSafeThreadAttachmentSegment(threadId);
+  if (!threadSegment) return null;
+  const hash = NodeCrypto.createHash("sha256")
+    .update(JSON.stringify([threadId, stableKey]))
+    .digest("hex")
+    .slice(0, 32);
+  const uuid = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
+  return `${threadSegment}-${uuid}`;
 }
 
 export function parseThreadSegmentFromAttachmentId(attachmentId: string): string | null {
@@ -105,15 +112,6 @@ export function parseThreadSegmentFromAttachmentId(attachmentId: string): string
     return null;
   }
   return match[1]?.toLowerCase() ?? null;
-}
-
-export function isAttachmentOwnedByThread(input: {
-  readonly attachmentId: string;
-  readonly threadId: string;
-}): boolean {
-  const expectedThreadSegment = toCanonicalThreadAttachmentSegment(input.threadId);
-  const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(input.attachmentId);
-  return expectedThreadSegment !== null && attachmentThreadSegment === expectedThreadSegment;
 }
 
 /** Null for attachment types this build does not know; callers skip those. */
@@ -136,15 +134,7 @@ export function attachmentRelativePath(attachment: ChatAttachment): string | nul
 export function resolveAttachmentPath(input: {
   readonly attachmentsDir: string;
   readonly attachment: ChatAttachment;
-  readonly threadId?: string;
 }): string | null {
-  if (
-    input.threadId !== undefined &&
-    !isAttachmentOwnedByThread({ attachmentId: input.attachment.id, threadId: input.threadId })
-  ) {
-    return null;
-  }
-
   const relativePath = attachmentRelativePath(input.attachment);
   if (!relativePath) {
     return null;
@@ -155,19 +145,10 @@ export function resolveAttachmentPath(input: {
   });
 }
 
-/** Legacy image-only lookup for claims issued before typed attachment metadata was signed. */
 export function resolveAttachmentPathById(input: {
   readonly attachmentsDir: string;
   readonly attachmentId: string;
-  readonly threadId?: string;
 }): string | null {
-  if (
-    input.threadId !== undefined &&
-    !isAttachmentOwnedByThread({ attachmentId: input.attachmentId, threadId: input.threadId })
-  ) {
-    return null;
-  }
-
   const normalizedId = normalizeAttachmentRelativePath(input.attachmentId);
   if (!normalizedId || normalizedId.includes("/") || normalizedId.includes(".")) {
     return null;
@@ -212,7 +193,7 @@ export function planAttachmentClaim(input: {
     return { ok: false, reason: "invalid attachment id" };
   }
 
-  if (!toCanonicalThreadAttachmentSegment(input.threadId)) {
+  if (!toSafeThreadAttachmentSegment(input.threadId)) {
     return { ok: false, reason: "invalid thread id" };
   }
   if (requestedSegment !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
@@ -292,7 +273,7 @@ export function sweepStalePendingAttachments(input: {
   return { deleted };
 }
 
-export function parseAttachmentIdFromRelativePath(relativePath: string): string | null {
+function parseAttachmentIdFromRelativePath(relativePath: string): string | null {
   const normalized = normalizeAttachmentRelativePath(relativePath);
   if (!normalized || normalized.includes("/")) {
     return null;

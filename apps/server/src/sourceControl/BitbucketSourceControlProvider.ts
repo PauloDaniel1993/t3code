@@ -192,7 +192,8 @@ export const makeDiscovery = Effect.gen(function* () {
     type: "api",
     kind: "bitbucket",
     label: "Bitbucket",
-    installHint: "Add a Bitbucket token in Settings → Source Control.",
+    installHint:
+      "Set T3CODE_BITBUCKET_EMAIL and T3CODE_BITBUCKET_API_TOKEN on the server (use a Bitbucket API token with pull request, repository, and user read scopes).",
     probeAuth: bitbucket.probeAuth,
   } satisfies SourceControlApiDiscoverySpec;
 });

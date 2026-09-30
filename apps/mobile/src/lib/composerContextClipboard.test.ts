@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { ComposerContextId, EnvironmentId } from "@t3tools/contracts";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 
 const mocks = vi.hoisted(() => ({
@@ -70,10 +70,7 @@ const clipboard = {
   text: "![Checkout](t3-context://v1/image/image-source) [Build](t3-context://v1/terminal/terminal-source)",
   fragment: encodeComposerContextFragment({
     version: 1,
-    source: {
-      environmentId: EnvironmentId.make("source"),
-      threadId: ThreadId.make("source-thread"),
-    },
+    source: { environmentId: EnvironmentId.make("source") },
     records: [image, terminal],
   })!,
   html: "",
@@ -102,21 +99,6 @@ describe("mobile context clipboard imports", () => {
     expect(result?.context.records[1]).toMatchObject({ text: "Build failed" });
     expect(result?.text).toContain("/image/import-1)");
     expect(mocks.dispose).toHaveBeenCalledOnce();
-    expect(mocks.execute).toHaveBeenCalledWith(
-      expect.anything(),
-      {
-        environmentId: EnvironmentId.make("source"),
-        input: {
-          resource: {
-            _tag: "attachment",
-            attachmentId: "source-file",
-            threadId: ThreadId.make("source-thread"),
-            fileName: "checkout.png",
-          },
-        },
-      },
-      { refresh: true, reportFailure: false },
-    );
   });
 
   it("keeps failed attachment references visibly unavailable without dropping text context", async () => {
@@ -158,31 +140,6 @@ describe("mobile context clipboard imports", () => {
     });
     expect(mocks.execute).not.toHaveBeenCalled();
     expect(mocks.download).not.toHaveBeenCalled();
-  });
-
-  it("does not send claimed ownership for a pending source upload", async () => {
-    const pendingClipboard = {
-      ...clipboard,
-      fragment: encodeComposerContextFragment({
-        version: 1,
-        source: {
-          environmentId: EnvironmentId.make("source"),
-          threadId: ThreadId.make("source-thread"),
-        },
-        records: [{ ...image, attachmentId: "pending-source-file" }],
-      })!,
-    };
-    await importComposerContextClipboard(pendingClipboard, 0, new AbortController().signal);
-    expect(mocks.execute.mock.calls[0]?.[1]).toEqual({
-      environmentId: EnvironmentId.make("source"),
-      input: {
-        resource: {
-          _tag: "attachment",
-          attachmentId: "pending-source-file",
-          fileName: "checkout.png",
-        },
-      },
-    });
   });
 
   it("refuses an overflowing context paste before copying files", async () => {

@@ -55,11 +55,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
-const DESKTOP_PACKAGE_NAME = "t3code";
-const LOCAL_DESKTOP_APP_ID = "com.t3tools.t3code.alpha.local";
-const LOCAL_DESKTOP_PACKAGE_NAME = "t3code-alpha-local";
-const LOCAL_DESKTOP_PRODUCT_NAME = "T3 alpha.local";
-const LOCAL_DESKTOP_EXECUTABLE_NAME = "T3 alpha.local";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -161,7 +156,6 @@ interface BuildCliInput {
   readonly buildVersion: Option.Option<string>;
   readonly outputDir: Option.Option<string>;
   readonly skipBuild: Option.Option<boolean>;
-  readonly localIdentity: Option.Option<boolean>;
   readonly keepStage: Option.Option<boolean>;
   readonly signed: Option.Option<boolean>;
   readonly verbose: Option.Option<boolean>;
@@ -919,7 +913,6 @@ interface ResolvedBuildOptions {
   readonly version: string | undefined;
   readonly outputDir: string;
   readonly skipBuild: boolean;
-  readonly localIdentity: boolean;
   readonly keepStage: boolean;
   readonly signed: boolean;
   readonly verbose: boolean;
@@ -949,6 +942,11 @@ interface StagePackageJson {
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
+  // Cursor finds platform assets by walking up from argv[1]. Keep them outside
+  // asar so spawning helpers and loading native addons both use real paths.
+  "!**/node_modules/@cursor/sdk-*/**/*",
+  "!apps/desktop/prod-resources/cursor-sdk",
+  "!apps/desktop/prod-resources/cursor-sdk/**/*",
   // T3 Code always passes the user's installed Claude executable to the SDK,
   // so the SDK's optional platform packages (each a ~200MB bundled executable)
   // are dead weight. The trailing dash keeps the SDK's own JS package.
@@ -1013,6 +1011,8 @@ export const WINDOWS_NATIVE_ASAR_UNPACK_GLOB =
 // are never spawned at runtime (and are symlinks on POSIX build hosts, which
 // the asar extraction path deliberately does not support).
 export const WINDOWS_SERVER_ASAR_IGNORE_GLOBS = [
+  "**/node_modules/@cursor/sdk-*",
+  "**/node_modules/@cursor/sdk-*/**",
   "**/node_modules/@anthropic-ai/claude-agent-sdk-*",
   "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
   "**/node_modules/.bin",
@@ -1073,6 +1073,10 @@ export const WSL_RUNTIME_EXTRA_RESOURCES = [
   WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE,
 ] as const;
 export const DESKTOP_EXTRA_RESOURCES = [
+  {
+    from: "apps/desktop/prod-resources/cursor-sdk",
+    to: "node_modules/@cursor",
+  },
   {
     from: "apps/desktop/prod-resources/resource-monitor",
     to: "resource-monitor",
@@ -1356,6 +1360,24 @@ export function resolveMergedStageDependencies(input: {
   };
 }
 
+/** Cursor's helper lookup falls through the archive to this real resources tree. */
+export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformPackages")(
+  function* (nodeModulesDir: string, destination: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.makeDirectory(destination, { recursive: true });
+    const sdkDirectory = path.join(nodeModulesDir, "@cursor/sdk");
+    if (!(yield* fs.exists(sdkDirectory))) return;
+    // pnpm's isolated layout puts optional packages beside the real SDK directory.
+    const cursorDirectory = path.dirname(yield* fs.realPath(sdkDirectory));
+    for (const name of yield* fs.readDirectory(cursorDirectory)) {
+      if (!name.startsWith("sdk-")) continue;
+      const source = yield* fs.realPath(path.join(cursorDirectory, name));
+      yield* fs.copy(source, path.join(destination, name));
+    }
+  },
+);
+
 export interface ClerkPasskeyNativeArtifact {
   readonly packageName: string;
   readonly binaryFileName: string;
@@ -1552,7 +1574,6 @@ const BuildEnvConfig = Config.all({
   version: Config.String("T3CODE_DESKTOP_VERSION").pipe(Config.option),
   outputDir: Config.String("T3CODE_DESKTOP_OUTPUT_DIR").pipe(Config.option),
   skipBuild: Config.Boolean("T3CODE_DESKTOP_SKIP_BUILD").pipe(Config.withDefault(false)),
-  localIdentity: Config.Boolean("T3CODE_DESKTOP_LOCAL_IDENTITY").pipe(Config.withDefault(false)),
   keepStage: Config.Boolean("T3CODE_DESKTOP_KEEP_STAGE").pipe(Config.withDefault(false)),
   signed: Config.Boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
   verbose: Config.Boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
@@ -1637,7 +1658,6 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   );
 
   const skipBuild = resolveBooleanFlag(input.skipBuild, env.skipBuild);
-  const localIdentity = resolveBooleanFlag(input.localIdentity, env.localIdentity);
   const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
   const signed = resolveBooleanFlag(input.signed, env.signed);
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
@@ -1664,7 +1684,6 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     version,
     outputDir,
     skipBuild,
-    localIdentity,
     keepStage,
     signed,
     verbose,
@@ -1806,21 +1825,15 @@ export const preflightMacDesktopBuild = Effect.fn("preflightMacDesktopBuild")(fu
 });
 
 function windowsVswherePrerequisiteScript(arch: typeof BuildArch.Type): string {
-  const requiredComponents =
+  const toolComponents =
     arch === "arm64"
-      ? [
-          "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
-          "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre",
-        ]
-      : [
-          "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-          "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
-        ];
+      ? ["Microsoft.VisualStudio.Component.VC.Tools.ARM64"]
+      : ["Microsoft.VisualStudio.Component.VC.Tools.x86.x64"];
   const spectreArch = arch === "arm64" ? "arm64" : "x64";
   return [
     "$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\\Installer\\vswhere.exe'",
     "if (!(Test-Path $vswhere)) { exit 1 }",
-    `$install = & $vswhere -latest -products * -requires ${requiredComponents.join(" ")} -property installationPath`,
+    `$install = & $vswhere -latest -products * -requires ${toolComponents.join(" ")} -property installationPath`,
     "if (!$install) { exit 1 }",
     "$kitsRoot = Get-ItemPropertyValue 'HKLM:\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots' -Name KitsRoot10 -ErrorAction SilentlyContinue",
     "if (!$kitsRoot -or !(Test-Path (Join-Path $kitsRoot 'Lib'))) { exit 1 }",
@@ -2629,29 +2642,10 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string, localIdentity = false): string {
-  if (localIdentity) return LOCAL_DESKTOP_PRODUCT_NAME;
+export function resolveDesktopProductName(version: string): string {
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
-}
-
-/**
- * The base name electron-builder gives the emitted executable: `executableName`
- * when the build config sets one, otherwise `productName`. Only a local-identity
- * build sets it, so the two diverge exactly there — which is why anything probing
- * for the packaged executable has to ask this rather than assume the product name.
- */
-export function resolveDesktopExecutableBaseName(version: string, localIdentity = false): string {
-  return localIdentity ? LOCAL_DESKTOP_EXECUTABLE_NAME : resolveDesktopProductName(version);
-}
-
-export function resolveDesktopAppId(localIdentity = false): string {
-  return localIdentity ? LOCAL_DESKTOP_APP_ID : DESKTOP_APP_ID;
-}
-
-export function resolveDesktopPackageName(localIdentity = false): string {
-  return localIdentity ? LOCAL_DESKTOP_PACKAGE_NAME : DESKTOP_PACKAGE_NAME;
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2672,16 +2666,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   // source file was never written fails the electron-builder step.
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
-  localIdentity = false,
 ) {
-  const productName = resolveDesktopProductName(version, localIdentity);
   const buildConfig: Record<string, unknown> = {
-    appId: resolveDesktopAppId(localIdentity),
-    productName,
-    executableName: localIdentity ? LOCAL_DESKTOP_EXECUTABLE_NAME : undefined,
-    artifactName: localIdentity
-      ? "T3-Code-alpha-local-${version}-${arch}.${ext}"
-      : "T3-Code-${version}-${arch}.${ext}",
+    appId: DESKTOP_APP_ID,
+    productName: resolveDesktopProductName(version),
+    artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [
       ...DESKTOP_FILE_EXCLUSIONS,
@@ -2711,7 +2700,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const updateChannel = resolveDesktopUpdateChannel(version);
   if (!isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
-    if (!localIdentity && publishConfig) {
+    if (publishConfig) {
       buildConfig.publish = [publishConfig];
     } else if (mockUpdates) {
       buildConfig.publish = [
@@ -2779,7 +2768,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // resources/package-type into the .deb only, so electron-updater updates
       // each install in its own format.
       target: target === "AppImage" ? [target, "deb"] : [target],
-      executableName: localIdentity ? LOCAL_DESKTOP_PACKAGE_NAME : DESKTOP_PACKAGE_NAME,
+      executableName: "t3code",
       icon: "icons",
       category: "Development",
       synopsis: "Desktop GUI for coding agents",
@@ -2796,7 +2785,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ],
       desktop: {
         entry: {
-          StartupWMClass: localIdentity ? LOCAL_DESKTOP_PACKAGE_NAME : DESKTOP_PACKAGE_NAME,
+          StartupWMClass: "t3code",
         },
       },
     };
@@ -3703,7 +3692,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
   const stagePackageJson: StagePackageJson = {
-    name: resolveDesktopPackageName(options.localIdentity),
+    name: "t3code",
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
@@ -3729,7 +3718,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
-      options.localIdentity,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -3786,6 +3774,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       verbose: options.verbose,
     });
   }
+  yield* stageCursorSdkPlatformPackages(
+    path.join(
+      options.platform === "win" ? path.join(stageRoot, "server") : stageAppDir,
+      "node_modules",
+    ),
+    path.join(stageProdResourcesDir, "cursor-sdk"),
+  );
   if (
     options.wslRuntime !== undefined &&
     bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime })
@@ -3894,7 +3889,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (options.platform === "win") {
     yield* validateWindowsPackagedPayload({
       stageDistDir,
-      appExecutableName: `${resolveDesktopExecutableBaseName(appVersion, options.localIdentity)}.exe`,
+      appExecutableName: `${resolveDesktopProductName(appVersion)}.exe`,
       targetArch: options.arch,
       appVersion,
       expectWslRuntime: bundlesWslRuntime({
@@ -3909,24 +3904,17 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
 
   const copiedArtifacts: string[] = [];
-  let copiedDirectory = false;
   for (const entry of stageEntries) {
     const from = path.join(stageDistDir, entry);
     const stat = yield* fs.stat(from).pipe(Effect.orElseSucceed(() => null));
-    if (!stat || (stat.type !== "File" && stat.type !== "Directory")) continue;
+    if (!stat || stat.type !== "File") continue;
 
     const to = path.join(options.outputDir, entry);
-    if (stat.type === "Directory") {
-      yield* fs.remove(to, { recursive: true, force: true });
-      yield* fs.copy(from, to);
-      copiedDirectory = true;
-    } else {
-      yield* fs.copyFile(from, to);
-    }
+    yield* fs.copyFile(from, to);
     copiedArtifacts.push(to);
   }
 
-  if (copiedArtifacts.length === 0 || (options.target === "dir" && !copiedDirectory)) {
+  if (copiedArtifacts.length === 0) {
     return yield* new DesktopBuildNoArtifactsProducedError({
       distPath: stageDistDir,
       platform: options.platform,
@@ -3965,12 +3953,6 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   skipBuild: Flag.Boolean("skip-build").pipe(
     Flag.withDescription(
       "Skip `vp run build:desktop` and use existing dist artifacts (env: T3CODE_DESKTOP_SKIP_BUILD).",
-    ),
-    Flag.optional,
-  ),
-  localIdentity: Flag.Boolean("local-identity").pipe(
-    Flag.withDescription(
-      "Build with local app identity, product name, and executable name (env: T3CODE_DESKTOP_LOCAL_IDENTITY).",
     ),
     Flag.optional,
   ),

@@ -5,7 +5,7 @@
  * ~/.t3 database, then run this checkout's migrations against it.
  *
  * `vp run migrate-dev-db` from a worktree:
- *   1. Nukes `<worktree>/.t3/userdata/state.sqlite`.
+ *   1. Nukes `<worktree>/.t3/userdata/statev2.sqlite`.
  *   2. Snapshots the real db (read-only VACUUM INTO) and prunes it to the
  *      most recently updated projects and, per project, the most recent
  *      threads that have fully stopped. Working, settled, and monitored
@@ -37,10 +37,6 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { Command, Flag } from "effect/unstable/cli";
 
-import {
-  reconcileBaseMigrationLedger,
-  runForkMigrations,
-} from "../src/persistence/ForkMigrations.ts";
 import { migrationManifest, runMigrations } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
@@ -304,7 +300,6 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
         "projection_pending_approvals",
         "projection_thread_proposed_plans",
         "checkpoint_diff_blobs",
-        "attachment_cleanup_queue",
       ]) {
         yield* sql.unsafe(
           `DELETE FROM ${table} WHERE thread_id NOT IN (SELECT thread_id FROM kept_threads)`,
@@ -378,7 +373,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     return yield* new MigrateDevDbNotInWorktreeError();
   }
   const stateDir = path.join(baseDir, "userdata");
-  const databasePath = path.join(stateDir, "state.sqlite");
+  const databasePath = path.join(stateDir, "statev2.sqlite");
   const snapshotPath = `${databasePath}.migrate-dev-db-tmp`;
 
   if (!(yield* fs.exists(sourcePath))) {
@@ -440,13 +435,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
       const sql = yield* SqlClient.SqlClient;
       // Mirror server boot (persistence/Layers/Sqlite.ts).
       yield* sql.unsafe("PRAGMA foreign_keys = ON").unprepared;
-      yield* reconcileBaseMigrationLedger();
-      const base = yield* runMigrations();
-      const fork = yield* runForkMigrations();
-      return [
-        ...base.map(([id, name]) => `base:${id}_${name}`),
-        ...fork.map(([id, name]) => `fork:${id}_${name}`),
-      ];
+      return yield* runMigrations();
     }).pipe(
       Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
       wrapPhase("migrate", snapshotPath),
@@ -505,7 +494,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     sizeBytes: Number(size),
     projects: pruned.projects,
     eventCount: pruned.eventCount,
-    executedMigrations,
+    executedMigrations: executedMigrations.map(([id, name]) => `${id}_${name}`),
   };
 });
 

@@ -4,7 +4,7 @@ import type {
   ComposerContextRecord,
   ElementContextSource,
   EnvironmentId,
-  ThreadId,
+  ScopedThreadRef,
 } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { videoMimeType } from "@t3tools/shared/video";
@@ -35,7 +35,6 @@ import { SymbolView } from "./AppSymbol";
 import { ContextSheetSize } from "./ContextSheetSize";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 import { getMobileTerminalTheme } from "../features/terminal/terminalTheme";
-import { attachmentAssetOwnership } from "../lib/attachmentDocument";
 
 function ContextField(props: { label: string; value: string | null | undefined; code?: boolean }) {
   if (!props.value) return null;
@@ -90,8 +89,8 @@ export function ComposerContextSheet(props: {
   readonly onOpenPullRequest?: () => void;
   readonly skillDescription?: string;
   readonly onOpenSkill?: () => void;
+  readonly onOpenThread?: (thread: ScopedThreadRef) => void;
   readonly environmentId?: EnvironmentId;
-  readonly threadId?: ThreadId;
   readonly records?: ReadonlyArray<ComposerContextRecord>;
   readonly attachments?: ReadonlyArray<DraftComposerAttachment>;
 }) {
@@ -120,11 +119,6 @@ export function ComposerContextSheet(props: {
       attachmentId: record.attachmentId,
       fileName: record.name,
       mimeType,
-      ...attachmentAssetOwnership({
-        attachmentId: record.attachmentId,
-        threadId: props.threadId,
-        isLocal: localAttachment !== undefined,
-      }),
     };
     const remoteSource = props.environmentId
       ? { environmentId: props.environmentId, resource }
@@ -356,6 +350,25 @@ export function ComposerContextSheet(props: {
                 {record.kind === "mention" ? (
                   <ContextField label="Path" value={record.path} code />
                 ) : null}
+                {record.kind === "thread" ? (
+                  <View className="gap-3">
+                    <ContextField label="Thread" value={record.title} />
+                    {props.onOpenThread ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() =>
+                          props.onOpenThread?.({
+                            environmentId: record.environmentId,
+                            threadId: record.threadId,
+                          })
+                        }
+                        className="rounded-xl bg-subtle p-4"
+                      >
+                        <Text className="text-foreground">Open thread</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ) : null}
                 {record.kind === "skill" ? (
                   <View className="gap-3">
                     <ContextField label="Skill" value={record.name} />
@@ -382,14 +395,12 @@ export function ComposerContextSheet(props: {
               <ComposerContextAttachment
                 key={JSON.stringify([
                   props.environmentId,
-                  props.threadId,
                   attachmentRecord.attachmentId,
                   props.attachments?.find((entry) => entry.id === attachmentRecord.attachmentId)
                     ?.fileUri,
                 ])}
                 record={attachmentRecord}
                 environmentId={props.environmentId}
-                {...(props.threadId !== undefined ? { threadId: props.threadId } : {})}
                 attachment={props.attachments?.find(
                   (entry) => entry.id === attachmentRecord.attachmentId,
                 )}

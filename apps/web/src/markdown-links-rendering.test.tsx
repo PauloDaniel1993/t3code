@@ -27,8 +27,7 @@ const SANITIZE_SCHEMA = {
 
 describe("markdown file link rendering", () => {
   it("preserves an absolute windows file target through sanitization", () => {
-    const path =
-      "I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf";
+    const path = "C:/work/reports/output/pdf/quarterly-report.pdf";
     const html = renderToStaticMarkup(
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
@@ -52,7 +51,7 @@ describe("markdown file link rendering", () => {
       </ReactMarkdown>,
     );
 
-    expect(html).toContain(`data-preserved-href="file:///I:/projects/Personal/jobs/output/pdf/`);
+    expect(html).toContain(`data-preserved-href="file:///C:/work/reports/output/pdf/`);
     expect(html).toContain(">Download the PDF</a>");
   });
 });

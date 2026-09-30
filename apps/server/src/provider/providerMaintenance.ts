@@ -58,8 +58,6 @@ export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
   readonly update: ProviderMaintenanceCommandAction | null;
-  /** Copyable fallback when the detected installer cannot be supervised. */
-  readonly manualCommand?: string | null;
   /**
    * Latest version reported by the installer that owns the executable.
    * `undefined` means the installer has no channel of its own and the npm
@@ -163,7 +161,6 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly platform?: NodeJS.Platform;
   readonly env?: NodeJS.ProcessEnv;
   readonly latestVersion?: string | null;
-  readonly manualCommand?: string | null;
 }): ProviderMaintenanceCapabilities {
   const platform = input.platform ?? HostProcessPlatform.defaultValue();
   const update =
@@ -185,7 +182,6 @@ export function makeProviderMaintenanceCapabilities(input: {
     provider: input.provider,
     packageName: input.packageName,
     update,
-    ...(input.manualCommand !== undefined ? { manualCommand: input.manualCommand } : {}),
     ...("latestVersion" in input ? { latestVersion: input.latestVersion } : {}),
   };
 }
@@ -220,7 +216,6 @@ export function makeTargetedProviderUpdateAction(
 export function makeManualOnlyProviderMaintenanceCapabilities(input: {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
-  readonly manualCommand?: string | null;
 }): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: input.provider,
@@ -228,7 +223,6 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
     updateExecutable: null,
     updateArgs: [],
     updateLockKey: null,
-    ...(input.manualCommand !== undefined ? { manualCommand: input.manualCommand } : {}),
   });
 }
 
@@ -520,7 +514,7 @@ const resolveNpmGlobalPrefix = Effect.fn("resolveNpmGlobalPrefix")(function* (
   if (fromRealPath) {
     return fromRealPath;
   }
-  if (context.platform !== "win32") {
+  if ((yield* HostProcessPlatform) !== "win32") {
     return null;
   }
   const fileSystem = yield* FileSystem.FileSystem;
@@ -658,7 +652,7 @@ export function createProviderVersionAdvisory(input: {
     status: advisory.status,
     currentVersion: input.currentVersion,
     latestVersion,
-    updateCommand: capabilities.update?.command ?? capabilities.manualCommand ?? null,
+    updateCommand: capabilities.update?.command ?? null,
     canUpdate: capabilities.update !== null,
     canInstallVersion: makeTargetedProviderUpdateAction(capabilities, "0.0.0") !== null,
     checkedAt: input.checkedAt ?? null,

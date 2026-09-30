@@ -29,35 +29,6 @@ export function formatProviderSkillDisplayName(
   return titleCaseWords(skill.name);
 }
 
-export function formatProviderSkillInstallSource(
-  skill: Pick<ServerProviderSkill, "path" | "scope">,
-): string | null {
-  const normalizedPath = normalizePathSeparators(skill.path);
-  if (normalizedPath.includes("/.codex/plugins/") || normalizedPath.includes("/.agents/plugins/")) {
-    return "App";
-  }
-
-  const normalizedScope = skill.scope?.trim().toLowerCase();
-  if (normalizedScope === "system") {
-    return "System";
-  }
-  if (
-    normalizedScope === "project" ||
-    normalizedScope === "workspace" ||
-    normalizedScope === "local"
-  ) {
-    return "Project";
-  }
-  if (normalizedScope === "user" || normalizedScope === "personal") {
-    return "Personal";
-  }
-  if (normalizedScope) {
-    return titleCaseWords(normalizedScope);
-  }
-
-  return null;
-}
-
 export function dedupeProviderSkillsByName(
   skills: ReadonlyArray<ServerProviderSkill>,
 ): ServerProviderSkill[] {

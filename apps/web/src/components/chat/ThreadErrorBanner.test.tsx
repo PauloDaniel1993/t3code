@@ -37,22 +37,6 @@ describe("ThreadErrorBanner", () => {
     ).toBe(true);
   });
 
-  it("reappears when the same error text belongs to a newer session update", () => {
-    const previousKey = getThreadErrorBannerKey(
-      "env:thread-b2",
-      "Provider interrupted",
-      "2026-08-13T12:00:00.000Z",
-    );
-    dismissThreadErrorBannerForSession(previousKey);
-
-    const nextKey = getThreadErrorBannerKey(
-      "env:thread-b2",
-      "Provider interrupted",
-      "2026-08-13T12:01:00.000Z",
-    );
-    expect(isThreadErrorBannerDismissedForSession(nextKey)).toBe(false);
-  });
-
   it("scopes dismissals to the thread that dismissed them", () => {
     dismissThreadErrorBannerForSession(getThreadErrorBannerKey("env:thread-c", "Aborted"));
     const otherThreadKey = getThreadErrorBannerKey("env:other-thread", "Aborted");

@@ -96,10 +96,8 @@ describe("searchSettings", () => {
     expect(searchSettings("push notifications")[0]?.id).toBe("publish-agent-activity");
     expect(searchSettings("battery saver")[0]?.id).toBe("background-activity");
     expect(searchSettings("binary path")[0]?.id).toBe("providers");
-    expect(searchSettings("Kimi").map((item) => item.id)).toContain("providers");
     expect(searchSettings("Antigravity")[0]?.id).toBe("providers");
     expect(searchSettings("Google sign in")[0]?.id).toBe("providers");
-    expect(searchSettings("Kimi update")[0]?.id).toBe("provider-update-checks");
     expect(searchSettings("authorized clients")[0]?.id).toBe("connections-environment");
     expect(searchSettings("administrative access")[0]?.id).toBe("connections-environment");
   });
@@ -286,31 +284,15 @@ describe("searchSettings", () => {
       id: "word-wrap",
       to: "/settings/appearance",
     });
+    expect(searchSettings("composer context")[0]).toMatchObject({
+      id: "composer-context",
+      to: "/settings/appearance",
+    });
     expect(searchSettings("environment identification")[0]).toMatchObject({
       id: "environment-identification",
       to: "/settings/appearance",
       targetId: "appearance-interface",
     });
-  });
-
-  it("routes thread task controls to General after the beta page retirement", () => {
-    expect(searchSettings("thread tasks")[0]).toMatchObject({
-      id: "thread-tasks",
-      to: "/settings/general",
-    });
-    expect(searchSettings("tasks running")[0]).toMatchObject({
-      id: "thread-task-max-running",
-      to: "/settings/general",
-    });
-  });
-
-  it("keeps flat font preferences in the modular appearance panel", () => {
-    expect(searchSettings("font").map(({ id, to }) => ({ id, to }))).toEqual([
-      { id: "interface-font", to: "/settings/appearance" },
-      { id: "prompt-font", to: "/settings/appearance" },
-      { id: "code-font", to: "/settings/appearance" },
-      { id: "terminal-font", to: "/settings/appearance" },
-    ]);
   });
 
   it("routes conditional window capture settings to the stable toggle row", () => {

@@ -53,9 +53,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
     if (current === null) return;
     const configs = appAtomRegistry.get(environmentServerConfigsAtom);
     const ordered = getThreadListV2OrderedSection({
-      threads: appAtomRegistry
-        .get(environmentThreadShells.threadShellsAtom)
-        .filter((thread) => thread.parentThreadId == null),
+      threads: appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
       section: current.section,
       now: new Date().toISOString(),
       queuedThreadKeys: appAtomRegistry.get(queuedThreadKeysAtom),

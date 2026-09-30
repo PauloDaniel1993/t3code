@@ -35,31 +35,32 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
-  it("registers Kimi with its executable and subscription home fields", () => {
-    const kimi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("kimi")];
+  it("uses a dedicated environment field instead of legacy Cursor CLI settings", () => {
+    const cursor = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("cursor")];
 
-    expect(kimi).toMatchObject({
-      label: "Kimi",
-      badgeLabel: "Early Access",
-    });
-    expect(deriveProviderSettingsFields(kimi!).map((field) => field.key)).toEqual([
-      "binaryPath",
-      "homePath",
+    expect(cursor).toBeDefined();
+    expect(deriveProviderSettingsFields(cursor!)).toEqual([]);
+    expect(cursor?.environmentFields).toEqual([
+      {
+        name: "CURSOR_API_KEY",
+        label: "Cursor API key",
+        description: "Optional. Overrides browser sign-in for this provider.",
+        placeholder: "Paste API key",
+        sensitive: true,
+      },
     ]);
-    expect(deriveProviderSettingsFields(kimi!)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          key: "binaryPath",
-          label: "Binary path",
-          placeholder: "kimi",
-        }),
-        expect.objectContaining({
-          key: "homePath",
-          label: "KIMI_CODE_HOME path",
-          placeholder: "~/.kimi-code",
-        }),
-      ]),
-    );
+  });
+
+  it("exposes ACP Registry as an instance-only configurable driver", () => {
+    const acpRegistry = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("acpRegistry")];
+
+    expect(acpRegistry).toBeDefined();
+    expect(acpRegistry?.hasDefaultInstance).toBe(false);
+    expect(deriveProviderSettingsFields(acpRegistry!).map((field) => field.key)).toEqual([
+      "agentId",
+      "commandPath",
+      "authMethodId",
+    ]);
   });
 
   it("derives a select control with its choices for the Antigravity sign-in method", () => {

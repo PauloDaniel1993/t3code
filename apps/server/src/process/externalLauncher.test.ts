@@ -6,7 +6,6 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -18,11 +17,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import {
-  CommandAvailability,
-  type CommandAvailabilityChecker,
-  SpawnExecutableResolution,
-} from "@t3tools/shared/shell";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as ExternalLauncher from "./externalLauncher.ts";
 
 // Tests below write `#!/bin/sh` stubs into a real temp dir and hand that
@@ -65,43 +60,11 @@ function makeMockDetachedHandle(input: MockSpawnResult & { readonly onUnref?: ()
 const testLayer = (input: {
   readonly platform: NodeJS.Platform;
   readonly env?: Record<string, string>;
-  readonly commandAvailable?: CommandAvailabilityChecker;
   readonly resolveExecutable?: (command: string) => string | undefined;
   readonly onSpawn?: (command: ChildProcess.StandardCommand) => void;
   readonly onUnref?: () => void;
   readonly spawnResult?: (command: ChildProcess.StandardCommand) => MockSpawnResult | undefined;
 }) => {
-  const testCommandAvailable: CommandAvailabilityChecker = (command, options = {}) =>
-    Effect.sync(() => {
-      if (command.includes("/") || command.includes("\\")) {
-        return NodeFS.existsSync(command) && NodeFS.statSync(command).isFile();
-      }
-
-      const env = options.env ?? {};
-      const pathValue = env.PATH ?? env.Path ?? env.path ?? "";
-      const pathExtensions =
-        input.platform === "win32"
-          ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
-              .split(";")
-              .map((extension) => extension.trim())
-              .filter((extension) => extension.length > 0)
-          : [""];
-      const candidates =
-        input.platform === "win32" && NodePath.extname(command).length === 0
-          ? pathExtensions.map((extension) => `${command}${extension}`)
-          : [command];
-
-      return pathValue
-        .split(NodePath.delimiter)
-        .filter((entry) => entry.length > 0)
-        .some((entry) =>
-          candidates.some((candidate) => {
-            const candidatePath = NodePath.join(entry, candidate);
-            return NodeFS.existsSync(candidatePath) && NodeFS.statSync(candidatePath).isFile();
-          }),
-        );
-    });
-
   const spawnerLayer = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) =>
@@ -122,7 +85,6 @@ const testLayer = (input: {
   return Layer.mergeAll(
     ExternalLauncher.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, spawnerLayer))),
     Layer.succeed(HostProcessPlatform, input.platform),
-    Layer.succeed(CommandAvailability, input.commandAvailable ?? testCommandAvailable),
     Layer.succeed(
       SpawnExecutableResolution,
       (command) => input.resolveExecutable?.(command) ?? command,
@@ -960,34 +922,6 @@ it.effect("discovers editors through the service API", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("checks independent editor commands concurrently", () => {
-  let activeChecks = 0;
-  let peakActiveChecks = 0;
-
-  return Effect.gen(function* () {
-    const launcher = yield* ExternalLauncher.ExternalLauncher;
-    const editors = yield* launcher.resolveAvailableEditors();
-
-    assert.isAbove(peakActiveChecks, 1);
-    assert.deepEqual(editors, ["vscode", "file-manager"]);
-  }).pipe(
-    Effect.provide(
-      testLayer({
-        platform: "win32",
-        env: { PATH: "" },
-        commandAvailable: (command) =>
-          Effect.gen(function* () {
-            activeChecks += 1;
-            peakActiveChecks = Math.max(peakActiveChecks, activeChecks);
-            yield* Effect.yieldNow;
-            activeChecks -= 1;
-            return command === "code" || command === "explorer";
-          }),
-      }),
-    ),
-  );
-});
-
 for (const { platform, installPath, editor, args } of [
   {
     platform: "darwin",
@@ -1192,101 +1126,129 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("reuses successful editor discovery results", () => {
-  let commandChecks = 0;
-
-  return Effect.gen(function* () {
-    const launcher = yield* ExternalLauncher.ExternalLauncher;
-    const firstEditors = yield* launcher.resolveAvailableEditors();
-    const checksAfterFirstDiscovery = commandChecks;
-    const secondEditors = yield* launcher.resolveAvailableEditors();
-
-    assert.isAbove(checksAfterFirstDiscovery, 0);
-    assert.deepEqual(firstEditors, ["vscode", "file-manager"]);
-    assert.deepEqual(secondEditors, firstEditors);
-    assert.equal(commandChecks, checksAfterFirstDiscovery);
-  }).pipe(
-    Effect.provide(
-      testLayer({
-        platform: "win32",
-        env: { PATH: "" },
-        commandAvailable: (command) =>
-          Effect.sync(() => {
-            commandChecks += 1;
-            return command === "code" || command === "explorer";
-          }),
-      }),
+it.effect("memoizes editor discovery and refreshes after the cache window", () => {
+  let statCalls = 0;
+  const fileInfo = { type: "File" } as FileSystem.File.Info;
+  const launcherLayer = ExternalLauncher.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        FileSystem.layerNoop({
+          stat: () =>
+            Effect.sync(() => {
+              statCalls += 1;
+              return fileInfo;
+            }),
+        }),
+        Path.layer,
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.sync(() => makeMockDetachedHandle())),
+        ),
+      ),
     ),
   );
-});
-
-it.effect("memoizes editor discovery and refreshes after the cache window", () => {
-  let commandChecks = 0;
 
   return Effect.gen(function* () {
     const launcher = yield* ExternalLauncher.ExternalLauncher;
 
     const first = yield* launcher.resolveAvailableEditors();
-    assert.deepEqual(first, ["vscode", "file-manager"]);
-    const checksAfterFirstScan = commandChecks;
-    assert.isAbove(checksAfterFirstScan, 0);
+    assert.equal(first.includes("vscode"), true);
+    const statCallsAfterFirstScan = statCalls;
+    assert.isAbove(statCallsAfterFirstScan, 0);
 
+    // Past the shared command-resolution cache TTL (30s) but within the
+    // discovery cache window: the memoized set is reused without any scan.
     yield* TestClock.adjust("31 seconds");
     const second = yield* launcher.resolveAvailableEditors();
-    assert.deepEqual(second, first);
-    assert.equal(commandChecks, checksAfterFirstScan);
+    assert.deepEqual([...second], [...first]);
+    assert.equal(statCalls, statCallsAfterFirstScan);
 
+    // Past the discovery cache window the next call rescans.
     yield* TestClock.adjust("30 seconds");
     yield* launcher.resolveAvailableEditors();
-    assert.isAbove(commandChecks, checksAfterFirstScan);
+    assert.isAbove(statCalls, statCallsAfterFirstScan);
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
-        testLayer({
-          platform: "win32",
-          env: { PATH: "" },
-          commandAvailable: (command) =>
-            Effect.sync(() => {
-              commandChecks += 1;
-              return command === "code" || command === "explorer";
-            }),
-        }),
+        launcherLayer,
+        Layer.succeed(HostProcessPlatform, "win32"),
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: {
+              PATH: "C:\\t3-editor-discovery-cache-test",
+              PATHEXT: ".COM;.EXE;.BAT;.CMD",
+            },
+          }),
+        ),
         TestClock.layer(),
       ),
     ),
   );
 });
 
-it.effect("rescans after an interrupted discovery instead of caching the interrupt", () =>
-  Effect.gen(function* () {
-    const discoveryStarted = yield* Deferred.make<void>();
-    let blockDiscovery = true;
-
-    const editors = yield* Effect.gen(function* () {
-      const launcher = yield* ExternalLauncher.ExternalLauncher;
-      const firstAttempt = yield* launcher.resolveAvailableEditors().pipe(Effect.forkChild);
-
-      yield* Deferred.await(discoveryStarted);
-      yield* Fiber.interrupt(firstAttempt);
-      blockDiscovery = false;
-
-      return yield* launcher.resolveAvailableEditors();
-    }).pipe(
-      Effect.provide(
-        testLayer({
-          platform: "win32",
-          env: { PATH: "" },
-          commandAvailable: (command) =>
-            blockDiscovery
-              ? Deferred.succeed(discoveryStarted, undefined).pipe(Effect.andThen(Effect.never))
-              : Effect.succeed(command === "code" || command === "explorer"),
+// A client that disconnects mid-scan interrupts the shared discovery effect on
+// the connection fiber. The cache must not retain that interrupt: doing so
+// replayed it to every later connect for the whole TTL, so `server.getConfig`
+// failed and no client could reconnect until the server restarted.
+it.effect("rescans after an interrupted discovery instead of caching the interrupt", () => {
+  const fileInfo = { type: "File" } as FileSystem.File.Info;
+  let blockFirstScan = true;
+  let scans = 0;
+  const launcherLayer = ExternalLauncher.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        FileSystem.layerNoop({
+          // The first scan parks inside `stat` so the interrupt lands while
+          // discovery is in flight, which is what a client disconnecting
+          // mid-connect does to the shared effect.
+          stat: () =>
+            Effect.gen(function* () {
+              scans += 1;
+              if (blockFirstScan) {
+                return yield* Effect.never;
+              }
+              return fileInfo;
+            }),
         }),
+        Path.layer,
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.sync(() => makeMockDetachedHandle())),
+        ),
       ),
-    );
+    ),
+  );
 
-    assert.deepEqual(editors, ["vscode", "file-manager"]);
-  }),
-);
+  return Effect.gen(function* () {
+    const launcher = yield* ExternalLauncher.ExternalLauncher;
+
+    const fiber = yield* Effect.forkChild(launcher.resolveAvailableEditors());
+    yield* Effect.yieldNow;
+    yield* Fiber.interrupt(fiber);
+
+    // The next connect must still get a real answer well inside the TTL.
+    blockFirstScan = false;
+    scans = 0;
+    const editors = yield* launcher.resolveAvailableEditors();
+    assert.equal(editors.includes("vscode"), true);
+    assert.isAbove(scans, 0);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        launcherLayer,
+        Layer.succeed(HostProcessPlatform, "win32"),
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: {
+              PATH: "C:\\t3-editor-discovery-interrupt-test",
+              PATHEXT: ".COM;.EXE;.BAT;.CMD",
+            },
+          }),
+        ),
+      ),
+    ),
+  );
+});
 
 it.effect("rejects unknown editors through the service API", () =>
   Effect.gen(function* () {

@@ -18,7 +18,7 @@ describe("openFileOutsideT3", () => {
   it("opens a workspace-relative PDF asset in the system browser", async () => {
     const createAssetUrl = vi.fn(async () =>
       AsyncResult.success({
-        relativeUrl: "/api/assets/signed/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+        relativeUrl: "/api/assets/signed/quarterly-report.pdf",
         expiresAt: Date.now() + 60_000,
       }),
     );
@@ -26,7 +26,7 @@ describe("openFileOutsideT3", () => {
 
     const result = await openFileOutsideT3({
       threadRef,
-      filePath: "output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+      filePath: "output/pdf/quarterly-report.pdf",
       httpBaseUrl: "http://localhost:13785",
       createAssetUrl,
       openExternal,
@@ -39,12 +39,12 @@ describe("openFileOutsideT3", () => {
         resource: {
           _tag: "workspace-file",
           threadId: "thread-1",
-          path: "output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+          path: "output/pdf/quarterly-report.pdf",
         },
       },
     });
     expect(openExternal).toHaveBeenCalledWith(
-      "http://localhost:13785/api/assets/signed/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+      "http://localhost:13785/api/assets/signed/quarterly-report.pdf",
     );
   });
 

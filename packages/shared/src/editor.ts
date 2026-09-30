@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as HostProcess from "./hostProcess.ts";
-import { isCommandAvailable, type CommandAvailabilityChecker } from "./shell.ts";
+import { isCommandAvailable } from "./shell.ts";
 
 type Editor = (typeof EDITORS)[number];
 
@@ -22,12 +22,11 @@ const installNames: Partial<Record<Editor["id"], ReadonlyArray<string>>> = {
 export const resolveEditorCommand = Effect.fn("editor.resolveEditorCommand")(function* (
   editor: Editor,
   env: NodeJS.ProcessEnv,
-  commandAvailable: CommandAvailabilityChecker = isCommandAvailable,
 ) {
   if (editor.commands === null) return Option.none();
   const baseArgs = "baseArgs" in editor ? editor.baseArgs : [];
   for (const command of editor.commands) {
-    if (yield* commandAvailable(command, { env })) return Option.some({ command, baseArgs });
+    if (yield* isCommandAvailable(command, { env })) return Option.some({ command, baseArgs });
   }
 
   const platform = yield* HostProcess.HostProcessPlatform;
@@ -118,7 +117,7 @@ export const resolveEditorCommand = Effect.fn("editor.resolveEditorCommand")(fun
   }
 
   for (const candidate of candidates) {
-    if (yield* commandAvailable(candidate, { env })) {
+    if (yield* isCommandAvailable(candidate, { env })) {
       return Option.some({
         command: candidate,
         baseArgs:

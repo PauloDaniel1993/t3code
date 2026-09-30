@@ -2,7 +2,7 @@
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { MenuAction } from "@react-native-menu/menu";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Platform, ScrollView, View } from "react-native";
@@ -165,7 +165,6 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   const isAndroid = Platform.OS === "android";
   const params = props.route.params;
   const environmentId = params.environmentId ? EnvironmentId.make(params.environmentId) : null;
-  const threadId = params.threadId ? ThreadId.make(params.threadId) : null;
   const sizeBytes = Number.parseInt(params.sizeBytes, 10) || 0;
   const draftKey = params.draftKey ?? null;
   const draft = useComposerDraft(draftKey);
@@ -180,7 +179,6 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     sizeBytes,
     attachmentId: params.attachmentId,
     environmentId,
-    threadId,
     attachment: localAttachment,
   });
   const [nativeOpen, setNativeOpen] = useState(false);

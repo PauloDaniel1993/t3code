@@ -4,6 +4,7 @@ import type { Atom } from "effect/unstable/reactivity";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { createPendingThreadOrder } from "../features/threads/threadOrder";
+import { makeThreadShellFixture } from "../test-fixtures";
 import { appAtomRegistry } from "./atom-registry";
 import {
   beginPendingThreadOrder,
@@ -36,17 +37,14 @@ const shellsAtom = environmentThreadShells.threadShellsAtom as Atom.Writable<
 >;
 
 function fixture() {
-  // Only section membership and order fields are read by this coordinator.
-  const rows = ["a", "b"].map(
-    (id, index) =>
-      ({
-        id: ThreadId.make(id),
-        environmentId: EnvironmentId.make("env"),
-        createdAt: `2026-06-01T0${2 - index}:00:00.000Z`,
-        archivedAt: null,
-        pinnedAt: null,
-        activeOrderKey: null,
-      }) as EnvironmentThreadShell,
+  // The shared section helper also reads lineage/settled/snooze fields, so
+  // partial casts break when it grows — build complete shells instead.
+  const rows = ["a", "b"].map((id, index) =>
+    makeThreadShellFixture({
+      id: ThreadId.make(id),
+      environmentId: EnvironmentId.make("env"),
+      createdAt: `2026-06-01T0${2 - index}:00:00.000Z`,
+    }),
   );
   appAtomRegistry.set(shellsAtom, rows);
   const pending = createPendingThreadOrder({
@@ -73,25 +71,6 @@ function fixture() {
 afterEach(() => appAtomRegistry.reset());
 
 describe("shared mobile pending move", () => {
-  it("keeps a top-level move pending while child tasks are present and updated", () => {
-    const { rows, start, upsert } = fixture();
-    const child = {
-      ...rows[0]!,
-      id: ThreadId.make("child"),
-      parentThreadId: ThreadId.make("a"),
-    };
-    appAtomRegistry.set(shellsAtom, [...rows, child]);
-    const move = start();
-    expect(move.isPending()).toBe(true);
-    upsert("child", "zz");
-    expect(move.isPending()).toBe(true);
-    move.complete();
-    upsert("b", "aa");
-    expect(move.isPending()).toBe(true);
-    upsert("a", "bb");
-    expect(getPendingThreadOrder()).toBeNull();
-  });
-
   it("blocks another pickup after receipts and clears on final canonical upsert", () => {
     const { start, upsert } = fixture();
     const move = start();

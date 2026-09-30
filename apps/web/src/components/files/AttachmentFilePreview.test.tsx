@@ -1,19 +1,13 @@
-import { EnvironmentId, ThreadId, type AssetResource } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import { act, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { AttachmentFilePreview } from "./AttachmentFilePreview";
 
-const { refresh, useAssetUrlRefresh } = vi.hoisted(() => {
-  const refresh = vi.fn<() => Promise<string | null>>();
-  const useAssetUrlRefresh = vi.fn<
-    (environmentId: EnvironmentId | null, resource: AssetResource | null) => typeof refresh
-  >(() => refresh);
-  return { refresh, useAssetUrlRefresh };
-});
+const { refresh } = vi.hoisted(() => ({ refresh: vi.fn<() => Promise<string | null>>() }));
 
-vi.mock("~/assets/assetUrls", () => ({ useAssetUrlRefresh }));
+vi.mock("~/assets/assetUrls", () => ({ useAssetUrlRefresh: () => refresh }));
 vi.mock("~/hooks/useCopyToClipboard", () => ({
   useCopyToClipboard: () => ({ copyToClipboard: vi.fn(), isCopied: false }),
 }));
@@ -46,7 +40,6 @@ describe("attachment HTML preview recovery", () => {
     now = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     refresh.mockReset().mockResolvedValueOnce(originalUrl).mockResolvedValue(renewedUrl);
-    useAssetUrlRefresh.mockClear();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("<p>Captured HTML</p>")),
@@ -66,11 +59,7 @@ describe("attachment HTML preview recovery", () => {
           name="document.html"
           mimeType="text/html"
           sizeBytes={100}
-          asset={{
-            environmentId: EnvironmentId.make("test-environment"),
-            attachmentId: "html",
-            threadId: ThreadId.make("thread-1"),
-          }}
+          asset={{ environmentId: EnvironmentId.make("test-environment"), attachmentId: "html" }}
         />,
       );
     });
@@ -140,77 +129,5 @@ describe("attachment HTML preview recovery", () => {
     await toggleMode("Show rendered page");
     expect(renderer.root.findAllByProps({ role: "alert" })).toHaveLength(0);
     expect(renderer.root.findByType("iframe").props.title).toBe("document.html");
-  });
-});
-
-describe("attachment ownership scope", () => {
-  let renderer: ReactTestRenderer;
-
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    refresh.mockReset().mockResolvedValue("https://environment.test/document.pdf");
-    useAssetUrlRefresh.mockClear();
-  });
-
-  afterEach(async () => {
-    if (renderer) await act(() => renderer.unmount());
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
-
-  it("leaves a hydrated pending draft file unscoped", async () => {
-    const environmentId = EnvironmentId.make("test-environment");
-    const threadId = ThreadId.make("thread-1");
-    await act(async () => {
-      renderer = create(
-        <AttachmentFilePreview
-          name="report.pdf"
-          mimeType="application/pdf"
-          sizeBytes={100}
-          asset={{
-            environmentId,
-            attachmentId: "pending-00000000-0000-0000-0000-000000000001-pdf",
-            threadId,
-          }}
-        />,
-      );
-    });
-
-    expect(useAssetUrlRefresh).toHaveBeenNthCalledWith(1, environmentId, {
-      _tag: "attachment",
-      attachmentId: "pending-00000000-0000-0000-0000-000000000001-pdf",
-      fileName: "report.pdf",
-      mimeType: "application/pdf",
-      disposition: "inline",
-    });
-    expect(useAssetUrlRefresh.mock.calls[0]?.[1]).not.toHaveProperty("threadId");
-  });
-
-  it("keeps a claimed attachment scoped to its owning thread", async () => {
-    const environmentId = EnvironmentId.make("test-environment");
-    const threadId = ThreadId.make("thread-1");
-    await act(async () => {
-      renderer = create(
-        <AttachmentFilePreview
-          name="report.pdf"
-          mimeType="application/pdf"
-          sizeBytes={100}
-          asset={{
-            environmentId,
-            attachmentId: "thread-1-00000000-0000-0000-0000-000000000001-pdf",
-            threadId,
-          }}
-        />,
-      );
-    });
-
-    expect(useAssetUrlRefresh).toHaveBeenNthCalledWith(1, environmentId, {
-      _tag: "attachment",
-      attachmentId: "thread-1-00000000-0000-0000-0000-000000000001-pdf",
-      threadId,
-      fileName: "report.pdf",
-      mimeType: "application/pdf",
-      disposition: "inline",
-    });
   });
 });

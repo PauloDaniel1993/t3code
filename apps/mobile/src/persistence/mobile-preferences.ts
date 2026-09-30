@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { ProviderInstanceId, SidebarProjectGroupingMode } from "@t3tools/contracts";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
+import type { FollowUpBehavior } from "../lib/followUpBehavior";
 import { MOBILE_THEME_IDS, type MobileThemeId, type MobileThemeMode } from "../lib/mobileTheme";
 import * as MobileDatabase from "./mobile-database";
 import * as MobileSecureStorage from "./mobile-secure-storage";
@@ -14,14 +15,6 @@ import { MobileStorageDecodeError, MobileStorageEncodeError } from "./mobile-sto
 
 const PREFERENCES_KEY = "t3code.preferences";
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
-
-/**
- * Keeps the device-local read-marker blob small while retaining a generous
- * recent history. Evicted markers fall back to the shipped unread policy.
- */
-export const MAX_TASK_AGENT_READ_MARKERS = 1_000;
-
-export type TaskAgentReadMarkers = Readonly<Record<string, string>>;
 
 export interface Preferences {
   readonly liveActivitiesEnabled?: boolean;
@@ -38,15 +31,16 @@ export interface Preferences {
   readonly collapsedProjectGroups?: readonly string[];
   /** What the Return key does in the composer on a hardware keyboard. iOS only. */
   readonly composerEnterBehavior?: ComposerEnterBehavior;
+  /**
+   * Device-local mirror of the web `followUpBehavior` client setting: whether a
+   * message sent during a running turn queues behind it or steers it.
+   */
+  readonly followUpBehavior?: FollowUpBehavior;
   /** @deprecated Kept temporarily so older OTA bundles retain the selected mode. */
   readonly projectGroupingEnabled?: boolean;
   readonly projectGroupingMode?: SidebarProjectGroupingMode;
   /** Device-local counterpart of desktop's `planModeEnabled` legacy flag. */
   readonly planModeEnabled?: boolean;
-  /** Device-local counterpart of web's local-only thread-tasks beta flag. */
-  readonly threadTasksEnabled?: boolean;
-  /** JSON-safe form of the task-agent read-state map. */
-  readonly taskAgentReadMarkers?: TaskAgentReadMarkers;
   /** Model favorites belong to this device, like the web client setting. */
   readonly modelFavorites?: ReadonlyArray<{
     readonly provider: ProviderInstanceId;
@@ -81,51 +75,6 @@ interface PreferencesFallback {
   readonly preferences: Preferences;
 }
 
-/**
- * Validate and bound the persisted marker map at the storage boundary.
- * Prioritized IDs let a visit command retain its parent/task pair together
- * when the map is already full.
- */
-export function normalizeTaskAgentReadMarkers(
-  value: unknown,
-  prioritizedThreadIds: ReadonlyArray<string> = [],
-): TaskAgentReadMarkers {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
-
-  const priorityByThreadId = new Map(
-    prioritizedThreadIds.map((threadId, index) => [threadId, index] as const),
-  );
-  const entries = Object.entries(value).flatMap(([threadId, visitedAt]) => {
-    if (threadId.trim().length === 0 || typeof visitedAt !== "string") return [];
-    const normalizedVisitedAt = visitedAt.trim();
-    if (normalizedVisitedAt.length === 0 || normalizedVisitedAt.startsWith("-")) return [];
-    const visitedAtMilliseconds = Date.parse(normalizedVisitedAt);
-    return Number.isFinite(visitedAtMilliseconds) && visitedAtMilliseconds >= 0
-      ? [{ threadId, visitedAt: normalizedVisitedAt, visitedAtMilliseconds }]
-      : [];
-  });
-
-  entries.sort((left, right) => {
-    const leftPriority = priorityByThreadId.get(left.threadId);
-    const rightPriority = priorityByThreadId.get(right.threadId);
-    if (leftPriority !== undefined || rightPriority !== undefined) {
-      if (leftPriority === undefined) return 1;
-      if (rightPriority === undefined) return -1;
-      return leftPriority - rightPriority;
-    }
-    return (
-      right.visitedAtMilliseconds - left.visitedAtMilliseconds ||
-      left.threadId.localeCompare(right.threadId)
-    );
-  });
-
-  return Object.fromEntries(
-    entries
-      .slice(0, MAX_TASK_AGENT_READ_MARKERS)
-      .map(({ threadId, visitedAt }) => [threadId, visitedAt]),
-  );
-}
-
 export class MobilePreferencesStore extends Context.Service<
   MobilePreferencesStore,
   {
@@ -154,11 +103,10 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
     collapsedProjectGroups?: readonly string[];
     composerEnterBehavior?: ComposerEnterBehavior;
+    followUpBehavior?: FollowUpBehavior;
     projectGroupingEnabled?: boolean;
     projectGroupingMode?: SidebarProjectGroupingMode;
     planModeEnabled?: boolean;
-    threadTasksEnabled?: boolean;
-    taskAgentReadMarkers?: TaskAgentReadMarkers;
     modelFavorites?: Preferences["modelFavorites"];
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
@@ -216,6 +164,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (parsed.composerEnterBehavior === "send" || parsed.composerEnterBehavior === "newline") {
     preferences.composerEnterBehavior = parsed.composerEnterBehavior;
   }
+  if (parsed.followUpBehavior === "queue" || parsed.followUpBehavior === "steer") {
+    preferences.followUpBehavior = parsed.followUpBehavior;
+  }
   if (typeof parsed.projectGroupingEnabled === "boolean") {
     preferences.projectGroupingEnabled = parsed.projectGroupingEnabled;
   }
@@ -228,16 +179,6 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.planModeEnabled === "boolean") {
     preferences.planModeEnabled = parsed.planModeEnabled;
-  }
-  if (typeof parsed.threadTasksEnabled === "boolean") {
-    preferences.threadTasksEnabled = parsed.threadTasksEnabled;
-  }
-  if (
-    typeof parsed.taskAgentReadMarkers === "object" &&
-    parsed.taskAgentReadMarkers !== null &&
-    !Array.isArray(parsed.taskAgentReadMarkers)
-  ) {
-    preferences.taskAgentReadMarkers = normalizeTaskAgentReadMarkers(parsed.taskAgentReadMarkers);
   }
   if (Array.isArray(parsed.modelFavorites)) {
     preferences.modelFavorites = parsed.modelFavorites.filter(

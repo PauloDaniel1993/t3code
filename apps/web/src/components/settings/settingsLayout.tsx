@@ -255,7 +255,6 @@ export function SettingsUnavailableGroup({
 export function SettingsRow({
   title,
   description,
-  descriptionId,
   status,
   resetAction,
   onResetOverride,
@@ -269,7 +268,6 @@ export function SettingsRow({
 }: Omit<ComponentPropsWithoutRef<"div">, "title"> & {
   title: ReactNode;
   description?: ReactNode;
-  descriptionId?: string;
   status?: ReactNode;
   resetAction?: ReactNode;
   /** Replaces the default override clear for rows with side effects beyond the settings key. */
@@ -448,10 +446,7 @@ export function SettingsRow({
             </span>
           </div>
           {description ? (
-            <p
-              id={descriptionId}
-              className="max-w-xl text-xs leading-normal text-muted-foreground/80"
-            >
+            <p className="max-w-xl text-xs leading-normal text-muted-foreground/80">
               {description}
             </p>
           ) : null}

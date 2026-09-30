@@ -49,6 +49,7 @@ const testLayer = Layer.mergeAll(
   NativeAppIconResolver.layer.pipe(Layer.provide(configLayer)),
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
 ).pipe(Layer.provideMerge(NodeServices.layer));
+
 describe("AssetAccess", () => {
   it.effect("loads private media immediately after login and reuses the found credential", () => {
     let lookups = 0;
@@ -712,7 +713,7 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("keeps pre-existing image-only attachment claims compatible", () =>
+  it.effect("issues exact attachment capabilities by attachment id", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -733,20 +734,6 @@ describe("AssetAccess", () => {
         kind: "file",
         path: attachmentPath,
       });
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect("rejects an attachment id that is not owned by the requested thread", () =>
-    Effect.gen(function* () {
-      const exit = yield* issueAssetUrl({
-        resource: {
-          _tag: "attachment",
-          attachmentId: "thread-1-00000000-0000-4000-8000-000000000001",
-          threadId: ThreadId.make("thread-2"),
-        },
-      }).pipe(Effect.exit);
-
-      expect(exit._tag).toBe("Failure");
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -965,7 +952,7 @@ describe("AssetAccess", () => {
         projectFaviconPath: "brand/custom.svg",
       });
 
-      expect(result.sourcePath).toBe("brand/custom.svg");
+      expect(result.sourcePath).toBe(path.join("brand", "custom.svg"));
       expect(result.relativeUrl).toMatch(/\/v[0-9a-f]{64}-custom\.svg$/);
     }).pipe(Effect.provide(testLayer)),
   );
@@ -1024,7 +1011,7 @@ describe("AssetAccess", () => {
         projectFaviconPath: "brand/saved.svg",
       });
 
-      expect(result.sourcePath).toBe("brand/saved.svg");
+      expect(result.sourcePath).toBe(path.join("brand", "saved.svg"));
       expect(result.relativeUrl).toMatch(/\/v[0-9a-f]{64}-saved\.svg$/);
     }).pipe(Effect.provide(testLayer)),
   );

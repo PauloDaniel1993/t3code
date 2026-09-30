@@ -1,9 +1,4 @@
-import type {
-  AssetResource,
-  ChatFileAttachment,
-  EnvironmentId,
-  ThreadId,
-} from "@t3tools/contracts";
+import type { AssetResource, ChatFileAttachment, EnvironmentId } from "@t3tools/contracts";
 import { videoMimeType } from "@t3tools/shared/video";
 
 import type { DraftComposerFileAttachment } from "./composerImages";
@@ -42,13 +37,7 @@ export function mediaVideoThumbnailKey(source: MediaVideoPreviewSource): string 
     "uri" in source
       ? ["media-video", source.uri]
       : source.resource._tag === "attachment"
-        ? [
-            "media-video",
-            source.environmentId,
-            "attachment",
-            source.resource.threadId ?? null,
-            source.resource.attachmentId,
-          ]
+        ? ["media-video", source.environmentId, "attachment", source.resource.attachmentId]
         : source.resource._tag === "media-file"
           ? [
               "media-video",
@@ -79,7 +68,6 @@ export type VideoPreviewSource = LocalVideoPreviewSource | MediaVideoPreviewSour
 
 export function attachmentVideoPreviewSource(
   environmentId: EnvironmentId,
-  threadId: ThreadId,
   attachment: ChatFileAttachment,
   sourceIdentifier?: string,
 ): MediaVideoPreviewSource {
@@ -87,7 +75,6 @@ export function attachmentVideoPreviewSource(
   const resource = {
     _tag: "attachment" as const,
     attachmentId: attachment.id,
-    threadId,
     fileName: attachment.name,
     mimeType,
   };
@@ -103,7 +90,6 @@ export function attachmentVideoPreviewSource(
       mimeType,
       ...(sourceIdentifier ? { sourceIdentifier } : {}),
       environmentId,
-      threadId,
       resource,
     },
   };

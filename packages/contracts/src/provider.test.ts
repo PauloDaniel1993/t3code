@@ -11,7 +11,6 @@ import {
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
 } from "./provider.ts";
-import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "./orchestration.ts";
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
@@ -208,74 +207,6 @@ describe("ProviderSendTurnInput", () => {
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
-  });
-
-  it("preserves mixed persisted attachment order and discriminants", () => {
-    const parsed = decodeProviderSendTurnInput({
-      threadId: "thread-1",
-      attachments: [
-        {
-          type: "image",
-          id: "image-1",
-          name: "first.png",
-          mimeType: "image/png",
-          sizeBytes: 1,
-        },
-        {
-          type: "file",
-          id: "pdf-1",
-          name: "second.pdf",
-          mimeType: "application/pdf",
-          sizeBytes: 10 * 1024 * 1024,
-        },
-        {
-          type: "file",
-          id: "file-1",
-          name: "third.ts",
-          mimeType: "text/typescript",
-          sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-        },
-      ],
-    });
-
-    expect(parsed.attachments?.map((attachment) => attachment.type)).toEqual([
-      "image",
-      "file",
-      "file",
-    ]);
-  });
-
-  it("rejects more than eight persisted attachments across kinds", () => {
-    const attachments = [
-      ...Array.from({ length: 6 }, (_, index) => ({
-        type: "image" as const,
-        id: `image-${index}`,
-        name: `image-${index}.png`,
-        mimeType: "image/png",
-        sizeBytes: 1,
-      })),
-      ...Array.from({ length: 2 }, (_, index) => ({
-        type: "file" as const,
-        id: `pdf-${index}`,
-        name: `pdf-${index}.pdf`,
-        mimeType: "application/pdf" as const,
-        sizeBytes: 1,
-      })),
-      {
-        type: "file" as const,
-        id: "file-1",
-        name: "notes.txt",
-        mimeType: "text/plain",
-        sizeBytes: 1,
-      },
-    ];
-
-    expect(() =>
-      decodeProviderSendTurnInput({
-        threadId: "thread-1",
-        attachments,
-      }),
-    ).toThrow();
   });
 });
 

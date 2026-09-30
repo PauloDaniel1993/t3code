@@ -18,9 +18,6 @@ import {
   type AcpToolCallState,
   canonicalItemTypeFromAcpToolKind,
 } from "./AcpRuntimeModel.ts";
-import * as Predicate from "effect/Predicate";
-import { PROVIDER_EVENT_FLOW_CONTROL } from "../../orchestration/ProviderEventFlowControl.ts";
-import { normalizeAcpToolActivity } from "./AcpToolActivityNormalizer.ts";
 
 type AcpAdapterRawSource = Extract<
   RuntimeEventRawSource,
@@ -50,67 +47,6 @@ function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonical
     default:
       return "dynamic_tool_call";
   }
-}
-
-function parseAcpToolRawInput(toolCall: AcpToolCallState): Record<string, unknown> | undefined {
-  const rawInput = toolCall.data.rawInput;
-  if (Predicate.isObject(rawInput)) {
-    return rawInput;
-  }
-  if (typeof rawInput !== "string" || !rawInput.trim().startsWith("{")) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(rawInput) as unknown;
-    return Predicate.isObject(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function acpSubagentPresentation(toolCall: AcpToolCallState):
-  | {
-      readonly title: string;
-      readonly detail?: string;
-    }
-  | undefined {
-  const input = parseAcpToolRawInput(toolCall);
-  if (input === undefined) {
-    return undefined;
-  }
-  const title = toolCall.title?.trim().toLowerCase();
-  const hasAgentIdentity =
-    title === "agent" ||
-    typeof input.subagent_type === "string" ||
-    typeof input.subagentType === "string" ||
-    typeof input.resume === "string";
-  const hasAgentSwarmIdentity =
-    (typeof input.prompt_template === "string" && Array.isArray(input.items)) ||
-    Predicate.isObject(input.resume_agent_ids);
-  const hasAgentTask =
-    (typeof input.prompt === "string" || hasAgentSwarmIdentity) &&
-    (typeof input.description === "string" || hasAgentIdentity || hasAgentSwarmIdentity);
-  if ((!hasAgentIdentity && !hasAgentSwarmIdentity) || !hasAgentTask) {
-    return undefined;
-  }
-  const description =
-    typeof input.description === "string" ? input.description.trim() || undefined : undefined;
-  const subagentType =
-    typeof input.subagent_type === "string"
-      ? input.subagent_type.trim() || undefined
-      : typeof input.subagentType === "string"
-        ? input.subagentType.trim() || undefined
-        : undefined;
-  const detail =
-    description === undefined
-      ? subagentType
-      : subagentType === undefined
-        ? description
-        : `${subagentType}: ${description}`;
-  return {
-    title: input.run_in_background === true ? "Launched background subagent" : "Subagent task",
-    ...(detail !== undefined ? { detail } : {}),
-  };
 }
 
 function runtimeItemStatusFromAcpToolStatus(
@@ -197,13 +133,34 @@ export function makeAcpPlanUpdatedEvent(input: {
   readonly method: string;
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
+  const payload =
+    input.payload.kind === "items"
+      ? {
+          plan: input.payload.plan,
+          ...(input.payload.explanation == null ? {} : { explanation: input.payload.explanation }),
+        }
+      : input.payload.kind === "removed"
+        ? { plan: [] }
+        : {
+            plan: [
+              {
+                step:
+                  input.payload.kind === "markdown"
+                    ? input.payload.markdown
+                    : input.payload.kind === "file"
+                      ? `Plan file: ${input.payload.uri}`
+                      : `[Unsupported ACP plan content: ${input.payload.contentType}]`,
+                status: "pending" as const,
+              },
+            ],
+          };
   return {
     type: "turn.plan.updated",
     ...input.stamp,
     provider: input.provider,
     threadId: input.threadId,
     turnId: input.turnId,
-    payload: input.payload,
+    payload,
     raw: {
       source: input.source,
       method: input.method,
@@ -221,22 +178,6 @@ export function makeAcpToolCallEvent(input: {
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
   const runtimeStatus = runtimeItemStatusFromAcpToolStatus(input.toolCall.status);
-  const subagentPresentation = acpSubagentPresentation(input.toolCall);
-  const itemType =
-    subagentPresentation === undefined
-      ? canonicalItemTypeFromAcpToolKind(input.toolCall.kind)
-      : "collab_agent_tool_call";
-  const normalized = normalizeAcpToolActivity(input.toolCall, {
-    detailMaximumBytes: PROVIDER_EVENT_FLOW_CONTROL.intermediateToolDetailMaxBytes,
-    terminalDataMaximumBytes: PROVIDER_EVENT_FLOW_CONTROL.terminalToolDataMaxBytes,
-  });
-  // Antigravity has already converted and bounded its native command payload in
-  // normalizeAntigravityToolCall. Keep those canonical command/cwd/item fields;
-  // the generic ACP normalizer intentionally retains only protocol outputs.
-  const data =
-    input.provider === "antigravity" && Object.keys(input.toolCall.data).length > 0
-      ? input.toolCall.data
-      : normalized.data;
   return {
     type:
       input.toolCall.status === "completed" || input.toolCall.status === "failed"
@@ -248,19 +189,11 @@ export function makeAcpToolCallEvent(input: {
     turnId: input.turnId,
     itemId: RuntimeItemId.make(input.toolCall.toolCallId),
     payload: {
-      itemType,
+      itemType: canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
       ...(runtimeStatus ? { status: runtimeStatus } : {}),
-      ...(subagentPresentation?.title
-        ? { title: subagentPresentation.title }
-        : normalized.title
-          ? { title: normalized.title }
-          : {}),
-      ...(subagentPresentation?.detail
-        ? { detail: subagentPresentation.detail }
-        : normalized.detail
-          ? { detail: normalized.detail }
-          : {}),
-      ...(data ? { data } : {}),
+      ...(input.toolCall.title ? { title: input.toolCall.title } : {}),
+      ...(input.toolCall.detail ? { detail: input.toolCall.detail } : {}),
+      ...(Object.keys(input.toolCall.data).length > 0 ? { data: input.toolCall.data } : {}),
     },
     raw: {
       source: "acp.jsonrpc",
@@ -288,38 +221,6 @@ export function makeAcpAssistantItemEvent(input: {
     payload: {
       itemType: "assistant_message",
       status: input.lifecycle === "item.completed" ? "completed" : "inProgress",
-    },
-  };
-}
-
-/**
- * ACP `agent_thought_chunk` updates carry the agent's user-visible reasoning.
- * They map to `reasoning_summary_text` because that is the stream kind the
- * orchestration layer buffers into a `turn.reasoning.summary` activity;
- * `reasoning_text` has no consumer today.
- */
-export function makeAcpReasoningDeltaEvent(input: {
-  readonly stamp: AcpEventStamp;
-  readonly provider: ProviderDriverKind;
-  readonly threadId: ThreadId;
-  readonly turnId: TurnId | undefined;
-  readonly text: string;
-  readonly rawPayload: unknown;
-}): ProviderRuntimeEvent {
-  return {
-    type: "content.delta",
-    ...input.stamp,
-    provider: input.provider,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    payload: {
-      streamKind: "reasoning_summary_text",
-      delta: input.text,
-    },
-    raw: {
-      source: "acp.jsonrpc",
-      method: "session/update",
-      payload: input.rawPayload,
     },
   };
 }

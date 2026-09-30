@@ -148,11 +148,7 @@ function DragHandle(props: {
 
 export function ThreadArrangementSheet(props: { onClose: () => void }) {
   const insets = useSafeAreaInsets();
-  const threads = useAtomValue(environmentThreadShells.threadShellsAtom);
-  const arrangedThreads = useMemo(
-    () => threads.filter((thread) => thread.parentThreadId == null),
-    [threads],
-  );
+  const threads = useAtomValue(environmentThreadShells.navigationThreadShellsAtom);
   const configs = useAtomValue(environmentServerConfigsAtom);
   const queuedThreadKeys = useAtomValue(queuedThreadKeysAtom);
   const pendingOrder = useAtomValue(pendingThreadOrderAtom);
@@ -162,7 +158,7 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
   const [expanded, setExpanded] = useState({ snoozed: false, settled: false });
   useEffect(() => {
     const wakeAt = Math.min(
-      ...arrangedThreads.flatMap((thread) => {
+      ...threads.flatMap((thread) => {
         const at = Date.parse(thread.snoozedUntil ?? "");
         return at > Date.parse(now) ? [at] : [];
       }),
@@ -173,10 +169,10 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
       Math.min(Math.max(0, wakeAt - Date.now()) + 1, 2_147_483_647),
     );
     return () => clearTimeout(timer);
-  }, [arrangedThreads, now]);
+  }, [threads, now]);
   const sections = useMemo(() => {
     const shared = {
-      threads: arrangedThreads,
+      threads,
       now,
       queuedThreadKeys,
       pendingOrder,
@@ -194,7 +190,7 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
     const pinned = getThreadListV2OrderedSection({ ...shared, section: "pinned" });
     const active = getThreadListV2OrderedSection({ ...shared, section: "active" });
     const visible = new Set([...pinned, ...active].map(keyOf));
-    const parked = arrangedThreads.filter(
+    const parked = threads.filter(
       (thread) => thread.archivedAt === null && !visible.has(keyOf(thread)),
     );
     return {
@@ -203,12 +199,12 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
       snoozed: parked.filter((thread) => effectiveSnoozed(thread, { now })),
       settled: parked.filter((thread) => !effectiveSnoozed(thread, { now })),
     };
-  }, [arrangedThreads, configs, now, queuedThreadKeys, pendingOrder]);
+  }, [threads, configs, now, queuedThreadKeys, pendingOrder]);
   const planners = useMemo(() => {
     const planner = (section: "pinned" | "active") =>
       createThreadMovePlanner({
         ordered: sections[section],
-        allThreads: arrangedThreads,
+        allThreads: threads,
         section,
         reorderableEnvironmentIds: new Set(
           [...configs].flatMap(([id, config]) =>
@@ -223,7 +219,7 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
         ),
       });
     return { pinned: planner("pinned"), active: planner("active") };
-  }, [sections, arrangedThreads, configs]);
+  }, [sections, threads, configs]);
   const rows = useMemo(() => {
     const result: Row[] = [];
     let offset = 0;

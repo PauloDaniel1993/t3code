@@ -24,7 +24,6 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectOrder: [],
     sidebarProjectScopeKey: null,
     threadLastVisitedAtById: {},
-    taskGroupExpandedByThreadId: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
     pullRequestMergeMethod: "merge",
@@ -210,7 +209,6 @@ describe("parsePersistedState", () => {
           "turn-2": true,
         },
       },
-      taskGroupExpandedByThreadId: {},
     });
   });
 
@@ -333,7 +331,6 @@ describe("uiStateStore persistence", () => {
           "turn-2": true,
         },
       },
-      taskGroupExpandedByThreadId: {},
       pullRequestMergeMethod: "merge",
     });
     expect(parsePersistedState(persisted)).toEqual({
@@ -364,5 +361,6 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(resolveProjectExpanded(persisted.projectExpandedById ?? {}, ["unknown"])).toBe(true);
+    expect(persisted).not.toHaveProperty("threadPanelOpen");
   });
 });

@@ -21,8 +21,7 @@ import {
 import { resolveEditorCommand } from "@t3tools/shared/editor";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import {
-  CommandAvailability,
-  type CommandAvailabilityChecker,
+  isCommandAvailable,
   resolveSpawnCommand,
   withPathDirectoryListings,
 } from "@t3tools/shared/shell";
@@ -35,7 +34,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -87,8 +86,6 @@ const DETACHED_IGNORE_STDIO_OPTIONS = {
   stdout: "ignore",
   stderr: "ignore",
 } as const satisfies ChildProcess.CommandOptions;
-
-const EDITOR_DISCOVERY_CONCURRENCY = 8;
 
 const compactEnv = (input: Record<string, Option.Option<string>>): NodeJS.ProcessEnv =>
   Object.fromEntries(
@@ -264,13 +261,12 @@ const LINUX_DIRECTORY_HANDLER_PROBE_TIMEOUT = "2 seconds";
 const hasUsableLinuxDirectoryHandler = Effect.fn("externalLauncher.hasUsableLinuxDirectoryHandler")(
   function* (
     env: NodeJS.ProcessEnv,
-    commandAvailable: CommandAvailabilityChecker,
   ): Effect.fn.Return<
     boolean,
     never,
     FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
   > {
-    if (!(yield* commandAvailable("xdg-mime", { env }))) {
+    if (!(yield* isCommandAvailable("xdg-mime", { env }))) {
       return false;
     }
 
@@ -300,16 +296,15 @@ const isUsableFileManagerCommand = Effect.fn("externalLauncher.isUsableFileManag
   function* (
     command: string,
     env: NodeJS.ProcessEnv,
-    commandAvailable: CommandAvailabilityChecker,
   ): Effect.fn.Return<
     boolean,
     never,
     FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
   > {
-    if (!(yield* commandAvailable(command, { env }))) {
+    if (!(yield* isCommandAvailable(command, { env }))) {
       return false;
     }
-    return command !== "xdg-open" || (yield* hasUsableLinuxDirectoryHandler(env, commandAvailable));
+    return command !== "xdg-open" || (yield* hasUsableLinuxDirectoryHandler(env));
   },
 );
 
@@ -323,23 +318,19 @@ const resolveUsableFileManagerCommand = Effect.fn(
 )(function* (
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-  commandAvailable: CommandAvailabilityChecker,
 ): Effect.fn.Return<
   string | undefined,
   never,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
   const command = fileManagerCommandForPlatform(platform, env);
-  if (
-    command !== undefined &&
-    (yield* isUsableFileManagerCommand(command, env, commandAvailable))
-  ) {
+  if (command !== undefined && (yield* isUsableFileManagerCommand(command, env))) {
     return command;
   }
   if (
     shouldUseWindowsHostFromWsl(platform, env) &&
     hasGraphicalLinuxSession(env) &&
-    (yield* isUsableFileManagerCommand("xdg-open", env, commandAvailable))
+    (yield* isUsableFileManagerCommand("xdg-open", env))
   ) {
     return "xdg-open";
   }
@@ -358,7 +349,6 @@ const fileManagerRevealKindForPlatform = Effect.fn(
 )(function* (
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-  commandAvailable: CommandAvailabilityChecker,
 ): Effect.fn.Return<
   FileManagerRevealKind | undefined,
   never,
@@ -366,20 +356,19 @@ const fileManagerRevealKindForPlatform = Effect.fn(
 > {
   if (platform === "darwin") return "finder";
   if (platform === "win32") {
-    return (yield* commandAvailable(resolvePowerShellPath(env), { env }))
+    return (yield* isCommandAvailable(resolvePowerShellPath(env), { env }))
       ? "file-explorer"
       : undefined;
   }
   if (shouldUseWindowsHostFromWsl(platform, env)) {
     if (
       env.WSL_DISTRO_NAME?.trim() &&
-      (yield* commandAvailable("explorer.exe", { env })) &&
-      (yield* commandAvailable(WSL_POWERSHELL_COMMAND, { env }))
+      (yield* isCommandAvailable("explorer.exe", { env })) &&
+      (yield* isCommandAvailable(WSL_POWERSHELL_COMMAND, { env }))
     ) {
       return "file-explorer";
     }
-    return hasGraphicalLinuxSession(env) &&
-      (yield* isUsableFileManagerCommand("xdg-open", env, commandAvailable))
+    return hasGraphicalLinuxSession(env) && (yield* isUsableFileManagerCommand("xdg-open", env))
       ? "files"
       : undefined;
   }
@@ -427,23 +416,23 @@ const buildAvailableEditors = Effect.fn("externalLauncher.buildAvailableEditors"
   never,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
-  const commandAvailable = yield* CommandAvailability;
-  const available = yield* Effect.forEach(
-    EDITORS,
-    (editor) =>
-      Effect.gen(function* () {
-        if (editor.commands === null) {
-          const command = yield* resolveUsableFileManagerCommand(platform, env, commandAvailable);
-          return command === undefined ? null : editor.id;
-        }
+  const available: EditorId[] = [];
 
-        const command = yield* resolveEditorCommand(editor, env, commandAvailable);
-        return Option.isSome(command) ? editor.id : null;
-      }),
-    { concurrency: EDITOR_DISCOVERY_CONCURRENCY },
-  );
+  for (const editor of EDITORS) {
+    if (editor.commands === null) {
+      if ((yield* resolveUsableFileManagerCommand(platform, env)) !== undefined) {
+        available.push(editor.id);
+      }
+      continue;
+    }
 
-  return available.filter((editor): editor is EditorId => editor !== null);
+    const command = yield* resolveEditorCommand(editor, env);
+    if (Option.isSome(command)) {
+      available.push(editor.id);
+    }
+  }
+
+  return available;
 });
 
 const resolveBrowserLaunch = Effect.fn("externalLauncher.resolveBrowserLaunch")(function* (
@@ -464,8 +453,7 @@ const resolveFileManagerRevealKind = Effect.fn("externalLauncher.resolveFileMana
   function* () {
     const platform = yield* HostProcessPlatform;
     const env = { ...(yield* readBrowserLaunchEnv), ...(yield* readCommandLookupEnv) };
-    const commandAvailable = yield* CommandAvailability;
-    return yield* fileManagerRevealKindForPlatform(platform, env, commandAvailable);
+    return yield* fileManagerRevealKindForPlatform(platform, env);
   },
 );
 
@@ -473,7 +461,6 @@ const resolveFileManagerRevealKind = Effect.fn("externalLauncher.resolveFileMana
 // client connect (the server config embeds the available editors). Memoize
 // the discovered set for a bounded window so repeat connects skip even the
 // per-command cache lookups in @t3tools/shared/shell.
-// A synchronized cache also makes concurrent cache misses share one scan.
 //
 // This deliberately does not use `Effect.cachedWithTTL`: that memoizes the
 // first caller's Exit whatever it is, including an interrupt. Callers run this
@@ -531,7 +518,6 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
 > {
   const platform = yield* HostProcessPlatform;
   const env = { ...(yield* readBrowserLaunchEnv), ...(yield* readCommandLookupEnv) };
-  const commandAvailable = yield* CommandAvailability;
   yield* Effect.annotateCurrentSpan({
     "externalLauncher.editor": input.editor,
     "externalLauncher.cwd": input.cwd,
@@ -544,7 +530,7 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
 
   if (editorDef.commands) {
     const { command, baseArgs } = Option.getOrElse(
-      yield* resolveEditorCommand(editorDef, env, commandAvailable),
+      yield* resolveEditorCommand(editorDef, env),
       () => ({
         command: editorDef.commands[0],
         baseArgs: "baseArgs" in editorDef ? editorDef.baseArgs : [],
@@ -562,19 +548,13 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
     return yield* new ExternalLauncherUnsupportedEditorError({ editor: input.editor });
   }
 
-  const command = yield* resolveUsableFileManagerCommand(platform, env, commandAvailable);
+  const command = yield* resolveUsableFileManagerCommand(platform, env);
   if (command === undefined) {
     return yield* new ExternalLauncherUnsupportedEditorError({ editor: input.editor });
   }
 
   if (input.reveal === true) {
-    return yield* resolveFileManagerRevealLaunch(
-      input.cwd,
-      platform,
-      env,
-      command,
-      commandAvailable,
-    );
+    return yield* resolveFileManagerRevealLaunch(input.cwd, platform, env, command);
   }
 
   return {
@@ -633,7 +613,6 @@ const resolveFileManagerRevealLaunch = Effect.fn("resolveFileManagerRevealLaunch
   // The command resolveUsableFileManagerCommand picked; a WSL host that fell
   // back to the Linux file manager must reveal through it as well.
   command: string,
-  commandAvailable: CommandAvailabilityChecker,
 ): Effect.fn.Return<
   EditorLaunch,
   never,
@@ -657,7 +636,7 @@ const resolveFileManagerRevealLaunch = Effect.fn("resolveFileManagerRevealLaunch
     env.WSL_DISTRO_NAME !== undefined
   ) {
     const explorerTarget = resolveWslFileManagerPath(target, env.WSL_DISTRO_NAME);
-    if (yield* commandAvailable(WSL_POWERSHELL_COMMAND, { env })) {
+    if (yield* isCommandAvailable(WSL_POWERSHELL_COMMAND, { env })) {
       // Explorer's raw switch cannot express a double quote, and unlike
       // Windows paths a WSL path may legally contain one: open the containing
       // directory in File Explorer instead, matching the advertised
@@ -676,10 +655,7 @@ const resolveFileManagerRevealLaunch = Effect.fn("resolveFileManagerRevealLaunch
     // Without interop PowerShell the capability advertised the Linux "files"
     // kind when it advertised anything at all, so the reveal must open the
     // Linux file manager the label promised, not File Explorer.
-    if (
-      hasGraphicalLinuxSession(env) &&
-      (yield* isUsableFileManagerCommand("xdg-open", env, commandAvailable))
-    ) {
+    if (hasGraphicalLinuxSession(env) && (yield* isUsableFileManagerCommand("xdg-open", env))) {
       const path = yield* Path.Path;
       return { editor: "file-manager", target, command: "xdg-open", args: [path.dirname(target)] };
     }
@@ -739,8 +715,7 @@ const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(fu
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
   const env = yield* readCommandLookupEnv;
-  const commandAvailable = yield* CommandAvailability;
-  if (!(yield* commandAvailable(launch.command, { env }))) {
+  if (!(yield* isCommandAvailable(launch.command, { env }))) {
     return yield* new ExternalLauncherCommandNotFoundError({
       editor: launch.editor,
       command: launch.command,
@@ -785,34 +760,30 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
 
-  const editorDiscoveryCache = yield* SynchronizedRef.make<
-    Option.Option<EditorDiscoveryCacheEntry>
-  >(Option.none());
-  const resolveAvailableEditorsCached = Effect.fn("externalLauncher.resolveAvailableEditorsCached")(
-    function* () {
-      return yield* SynchronizedRef.modifyEffect(editorDiscoveryCache, (entry) =>
-        Effect.gen(function* () {
-          const nowNanos = yield* Clock.currentTimeNanos;
-          if (Option.isSome(entry) && entry.value.expiresAtNanos > nowNanos) {
-            return [entry.value.editors, entry] as const;
-          }
-
-          const editors = yield* provideCommandResolutionServices(resolveAvailableEditors()).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          );
-          return [
-            editors,
-            Option.some({
-              editors,
-              expiresAtNanos: nowNanos + EDITOR_DISCOVERY_CACHE_TTL_NANOS,
-            }),
-          ] as const;
-        }),
-      );
-    },
+  const editorDiscoveryCache = yield* Ref.make<Option.Option<EditorDiscoveryCacheEntry>>(
+    Option.none(),
   );
+  const cachedAvailableEditors = Effect.gen(function* () {
+    const nowNanos = yield* Clock.currentTimeNanos;
+    const entry = yield* Ref.get(editorDiscoveryCache);
+    if (Option.isSome(entry) && entry.value.expiresAtNanos > nowNanos) {
+      return entry.value.editors;
+    }
+    const editors = yield* provideCommandResolutionServices(resolveAvailableEditors()).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    yield* Ref.set(
+      editorDiscoveryCache,
+      Option.some({
+        editors,
+        expiresAtNanos: nowNanos + EDITOR_DISCOVERY_CACHE_TTL_NANOS,
+      }),
+    );
+    return editors;
+  });
+
   return ExternalLauncher.of({
-    resolveAvailableEditors: resolveAvailableEditorsCached,
+    resolveAvailableEditors: () => cachedAvailableEditors,
     resolveFileManagerRevealKind: () =>
       provideCommandResolutionServices(resolveFileManagerRevealKind()).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

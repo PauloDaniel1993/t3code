@@ -57,7 +57,6 @@ import {
 import { AndroidHomeFabLayout } from "../home/AndroidHomeFab";
 import { HomeListOptionsProvider } from "../home/home-list-options";
 import { ThreadNavigationSidebar } from "../threads/ThreadNavigationSidebar";
-import type { TaskDestination } from "../threads/task-agent-surface/taskAgentNavigation";
 import { RenderErrorBoundary, RenderFailureView } from "../../components/RenderErrorBoundary";
 import { WORKSPACE_PANE_TIMING } from "./workspace-pane-animation";
 import { WorkspaceInspectorPane } from "./workspace-inspector-pane";
@@ -496,7 +495,7 @@ function AdaptiveWorkspaceLayoutContent(
   );
 
   const handleSelectThread = useCallback(
-    (thread: Pick<EnvironmentThreadShell, "environmentId" | "id">) => {
+    (thread: EnvironmentThreadShell) => {
       const params = {
         environmentId: String(thread.environmentId),
         threadId: String(thread.id),
@@ -565,19 +564,6 @@ function AdaptiveWorkspaceLayoutContent(
       togglePrimarySidebar,
     ],
   );
-  const handleOpenTaskAgentDestination = useCallback(
-    (destination: TaskDestination) => {
-      if (destination.kind === "peek") {
-        navigation.navigate("TaskPeek", destination.params);
-        return;
-      }
-      handleSelectThread({
-        environmentId: destination.params.environmentId,
-        id: destination.params.threadId,
-      });
-    },
-    [handleSelectThread, navigation],
-  );
 
   return (
     <HomeListOptionsProvider projectGroupingMode={projectGroupingMode}>
@@ -615,7 +601,6 @@ function AdaptiveWorkspaceLayoutContent(
                       onNewThreadInProject={handleNewThreadInProject}
                       onNewThreadOnBranch={handleNewThreadOnBranch}
                       onSelectThread={handleSelectThread}
-                      onOpenTaskAgentDestination={handleOpenTaskAgentDestination}
                       onSearchQueryChange={setPrimarySidebarSearchQuery}
                       searchQuery={primarySidebarSearchQuery}
                     />

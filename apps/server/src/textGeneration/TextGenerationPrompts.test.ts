@@ -118,6 +118,39 @@ describe("buildPrContentPrompt", () => {
 });
 
 describe("buildBranchNamePrompt", () => {
+  it("requests a semantic prefix as part of the same branch response", () => {
+    const { prompt, outputSchema } = buildBranchNamePrompt({
+      message: "Add search",
+      naming: { mode: "semantic", prefix: "ignored", instructions: "ignored instruction" },
+    });
+    expect(prompt).toContain("feat/add-search");
+    expect(prompt).not.toContain("ignored instruction");
+    expect(toJsonSchemaObject(outputSchema)).toMatchObject({ required: ["branch"] });
+  });
+  it("appends custom instructions without imposing a prefix, case or word limit", () => {
+    const { prompt } = buildBranchNamePrompt({
+      message: "Add search",
+      naming: {
+        mode: "custom",
+        prefix: "ignored",
+        instructions: "Use Julius/ABC-123 and preserve capitalization.",
+      },
+    });
+    expect(prompt).toContain("Use Julius/ABC-123 and preserve capitalization.");
+    expect(prompt).toContain("complete branch name");
+    expect(prompt).not.toContain("2-6 words");
+    expect(prompt).not.toContain("lowercase");
+    expect(prompt).not.toContain("no issue prefixes");
+  });
+  it("asks for just the fragment in static mode", () => {
+    const { prompt } = buildBranchNamePrompt({
+      message: "Add search",
+      naming: { mode: "static", prefix: "team", instructions: "ignored instruction" },
+    });
+    expect(prompt).toContain("without a prefix or namespace");
+    expect(prompt).not.toContain("ignored instruction");
+  });
+
   it("includes the user message in the prompt", () => {
     const result = buildBranchNamePrompt({
       message: "Fix the login timeout bug",
@@ -128,9 +161,9 @@ describe("buildBranchNamePrompt", () => {
     expect(result.prompt).not.toContain("Attachment metadata:");
   });
 
-  it("includes ordered image and file metadata", () => {
+  it("includes attachment metadata when attachments are provided", () => {
     const result = buildBranchNamePrompt({
-      message: "Fix the layout from the supplied context",
+      message: "Fix the layout from screenshot",
       attachments: [
         {
           type: "image" as const,
@@ -139,51 +172,13 @@ describe("buildBranchNamePrompt", () => {
           mimeType: "image/png",
           sizeBytes: 12345,
         },
-        {
-          type: "file" as const,
-          id: "att-124",
-          name: "requirements.pdf",
-          mimeType: "application/pdf" as const,
-          sizeBytes: 23456,
-        },
-        {
-          type: "file" as const,
-          id: "att-125",
-          name: "notes.md",
-          mimeType: "text/markdown",
-          sizeBytes: 34567,
-        },
       ],
     });
 
     expect(result.prompt).toContain("Attachment metadata:");
-    const imageIndex = result.prompt.indexOf("screenshot.png");
-    const pdfIndex = result.prompt.indexOf("requirements.pdf");
-    const fileIndex = result.prompt.indexOf("notes.md");
-    expect(imageIndex).toBeGreaterThan(-1);
-    expect(pdfIndex).toBeGreaterThan(imageIndex);
-    expect(fileIndex).toBeGreaterThan(pdfIndex);
-    expect(result.prompt).toContain("application/pdf");
-    expect(result.prompt).toContain("text/markdown");
-    expect(result.prompt).toContain("34567 bytes");
-  });
-
-  it("surfaces unknown attachment kinds in metadata instead of dropping them", () => {
-    const result = buildBranchNamePrompt({
-      message: "Name this work",
-      attachments: [
-        {
-          type: "archive",
-          id: "att-unknown",
-          name: "bundle.zip",
-          mimeType: "application/zip",
-          sizeBytes: 42,
-        } as never,
-      ],
-    });
-
-    expect(result.prompt).toContain("bundle.zip");
-    expect(result.prompt).toContain('unsupported attachment kind "archive"');
+    expect(result.prompt).toContain("screenshot.png");
+    expect(result.prompt).toContain("image/png");
+    expect(result.prompt).toContain("12345 bytes");
   });
 });
 

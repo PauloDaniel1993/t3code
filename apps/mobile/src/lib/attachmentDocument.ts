@@ -1,5 +1,5 @@
 import { filePreviewDelimiter, parseDelimitedPreview } from "@t3tools/shared/delimitedPreview";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { readFilePreviewResponse } from "@t3tools/client-runtime/file-preview";
 import { filePreviewKind, FILE_TEXT_PREVIEW_MAX_BYTES } from "@t3tools/shared/filePreview";
 import { fetch } from "expo/fetch";
@@ -18,18 +18,6 @@ const isLocalUri = (uri: string) => /^(file|content):/.test(uri);
 /** Signed asset URLs live for an hour; treat anything older than this as worth re-minting. */
 const STALE_URL_MS = 5 * 60_000;
 
-/** Claimed attachments are thread-owned; drafts and pending uploads are not claimed yet. */
-export function attachmentAssetOwnership(input: {
-  readonly attachmentId: string;
-  readonly threadId: ThreadId | null | undefined;
-  readonly isLocal: boolean;
-}) {
-  if (input.isLocal || input.attachmentId.startsWith("pending-") || input.threadId == null) {
-    return {};
-  }
-  return { threadId: input.threadId };
-}
-
 /**
  * Loads a captured attachment for viewing: a fresh signed URL for a sent or uploaded file,
  * a leased local file for a draft. Text kinds read a bounded prefix; documents hand their
@@ -41,7 +29,6 @@ export function useAttachmentDocument(input: {
   readonly sizeBytes: number;
   readonly attachmentId: string;
   readonly environmentId: EnvironmentId | null;
-  readonly threadId: ThreadId | null;
   readonly attachment: FileBackedComposerAttachment | null;
 }) {
   const kind = filePreviewKind(input);
@@ -55,13 +42,8 @@ export function useAttachmentDocument(input: {
       fileName: input.name,
       mimeType: input.mimeType,
       disposition: "inline" as const,
-      ...attachmentAssetOwnership({
-        attachmentId: input.attachmentId,
-        threadId: input.threadId,
-        isLocal: input.attachment !== null,
-      }),
     }),
-    [input.attachment, input.attachmentId, input.mimeType, input.name, input.threadId],
+    [input.attachmentId, input.name, input.mimeType],
   );
   const environmentId = input.attachment ? null : input.environmentId;
   const refresh = useRefreshAssetUrl(environmentId, resource);

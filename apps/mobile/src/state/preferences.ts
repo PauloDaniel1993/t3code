@@ -1,4 +1,3 @@
-import { useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
@@ -138,17 +137,3 @@ export const mobilePreferencesState = createMobilePreferencesState(mobilePrefere
 
 export const mobilePreferencesAtom = mobilePreferencesState.preferencesAtom;
 export const updateMobilePreferencesAtom = mobilePreferencesState.updatePreferencesAtom;
-
-export function resolveThreadTasksEnabled(preference: boolean | undefined): boolean {
-  return preference === true;
-}
-
-/** Mobile's device-local counterpart of web's local-only thread-tasks beta flag. */
-export function useThreadTasksEnabled(): boolean {
-  const preferencesResult = useAtomValue(mobilePreferencesAtom);
-  return resolveThreadTasksEnabled(
-    AsyncResult.isSuccess(preferencesResult)
-      ? preferencesResult.value.threadTasksEnabled
-      : undefined,
-  );
-}

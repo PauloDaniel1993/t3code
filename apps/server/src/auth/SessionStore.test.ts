@@ -3,7 +3,6 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -358,13 +357,11 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
             subject: "desktop-bootstrap",
             method: "bearer-access-token",
             replaceActiveForSubjectAndMethod: true,
-            client: { deviceType: "desktop", surface: "desktop", appVersion: "1.2.3" },
           }),
           sessions.issue({
             subject: "desktop-bootstrap",
             method: "bearer-access-token",
             replaceActiveForSubjectAndMethod: true,
-            client: { deviceType: "desktop", surface: "desktop", appVersion: "1.2.3" },
           }),
         ],
         { concurrency: "unbounded" },
@@ -385,10 +382,6 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
         ),
       ).toHaveLength(1);
       expect(bearerVerification.filter(Option.isSome)).toHaveLength(1);
-      expect(active.find((entry) => entry.method === "bearer-access-token")?.client).toMatchObject({
-        surface: "desktop",
-        appVersion: "1.2.3",
-      });
     }).pipe(Effect.provide(makeSessionStoreLayer())),
   );
 
@@ -714,8 +707,6 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
         subject: "client-connection-test",
         method: "bearer-access-token",
       });
-      const nextChange = yield* Stream.runHead(sessions.streamChanges).pipe(Effect.forkChild);
-      yield* Effect.yieldNow;
       const readRow = sql<{
         readonly surface: string | null;
         readonly appVersion: string | null;
@@ -730,10 +721,6 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
         appVersion: "1.2.0",
       });
       expect((yield* readRow)[0]).toEqual({ surface: "mobile", appVersion: "1.2.0" });
-      expect((yield* sessions.verify(issued.token)).client).toMatchObject({
-        surface: "mobile",
-        appVersion: "1.2.0",
-      });
 
       // A partial report (old or minimal client) must not null out stored data.
       yield* sessions.recordClientConnection(issued.sessionId, { appVersion: "1.3.0" });
@@ -741,22 +728,6 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
 
       yield* sessions.recordClientConnection(issued.sessionId, {});
       expect((yield* readRow)[0]).toEqual({ surface: "mobile", appVersion: "1.3.0" });
-
-      const activeSessions = yield* sessions.listActive();
-      expect(activeSessions[0]?.client).toMatchObject({
-        surface: "mobile",
-        appVersion: "1.3.0",
-      });
-
-      yield* sessions.markConnected(issued.sessionId);
-      const change = Option.getOrThrow(yield* Fiber.join(nextChange));
-      expect(change.type).toBe("clientUpserted");
-      if (change.type === "clientUpserted") {
-        expect(change.clientSession.client).toMatchObject({
-          surface: "mobile",
-          appVersion: "1.3.0",
-        });
-      }
     }).pipe(Effect.provide(Layer.mergeAll(makeSessionStoreLayer(), SqlitePersistenceMemory))),
   );
 });

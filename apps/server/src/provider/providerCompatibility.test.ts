@@ -54,6 +54,8 @@ const provider: ServerProvider = {
 describe("provider compatibility", () => {
   it("bundles a compatibility policy for every built-in harness", () => {
     for (const builtIn of BUILT_IN_DRIVERS) {
+      // Registry entries are arbitrary external ACP agents, not one versioned harness.
+      if (builtIn.driverKind === "acpRegistry") continue;
       assert.isDefined(
         resolveProviderCompatibility(
           ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
@@ -61,6 +63,24 @@ describe("provider compatibility", () => {
           null,
         ),
         `Missing bundled compatibility policy for ${builtIn.driverKind}`,
+      );
+    }
+  });
+
+  it("supports Codex 0.156 and marks Codex without Thread.projectId broken", () => {
+    const bundled = ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility;
+    for (const [t3CodeVersion, codexVersion, expected] of [
+      ["0.0.42", "0.148.0", "broken"],
+      ["0.0.42", "0.149.0", "unsupported"],
+      ["0.0.42", "0.155.0", "unsupported"],
+      ["0.0.42", "0.156.0", "supported"],
+      ["0.0.43-nightly.20260924.2200", "0.153.3", "unsupported"],
+      ["0.0.43-nightly.20260924.2200", "0.156.1", "supported"],
+    ] as const) {
+      assert.strictEqual(
+        resolveProviderCompatibility(bundled, driver, codexVersion, t3CodeVersion)?.status,
+        expected,
+        `T3 Code ${t3CodeVersion} with Codex ${codexVersion}`,
       );
     }
   });
@@ -234,7 +254,7 @@ it.effect("a remote policy refresh preserves a newer health result on the regist
             makeManualOnlyProviderMaintenanceCapabilities({ provider: driver, packageName: null }),
           ),
       },
-      adapter: {} as ProviderInstance["adapter"],
+      orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
       textGeneration: {} as ProviderInstance["textGeneration"],
     };
     const refresh = Deferred.succeed(started, undefined).pipe(

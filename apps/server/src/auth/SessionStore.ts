@@ -460,8 +460,6 @@ function toClientMetadata(record: {
   readonly deviceType: AuthClientMetadata["deviceType"];
   readonly os: string | null;
   readonly browser: string | null;
-  readonly surface?: ClientSurface | null;
-  readonly appVersion?: string | null;
 }): AuthClientMetadata {
   return {
     ...(record.label ? { label: record.label } : {}),
@@ -470,8 +468,6 @@ function toClientMetadata(record: {
     deviceType: record.deviceType,
     ...(record.os ? { os: record.os } : {}),
     ...(record.browser ? { browser: record.browser } : {}),
-    ...(record.surface ? { surface: record.surface } : {}),
-    ...(record.appVersion ? { appVersion: record.appVersion } : {}),
   };
 }
 
@@ -701,8 +697,6 @@ export const make = Effect.gen(function* () {
           deviceType: client.deviceType,
           os: client.os ?? null,
           browser: client.browser ?? null,
-          surface: client.surface ?? null,
-          appVersion: client.appVersion ?? null,
         },
         issuedAt,
         expiresAt,

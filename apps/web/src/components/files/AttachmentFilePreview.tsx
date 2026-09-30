@@ -1,5 +1,5 @@
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { readFilePreviewResponse } from "@t3tools/client-runtime/file-preview";
 import { filePreviewKind, FILE_TEXT_PREVIEW_MAX_BYTES } from "@t3tools/shared/filePreview";
@@ -66,8 +66,7 @@ export function AttachmentFilePreview(props: {
   mimeType: string;
   sizeBytes: number;
   file?: Blob | null;
-  /** Pending uploads omit the thread; claimed attachments require their owning thread. */
-  asset?: { environmentId: EnvironmentId; attachmentId: string; threadId?: ThreadId };
+  asset?: { environmentId: EnvironmentId; attachmentId: string };
   /** First crumb: where the file comes from. */
   origin?: string;
   onRemove?: () => void;
@@ -77,21 +76,21 @@ export function AttachmentFilePreview(props: {
   const delimiter = filePreviewDelimiter(props);
   const renderedMode =
     kind === "markdown" ? "markdown" : kind === "html" ? "html" : delimiter ? "table" : null;
-  const asset = props.asset;
+  const attachmentId = props.asset?.attachmentId;
   const { copyToClipboard, isCopied } = useCopyToClipboard({ target: props.name });
-  const resource = useMemo(() => {
-    if (!asset) return null;
-    const pending = asset.attachmentId.startsWith("pending-");
-    if (!pending && asset.threadId === undefined) return null;
-    return {
-      _tag: "attachment" as const,
-      attachmentId: asset.attachmentId,
-      ...(pending ? {} : { threadId: asset.threadId }),
-      fileName: props.name,
-      mimeType: props.mimeType,
-      disposition: "inline" as const,
-    };
-  }, [asset, props.name, props.mimeType]);
+  const resource = useMemo(
+    () =>
+      attachmentId
+        ? {
+            _tag: "attachment" as const,
+            attachmentId,
+            fileName: props.name,
+            mimeType: props.mimeType,
+            disposition: "inline" as const,
+          }
+        : null,
+    [attachmentId, props.name, props.mimeType],
+  );
   const refresh = useAssetUrlRefresh(
     props.file ? null : (props.asset?.environmentId ?? null),
     props.file ? null : resource,

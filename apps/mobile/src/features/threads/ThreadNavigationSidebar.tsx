@@ -11,9 +11,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import { LegendList } from "@legendapp/list/react-native";
 import type { MenuAction } from "@react-native-menu/menu";
-import { useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
-import { type EnvironmentId, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LayoutChangeEvent } from "react-native";
 import { Platform, StyleSheet, TextInput, View } from "react-native";
@@ -29,13 +27,11 @@ import { SymbolView } from "../../components/AppSymbol";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
-import { useProjects, useThreadShells } from "../../state/entities";
-import { useThreadTasksEnabled } from "../../state/preferences";
+import { useProjects, useNavigationThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
-import { useTaskAgentReadState } from "../../state/use-task-agent-read-state";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { usePendingThreadOrder } from "../../state/thread-order";
-import { environmentServerConfigsAtom } from "../../state/server";
+import { threadListEnvironmentsAtom } from "../../state/server";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import { useWorkspaceState } from "../../state/workspace";
@@ -66,16 +62,6 @@ import {
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
 } from "./thread-list-v2-items";
-import { buildTaskAgentModel } from "./task-agent-surface/taskAgentModel";
-import type { TaskPeekAgentRouteParams } from "./task-agent-surface/taskAgentPeek.logic";
-import type { TaskDestination } from "./task-agent-surface/taskAgentNavigation";
-import {
-  buildTaskAgentSurfaceRows,
-  taskAgentPresentationStatesEqual,
-  type TaskAgentListPresentationState,
-  type TaskAgentRowViewModel,
-  type TaskAgentSurfaceViewModel,
-} from "./task-agent-surface/taskAgentSurface.logic";
 import { useThreadRowProviderInstanceResolver } from "./thread-provider-instance";
 import {
   buildThreadListV2Items,
@@ -88,15 +74,10 @@ import {
   type ThreadListV2ListItem,
 } from "./threadListV2";
 
-/** A v2 thread row with task expansion captured in list data so the recycler
-    can compare old and new presentations without rebuilding unrelated rows. */
-type SidebarV2ThreadListItem = Extract<ThreadListV2ListItem, { readonly type: "v2-thread" }> & {
-  readonly taskAgentPresentationState: TaskAgentListPresentationState | undefined;
-};
-
+/** The sidebar list: flat v2 rows with queued tasks spliced in, plus a
+    settled "Show more" pager row. */
 type SidebarListItem =
-  | SidebarV2ThreadListItem
-  | Exclude<ThreadListV2ListItem, { readonly type: "v2-thread" }>
+  | ThreadListV2ListItem
   | { readonly type: "v2-show-more"; readonly key: string; readonly hiddenCount: number };
 
 const SIDEBAR_STICKY_HEADER_HEIGHT = 106;
@@ -111,73 +92,8 @@ interface ThreadNavigationSidebarProps {
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
-  readonly onOpenTaskAgentDestination: (destination: TaskDestination) => void;
   readonly onRequestVisibility: () => void;
   readonly searchQuery: string;
-}
-
-type TaskAgentPeekParamsByRow = ReadonlyMap<TaskAgentRowViewModel, TaskPeekAgentRouteParams>;
-type OpenTaskAgentPeek = (params: TaskPeekAgentRouteParams) => void;
-
-function buildTaskAgentPeekParamsByRow(
-  surface: TaskAgentSurfaceViewModel | null,
-): TaskAgentPeekParamsByRow {
-  const paramsByRow = new Map<TaskAgentRowViewModel, TaskPeekAgentRouteParams>();
-  if (surface === null) return paramsByRow;
-
-  for (const thread of surface.threads) {
-    if (thread.kind !== "rollup-thread") continue;
-    const environmentId = thread.thread.environmentId;
-    const threadId = thread.thread.id;
-    if (
-      typeof environmentId !== "string" ||
-      environmentId.trim().length === 0 ||
-      typeof threadId !== "string" ||
-      threadId.trim().length === 0
-    ) {
-      continue;
-    }
-
-    for (const turn of thread.rollup.nativeAgentTurns) {
-      for (const agent of turn.agents) {
-        if (agent.kind !== "native-agent") continue;
-        const agentId = agent.nativeAgent?.id;
-        if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
-        paramsByRow.set(agent, {
-          environmentId,
-          threadId,
-          agentId,
-        });
-      }
-    }
-
-    for (const task of thread.rollup.tasks) {
-      if (!("tap" in task.navigation)) continue;
-      const taskIdentity = task.navigation.tap.params;
-      if (
-        typeof taskIdentity.environmentId !== "string" ||
-        taskIdentity.environmentId.trim().length === 0 ||
-        typeof taskIdentity.threadId !== "string" ||
-        taskIdentity.threadId.trim().length === 0
-      ) {
-        continue;
-      }
-      for (const turn of task.turns) {
-        for (const agent of turn.agents) {
-          if (agent.kind !== "native-agent") continue;
-          const agentId = agent.nativeAgent?.id;
-          if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
-          paramsByRow.set(agent, {
-            environmentId: taskIdentity.environmentId,
-            threadId: taskIdentity.threadId,
-            agentId,
-          });
-        }
-      }
-    }
-  }
-
-  return paramsByRow;
 }
 
 /**
@@ -190,29 +106,13 @@ function buildTaskAgentPeekParamsByRow(
  * column gets. Other platforms keep the custom header chrome.
  */
 export function ThreadNavigationSidebar(props: ThreadNavigationSidebarProps) {
-  const navigation = useNavigation();
-  const openTaskAgentPeek = useCallback(
-    (params: TaskPeekAgentRouteParams) => {
-      navigation.navigate("TaskAgentPeek", params);
-    },
-    [navigation],
-  );
-
   if (Platform.OS !== "ios") {
-    return (
-      <ThreadNavigationSidebarPane
-        {...props}
-        nativeChrome={false}
-        onOpenTaskAgentPeek={openTaskAgentPeek}
-      />
-    );
+    return <ThreadNavigationSidebarPane {...props} nativeChrome={false} />;
   }
-  return <NativeSidebarContainer {...props} onOpenTaskAgentPeek={openTaskAgentPeek} />;
+  return <NativeSidebarContainer {...props} />;
 }
 
-function NativeSidebarContainer(
-  props: ThreadNavigationSidebarProps & { readonly onOpenTaskAgentPeek: OpenTaskAgentPeek },
-) {
+function NativeSidebarContainer(props: ThreadNavigationSidebarProps) {
   return (
     <View
       testID="thread-navigation-sidebar"
@@ -227,10 +127,7 @@ function NativeSidebarContainer(
 }
 
 function ThreadNavigationSidebarPane(
-  props: ThreadNavigationSidebarProps & {
-    readonly nativeChrome: boolean;
-    readonly onOpenTaskAgentPeek: OpenTaskAgentPeek;
-  },
+  props: ThreadNavigationSidebarProps & { readonly nativeChrome: boolean },
 ) {
   const { themeVariables: materialTheme } = useAppearancePreferences();
   const drawerColor = materialTheme["--color-drawer"];
@@ -238,7 +135,7 @@ function ThreadNavigationSidebarPane(
   const insets = useSafeAreaInsets();
   const { fabClearance } = useAndroidControlSizing();
   const projects = useProjects();
-  const threads = useThreadShells();
+  const threads = useNavigationThreadShells();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInput>(null);
@@ -259,8 +156,6 @@ function ThreadNavigationSidebarPane(
     renameThread,
     regenerateThreadTitle,
   } = useThreadListActions();
-  const threadTasksEnabled = useThreadTasksEnabled();
-  const { readState: taskAgentReadState, markThreadsVisited } = useTaskAgentReadState();
   const pendingTasks = usePendingNewTasks();
   const queuedThreadKeys = useQueuedThreadKeys();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
@@ -413,161 +308,33 @@ function ThreadNavigationSidebarPane(
   }, []);
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
-  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
-  const threadTaskEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadTasks === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const settlementEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadSettlement === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const snoozeEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadSnooze === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const pinningEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadPinning === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const autoSettleOptOutEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadAutoSettleOptOut === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const pinReorderEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadPinReorder === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const liveThreads = useMemo(
-    () => threads.filter((thread) => thread.archivedAt === null),
-    [threads],
-  );
-  // Keep the task projection on the same minute boundary as v2 partitioning;
-  // this advances elapsed labels without reading time during a render pass.
-  const taskAgentNowMs = useMemo(() => Date.parse(`${nowMinute}:00.000Z`), [nowMinute]);
-  const taskAgentSurface = useMemo(() => {
-    if (!threadTasksEnabled) return null;
-    return buildTaskAgentSurfaceRows(
-      buildTaskAgentModel({
-        // Top-level shells retain native-agent rollups on older environments;
-        // only capable environments contribute nested durable task children.
-        threads: liveThreads.filter(
-          (thread) =>
-            thread.parentThreadId == null || threadTaskEnvironmentIds.has(thread.environmentId),
-        ),
-        nowMs: taskAgentNowMs,
-        readState: taskAgentReadState,
-      }),
-    );
-  }, [
-    taskAgentNowMs,
-    taskAgentReadState,
-    liveThreads,
-    threadTaskEnvironmentIds,
-    threadTasksEnabled,
-  ]);
-  const activeReorderEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadActiveReorder === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const titleRegenerationEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadTitleRegeneration === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const taskAgentParentThreadIdByTaskThreadKey = useMemo(() => {
-    const parentThreadIdByTaskThreadKey = new Map<string, EnvironmentThreadShell["id"]>();
-    if (taskAgentSurface === null) return parentThreadIdByTaskThreadKey;
-
-    for (const row of taskAgentSurface.threads) {
-      if (row.kind !== "rollup-thread") continue;
-      for (const task of row.rollup.tasks) {
-        parentThreadIdByTaskThreadKey.set(`${row.thread.environmentId}:${task.id}`, row.thread.id);
-      }
-    }
-    return parentThreadIdByTaskThreadKey;
-  }, [taskAgentSurface]);
-  const nestedTaskThreadKeys = useMemo(
-    () => new Set(taskAgentParentThreadIdByTaskThreadKey.keys()),
-    [taskAgentParentThreadIdByTaskThreadKey],
-  );
-  const machineByEnvironmentId = useMemo(
-    () =>
-      new Map(
-        [...serverConfigs].map(
-          ([environmentId, config]) =>
-            [environmentId, resolveEnvironmentMachineKind(config)] as const,
-        ),
-      ),
-    [serverConfigs],
-  );
-  // Reference-stable provider glyphs: a fresh object per render would break
-  // the memoized rows' props comparison on every parent render.
-  const resolveProviderInstance = useThreadRowProviderInstanceResolver(serverConfigs);
+  const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
+  const {
+    providersByEnvironmentId,
+    machineByEnvironmentId,
+    settlementEnvironmentIds,
+    snoozeEnvironmentIds,
+    pinningEnvironmentIds,
+    autoSettleOptOutEnvironmentIds,
+    pinReorderEnvironmentIds,
+    activeReorderEnvironmentIds,
+    titleRegenerationEnvironmentIds,
+  } = listEnvironments;
+  const resolveProviderInstance = useThreadRowProviderInstanceResolver(providersByEnvironmentId);
   const pendingOrder = usePendingThreadOrder(nowMinute, snoozeWakeTick);
-  const topLevelThreads = useMemo(
-    () => threads.filter((thread) => thread.parentThreadId == null),
-    [threads],
-  );
   // Up/down menu availability for every card, computed once per section per
   // rebuild (see computeThreadMoveAvailability): per-thread planner calls made
   // list construction quadratic, and this list rebuilds on every minute tick.
   const threadMoveAvailability = useMemo(() => {
     const sectionAvailability = (section: "pinned" | "active") =>
       computeThreadMoveAvailability({
-        allThreads: topLevelThreads,
+        allThreads: threads,
         section,
         pendingOrder,
-        reorderableEnvironmentIds: new Set(
-          [...serverConfigs].flatMap(([id, config]) =>
-            (section === "pinned"
-              ? config.environment.capabilities.threadPinReorder
-              : config.environment.capabilities.threadActiveReorder) === true
-              ? [id]
-              : [],
-          ),
-        ),
+        reorderableEnvironmentIds:
+          section === "pinned" ? pinReorderEnvironmentIds : activeReorderEnvironmentIds,
         ordered: getThreadListV2OrderedSection({
-          threads: topLevelThreads,
+          threads,
           section,
           pendingOrder,
           now: new Date().toISOString(),
@@ -578,8 +345,9 @@ function ThreadNavigationSidebarPane(
       });
     return new Map([...sectionAvailability("pinned"), ...sectionAvailability("active")]);
   }, [
-    serverConfigs,
-    topLevelThreads,
+    pinReorderEnvironmentIds,
+    activeReorderEnvironmentIds,
+    threads,
     pendingOrder,
     queuedThreadKeys,
     settlementEnvironmentIds,
@@ -590,8 +358,7 @@ function ThreadNavigationSidebarPane(
   const threadListV2Layout = useMemo(() => {
     return buildThreadListV2Items({
       pendingOrder,
-      threads: liveThreads,
-      nestedTaskThreadKeys,
+      threads: threads.filter((thread) => thread.archivedAt === null),
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
@@ -616,11 +383,10 @@ function ThreadNavigationSidebarPane(
     options.selectedEnvironmentId,
     props.searchQuery,
     matchedThreadKeys,
-    nestedTaskThreadKeys,
     settledVisibleCount,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
-    liveThreads,
+    threads,
     selectedProjectScope,
   ]);
   // Re-partition the moment the earliest snooze expires (clamped to the
@@ -637,64 +403,6 @@ function ThreadNavigationSidebarPane(
     // unchanged: after a clamped fire (wake beyond the 32-bit setTimeout
     // range) the boundary string is identical and the chain would die.
   }, [nextSnoozeWakeAt, snoozeWakeTick]);
-  const [taskAgentExpandedByThreadKey, setTaskAgentExpandedByThreadKey] = useState<
-    ReadonlyMap<string, boolean>
-  >(() => new Map());
-  const taskAgentPresentationByThreadKey = useMemo(() => {
-    if (taskAgentSurface === null) return null;
-    const presentationByThreadKey = new Map<string, TaskAgentListPresentationState>();
-    for (const row of taskAgentSurface.threads) {
-      presentationByThreadKey.set(row.key, {
-        row,
-        expanded:
-          row.kind === "rollup-thread"
-            ? (taskAgentExpandedByThreadKey.get(row.key) ?? row.rollup.expandedByDefault)
-            : false,
-      });
-    }
-    return presentationByThreadKey;
-  }, [taskAgentExpandedByThreadKey, taskAgentSurface]);
-  const taskAgentParentThreadIdByTaskThreadKeyRef = useRef(taskAgentParentThreadIdByTaskThreadKey);
-  taskAgentParentThreadIdByTaskThreadKeyRef.current = taskAgentParentThreadIdByTaskThreadKey;
-  const taskAgentPeekParamsByRow = useMemo(
-    () => buildTaskAgentPeekParamsByRow(taskAgentSurface),
-    [taskAgentSurface],
-  );
-  const taskAgentPeekParamsByRowRef = useRef(taskAgentPeekParamsByRow);
-  taskAgentPeekParamsByRowRef.current = taskAgentPeekParamsByRow;
-  const handleTaskAgentExpandedChange = useCallback((threadKey: string, expanded: boolean) => {
-    setTaskAgentExpandedByThreadKey((current) => {
-      if (current.get(threadKey) === expanded) return current;
-      const next = new Map(current);
-      next.set(threadKey, expanded);
-      return next;
-    });
-  }, []);
-  const handleTaskAgentRowPress = useCallback(
-    (row: TaskAgentRowViewModel) => {
-      if (row.kind === "native-agent") {
-        const params = taskAgentPeekParamsByRowRef.current.get(row);
-        if (params === undefined) return;
-        props.onOpenTaskAgentPeek(params);
-        return;
-      }
-      if (!("tap" in row.navigation)) return;
-
-      const destination = row.navigation.tap;
-      const parentThreadId = taskAgentParentThreadIdByTaskThreadKeyRef.current.get(
-        scopedThreadKey(destination.params.environmentId, destination.params.threadId),
-      );
-      if (parentThreadId !== undefined) {
-        markThreadsVisited({
-          parentThreadId,
-          taskThreadId: destination.params.threadId,
-          visitedAt: new Date().toISOString(),
-        });
-      }
-      props.onOpenTaskAgentDestination(destination);
-    },
-    [markThreadsVisited, props.onOpenTaskAgentDestination, props.onOpenTaskAgentPeek],
-  );
   const listItems = useMemo<readonly SidebarListItem[]>(() => {
     // Queued offline tasks are not thread shells, so the v2 item builder
     // never sees them; the shared splice puts them below the active block
@@ -727,14 +435,6 @@ function ThreadNavigationSidebarPane(
       queuedThreadKeys,
       moveAvailability: threadMoveAvailability,
       shelfPreferencesLoading: !shelfPreferencesLoaded,
-    }).map((item) => {
-      if (item.type !== "v2-thread") return item;
-      return {
-        ...item,
-        taskAgentPresentationState: taskAgentPresentationByThreadKey?.get(
-          scopedThreadKey(item.item.thread.environmentId, item.item.thread.id),
-        ),
-      };
     });
     if (settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0) {
       items.push({
@@ -752,7 +452,6 @@ function ThreadNavigationSidebarPane(
     queuedThreadKeys,
     threadMoveAvailability,
     selectedProjectRefs,
-    taskAgentPresentationByThreadKey,
     settledShelfExpanded,
     shelfPreferencesLoaded,
     snoozedShelfExpanded,
@@ -886,7 +585,7 @@ function ThreadNavigationSidebarPane(
       projectByKey,
       projectTitleByProjectKey,
       savedConnectionsById,
-      serverConfigs,
+      listEnvironments,
       threadSearchMatchByKey,
     }),
     [
@@ -894,22 +593,13 @@ function ThreadNavigationSidebarPane(
       projectByKey,
       projectTitleByProjectKey,
       savedConnectionsById,
-      serverConfigs,
+      listEnvironments,
       threadSearchMatchByKey,
     ],
   );
   useThreadJumpShortcuts(listItems, handleSelectThread);
   const sidebarItemsAreEqual = useCallback(
     (previous: SidebarListItem, item: SidebarListItem): boolean => {
-      if (previous.type === "v2-thread" && item.type === "v2-thread") {
-        return (
-          threadListV2ListItemsAreEqual(previous, item) &&
-          taskAgentPresentationStatesEqual(
-            previous.taskAgentPresentationState,
-            item.taskAgentPresentationState,
-          )
-        );
-      }
       if (isThreadListV2ListItem(previous) && isThreadListV2ListItem(item)) {
         return threadListV2ListItemsAreEqual(previous, item);
       }
@@ -967,7 +657,6 @@ function ThreadNavigationSidebarPane(
         case "v2-thread": {
           const thread = item.item.thread;
           const scopeKey = scopedProjectKey(thread.environmentId, thread.projectId);
-          const taskAgentPresentation = item.taskAgentPresentationState;
           // Intentional difference from Home: the sidebar never passes
           // `showTrailingDivider` because its rows render no Home-style row
           // hairline at all — card rows carry tonal containers in this pane
@@ -990,6 +679,7 @@ function ThreadNavigationSidebarPane(
               project={projectByKey.get(scopeKey) ?? null}
               projectTitle={projectTitleByProjectKey.get(scopeKey)}
               providerInstance={resolveProviderInstance(thread)}
+              providers={providersByEnvironmentId.get(thread.environmentId)}
               environmentLabel={
                 Object.keys(savedConnectionsById).length > 1
                   ? (savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
@@ -1036,15 +726,6 @@ function ThreadNavigationSidebarPane(
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
               simultaneousSwipeGesture={sidebarScrollGesture}
-              {...(taskAgentPresentation === undefined
-                ? {}
-                : {
-                    taskAgentPresentation: {
-                      ...taskAgentPresentation,
-                      onExpandedChange: handleTaskAgentExpandedChange,
-                      onPressRow: handleTaskAgentRowPress,
-                    },
-                  })}
             />
           );
         }
@@ -1084,8 +765,6 @@ function ThreadNavigationSidebarPane(
       confirmDeletePendingTask,
       confirmDeleteThread,
       handleSelectThread,
-      handleTaskAgentExpandedChange,
-      handleTaskAgentRowPress,
       handleSwipeableClose,
       handleSwipeableWillOpen,
       machineByEnvironmentId,
@@ -1095,18 +774,20 @@ function ThreadNavigationSidebarPane(
       pinThread,
       pinningEnvironmentIds,
       autoSettleOptOutEnvironmentIds,
+      autoSettleOptOutEnvironmentIds,
       setThreadAutoSettle,
       projectByKey,
       projectTitleByProjectKey,
       regenerateThreadTitle,
       renameThread,
-      threadSearchMatchByKey,
-      props.onNewThreadInProject,
       props.onNewThreadOnBranch,
       props.searchQuery,
       props.selectedThreadKey,
       props.width,
       savedConnectionsById,
+      resolveProviderInstance,
+      providersByEnvironmentId,
+      threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
       settleThread,
       settlementEnvironmentIds,
@@ -1114,7 +795,6 @@ function ThreadNavigationSidebarPane(
       sidebarScrollGesture,
       snoozeEnvironmentIds,
       snoozeThread,
-      resolveProviderInstance,
       toggleSettledShelf,
       toggleSnoozedShelf,
       unpinThread,

@@ -4,7 +4,6 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { CommandId, MessageId, ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -17,8 +16,6 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { base64UrlEncode, signPayload } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import { parseThreadSegmentFromAttachmentId } from "../attachmentStore.ts";
-import { normalizeDispatchCommand } from "../orchestration/Normalizer.ts";
-import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import {
   ATTACHMENT_UPLOAD_ROUTE_PREFIX,
   deletePendingAttachment,
@@ -29,7 +26,6 @@ import {
 
 const testLayer = ServerSecretStore.layer.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-attachment-upload-" })),
-  Layer.provideMerge(WorkspacePaths.layer),
   Layer.provideMerge(NodeServices.layer),
 );
 
@@ -195,6 +191,7 @@ describe("AttachmentUpload", () => {
       if (!claims) {
         throw new Error("Expected valid upload claims.");
       }
+
       expect(yield* storeAttachmentUpload(claims, Stream.make(new Uint8Array(7)))).toMatchObject({
         ok: false,
         status: 400,
@@ -230,60 +227,6 @@ describe("AttachmentUpload", () => {
 
       yield* Fiber.interrupt(upload);
       expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect("claims pending uploads through the transactional attachment stage", () =>
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      const issued = yield* issueAttachmentUploadUrl(uploadInput);
-      const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
-      const claims = yield* validateAttachmentUploadToken(token);
-      if (!claims) {
-        throw new Error("Expected valid upload claims.");
-      }
-      yield* storeAttachmentUpload(claims, Buffer.from("pixels"));
-
-      const normalized = yield* normalizeDispatchCommand({
-        type: "thread.turn.start",
-        commandId: CommandId.make("command-pending-upload"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: MessageId.make("message-pending-upload"),
-          role: "user",
-          text: "inspect this",
-          attachments: [
-            {
-              type: "image",
-              id: issued.attachmentId,
-              name: uploadInput.name,
-              mimeType: uploadInput.mimeType,
-              sizeBytes: uploadInput.sizeBytes,
-            },
-          ],
-        },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        createdAt: "2026-08-01T00:00:00.000Z",
-      });
-      if (normalized.command.type !== "thread.turn.start" || !normalized.attachmentStage) {
-        throw new Error("Expected a staged thread.turn.start command.");
-      }
-
-      const attachment = normalized.command.message.attachments[0]!;
-      const pendingPath = NodePath.join(config.attachmentsDir, `${issued.attachmentId}.png`);
-      const finalPath = NodePath.join(config.attachmentsDir, `${attachment.id}.png`);
-      expect(NodeFS.existsSync(pendingPath)).toBe(true);
-      expect(NodeFS.existsSync(finalPath)).toBe(false);
-
-      yield* normalized.attachmentStage.claim;
-      yield* normalized.attachmentStage.commit;
-      expect(NodeFS.readFileSync(finalPath)).toEqual(Buffer.from("pixels"));
-      expect(NodeFS.existsSync(pendingPath)).toBe(true);
-
-      yield* normalized.attachmentStage.complete;
-      yield* deletePendingAttachment(issued.attachmentId);
-      expect(NodeFS.existsSync(pendingPath)).toBe(false);
     }).pipe(Effect.provide(testLayer)),
   );
 

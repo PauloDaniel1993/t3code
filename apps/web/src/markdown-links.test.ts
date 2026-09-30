@@ -27,12 +27,8 @@ describe("isMarkdownFileExternalOpenModifier", () => {
 describe("rewriteMarkdownFileHrefForRendering", () => {
   it("wraps absolute windows paths in an allowed file URL for markdown rendering", () => {
     expect(
-      rewriteMarkdownFileHrefForRendering(
-        "I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
-      ),
-    ).toBe(
-      "file:///I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
-    );
+      rewriteMarkdownFileHrefForRendering("C:/work/reports/output/pdf/quarterly-report.pdf"),
+    ).toBe("file:///C:/work/reports/output/pdf/quarterly-report.pdf");
   });
 
   it("preserves file URLs so the markdown sanitizer can allow them", () => {
@@ -291,13 +287,12 @@ describe("resolveMarkdownFileLinkTarget", () => {
   it("creates a workspace-relative preview path for the generated PDF link", () => {
     expect(
       resolveMarkdownFileLinkMeta(
-        "I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
-        "I:/projects/Personal/jobs",
+        "C:/work/reports/output/pdf/quarterly-report.pdf",
+        "C:/work/reports",
       ),
     ).toMatchObject({
-      filePath:
-        "I:/projects/Personal/jobs/output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
-      workspaceRelativePath: "output/pdf/PauloDaniel_Senior_Staff_TypeScript_Engineer.pdf",
+      filePath: "C:/work/reports/output/pdf/quarterly-report.pdf",
+      workspaceRelativePath: "output/pdf/quarterly-report.pdf",
     });
   });
 

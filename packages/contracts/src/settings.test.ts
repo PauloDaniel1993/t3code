@@ -1,19 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import {
-  ANTIGRAVITY_DEFAULT_MODEL,
-  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
-  DEFAULT_MODEL_BY_PROVIDER,
-  KIMI_DEFAULT_MODEL,
-  KIMI_DEFAULT_MODEL_NAME,
-  PROVIDER_DISPLAY_NAMES,
-} from "./model.ts";
-import { DEFAULT_THREAD_TASK_MAX_RUNNING, resolveThreadTaskLimits } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
-  ClientSettingsPatch,
   ClientSettingsSchema,
+  ClientSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
   resolveProviderInstanceEnabled,
@@ -27,8 +18,35 @@ const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
-const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+
+describe("ServerSettings response streaming", () => {
+  it("defaults to paragraph buffering", () => {
+    expect(decodeServerSettings({}).responseStreamingMode).toBe("paragraph");
+  });
+
+  it.each(["turn", "paragraph"])(
+    "round-trips %s as an environment setting and project override",
+    (responseStreamingMode) => {
+      const input = {
+        responseStreamingMode,
+        projectSettingsOverrides: { project: { responseStreamingMode } },
+      };
+      expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+      expect(decodeServerSettingsPatch(input)).toEqual(input);
+    },
+  );
+
+  it.each(["token", "unsupported"])("rejects %s in settings snapshots and writes", (mode) => {
+    for (const input of [
+      { responseStreamingMode: mode },
+      { projectSettingsOverrides: { project: { responseStreamingMode: mode } } },
+    ]) {
+      expect(() => decodeServerSettings(input)).toThrow();
+      expect(() => decodeServerSettingsPatch(input)).toThrow();
+    }
+  });
+});
 
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
@@ -343,6 +361,15 @@ describe("ClientSettings load balancing", () => {
   });
 });
 
+describe("ClientSettings composer context strip", () => {
+  it("defaults to draft-only and accepts a persistent strip preference", () => {
+    expect(decodeClientSettings({}).persistComposerContextStrip).toBe(false);
+    expect(
+      decodeClientSettingsPatch({ persistComposerContextStrip: true }).persistComposerContextStrip,
+    ).toBe(true);
+  });
+});
+
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
     expect(decodeClientSettings({}).wordWrap).toBe(true);
@@ -581,22 +608,6 @@ describe("ClientSettings environment identification", () => {
   });
 });
 
-describe("ClientSettings appearance ownership", () => {
-  it("drops the removed fork appearance payload from persisted settings and patches", () => {
-    const legacyAppearance = {
-      colorScheme: "dark",
-      activeThemeId: "compact",
-      customThemeOrder: [],
-      customThemes: {},
-    };
-
-    expect(decodeClientSettings({ appearance: legacyAppearance })).not.toHaveProperty("appearance");
-    expect(decodeClientSettingsPatch({ appearance: legacyAppearance })).not.toHaveProperty(
-      "appearance",
-    );
-  });
-});
-
 describe("ClientSettings sidebar", () => {
   it("defaults to the current sidebar", () => {
     expect(decodeClientSettings({}).legacySidebarEnabled).toBe(false);
@@ -713,66 +724,6 @@ describe("ServerSettings thread settlement", () => {
   });
 });
 
-describe("ClientSettings thread tasks", () => {
-  it("defaults the task surface off and preserves an explicit opt-in", () => {
-    expect(decodeClientSettings({}).threadTasksEnabled).toBe(false);
-    expect(decodeClientSettings({ threadTasksEnabled: true }).threadTasksEnabled).toBe(true);
-    expect(decodeClientSettingsPatch({ threadTasksEnabled: true }).threadTasksEnabled).toBe(true);
-  });
-});
-
-describe("ServerSettings thread task limits", () => {
-  it("defaults the concurrent cap and derives the lifetime cap", () => {
-    const decoded = decodeServerSettings({});
-    expect(decoded.threadTaskMaxRunning).toBe(DEFAULT_THREAD_TASK_MAX_RUNNING);
-    expect(decoded.threadTaskMaxTotal).toBeNull();
-    expect(
-      resolveThreadTaskLimits({
-        maxRunning: decoded.threadTaskMaxRunning,
-        maxTotal: decoded.threadTaskMaxTotal,
-      }),
-    ).toEqual({ maxRunning: DEFAULT_THREAD_TASK_MAX_RUNNING, maxTotal: 25 });
-  });
-
-  it("round-trips environment and project-specific task caps", () => {
-    const input = {
-      threadTaskMaxRunning: 8,
-      threadTaskMaxTotal: 80,
-      projectSettingsOverrides: {
-        project: { threadTaskMaxRunning: 2, threadTaskMaxTotal: null },
-      },
-    };
-
-    expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
-    expect(decodeServerSettingsPatch(input)).toEqual(input);
-    expect(resolveThreadTaskLimits({ maxRunning: 8, maxTotal: null })).toEqual({
-      maxRunning: 8,
-      maxTotal: 40,
-    });
-  });
-
-  it.each([
-    ["threadTaskMaxRunning", 0],
-    ["threadTaskMaxRunning", 101],
-    ["threadTaskMaxTotal", 0],
-    ["threadTaskMaxTotal", 10_001],
-  ] as const)("rejects an invalid %s value: %s", (key, value) => {
-    expect(() => decodeServerSettingsPatch({ [key]: value })).toThrow();
-  });
-});
-
-describe("ClientSettings skills menu", () => {
-  it("defaults skills on and preserves an explicit opt-out", () => {
-    expect(decodeClientSettings({}).showSkillsInSlashMenu).toBe(true);
-    expect(decodeClientSettings({ showSkillsInSlashMenu: false }).showSkillsInSlashMenu).toBe(
-      false,
-    );
-    expect(decodeClientSettingsPatch({ showSkillsInSlashMenu: false }).showSkillsInSlashMenu).toBe(
-      false,
-    );
-  });
-});
-
 describe("ClientSettings pull request merge methods", () => {
   it("defaults to no project overrides and accepts supported methods", () => {
     expect(decodeClientSettings({}).pullRequestMergeMethodOverrides).toEqual({});
@@ -803,21 +754,6 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     // Legacy `providers` struct is still hydrated with its per-driver defaults
     // so existing call sites keep working through the migration.
     expect(decoded.providers.codex.enabled).toBe(true);
-    expect(decoded.providers.kimi).toEqual({
-      enabled: false,
-      binaryPath: "kimi",
-      homePath: "",
-      customModels: [],
-    });
-    expect(decoded.providers.antigravity).toEqual({
-      enabled: false,
-      authMethod: "oauth-personal",
-      apiKey: "",
-      gcpProject: "",
-      gcpLocation: "",
-      binaryPath: "",
-      customModels: [],
-    });
   });
 
   it("decodes a multi-instance map mixing first-party and fork drivers", () => {
@@ -863,111 +799,6 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   });
 });
 
-describe("ServerSettings Kimi provider", () => {
-  const kimiDriver = ProviderDriverKind.make("kimi");
-
-  it("exposes the synthetic default model identity and display metadata", () => {
-    expect(KIMI_DEFAULT_MODEL).toBe("kimi-default");
-    expect(KIMI_DEFAULT_MODEL_NAME).toBe("Kimi default");
-    expect(DEFAULT_MODEL_BY_PROVIDER[kimiDriver]).toBe(KIMI_DEFAULT_MODEL);
-    expect(DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[kimiDriver]).toBe(KIMI_DEFAULT_MODEL);
-    expect(PROVIDER_DISPLAY_NAMES[kimiDriver]).toBe("Kimi");
-  });
-
-  it("decodes, normalizes, and round-trips a Kimi settings patch", () => {
-    const decoded = decodeServerSettingsPatch({
-      providers: {
-        kimi: {
-          enabled: true,
-          binaryPath: "  /opt/homebrew/bin/kimi  ",
-          homePath: "  ~/.kimi-code-work  ",
-          customModels: ["kimi-k2-custom"],
-        },
-      },
-    });
-
-    expect(decoded.providers?.kimi).toEqual({
-      enabled: true,
-      binaryPath: "/opt/homebrew/bin/kimi",
-      homePath: "~/.kimi-code-work",
-      customModels: ["kimi-k2-custom"],
-    });
-    expect(decodeServerSettingsPatch(encodeServerSettingsPatch(decoded))).toEqual(decoded);
-  });
-
-  it("round-trips explicit Kimi instances without narrowing unknown drivers", () => {
-    const decoded = decodeServerSettings({
-      providers: {
-        kimi: {
-          enabled: true,
-          binaryPath: "kimi-preview",
-          homePath: "~/.kimi-code-preview",
-          customModels: ["kimi-preview-model"],
-        },
-      },
-      providerInstances: {
-        kimi_work: {
-          driver: "kimi",
-          displayName: "Kimi Work",
-          config: { homePath: "~/.kimi-code-work", customModels: ["kimi-work-model"] },
-        },
-        ollama_local: {
-          driver: "ollama",
-          config: { endpoint: "http://localhost:11434" },
-        },
-      },
-    });
-    const roundTripped = decodeServerSettings(encodeServerSettings(decoded));
-
-    expect(roundTripped.providers.kimi).toEqual({
-      enabled: true,
-      binaryPath: "kimi-preview",
-      homePath: "~/.kimi-code-preview",
-      customModels: ["kimi-preview-model"],
-    });
-    expect(roundTripped.providerInstances[ProviderInstanceId.make("kimi_work")]).toEqual({
-      driver: "kimi",
-      displayName: "Kimi Work",
-      config: { homePath: "~/.kimi-code-work", customModels: ["kimi-work-model"] },
-    });
-    expect(roundTripped.providerInstances[ProviderInstanceId.make("ollama_local")]).toEqual({
-      driver: "ollama",
-      config: { endpoint: "http://localhost:11434" },
-    });
-  });
-});
-
-describe("ServerSettings Antigravity provider", () => {
-  const antigravityDriver = ProviderDriverKind.make("antigravity");
-
-  it("exposes the synthetic default model identity and display metadata", () => {
-    expect(DEFAULT_MODEL_BY_PROVIDER[antigravityDriver]).toBe(ANTIGRAVITY_DEFAULT_MODEL);
-    expect(DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[antigravityDriver]).toBe(
-      ANTIGRAVITY_DEFAULT_MODEL,
-    );
-    expect(PROVIDER_DISPLAY_NAMES[antigravityDriver]).toBe("Antigravity");
-  });
-
-  it("normalizes a partial settings patch without materializing absent optional fields", () => {
-    const decoded = decodeServerSettingsPatch({
-      providers: {
-        antigravity: {
-          authMethod: "oauth-business",
-          gcpProject: "  t3-enterprise  ",
-          gcpLocation: "  us-central1  ",
-        },
-      },
-    });
-
-    expect(decoded.providers?.antigravity).toEqual({
-      authMethod: "oauth-business",
-      gcpProject: "t3-enterprise",
-      gcpLocation: "us-central1",
-    });
-    expect(decodeServerSettingsPatch(encodeServerSettingsPatch(decoded))).toEqual(decoded);
-  });
-});
-
 describe("provider enabled defaults", () => {
   it("enables only the stable bindings by default", () => {
     const decoded = decodeServerSettings({});
@@ -975,9 +806,7 @@ describe("provider enabled defaults", () => {
     expect(decoded.providers.claudeAgent.enabled).toBe(true);
     expect(decoded.providers.cursor.enabled).toBe(false);
     expect(decoded.providers.grok.enabled).toBe(false);
-    expect(decoded.providers.kimi.enabled).toBe(false);
     expect(decoded.providers.opencode.enabled).toBe(false);
-    expect(decoded.providers.antigravity.enabled).toBe(false);
   });
 
   it("keeps Cursor enabled when an existing user explicitly opted in", () => {
@@ -1060,6 +889,42 @@ describe("ServerSettings worktree defaults", () => {
     );
     expect(decodeServerSettings({ worktreeSubmodules: "shallow" }).worktreeSubmodules).toBeNull();
     expect(decodeServerSettingsPatch({ worktreeSubmodules: null }).worktreeSubmodules).toBeNull();
+  });
+});
+
+describe("ServerSettings Cursor legacy settings", () => {
+  it("preserves V1 Cursor CLI settings when reading and writing shared settings", () => {
+    const decoded = decodeServerSettings({
+      providers: {
+        cursor: {
+          enabled: true,
+          binaryPath: "cursor-agent",
+          apiEndpoint: "http://127.0.0.1:3774",
+        },
+      },
+    });
+
+    expect(decoded.providers.cursor.enabled).toBe(true);
+    expect(encodeServerSettings(decoded).providers?.cursor).toMatchObject({
+      binaryPath: "cursor-agent",
+      apiEndpoint: "http://127.0.0.1:3774",
+    });
+  });
+
+  it("ignores obsolete Cursor CLI settings in patches", () => {
+    const patch = decodeServerSettingsPatch({
+      providers: {
+        cursor: {
+          enabled: true,
+          binaryPath: "cursor-agent",
+          apiEndpoint: "http://127.0.0.1:3774",
+        },
+      },
+    });
+
+    expect(patch.providers?.cursor?.enabled).toBe(true);
+    expect(patch.providers?.cursor).not.toHaveProperty("binaryPath");
+    expect(patch.providers?.cursor).not.toHaveProperty("apiEndpoint");
   });
 });
 
@@ -1216,4 +1081,27 @@ it("validates remote device hosts and rejects ambiguous host ids", () => {
     decodeDeviceHostSettings({ deviceHosts: [{ ...host, target: "-oProxyCommand=bad" }] }),
   ).toThrow();
   expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
+});
+
+describe("branch naming settings", () => {
+  it("defaults existing settings to the t3code static prefix", () => {
+    expect(decodeServerSettings({})).toMatchObject({
+      branchNamingMode: "static",
+      branchNamePrefix: "t3code",
+      branchNameInstructions: "",
+    });
+  });
+  it.each(["static", "semantic", "custom"])(
+    "round-trips %s and project overrides",
+    (branchNamingMode) => {
+      const naming = {
+        branchNamingMode,
+        branchNamePrefix: "team/",
+        branchNameInstructions: "Include the issue ID.",
+      };
+      const input = { ...naming, projectSettingsOverrides: { project: naming } };
+      expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+      expect(decodeServerSettingsPatch(input)).toEqual(input);
+    },
+  );
 });

@@ -21,7 +21,6 @@ const clientSettings: ClientSettings = {
   notificationMode: "notifications-and-sound",
   inAppNotificationsEnabled: true,
   appearanceContrast: 100,
-  autoOpenPlanSidebar: false,
   browserDefaultViewport: { _tag: "preset", width: 1024, height: 600, presetId: "nest-hub" },
   browserDefaultZoomFactor: 1.25,
   browserDefaultAppearance: "dark",
@@ -57,6 +56,7 @@ const clientSettings: ClientSettings = {
   planModeEnabled: false,
   proactivePanelsEnabled: true,
   showSkillsInSlashMenu: false,
+  persistComposerContextStrip: true,
   providerModelPreferences: {},
   sidebarProjectGroupingMode: "repository_path",
   sidebarProjectGroupingOverrides: {

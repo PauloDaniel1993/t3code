@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ExecutionEnvironmentDescriptor, ORCHESTRATION_PROTOCOL_VERSION } from "./environment.ts";
+import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 
 const decodeDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
 
@@ -14,47 +14,14 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
-  it("keeps protocol negotiation and fork capabilities independent", () => {
-    const decoded = decodeDescriptor({
-      ...descriptor,
-      orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
-      capabilities: {
-        ...descriptor.capabilities,
-        projectCloneTracking: true,
-        threadTasks: true,
-      },
-    });
-
-    expect(decoded.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
-    expect(decoded.capabilities.projectCloneTracking).toBe(true);
-    expect(decoded.capabilities.threadTasks).toBe(true);
-  });
-
-  it("leaves versioned capabilities absent for older descriptors", () => {
-    const decoded = decodeDescriptor(descriptor);
-    expect(decoded.orchestrationProtocolVersion).toBeUndefined();
-    expect(decoded.capabilities.projectCloneTracking).toBeUndefined();
-    expect(decoded.capabilities.threadTasks).toBeUndefined();
-  });
-
-  it("requires advertised bootstrap and cleanup capabilities", () => {
-    const olderCapabilities = decodeDescriptor(descriptor).capabilities;
-    expect(olderCapabilities.requiredWorktreeBootstrap).toBeUndefined();
-    expect(olderCapabilities.storageCleanup).toBeUndefined();
-    expect(olderCapabilities.projectWorktreeCleanup).toBeUndefined();
-
-    const capabilities = decodeDescriptor({
-      ...descriptor,
-      capabilities: {
-        ...descriptor.capabilities,
-        requiredWorktreeBootstrap: true,
-        storageCleanup: true,
-        projectWorktreeCleanup: true,
-      },
-    }).capabilities;
-    expect(capabilities.requiredWorktreeBootstrap).toBe(true);
-    expect(capabilities.storageCleanup).toBe(true);
-    expect(capabilities.projectWorktreeCleanup).toBe(true);
+  it("requires an advertised required-worktree bootstrap capability", () => {
+    expect(decodeDescriptor(descriptor).capabilities.requiredWorktreeBootstrap).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, requiredWorktreeBootstrap: true },
+      }).capabilities.requiredWorktreeBootstrap,
+    ).toBe(true);
   });
 
   it("treats a missing pull-request capability as unsupported under version skew", () => {
@@ -93,5 +60,21 @@ describe("ExecutionEnvironmentDescriptor", () => {
         },
       }).capabilities.fileAttachments,
     ).toEqual({ maxUploadBytes: 50 * 1024 * 1024 });
+  });
+
+  it("treats missing server-resolved command context as unsupported", () => {
+    expect(decodeDescriptor(descriptor).capabilities.serverResolvedCommandContext).toBeUndefined();
+  });
+
+  it("preserves advertised server-resolved command context", () => {
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: {
+          ...descriptor.capabilities,
+          serverResolvedCommandContext: true,
+        },
+      }).capabilities.serverResolvedCommandContext,
+    ).toBe(true);
   });
 });

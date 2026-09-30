@@ -1,4 +1,4 @@
-import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { ApprovalRequestId, EnvironmentId } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -21,7 +21,6 @@ describe("QuestionAnswerHistory", () => {
       const markup = renderToStaticMarkup(
         <QuestionAnswerHistory
           environmentId={EnvironmentId.make("environment-local")}
-          threadId={ThreadId.make("thread-1")}
           answer={{
             requestId: ApprovalRequestId.make("question-request"),
             answers,

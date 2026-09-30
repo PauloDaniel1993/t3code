@@ -7,7 +7,6 @@ import type {
   AssetResource,
   EnvironmentId,
   ScopedThreadRef,
-  ThreadId,
 } from "@t3tools/contracts";
 import { videoMimeType } from "@t3tools/shared/video";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
@@ -111,7 +110,6 @@ export async function resolveMarkdownMediaPreview(input: {
 
 export function buildAttachmentVideoAsset(
   environmentId: EnvironmentId,
-  threadId: ThreadId,
   attachment: ChatFileAttachment,
 ): NonNullable<MediaActionSource["asset"]> {
   return {
@@ -119,7 +117,6 @@ export function buildAttachmentVideoAsset(
     resource: {
       _tag: "attachment" as const,
       attachmentId: attachment.id,
-      ...(attachment.id.startsWith("pending-") ? {} : { threadId }),
       fileName: attachment.name,
       mimeType: videoMimeType(attachment) ?? attachment.mimeType,
     },
@@ -129,7 +126,6 @@ export function buildAttachmentVideoAsset(
 /** Opens a persisted video through the same signed-asset dialog used by message media. */
 export function buildAttachmentVideoPreview(
   environmentId: EnvironmentId,
-  threadId: ThreadId,
   attachment: ChatFileAttachment,
 ): ExpandedImagePreview | null {
   if (!isVideoAttachment(attachment)) return null;
@@ -137,7 +133,7 @@ export function buildAttachmentVideoPreview(
   const asset =
     attachment.downloadable === false
       ? undefined
-      : buildAttachmentVideoAsset(environmentId, threadId, attachment);
+      : buildAttachmentVideoAsset(environmentId, attachment);
   if (src === null && asset === undefined) return null;
   return {
     images: [

@@ -1,24 +1,22 @@
-// @effect-diagnostics preferSchemaOverJson:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import { createModelSelection } from "@t3tools/shared/model";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { expect } from "vite-plus/test";
 
 import { CodexSettings, ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import {
-  makeCodexTextGeneration,
-  prepareCodexTextGenerationAttachments,
-} from "./CodexTextGeneration.ts";
+import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
+import { writeFakeCli } from "../testUtils/fakeCli.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
@@ -44,266 +42,93 @@ interface FakeCodexInput {
   stdinMustNotContain?: string;
 }
 
-function makeFakeCodexBinary(
-  dir: string,
-  input: {
-    output: string;
-    exitCode?: number;
-    stderr?: string;
-    requireImage?: boolean;
-    requireServiceTier?: string;
-    requireReasoningEffort?: string;
-    forbidReasoningEffort?: boolean;
-    requireArg?: string;
-    forbidArg?: string;
-    stdinMustContain?: string;
-    stdinMustNotContain?: string;
-  },
-) {
+// The stub walks argv the way the shell script it replaced did: `--image`,
+// `--config key=value`, and `--output-last-message <path>` are consumed, the
+// prompt arrives on stdin, and each check exits with its own code so a
+// failing test names the assertion that tripped.
+function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
+  const check = JSON.stringify({
+    requireImage: input.requireImage ?? false,
+    requireServiceTier: input.requireServiceTier ?? null,
+    requireReasoningEffort: input.requireReasoningEffort ?? null,
+    forbidReasoningEffort: input.forbidReasoningEffort ?? false,
+    requireArg: input.requireArg ?? null,
+    forbidArg: input.forbidArg ?? null,
+    stdinMustContain: input.stdinMustContain ?? null,
+    stdinMustNotContain: input.stdinMustNotContain ?? null,
+    stderr: input.stderr ?? null,
+    output: input.output,
+    exitCode: input.exitCode ?? 0,
+  });
   return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const binDir = path.join(dir, "bin");
-    const windows = (yield* HostProcessPlatform) === "win32";
-    const codexPath = path.join(binDir, windows ? "codex.cmd" : "codex");
-    yield* fs.makeDirectory(binDir, { recursive: true });
-
-    if (windows) {
-      const runnerPath = path.join(binDir, "fake-codex.cjs");
-      yield* fs.writeFileString(
-        runnerPath,
-        [
-          'const fs = require("node:fs");',
-          "const args = process.argv.slice(2);",
-          'let outputPath = "";',
-          "let seenImage = false;",
-          'let seenServiceTier = "";',
-          'let seenReasoningEffort = "";',
-          "for (let index = 0; index < args.length; index += 1) {",
-          '  if (args[index] === "--image") {',
-          "    seenImage = Boolean(args[index + 1]);",
-          "    index += 1;",
-          "    continue;",
-          "  }",
-          '  if (args[index] === "--config") {',
-          '    const value = args[index + 1] ?? "";',
-          '    if (value.startsWith("service_tier=")) seenServiceTier = value;',
-          '    if (value.startsWith("model_reasoning_effort=")) seenReasoningEffort = value;',
-          "    index += 1;",
-          "    continue;",
-          "  }",
-          '  if (args[index] === "--output-last-message") {',
-          '    outputPath = args[index + 1] ?? "";',
-          "    index += 1;",
-          "  }",
-          "}",
-          'const stdinContent = fs.readFileSync(0, "utf8");',
-          ...(input.requireArg !== undefined
-            ? [
-                `if (!args.includes(${JSON.stringify(input.requireArg)})) {`,
-                `  process.stderr.write(${JSON.stringify(`missing arg: ${input.requireArg}\n`)});`,
-                "  process.exit(8);",
-                "}",
-              ]
-            : []),
-          ...(input.forbidArg !== undefined
-            ? [
-                `if (args.includes(${JSON.stringify(input.forbidArg)})) {`,
-                `  process.stderr.write(${JSON.stringify(`forbidden arg: ${input.forbidArg}\n`)});`,
-                "  process.exit(9);",
-                "}",
-              ]
-            : []),
-          ...(input.requireImage
-            ? [
-                "if (!seenImage) {",
-                '  process.stderr.write("missing --image input\\n");',
-                "  process.exit(2);",
-                "}",
-              ]
-            : []),
-          ...(input.requireServiceTier
-            ? [
-                `if (seenServiceTier !== ${JSON.stringify(`service_tier="${input.requireServiceTier}"`)}) {`,
-                "  process.stderr.write(`unexpected service tier config: ${seenServiceTier}\\n`);",
-                "  process.exit(5);",
-                "}",
-              ]
-            : []),
-          ...(input.requireReasoningEffort !== undefined
-            ? [
-                `if (seenReasoningEffort !== ${JSON.stringify(`model_reasoning_effort="${input.requireReasoningEffort}"`)}) {`,
-                "  process.stderr.write(`unexpected reasoning effort config: ${seenReasoningEffort}\\n`);",
-                "  process.exit(6);",
-                "}",
-              ]
-            : []),
-          ...(input.forbidReasoningEffort
-            ? [
-                "if (seenReasoningEffort) {",
-                "  process.stderr.write(`reasoning effort config should be omitted: ${seenReasoningEffort}\\n`);",
-                "  process.exit(7);",
-                "}",
-              ]
-            : []),
-          ...(input.stdinMustContain !== undefined
-            ? [
-                `if (!stdinContent.includes(${JSON.stringify(input.stdinMustContain)})) {`,
-                '  process.stderr.write("stdin missing expected content\\n");',
-                "  process.exit(3);",
-                "}",
-              ]
-            : []),
-          ...(input.stdinMustNotContain !== undefined
-            ? [
-                `if (stdinContent.includes(${JSON.stringify(input.stdinMustNotContain)})) {`,
-                '  process.stderr.write("stdin contained forbidden content\\n");',
-                "  process.exit(4);",
-                "}",
-              ]
-            : []),
-          ...(input.stderr !== undefined
-            ? [`process.stderr.write(${JSON.stringify(`${input.stderr}\n`)});`]
-            : []),
-          `if (outputPath) fs.writeFileSync(outputPath, ${JSON.stringify(input.output)}, "utf8");`,
-          `process.exit(${input.exitCode ?? 0});`,
-          "",
-        ].join("\n"),
-      );
-      yield* fs.writeFileString(
-        codexPath,
-        ["@echo off", `"${process.execPath}" "${runnerPath}" %*`, "exit /b %errorlevel%", ""].join(
-          "\r\n",
-        ),
-      );
-      return codexPath;
-    }
-
-    yield* fs.writeFileString(
-      codexPath,
-      [
-        "#!/bin/sh",
-        'original_args="$*"',
-        'output_path=""',
-        'seen_image="0"',
-        'seen_service_tier=""',
-        'seen_reasoning_effort=""',
-        "while [ $# -gt 0 ]; do",
-        '  if [ "$1" = "--image" ]; then',
-        "    shift",
-        '    if [ -n "$1" ]; then',
-        '      seen_image="1"',
-        "    fi",
-        "    shift",
-        "    continue",
-        "  fi",
-        '  if [ "$1" = "--config" ]; then',
-        "    shift",
-        '    case "$1" in',
-        "      service_tier=*)",
-        '        seen_service_tier="$1"',
-        "        ;;",
-        "    esac",
-        '    case "$1" in',
-        "      model_reasoning_effort=*)",
-        '        seen_reasoning_effort="$1"',
-        "        ;;",
-        "    esac",
-        "    shift",
-        "    continue",
-        "  fi",
-        '  if [ "$1" = "--output-last-message" ]; then',
-        "    shift",
-        '    output_path="$1"',
-        "    shift",
-        "    continue",
-        "  fi",
-        "  shift",
-        "done",
-        'stdin_content="$(cat)"',
-        ...(input.requireArg !== undefined
-          ? [
-              `case " $original_args " in *" ${input.requireArg} "*) ;; *)`,
-              `  printf "%s\\n" "missing arg: ${input.requireArg}" >&2`,
-              `  exit 8`,
-              "esac",
-            ]
-          : []),
-        ...(input.forbidArg !== undefined
-          ? [
-              `case " $original_args " in *" ${input.forbidArg} "*)`,
-              `  printf "%s\\n" "forbidden arg: ${input.forbidArg}" >&2`,
-              `  exit 9`,
-              "esac",
-            ]
-          : []),
-        ...(input.requireImage
-          ? [
-              'if [ "$seen_image" != "1" ]; then',
-              '  printf "%s\\n" "missing --image input" >&2',
-              `  exit 2`,
-              "fi",
-            ]
-          : []),
-        ...(input.requireServiceTier
-          ? [
-              `if [ "$seen_service_tier" != "service_tier=\\"${input.requireServiceTier}\\"" ]; then`,
-              '  printf "%s\\n" "unexpected service tier config: $seen_service_tier" >&2',
-              `  exit 5`,
-              "fi",
-            ]
-          : []),
-        ...(input.requireReasoningEffort !== undefined
-          ? [
-              `if [ "$seen_reasoning_effort" != "model_reasoning_effort=\\"${input.requireReasoningEffort}\\"" ]; then`,
-              '  printf "%s\\n" "unexpected reasoning effort config: $seen_reasoning_effort" >&2',
-              `  exit 6`,
-              "fi",
-            ]
-          : []),
-        ...(input.forbidReasoningEffort
-          ? [
-              'if [ -n "$seen_reasoning_effort" ]; then',
-              '  printf "%s\\n" "reasoning effort config should be omitted: $seen_reasoning_effort" >&2',
-              `  exit 7`,
-              "fi",
-            ]
-          : []),
-        ...(input.stdinMustContain !== undefined
-          ? [
-              // @effect-diagnostics-next-line preferSchemaOverJson:off
-              `if ! printf "%s" "$stdin_content" | grep -F -- ${JSON.stringify(input.stdinMustContain)} >/dev/null; then`,
-              '  printf "%s\\n" "stdin missing expected content" >&2',
-              `  exit 3`,
-              "fi",
-            ]
-          : []),
-        ...(input.stdinMustNotContain !== undefined
-          ? [
-              // @effect-diagnostics-next-line preferSchemaOverJson:off
-              `if printf "%s" "$stdin_content" | grep -F -- ${JSON.stringify(input.stdinMustNotContain)} >/dev/null; then`,
-              '  printf "%s\\n" "stdin contained forbidden content" >&2',
-              `  exit 4`,
-              "fi",
-            ]
-          : []),
-        ...(input.stderr !== undefined
-          ? [
-              // @effect-diagnostics-next-line preferSchemaOverJson:off
-              `printf "%s\\n" ${JSON.stringify(input.stderr)} >&2`,
-            ]
-          : []),
-        'if [ -n "$output_path" ]; then',
-        "  cat > \"$output_path\" <<'__T3CODE_FAKE_CODEX_OUTPUT__'",
-        input.output,
-        "__T3CODE_FAKE_CODEX_OUTPUT__",
-        "fi",
-        `exit ${input.exitCode ?? 0}`,
+    return writeFakeCli({
+      directory: path.join(dir, "bin"),
+      name: "codex",
+      source: [
+        'import * as NodeFS from "node:fs";',
+        `const check = ${check};`,
+        "const args = process.argv.slice(2);",
+        'const originalArgs = ` ${args.join(" ")} `;',
+        "let outputPath = null;",
+        "let seenImage = false;",
+        'let seenServiceTier = "";',
+        'let seenReasoningEffort = "";',
+        "for (let index = 0; index < args.length; index += 1) {",
+        '  if (args[index] === "--image") {',
+        "    index += 1;",
+        "    if (args[index]) seenImage = true;",
+        '  } else if (args[index] === "--config") {',
+        "    index += 1;",
+        '    const value = args[index] ?? "";',
+        '    if (value.startsWith("service_tier=")) seenServiceTier = value;',
+        '    if (value.startsWith("model_reasoning_effort=")) seenReasoningEffort = value;',
+        '  } else if (args[index] === "--output-last-message") {',
+        "    index += 1;",
+        "    outputPath = args[index] ?? null;",
+        "  }",
+        "}",
+        "const chunks = [];",
+        "for await (const chunk of process.stdin) chunks.push(chunk);",
+        'const stdinContent = Buffer.concat(chunks).toString("utf8");',
+        "function fail(message, code) {",
+        '  process.stderr.write(message + "\\n");',
+        "  process.exit(code);",
+        "}",
+        "if (check.requireArg !== null && !originalArgs.includes(` ${check.requireArg} `)) {",
+        '  fail("missing arg: " + check.requireArg, 8);',
+        "}",
+        "if (check.forbidArg !== null && originalArgs.includes(` ${check.forbidArg} `)) {",
+        '  fail("forbidden arg: " + check.forbidArg, 9);',
+        "}",
+        'if (check.requireImage && !seenImage) fail("missing --image input", 2);',
+        "if (",
+        "  check.requireServiceTier !== null &&",
+        '  seenServiceTier !== `service_tier="${check.requireServiceTier}"`',
+        ") {",
+        '  fail("unexpected service tier config: " + seenServiceTier, 5);',
+        "}",
+        "if (",
+        "  check.requireReasoningEffort !== null &&",
+        '  seenReasoningEffort !== `model_reasoning_effort="${check.requireReasoningEffort}"`',
+        ") {",
+        '  fail("unexpected reasoning effort config: " + seenReasoningEffort, 6);',
+        "}",
+        "if (check.forbidReasoningEffort && seenReasoningEffort.length > 0) {",
+        '  fail("reasoning effort config should be omitted: " + seenReasoningEffort, 7);',
+        "}",
+        "if (check.stdinMustContain !== null && !stdinContent.includes(check.stdinMustContain)) {",
+        '  fail("stdin missing expected content", 3);',
+        "}",
+        "if (check.stdinMustNotContain !== null && stdinContent.includes(check.stdinMustNotContain)) {",
+        '  fail("stdin contained forbidden content", 4);',
+        "}",
+        'if (check.stderr !== null) process.stderr.write(check.stderr + "\\n");',
+        'if (outputPath !== null) NodeFS.writeFileSync(outputPath, check.output + "\\n");',
+        "process.exitCode = check.exitCode;",
         "",
       ].join("\n"),
-    );
-    yield* fs.chmod(codexPath, 0o755);
-    return codexPath;
+    });
   });
 }
 
@@ -322,7 +147,7 @@ function withFakeCodexEnv<A, E, R>(
     const config = decodeCodexSettings({ binaryPath: codexPath, launchArgs: input.launchArgs });
     const textGeneration = yield* makeCodexTextGeneration(
       config,
-      input.environment,
+      input.environment === undefined ? undefined : { ...process.env, ...input.environment },
       Effect.succeed(
         (input.models ?? []).map((slug) => ({
           slug,
@@ -335,70 +160,6 @@ function withFakeCodexEnv<A, E, R>(
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
-
-it.effect("keeps Codex secondary materialization image-only", () =>
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
-      prefix: "codex-secondary-attachments-",
-    });
-
-    const prepared = yield* prepareCodexTextGenerationAttachments({
-      operation: "generateBranchName",
-      attachmentsDir,
-      fileSystem,
-      path,
-      attachments: [
-        {
-          type: "file",
-          id: "codex-secondary-pdf",
-          name: "requirements.pdf",
-          mimeType: "application/pdf",
-          sizeBytes: 24,
-        },
-        {
-          type: "file",
-          id: "codex-secondary-file",
-          name: "notes.md",
-          mimeType: "text/markdown",
-          sizeBytes: 12,
-        },
-      ],
-    });
-
-    expect(prepared.imagePaths).toEqual([]);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
-
-it.effect("rejects unknown Codex secondary attachment kinds", () =>
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
-      prefix: "codex-secondary-unknown-",
-    });
-
-    const error = yield* prepareCodexTextGenerationAttachments({
-      operation: "generateThreadTitle",
-      attachmentsDir,
-      fileSystem,
-      path,
-      attachments: [
-        {
-          type: "archive",
-          id: "codex-secondary-archive",
-          name: "bundle.zip",
-          mimeType: "application/zip",
-          sizeBytes: 1,
-        } as never,
-      ],
-    }).pipe(Effect.flip);
-
-    expect(error).toBeInstanceOf(TextGenerationError);
-    expect(error.message).toContain("archive");
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
   for (const selectedModel of ["gpt-5.6-luna", "openai.gpt-5.6-luna"]) {
@@ -617,6 +378,78 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
+  for (const example of [
+    {
+      mode: "static",
+      output: "Add Search",
+      expected: "team/add-search",
+      instruction: "without a prefix or namespace",
+    },
+    {
+      mode: "semantic",
+      output: "feat/add-search",
+      expected: "feat/add-search",
+      instruction: "semantic prefix",
+    },
+    {
+      mode: "custom",
+      output: "Julius/ABC-123.v2",
+      expected: "Julius/ABC-123.v2",
+      instruction: "Preserve the issue ID and capitalization.",
+    },
+  ] as const) {
+    it.effect(`generates a branch using ${example.mode} naming`, () =>
+      withFakeCodexEnv(
+        {
+          output: JSON.stringify({ branch: example.output }),
+          stdinMustContain: example.instruction,
+        },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const generated = yield* textGeneration.generateBranchName({
+              cwd: process.cwd(),
+              message: "Add search",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              naming: {
+                mode: example.mode,
+                prefix: "team/",
+                instructions: "Preserve the issue ID and capitalization.",
+              },
+            });
+            expect(generated.branch).toBe(example.expected);
+          }),
+      ),
+    );
+  }
+
+  it.effect("generates branch names even when the ambient scope is already closed", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          branch: "feat/background-generation",
+        }),
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          // Background fibers (e.g. the worktree branch rename fork) can run
+          // after their launching request's scope has closed; temp files must
+          // not be tied to that ambient scope or they are reaped on creation.
+          const closedScope = yield* Scope.make();
+          yield* Scope.close(closedScope, Exit.void);
+
+          const generated = yield* textGeneration
+            .generateBranchName({
+              cwd: process.cwd(),
+              message: "Please update session handling.",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            })
+            .pipe(Effect.provideService(Scope.Scope, closedScope));
+
+          expect(generated.branch).toBe("feat/background-generation");
+        }),
+    ),
+  );
+
   it.effect("generates thread titles and trims them for sidebar use", () =>
     withFakeCodexEnv(
       {
@@ -805,12 +638,13 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
-  it.effect("rejects missing codex image inputs instead of silently skipping them", () =>
+  it.effect("ignores missing attachment ids for codex image inputs", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({
           branch: "fix/ui-regression",
         }),
+        requireImage: true,
       },
       (textGeneration) =>
         Effect.gen(function* () {
@@ -841,8 +675,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           expect(Result.isFailure(result)).toBe(true);
           if (Result.isFailure(result)) {
             expect(result.failure).toBeInstanceOf(TextGenerationError);
-            expect(result.failure.message).toContain("outside.png");
-            expect(result.failure.message).toContain("could not be read");
+            expect(result.failure.message).toContain("missing --image input");
           }
         }),
     ),

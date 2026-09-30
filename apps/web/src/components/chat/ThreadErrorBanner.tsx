@@ -1,15 +1,12 @@
+import type { OrchestrationV2ProviderFailureClass } from "@t3tools/contracts";
 import { memo } from "react";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { CircleAlertIcon, XIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-export function getThreadErrorBannerKey(
-  threadKey: string,
-  error: string | null,
-  occurrenceKey: string | null = null,
-): string | null {
-  return error === null ? null : `${threadKey}\u0000${occurrenceKey ?? ""}\u0000${error}`;
+export function getThreadErrorBannerKey(threadKey: string, error: string | null): string | null {
+  return error === null ? null : `${threadKey}\u0000${error}`;
 }
 
 export function shouldShowThreadErrorBanner(
@@ -40,14 +37,17 @@ export function isThreadErrorBannerDismissedForSession(bannerKey: string | null)
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   onDismiss,
+  errorClass,
 }: {
   error: string | null;
+  errorClass?: OrchestrationV2ProviderFailureClass | null;
   onDismiss?: () => void;
 }) {
   if (!error) return null;
+  const variant = errorClass === "usage_limit" ? "warning" : "error";
   return (
     <div className="pointer-events-auto mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3">
-      <Alert variant="error" surface="glass" controlAlignment="first-line">
+      <Alert variant={variant} surface="glass" controlAlignment="first-line" data-variant={variant}>
         <CircleAlertIcon />
         <AlertDescription>
           <Tooltip>
@@ -60,7 +60,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
         {onDismiss && (
           <AlertAction>
             <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
-              <XIcon className="text-destructive" />
+              <XIcon />
             </Button>
           </AlertAction>
         )}

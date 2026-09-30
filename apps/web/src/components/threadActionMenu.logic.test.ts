@@ -4,8 +4,6 @@ import { buildThreadActionMenuItems, type ThreadActionMenuState } from "./thread
 
 const baseState: ThreadActionMenuState = {
   branch: null,
-  isTask: false,
-  canCreateTask: false,
   projectFilter: null,
   isPinned: false,
   isSettled: false,
@@ -131,40 +129,6 @@ describe("buildThreadActionMenuItems", () => {
       (candidate) => candidate.id === "regenerate-title",
     );
     expect(item).toMatchObject({ label: "Regenerating…", disabled: true });
-  });
-
-  it("offers new task only for a task-capable top-level thread", () => {
-    expect(ids({ ...baseState, canCreateTask: true })).toContain("new-task");
-    expect(ids(baseState)).not.toContain("new-task");
-    expect(ids({ ...baseState, isTask: true, canCreateTask: true })).not.toContain("new-task");
-  });
-
-  it("keeps task threads to safe standalone actions", () => {
-    const items = buildThreadActionMenuItems({
-      ...baseState,
-      branch: "feat/task",
-      isTask: true,
-      canCreateTask: true,
-      isPinned: true,
-      isSettled: true,
-      isSnoozed: true,
-    });
-
-    expect(items.map((item) => item.id)).toEqual(["unpin", "rename", "copy-thread-id", "delete"]);
-    expect(items.find((item) => item.id === "rename")).toMatchObject({ label: "Rename task" });
-    expect(ids({ ...baseState, isTask: true })).toEqual(["rename", "copy-thread-id", "delete"]);
-    expect(
-      ids({
-        ...baseState,
-        isTask: true,
-        isPinned: true,
-        supports: { ...baseState.supports, pinning: false },
-      }),
-    ).toEqual(["rename", "copy-thread-id", "delete"]);
-  });
-
-  it("includes copy thread ID for top-level threads", () => {
-    expect(allIds(baseState)).toContain("copy-thread-id");
   });
 
   it("marks delete as destructive and keeps it last", () => {

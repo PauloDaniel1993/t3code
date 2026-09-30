@@ -7,7 +7,6 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   COMPOSER_CONTEXT_MAX_RECORDS,
   type EnvironmentId,
-  type ThreadId,
 } from "@t3tools/contracts";
 import {
   decodeComposerContextClipboardHtml,
@@ -88,12 +87,7 @@ export async function importComposerContextClipboard(
       try {
         if (existingCount + attachments.length >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS)
           throw new Error("Attachment limit reached");
-        const file = await importAttachment(
-          record,
-          fragment.source.environmentId,
-          fragment.source.threadId,
-          signal,
-        );
+        const file = await importAttachment(record, fragment.source.environmentId, signal);
         attachments.push(file);
         records.push({ ...record, attachmentId: file.id });
       } catch (error) {
@@ -122,7 +116,6 @@ export async function importComposerContextClipboard(
 async function importAttachment(
   record: Extract<ComposerContextRecord, { attachmentId: string }>,
   environmentId: EnvironmentId,
-  threadId: ThreadId | undefined,
   signal: AbortSignal,
 ): Promise<DraftComposerAttachment> {
   await waitForComposerDraftsLoaded();
@@ -158,14 +151,7 @@ async function importAttachment(
     assetEnvironment.createUrl({
       environmentId,
       input: {
-        resource: {
-          _tag: "attachment",
-          attachmentId: record.attachmentId,
-          fileName: record.name,
-          ...(threadId !== undefined && !record.attachmentId.startsWith("pending-")
-            ? { threadId }
-            : {}),
-        },
+        resource: { _tag: "attachment", attachmentId: record.attachmentId, fileName: record.name },
       },
     }),
     { refresh: true, reportFailure: false },

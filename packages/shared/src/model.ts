@@ -1,6 +1,4 @@
 import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_BY_PROVIDER,
   type CustomModelSetting,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
   ModelCapabilities,
@@ -12,8 +10,19 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { copySorted } from "./Array.ts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
+
+/** Choose the command for a model change against the thread's current provider instance. */
+export function modelSelectionCommandType(
+  currentInstanceId: ProviderInstanceId,
+  selection: ModelSelection,
+) {
+  return currentInstanceId === selection.instanceId
+    ? ("thread.model-selection.set" as const)
+    : ("provider.switch" as const);
+}
 
 export interface SelectableModelOption {
   slug: string;
@@ -60,13 +69,6 @@ export function getProviderOptionBooleanSelectionValue(
   return typeof value === "boolean" ? value : undefined;
 }
 
-export function getModelSelectionOptionValue(
-  modelSelection: ModelSelection | null | undefined,
-  id: string,
-): string | boolean | undefined {
-  return getProviderOptionSelectionValue(modelSelection?.options, id);
-}
-
 export function getModelSelectionStringOptionValue(
   modelSelection: ModelSelection | null | undefined,
   id: string,
@@ -79,6 +81,44 @@ export function getModelSelectionBooleanOptionValue(
   id: string,
 ): boolean | undefined {
   return getProviderOptionBooleanSelectionValue(modelSelection?.options, id);
+}
+
+function canonicalModelSelectionOptions(
+  modelSelection: ModelSelection,
+): ReadonlyArray<readonly [id: string, value: string | boolean]> {
+  return copySorted(
+    (modelSelection.options ?? []).map(
+      (selection): readonly [id: string, value: string | boolean] => [
+        selection.id,
+        selection.value,
+      ],
+    ),
+    (
+      [leftId, leftValue]: readonly [id: string, value: string | boolean],
+      [rightId, rightValue]: readonly [id: string, value: string | boolean],
+    ) => {
+      const idOrder = leftId.localeCompare(rightId);
+      return idOrder !== 0 ? idOrder : String(leftValue).localeCompare(String(rightValue));
+    },
+  );
+}
+
+/**
+ * Compares the complete provider selection while treating option ordering and
+ * an omitted empty option list as presentation details.
+ */
+export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection): boolean {
+  if (left.instanceId !== right.instanceId || left.model !== right.model) {
+    return false;
+  }
+  const leftOptions = canonicalModelSelectionOptions(left);
+  const rightOptions = canonicalModelSelectionOptions(right);
+  return (
+    leftOptions.length === rightOptions.length &&
+    leftOptions.every(
+      ([id, value], index) => id === rightOptions[index]?.[0] && value === rightOptions[index]?.[1],
+    )
+  );
 }
 
 function resolveDescriptorChoiceValue(
@@ -216,82 +256,6 @@ export function buildProviderOptionSelectionsFromDescriptors(
   return nextSelections.length > 0 ? nextSelections : undefined;
 }
 
-type SelectOptionDescriptor = Extract<ProviderOptionDescriptor, { type: "select" }>;
-
-/** Lowercased and stripped of everything a caller might punctuate differently. */
-function foldOptionKey(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-const REASONING_DESCRIPTOR_IDS: ReadonlySet<string> = new Set([
-  "reasoningeffort",
-  "effort",
-  "reasoning",
-  "reasoninglevel",
-  "thinkinglevel",
-]);
-
-/**
- * The select descriptor that carries a model's reasoning level, or null when
- * the model has none.
- *
- * Every driver names this option differently — `effort` on Claude,
- * `reasoningEffort` on Codex, `reasoning` on Cursor, and whatever the agent
- * reported on the ACP-backed drivers — so callers that mean "the reasoning
- * level" cannot key off a single id. Matching is deliberately narrow: it is
- * better to tell a caller a model has no reasoning level than to silently
- * point `reasoning` at OpenCode's `variant` or `agent` picker.
- */
-export function findReasoningOptionDescriptor(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor> | null | undefined,
-): SelectOptionDescriptor | null {
-  const selects = (descriptors ?? []).filter(
-    (descriptor): descriptor is SelectOptionDescriptor => descriptor.type === "select",
-  );
-  return (
-    selects.find((descriptor) => REASONING_DESCRIPTOR_IDS.has(foldOptionKey(descriptor.id))) ??
-    selects.find((descriptor) => /reason|effort/.test(foldOptionKey(descriptor.id))) ??
-    selects.find((descriptor) => /reason|effort|thinking/.test(foldOptionKey(descriptor.label))) ??
-    null
-  );
-}
-
-/**
- * Match a caller-supplied reasoning level against a descriptor's choices,
- * returning the canonical choice id or null when nothing matches.
- *
- * Both the id and the label are accepted, and both sides are folded, so an
- * agent writing "extra high" lands on `xhigh` the same way "xhigh" does.
- */
-export function resolveReasoningOptionChoiceId(
-  descriptor: SelectOptionDescriptor,
-  raw: string | null | undefined,
-): string | null {
-  const wanted = foldOptionKey(trimOrNull(raw) ?? "");
-  if (wanted.length === 0) return null;
-  return (
-    descriptor.options.find((option) => foldOptionKey(option.id) === wanted)?.id ??
-    descriptor.options.find((option) => foldOptionKey(option.label) === wanted)?.id ??
-    null
-  );
-}
-
-export function getModelSelectionOptionDescriptors(
-  modelSelection: ModelSelection | null | undefined,
-  caps?: ModelCapabilities | null | undefined,
-): ReadonlyArray<ProviderOptionDescriptor> {
-  if (!modelSelection) {
-    return [];
-  }
-  if (!caps) {
-    return [];
-  }
-  return getProviderOptionDescriptors({
-    caps,
-    selections: modelSelection.options,
-  });
-}
-
 export function buildExplicitProviderOptionSelectionsFromDescriptors(
   descriptors: ReadonlyArray<ProviderOptionDescriptor> | null | undefined,
   selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
@@ -313,6 +277,26 @@ export function isClaudeUltrathinkPrompt(text: string | null | undefined): boole
 /** Compare Codex model families without changing provider-owned dispatch identifiers. */
 export function codexModelFamily(slug: string): string {
   return slug.startsWith("openai.gpt-") ? slug.slice("openai.".length) : slug;
+}
+
+export function formatCodexModelName(name: string): string {
+  return name.replace(/^gpt/i, "GPT").replace(/-([a-z])/g, (_, c) => "-" + c.toUpperCase());
+}
+
+export function formatModelSlugName(slug: string): string {
+  const separator = slug.lastIndexOf("/") + 1;
+  const prefix = slug.slice(0, separator);
+  const name = slug.slice(separator);
+  if (/^gpt-\d/i.test(name)) return prefix + formatCodexModelName(name);
+  if (!/^(claude-(opus|sonnet|haiku|fable)|gemini|grok|composer)-\d/i.test(name)) return slug;
+  return (
+    prefix +
+    name
+      .replace(/^(claude-[a-z]+-\d+)-(\d{1,2})(?=-|\[|$)/i, "$1.$2")
+      .split("-")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
+  );
 }
 
 export function normalizeModelSlug(
@@ -443,21 +427,6 @@ export function resolveSelectableModel(
 
   const resolved = options.find((option) => option.slug === normalized);
   return resolved ? resolved.slug : null;
-}
-
-function resolveModelSlug(model: string | null | undefined, provider: ProviderDriverKind): string {
-  const normalized = normalizeModelSlug(model, provider);
-  if (!normalized) {
-    return DEFAULT_MODEL_BY_PROVIDER[provider] ?? DEFAULT_MODEL;
-  }
-  return normalized;
-}
-
-export function resolveModelSlugForProvider(
-  provider: ProviderDriverKind,
-  model: string | null | undefined,
-): string {
-  return resolveModelSlug(model, provider);
 }
 
 /** Trim a string, returning null for empty/missing values. */

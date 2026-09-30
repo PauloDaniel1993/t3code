@@ -149,6 +149,8 @@ describe("AcpCoreRuntimeEvents", () => {
         threadId: "thread-1" as never,
         turnId,
         payload: {
+          nativePlanId: "plan-1",
+          kind: "items",
           plan: [{ step: "Inspect state", status: "inProgress" }],
         },
         source: "acp.cursor.extension",
@@ -168,7 +170,6 @@ describe("AcpCoreRuntimeEvents", () => {
         provider: ProviderDriverKind.make("cursor"),
         threadId: "thread-1" as never,
         turnId,
-        rawPayload: { sessionId: "session-1" },
         toolCall: {
           toolCallId: "tool-1",
           kind: "execute",
@@ -177,6 +178,7 @@ describe("AcpCoreRuntimeEvents", () => {
           detail: "bun run test",
           data: { command: "bun run test" },
         },
+        rawPayload: { sessionId: "session-1" },
       }),
     ).toMatchObject({
       type: "item.completed",
@@ -220,99 +222,6 @@ describe("AcpCoreRuntimeEvents", () => {
         itemType: "assistant_message",
         status: "inProgress",
       },
-    });
-  });
-
-  it("classifies ACP Agent calls without exposing the full delegated prompt", () => {
-    const event = makeAcpToolCallEvent({
-      stamp: { eventId: "event-agent" as never, createdAt: "2026-07-23T00:00:00.000Z" },
-      provider: ProviderDriverKind.make("kimi"),
-      threadId: "thread-agent" as never,
-      turnId: TurnId.make("turn-agent"),
-      rawPayload: { sessionId: "session-agent" },
-      toolCall: {
-        toolCallId: "tool-agent",
-        status: "completed",
-        title: "Tool",
-        detail: '{"description":"Verify backend","prompt":"long private delegation prompt"}',
-        data: {
-          rawInput:
-            '{"description":"Verify backend","prompt":"long private delegation prompt","subagent_type":"explore","run_in_background":true}',
-          rawOutput: "status: running",
-        },
-      },
-    });
-
-    expect(event).toMatchObject({
-      type: "item.completed",
-      payload: {
-        itemType: "collab_agent_tool_call",
-        status: "completed",
-        title: "Launched background subagent",
-        detail: "explore: Verify backend",
-      },
-    });
-    if (event.type === "item.completed") {
-      expect(event.payload.detail).not.toContain("long private delegation prompt");
-    }
-
-    expect(
-      makeAcpToolCallEvent({
-        stamp: { eventId: "event-agent-foreground" as never, createdAt: "2026-07-23T00:00:01Z" },
-        provider: ProviderDriverKind.make("kimi"),
-        threadId: "thread-agent" as never,
-        turnId: TurnId.make("turn-agent"),
-        rawPayload: { sessionId: "session-agent" },
-        toolCall: {
-          toolCallId: "tool-agent-foreground",
-          status: "inProgress",
-          title: "Agent",
-          data: {
-            rawInput: {
-              description: "Review UI",
-              prompt: "Review the UI implementation",
-              subagent_type: "explore",
-            },
-          },
-        },
-      }),
-    ).toMatchObject({
-      type: "item.updated",
-      payload: {
-        itemType: "collab_agent_tool_call",
-        status: "inProgress",
-        title: "Subagent task",
-        detail: "explore: Review UI",
-      },
-    });
-  });
-
-  it("preserves normalized Antigravity command result fields", () => {
-    const event = makeAcpToolCallEvent({
-      stamp: { eventId: "event-antigravity" as never, createdAt: "2026-09-02T00:00:00.000Z" },
-      provider: ProviderDriverKind.make("antigravity"),
-      threadId: "thread-antigravity" as never,
-      turnId: TurnId.make("turn-antigravity"),
-      rawPayload: { sessionId: "session-antigravity" },
-      toolCall: {
-        toolCallId: "command-1",
-        kind: "execute",
-        status: "completed",
-        command: "cat probe.txt",
-        detail: "cat probe.txt",
-        data: {
-          command: "cat probe.txt",
-          cwd: "/tmp",
-          item: { aggregatedOutput: "after\n", exitCode: 0 },
-          rawOutput: { combinedOutput: "after\n", exitCode: 0 },
-        },
-      },
-    });
-
-    expect(event.type === "item.completed" ? event.payload.data : undefined).toMatchObject({
-      command: "cat probe.txt",
-      cwd: "/tmp",
-      item: { aggregatedOutput: "after\n", exitCode: 0 },
     });
   });
 

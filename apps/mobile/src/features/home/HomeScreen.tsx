@@ -2,7 +2,6 @@ import { useAndroidControlSizing } from "../../components/useAndroidControlSizin
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import { computeThreadMoveAvailability } from "../threads/threadOrder";
 import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
-import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
@@ -11,12 +10,9 @@ import {
   threadSearchMatchKey,
   type EnvironmentThreadSearchMatch,
 } from "@t3tools/client-runtime/state/thread-search";
-import {
-  type EnvironmentId,
-  resolveEnvironmentMachineKind,
-  type SidebarProjectGroupingMode,
-} from "@t3tools/contracts";
+import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -34,14 +30,12 @@ import { EmptyState } from "../../components/EmptyState";
 import { MaterialFloatingActionButton } from "../../components/MaterialFloatingActionButton";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
-import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
+import { scopedProjectKey } from "../../lib/scopedEntities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
-import { useThreadTasksEnabled } from "../../state/preferences";
 import { useThreadSearch } from "../../state/queries";
-import { useTaskAgentReadState } from "../../state/use-task-agent-read-state";
 import { useThreadJumpShortcuts } from "../keyboard/threadKeyboardShortcuts";
 import { usePendingThreadOrder } from "../../state/thread-order";
-import { environmentServerConfigsAtom } from "../../state/server";
+import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import {
@@ -51,16 +45,6 @@ import {
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
 } from "../threads/thread-list-v2-items";
-import { buildTaskAgentModel } from "../threads/task-agent-surface/taskAgentModel";
-import type { TaskPeekAgentRouteParams } from "../threads/task-agent-surface/taskAgentPeek.logic";
-import type { TaskDestination } from "../threads/task-agent-surface/taskAgentNavigation";
-import {
-  buildTaskAgentSurfaceRows,
-  taskAgentPresentationStatesEqual,
-  type TaskAgentListPresentationState,
-  type TaskAgentRowViewModel,
-  type TaskAgentSurfaceViewModel,
-} from "../threads/task-agent-surface/taskAgentSurface.logic";
 import { useThreadRowProviderInstanceResolver } from "../threads/thread-provider-instance";
 import {
   buildThreadListV2Items,
@@ -105,7 +89,6 @@ interface HomeScreenProps {
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
-  readonly onOpenTaskAgentDestination: (destination: TaskDestination) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
   /** Resolves true iff the settle was dispatched and succeeded. */
@@ -132,87 +115,6 @@ interface HomeScreenProps {
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
   readonly onNewThreadOnBranch: (thread: EnvironmentThreadShell) => void;
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
-}
-
-/** A v2 thread row with its task presentation captured in list data, so a
-    minute tick re-renders only rows whose task text changed. */
-type HomeListItem =
-  | (Extract<ThreadListV2ListItem, { readonly type: "v2-thread" }> & {
-      readonly taskAgentPresentationState: TaskAgentListPresentationState | undefined;
-    })
-  | Exclude<ThreadListV2ListItem, { readonly type: "v2-thread" }>;
-
-function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem): boolean {
-  if (!threadListV2ListItemsAreEqual(previous, item)) return false;
-  return previous.type !== "v2-thread" || item.type !== "v2-thread"
-    ? true
-    : taskAgentPresentationStatesEqual(
-        previous.taskAgentPresentationState,
-        item.taskAgentPresentationState,
-      );
-}
-
-type TaskAgentPeekParamsByRow = ReadonlyMap<TaskAgentRowViewModel, TaskPeekAgentRouteParams>;
-
-function buildTaskAgentPeekParamsByRow(
-  surface: TaskAgentSurfaceViewModel | null,
-): TaskAgentPeekParamsByRow {
-  const paramsByRow = new Map<TaskAgentRowViewModel, TaskPeekAgentRouteParams>();
-  if (surface === null) return paramsByRow;
-
-  for (const thread of surface.threads) {
-    if (thread.kind !== "rollup-thread") continue;
-    const environmentId = thread.thread.environmentId;
-    const threadId = thread.thread.id;
-    if (
-      typeof environmentId !== "string" ||
-      environmentId.trim().length === 0 ||
-      typeof threadId !== "string" ||
-      threadId.trim().length === 0
-    ) {
-      continue;
-    }
-
-    for (const turn of thread.rollup.nativeAgentTurns) {
-      for (const agent of turn.agents) {
-        if (agent.kind !== "native-agent") continue;
-        const agentId = agent.nativeAgent?.id;
-        if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
-        paramsByRow.set(agent, {
-          environmentId,
-          threadId,
-          agentId,
-        });
-      }
-    }
-
-    for (const task of thread.rollup.tasks) {
-      if (!("tap" in task.navigation)) continue;
-      const taskIdentity = task.navigation.tap.params;
-      if (
-        typeof taskIdentity.environmentId !== "string" ||
-        taskIdentity.environmentId.trim().length === 0 ||
-        typeof taskIdentity.threadId !== "string" ||
-        taskIdentity.threadId.trim().length === 0
-      ) {
-        continue;
-      }
-      for (const turn of task.turns) {
-        for (const agent of turn.agents) {
-          if (agent.kind !== "native-agent") continue;
-          const agentId = agent.nativeAgent?.id;
-          if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
-          paramsByRow.set(agent, {
-            environmentId: taskIdentity.environmentId,
-            threadId: taskIdentity.threadId,
-            agentId,
-          });
-        }
-      }
-    }
-  }
-
-  return paramsByRow;
 }
 
 /* ─── Layout constants ───────────────────────────────────────────────── */
@@ -306,7 +208,7 @@ function deriveEmptyState(props: {
 
   return {
     title: "No threads yet",
-    detail: "Create a task to start a new coding session in one of your connected projects.",
+    detail: "Create a task to start a new coding runtime in one of your connected projects.",
     loading: false,
   };
 }
@@ -318,9 +220,6 @@ function HomeTopContentSpacer() {
 /* ─── Main screen ────────────────────────────────────────────────────── */
 
 export function HomeScreen(props: HomeScreenProps) {
-  const navigation = useNavigation();
-  const threadTasksEnabled = useThreadTasksEnabled();
-  const { readState: taskAgentReadState, markThreadsVisited } = useTaskAgentReadState();
   const queuedThreadKeys = useQueuedThreadKeys();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const insets = useSafeAreaInsets();
@@ -584,221 +483,35 @@ export function HomeScreen(props: HomeScreenProps) {
       return () => clearInterval(id);
     }, []),
   );
-  // The task/agent projection shares the v2 minute clock so elapsed labels can
-  // advance without reading a clock during render or invalidating every row.
-  const taskAgentNowMs = useMemo(() => Date.parse(`${nowMinute}:00.000Z`), [nowMinute]);
-  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
-  const threadTaskEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadTasks === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const taskAgentSurface = useMemo(() => {
-    if (!threadTasksEnabled) return null;
-    return buildTaskAgentSurfaceRows(
-      buildTaskAgentModel({
-        // Keep every top-level shell so native-agent rollups still work on
-        // older environments, but only give the hierarchy task children that
-        // their server can actually surface.
-        threads: props.threads.filter(
-          (thread) =>
-            thread.archivedAt === null &&
-            (thread.parentThreadId == null || threadTaskEnvironmentIds.has(thread.environmentId)),
-        ),
-        nowMs: taskAgentNowMs,
-        readState: taskAgentReadState,
-      }),
-    );
-  }, [
-    props.threads,
-    taskAgentNowMs,
-    taskAgentReadState,
-    threadTaskEnvironmentIds,
-    threadTasksEnabled,
-  ]);
-  const [taskAgentExpandedByThreadKey, setTaskAgentExpandedByThreadKey] = useState<
-    ReadonlyMap<string, boolean>
-  >(() => new Map());
-  const taskAgentPresentationByThreadKey = useMemo(() => {
-    if (taskAgentSurface === null) return null;
-    const presentationByThreadKey = new Map<string, TaskAgentListPresentationState>();
-    for (const row of taskAgentSurface.threads) {
-      presentationByThreadKey.set(row.key, {
-        row,
-        expanded:
-          row.kind === "rollup-thread"
-            ? (taskAgentExpandedByThreadKey.get(row.key) ?? row.rollup.expandedByDefault)
-            : false,
-      });
-    }
-    return presentationByThreadKey;
-  }, [taskAgentExpandedByThreadKey, taskAgentSurface]);
-  const taskAgentParentThreadIdByTaskThreadKey = useMemo(() => {
-    const parentThreadIdByTaskThreadKey = new Map<string, EnvironmentThreadShell["id"]>();
-    if (taskAgentSurface === null) return parentThreadIdByTaskThreadKey;
-
-    for (const row of taskAgentSurface.threads) {
-      if (row.kind !== "rollup-thread") continue;
-      for (const task of row.rollup.tasks) {
-        parentThreadIdByTaskThreadKey.set(`${row.thread.environmentId}:${task.id}`, row.thread.id);
-      }
-    }
-    return parentThreadIdByTaskThreadKey;
-  }, [taskAgentSurface]);
-  const nestedTaskThreadKeys = useMemo(
-    () => new Set(taskAgentParentThreadIdByTaskThreadKey.keys()),
-    [taskAgentParentThreadIdByTaskThreadKey],
-  );
-  const taskAgentParentThreadIdByTaskThreadKeyRef = useRef(taskAgentParentThreadIdByTaskThreadKey);
-  taskAgentParentThreadIdByTaskThreadKeyRef.current = taskAgentParentThreadIdByTaskThreadKey;
-  const taskAgentPeekParamsByRow = useMemo(
-    () => buildTaskAgentPeekParamsByRow(taskAgentSurface),
-    [taskAgentSurface],
-  );
-  const taskAgentPeekParamsByRowRef = useRef(taskAgentPeekParamsByRow);
-  taskAgentPeekParamsByRowRef.current = taskAgentPeekParamsByRow;
-  const handleTaskAgentExpandedChange = useCallback((threadKey: string, expanded: boolean) => {
-    setTaskAgentExpandedByThreadKey((current) => {
-      if (current.get(threadKey) === expanded) return current;
-      const next = new Map(current);
-      next.set(threadKey, expanded);
-      return next;
-    });
-  }, []);
-  const handleTaskAgentRowPress = useCallback(
-    (row: TaskAgentRowViewModel) => {
-      if (row.kind === "native-agent") {
-        const params = taskAgentPeekParamsByRowRef.current.get(row);
-        if (params === undefined) return;
-        navigation.navigate("TaskAgentPeek", params);
-        return;
-      }
-      if (!("tap" in row.navigation)) return;
-
-      const destination = row.navigation.tap;
-      const parentThreadId = taskAgentParentThreadIdByTaskThreadKeyRef.current.get(
-        scopedThreadKey(destination.params.environmentId, destination.params.threadId),
-      );
-      if (parentThreadId !== undefined) {
-        // This is interaction time, so the timestamp is deliberately read here
-        // rather than while projecting a render.
-        markThreadsVisited({
-          parentThreadId,
-          taskThreadId: destination.params.threadId,
-          visitedAt: new Date().toISOString(),
-        });
-      }
-      props.onOpenTaskAgentDestination(destination);
-    },
-    [markThreadsVisited, navigation, props.onOpenTaskAgentDestination],
-  );
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
-  const settlementEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadSettlement === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const snoozeEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadSnooze === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const pinningEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadPinning === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const autoSettleOptOutEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadAutoSettleOptOut === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const pinReorderEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadPinReorder === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const activeReorderEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadActiveReorder === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const titleRegenerationEnvironmentIds = useMemo(() => {
-    const supported = new Set<EnvironmentId>();
-    for (const [environmentId, config] of serverConfigs) {
-      if (config.environment.capabilities.threadTitleRegeneration === true) {
-        supported.add(environmentId);
-      }
-    }
-    return supported;
-  }, [serverConfigs]);
-  const machineByEnvironmentId = useMemo(
-    () =>
-      new Map(
-        [...serverConfigs].map(
-          ([environmentId, config]) =>
-            [environmentId, resolveEnvironmentMachineKind(config)] as const,
-        ),
-      ),
-    [serverConfigs],
-  );
-  // Reference-stable provider glyphs: a fresh object per render would break
-  // the memoized rows' props comparison on every parent render.
-  const resolveProviderInstance = useThreadRowProviderInstanceResolver(serverConfigs);
+  const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
+  const {
+    providersByEnvironmentId,
+    machineByEnvironmentId,
+    settlementEnvironmentIds,
+    snoozeEnvironmentIds,
+    pinningEnvironmentIds,
+    autoSettleOptOutEnvironmentIds,
+    pinReorderEnvironmentIds,
+    activeReorderEnvironmentIds,
+    titleRegenerationEnvironmentIds,
+  } = listEnvironments;
+  const resolveProviderInstance = useThreadRowProviderInstanceResolver(providersByEnvironmentId);
   const pendingOrder = usePendingThreadOrder(nowMinute, snoozeWakeTick);
-  const topLevelThreads = useMemo(
-    () => props.threads.filter((thread) => thread.parentThreadId == null),
-    [props.threads],
-  );
   // Up/down menu availability for every card, computed once per section per
   // rebuild (see computeThreadMoveAvailability): per-thread planner calls made
   // list construction quadratic, and this list rebuilds on every minute tick.
   const threadMoveAvailability = useMemo(() => {
     const sectionAvailability = (section: "pinned" | "active") =>
       computeThreadMoveAvailability({
-        allThreads: topLevelThreads,
+        allThreads: props.threads,
         section,
         pendingOrder,
-        reorderableEnvironmentIds: new Set(
-          [...serverConfigs].flatMap(([id, config]) =>
-            (section === "pinned"
-              ? config.environment.capabilities.threadPinReorder
-              : config.environment.capabilities.threadActiveReorder) === true
-              ? [id]
-              : [],
-          ),
-        ),
+        reorderableEnvironmentIds:
+          section === "pinned" ? pinReorderEnvironmentIds : activeReorderEnvironmentIds,
         ordered: getThreadListV2OrderedSection({
-          threads: topLevelThreads,
+          threads: props.threads,
           section,
           pendingOrder,
           now: new Date().toISOString(),
@@ -809,8 +522,9 @@ export function HomeScreen(props: HomeScreenProps) {
       });
     return new Map([...sectionAvailability("pinned"), ...sectionAvailability("active")]);
   }, [
-    serverConfigs,
-    topLevelThreads,
+    pinReorderEnvironmentIds,
+    activeReorderEnvironmentIds,
+    props.threads,
     pendingOrder,
     queuedThreadKeys,
     settlementEnvironmentIds,
@@ -824,7 +538,6 @@ export function HomeScreen(props: HomeScreenProps) {
     return buildThreadListV2Items({
       pendingOrder,
       threads: props.threads.filter((thread) => thread.archivedAt === null),
-      nestedTaskThreadKeys,
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -852,7 +565,6 @@ export function HomeScreen(props: HomeScreenProps) {
     props.selectedEnvironmentId,
     props.threads,
     matchedThreadKeys,
-    nestedTaskThreadKeys,
     v2ScopedProjectGroup,
   ]);
   // Re-partition the moment the earliest snooze expires (clamped to the
@@ -890,7 +602,7 @@ export function HomeScreen(props: HomeScreenProps) {
     [props.pendingTasks, props.selectedEnvironmentId, v2ScopedProjectKeys, v2SearchQuery],
   );
   const threadListV2Items = useMemo(
-    (): HomeListItem[] =>
+    () =>
       buildThreadListV2ListItems({
         items: threadListV2Layout.items,
         pendingTasks: v2PendingTasks,
@@ -905,20 +617,10 @@ export function HomeScreen(props: HomeScreenProps) {
         queuedThreadKeys,
         moveAvailability: threadMoveAvailability,
         shelfPreferencesLoading: !shelfPreferencesLoaded,
-      }).map((item) =>
-        item.type === "v2-thread"
-          ? {
-              ...item,
-              taskAgentPresentationState: taskAgentPresentationByThreadKey?.get(
-                scopedThreadKey(item.item.thread.environmentId, item.item.thread.id),
-              ),
-            }
-          : item,
-      ),
+      }),
     [
       nowMinute,
       queuedThreadKeys,
-      taskAgentPresentationByThreadKey,
       threadMoveAvailability,
       settledShelfExpanded,
       shelfPreferencesLoaded,
@@ -935,7 +637,7 @@ export function HomeScreen(props: HomeScreenProps) {
   }, [activateVisibleRows, swipeEnabled, threadListV2Items]);
 
   const renderV2Item = useCallback(
-    ({ item }: { readonly item: HomeListItem }) => {
+    ({ item }: { readonly item: ThreadListV2ListItem }) => {
       if (item.type === "v2-pending") {
         const pendingScopeKey = scopedProjectKey(
           item.pendingTask.environmentId,
@@ -981,7 +683,6 @@ export function HomeScreen(props: HomeScreenProps) {
         );
       }
       const thread = item.item.thread;
-      const taskAgentPresentation = item.taskAgentPresentationState;
       return (
         <ThreadListV2Row
           onNewThreadOnBranch={props.onNewThreadOnBranch}
@@ -1001,6 +702,7 @@ export function HomeScreen(props: HomeScreenProps) {
             scopedProjectKey(thread.environmentId, thread.projectId),
           )}
           providerInstance={resolveProviderInstance(thread)}
+          providers={providersByEnvironmentId.get(thread.environmentId)}
           environmentLabel={
             Object.keys(props.savedConnectionsById).length > 1
               ? (props.savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
@@ -1041,15 +743,6 @@ export function HomeScreen(props: HomeScreenProps) {
           onMoveThread={handleMoveThread}
           onSwipeableClose={handleSwipeableClose}
           onSwipeableWillOpen={handleSwipeableWillOpen}
-          {...(taskAgentPresentation === undefined
-            ? {}
-            : {
-                taskAgentPresentation: {
-                  ...taskAgentPresentation,
-                  onExpandedChange: handleTaskAgentExpandedChange,
-                  onPressRow: handleTaskAgentRowPress,
-                },
-              })}
           activationKey={item.key}
         />
       );
@@ -1065,14 +758,13 @@ export function HomeScreen(props: HomeScreenProps) {
       handleSnoozeThread,
       handleUnpinThread,
       handleUnsnoozeThread,
-      handleTaskAgentExpandedChange,
-      handleTaskAgentRowPress,
       handleSwipeableClose,
       handleSwipeableWillOpen,
       handleUnsettleThread,
       handleSetThreadAutoSettle,
       autoSettleOptOutEnvironmentIds,
       pinningEnvironmentIds,
+      autoSettleOptOutEnvironmentIds,
       machineByEnvironmentId,
       pinReorderEnvironmentIds,
       projectByKey,
@@ -1083,6 +775,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.onNewThreadOnBranch,
       props.savedConnectionsById,
       resolveProviderInstance,
+      providersByEnvironmentId,
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
       threadSearchMatchByKey,
@@ -1103,7 +796,7 @@ export function HomeScreen(props: HomeScreenProps) {
     () => ({
       projectByKey,
       projectTitleByProjectKey: v2ProjectTitleByProjectKey,
-      serverConfigs,
+      listEnvironments,
       savedConnectionsById: props.savedConnectionsById,
       searchQuery: props.searchQuery,
       threadSearchMatchByKey,
@@ -1112,7 +805,7 @@ export function HomeScreen(props: HomeScreenProps) {
       projectByKey,
       props.searchQuery,
       props.savedConnectionsById,
-      serverConfigs,
+      listEnvironments,
       threadSearchMatchByKey,
       v2ProjectTitleByProjectKey,
     ],
@@ -1252,7 +945,7 @@ export function HomeScreen(props: HomeScreenProps) {
             renderItem={renderV2Item}
             keyExtractor={v2KeyExtractor}
             getItemType={(item) => item.type}
-            itemsAreEqual={homeListItemsAreEqual}
+            itemsAreEqual={threadListV2ListItemsAreEqual}
             estimatedItemSize={ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT}
             drawDistance={THREAD_LIST_V2_DRAW_DISTANCE}
             recycleItems

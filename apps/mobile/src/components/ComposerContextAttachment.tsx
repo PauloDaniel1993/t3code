@@ -1,4 +1,4 @@
-import type { ComposerContextRecord, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { ComposerContextRecord, EnvironmentId } from "@t3tools/contracts";
 import { Alert, Pressable, View } from "react-native";
 import { Image } from "expo-image";
 import { useEffect, useId, useMemo, useState } from "react";
@@ -10,12 +10,10 @@ import { useAssetUrlState, useRefreshAssetUrl } from "../state/assets";
 import { AppText as Text } from "./AppText";
 import { FilePreviewModal } from "./FilePreviewModal";
 import { PresentationSource } from "./NativePresentation";
-import { attachmentAssetOwnership } from "../lib/attachmentDocument";
 
 export function ComposerContextAttachment(props: {
   record: Extract<ComposerContextRecord, { attachmentId: string }>;
   environmentId?: EnvironmentId;
-  threadId?: ThreadId;
   attachment?: DraftComposerAttachment;
 }) {
   const { record, attachment } = props;
@@ -25,13 +23,8 @@ export function ComposerContextAttachment(props: {
       _tag: "attachment" as const,
       attachmentId: record.attachmentId,
       fileName: record.name,
-      ...attachmentAssetOwnership({
-        attachmentId: record.attachmentId,
-        threadId: props.threadId,
-        isLocal: attachment !== undefined,
-      }),
     }),
-    [attachment, props.threadId, record.attachmentId, record.name],
+    [record.attachmentId, record.name],
   );
   const local = attachment?.fileUri
     ? (attachment as DraftComposerAttachment & { fileUri: string })

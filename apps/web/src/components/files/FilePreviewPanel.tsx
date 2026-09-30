@@ -1116,7 +1116,6 @@ export default function FilePreviewPanel({
               availableEditors={availableEditors}
               openInCwd={absolutePath}
               compact
-              enableShortcut={false}
             />
           ) : null}
           {canToggleRendered && renderedMode ? (
@@ -1182,15 +1181,11 @@ export default function FilePreviewPanel({
         >
           {isDirectory ? null : relativePath && attachment ? (
             <AttachmentFilePreview
-              key={`${environmentId}:${threadRef.threadId}:${attachment.id}`}
+              key={`${environmentId}:${attachment.id}`}
               name={attachment.name}
               mimeType={attachment.mimeType}
               sizeBytes={attachment.sizeBytes}
-              asset={{
-                environmentId,
-                attachmentId: attachment.id,
-                threadId: threadRef.threadId,
-              }}
+              asset={{ environmentId, attachmentId: attachment.id }}
             />
           ) : relativePath && isVideo && absolutePath ? (
             <WorkspaceVideoPreview

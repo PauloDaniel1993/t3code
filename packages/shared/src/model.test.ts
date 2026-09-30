@@ -7,7 +7,8 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
-  findReasoningOptionDescriptor,
+  formatCodexModelName,
+  formatModelSlugName,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
@@ -17,8 +18,27 @@ import {
   getProviderOptionStringSelectionValue,
   normalizeCustomModelSlug,
   normalizeModelSlug,
-  resolveReasoningOptionChoiceId,
+  modelSelectionsEqual,
 } from "./model.ts";
+
+it("keeps the Codex catalog display formatting", () => {
+  expect(formatCodexModelName("gpt-5.3-codex-spark")).toBe("GPT-5.3-Codex-Spark");
+  expect(formatCodexModelName("GPT Test")).toBe("GPT Test");
+});
+
+it.each([
+  ["gpt-5.4", "GPT-5.4"],
+  ["claude-opus-4-6", "Claude Opus 4.6"],
+  ["claude-sonnet-4-20250514", "Claude Sonnet 4 20250514"],
+  ["claude-opus-4-6[1m]", "Claude Opus 4.6[1m]"],
+  ["openai/gpt-5.4-mini", "openai/GPT-5.4-Mini"],
+  ["gemini-2.5-pro-preview-06-05", "Gemini 2.5 Pro Preview 06 05"],
+  ["custom/model-v2", "custom/model-v2"],
+  ["gpt-proxy", "gpt-proxy"],
+  ["My Custom Model", "My Custom Model"],
+])("formats a known model ID without losing its qualifiers: %s", (slug, expected) => {
+  expect(formatModelSlugName(slug)).toBe(expected);
+});
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [
@@ -38,6 +58,17 @@ const codexCaps: ModelCapabilities = createModelCapabilities({
       type: "boolean",
     },
   ],
+});
+
+describe("model slug normalization", () => {
+  it("preserves exact custom slugs instead of expanding provider aliases", () => {
+    // Claude aliases now resolve through the model catalog (#9084), so the
+    // provider alias table passes unknown slugs through unchanged.
+    const claude = ProviderDriverKind.make("claudeAgent");
+
+    expect(normalizeModelSlug("opus", claude)).toBe("opus");
+    expect(normalizeCustomModelSlug(" opus ")).toBe("opus");
+  });
 });
 
 const claudeCaps: ModelCapabilities = createModelCapabilities({
@@ -167,101 +198,28 @@ describe("descriptor helpers", () => {
     expect(getModelSelectionStringOptionValue(selection, "reasoningEffort")).toBe("high");
     expect(getModelSelectionBooleanOptionValue(selection, "fastMode")).toBe(true);
   });
-});
 
-describe("reasoning descriptor lookup", () => {
-  const cursorCaps: ModelCapabilities = createModelCapabilities({
-    optionDescriptors: [
-      {
-        id: "reasoning",
-        label: "Thought Level",
-        type: "select",
-        options: [
-          { id: "standard", label: "Standard", isDefault: true },
-          { id: "max", label: "Max" },
-        ],
-      },
-    ],
-  });
+  it("compares complete model selections independent of option ordering", () => {
+    const left = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+      { id: "reasoningEffort", value: "high" },
+      { id: "fastMode", value: true },
+    ]);
+    const reordered = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+      { id: "fastMode", value: true },
+      { id: "reasoningEffort", value: "high" },
+    ]);
 
-  it("finds the reasoning option under each driver's own id", () => {
-    for (const [caps, expected] of [
-      [codexCaps, "reasoningEffort"],
-      [claudeCaps, "effort"],
-      [cursorCaps, "reasoning"],
-    ] as const) {
-      expect(findReasoningOptionDescriptor(getProviderOptionDescriptors({ caps }))?.id).toBe(
-        expected,
-      );
-    }
-  });
-
-  it("finds a reasoning option named only by its label", () => {
-    const caps = createModelCapabilities({
-      optionDescriptors: [
-        {
-          id: "thought_level",
-          label: "Thinking",
-          type: "select",
-          options: [{ id: "deep", label: "Deep" }],
-        },
-      ],
-    });
-
-    expect(findReasoningOptionDescriptor(getProviderOptionDescriptors({ caps }))?.id).toBe(
-      "thought_level",
-    );
-  });
-
-  it("reports no reasoning option rather than claiming an unrelated select", () => {
-    // OpenCode publishes `variant` and `agent` selects and no reasoning level;
-    // treating the first select as "the reasoning one" would silently reassign
-    // the agent a task was meant to run under.
-    const openCodeCaps: ModelCapabilities = createModelCapabilities({
-      optionDescriptors: [
-        {
-          id: "variant",
-          label: "Variant",
-          type: "select",
-          options: [{ id: "default", label: "Default" }],
-        },
-        {
-          id: "agent",
-          label: "Agent",
-          type: "select",
-          options: [{ id: "build", label: "Build" }],
-        },
-      ],
-    });
-
+    expect(modelSelectionsEqual(left, reordered)).toBe(true);
     expect(
-      findReasoningOptionDescriptor(getProviderOptionDescriptors({ caps: openCodeCaps })),
-    ).toBe(null);
-    expect(findReasoningOptionDescriptor([])).toBe(null);
-  });
-
-  it("matches a requested level by id or label, however it is punctuated", () => {
-    const descriptor = findReasoningOptionDescriptor(
-      getProviderOptionDescriptors({ caps: codexCaps }),
-    );
-    if (!descriptor) throw new Error("expected a reasoning descriptor");
-
-    expect(resolveReasoningOptionChoiceId(descriptor, "xhigh")).toBe("xhigh");
-    expect(resolveReasoningOptionChoiceId(descriptor, " HIGH ")).toBe("high");
-    expect(resolveReasoningOptionChoiceId(descriptor, "extra high")).toBe("xhigh");
-    expect(resolveReasoningOptionChoiceId(descriptor, "extra-high")).toBe("xhigh");
-    expect(resolveReasoningOptionChoiceId(descriptor, "maximum")).toBe(null);
-    expect(resolveReasoningOptionChoiceId(descriptor, "")).toBe(null);
-    expect(resolveReasoningOptionChoiceId(descriptor, null)).toBe(null);
-  });
-});
-
-describe("model slug normalization", () => {
-  it("preserves exact custom slugs instead of expanding provider aliases", () => {
-    const cursor = ProviderDriverKind.make("cursor");
-
-    expect(normalizeModelSlug("opus-4.6", cursor)).toBe("claude-opus-4-6");
-    expect(normalizeCustomModelSlug(" opus-4.6 ")).toBe("opus-4.6");
+      modelSelectionsEqual(left, {
+        ...reordered,
+        options: [
+          { id: "fastMode", value: true },
+          { id: "reasoningEffort", value: "medium" },
+        ],
+      }),
+    ).toBe(false);
+    expect(modelSelectionsEqual(left, { ...reordered, model: "gpt-5.5" })).toBe(false);
   });
 });
 

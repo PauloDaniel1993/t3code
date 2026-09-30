@@ -116,6 +116,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --workspace-titlebar-control-size: 1.75rem;
   --workspace-titlebar-control-gap: 0.75rem;
   --workspace-titlebar-scroll-fade-height: 1.5rem;
+  --chat-content-max-width: 46rem;
+  --thread-details-panel-width: 19.5rem;
   /* The prompt on phones: iOS zooms into any input under 16px on focus. */
   --font-size-prompt-touch: max(var(--font-size-prompt, 1rem), 16px);
   /* Horizontal gutter shared by the page header and the chat column, clear of
@@ -174,6 +176,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --text-5xs--line-height: 1;
   /* Motion. drawer is the decelerating curve for surfaces that slide or pop in
      (composer context, pills). */
+  --inset-shadow-control-highlight: 0 1px rgb(255 255 255 / 16%);
+  --inset-shadow-control-pressed: 0 1px rgb(0 0 0 / 8%);
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
   /* The composer's elevation: a soft drop pulled in under the surface, shared
      by the composer, its context strip and attached banners. */
@@ -205,7 +209,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
      compositor updates discrete frames instead of every vsync. */
   --animate-status-pulse: status-pulse 2s infinite;
   --animate-status-ping: status-ping 2s infinite;
-  --animate-mini-thread-in: mini-thread-in 0.13s cubic-bezier(0.2, 0, 0.2, 1) both;
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-warning-surface: var(--warning-surface);
@@ -268,29 +271,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --radius-xl: calc(var(--radius) + 4px);
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
-  /* The peek card slides out of the row it belongs to, matching the mockup. */
-  @keyframes mini-thread-in {
-    from {
-      opacity: 0;
-      transform: translateX(-4px) scale(0.98);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  /* The sidebar's "show in transcript" jump flashes the target so the eye
-     lands on the row (or the collapsed card standing in for it). */
-  @keyframes native-agent-jump-flash {
-    0% {
-      background-color: color-mix(in oklab, var(--accent) 65%, transparent);
-      box-shadow: 0 0 0 1px var(--ring);
-    }
-    100% {
-      background-color: transparent;
-      box-shadow: 0 0 0 0 transparent;
-    }
-  }
   @keyframes skeleton {
     /* The single loading-bar breath used by every skeleton: one opacity pulse
        per container, stepped so however many bars sit under it, the compositor
@@ -340,13 +320,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       scale: 2;
     }
   }
-}
-
-/* The sidebar's "show in transcript" jump flashes the target so the eye lands
-   on the row (or the collapsed card standing in for it). */
-.native-agent-jump-flash {
-  animation: native-agent-jump-flash 1.6s ease-out both;
-  border-radius: var(--radius-md);
 }
 
 @utility surface-glass {
@@ -905,6 +878,28 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     outline: none;
   }
 
+  .surface-subheader {
+    @apply flex h-10 min-h-10 shrink-0 items-center border-b border-border/60 bg-background;
+  }
+
+  [data-preview-panel-mode="inline"] [data-right-panel-surface-content] [data-surface-subheader] {
+    height: calc(var(--spacing) * 7);
+    min-height: calc(var(--spacing) * 7);
+    margin-bottom: calc(var(--spacing) * 3);
+    border-bottom-color: transparent;
+  }
+
+  .chat-content-lane {
+    margin-inline: auto;
+    width: 100%;
+    min-width: 0;
+    max-width: var(--chat-content-max-width);
+  }
+
+  .messages-timeline-row-frame {
+    padding-inline: 0;
+  }
+
   .settings-slider {
     --settings-slider-progress: 0%;
     --settings-slider-fill-offset: 0.5rem;
@@ -1213,85 +1208,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
-/* Star map tokens (design decision 15). The starfield is intrinsically dark,
-   so the map panel scopes its own token block with light and dark variants —
-   the same technique as [data-sidebar-version] above. The engine's canvas
-   carries this attribute and reads the tokens once per theme change.
-   Status hues bind to --success / --warning / --info / --destructive so the
-   active modular theme supplies the same semantic palette used elsewhere.
-   Completion gold is an achievement state for the graph as a whole, not a
-   ticket status, so it has its own stable token.
-   Keep values in sync with DEFAULT_STAR_MAP_THEME in
-   apps/web/src/components/map/starMapTheme.ts. */
-[data-star-map] {
-  --star-map-background: #10141d;
-  --star-map-completion: #f5c451;
-  --star-map-star: #eef2f9;
-  --star-map-starfield-far: rgb(168 180 205 / 0.45);
-  --star-map-starfield-near: rgb(214 224 240 / 0.7);
-  --star-map-edge: rgb(148 163 184 / 0.38);
-  --star-map-label: rgb(226 232 240 / 0.9);
-  --star-map-selection: var(--ring);
-  --star-map-status-open: var(--info);
-  --star-map-status-claimed: var(--warning);
-  --star-map-status-resolved: var(--success);
-  --star-map-status-out-of-scope: var(--destructive);
-  background-color: var(--star-map-background);
-}
-
-.dark [data-star-map] {
-  --star-map-background: #05070c;
-  --star-map-star: #f6f8fc;
-  --star-map-starfield-far: rgb(176 188 214 / 0.5);
-  --star-map-starfield-near: rgb(226 234 246 / 0.8);
-  --star-map-edge: rgb(148 163 184 / 0.42);
-  --star-map-label: rgb(235 240 248 / 0.92);
-}
-
-/* Star map split (design decision 13). Below the breakpoint the ticket detail
-   replaces the map; above it the two sit side by side. This MUST be a
-   container query, not a viewport media query: PreviewPanelShell sizes the
-   panel in explicit pixels independent of the viewport, so a viewport query
-   would split at the wrong times. The 720px value mirrors
-   STAR_MAP_SPLIT_BREAKPOINT_PX in apps/web/src/components/map/starMapInteraction.ts.
-   A query cannot style its own container, so [data-star-map-container] only
-   establishes containment and the rules target the split inside it. */
-[data-star-map-container] {
-  container-type: inline-size;
-}
-
-[data-star-map-split][data-level="ticket"] > [data-star-map-mapside] {
-  display: none;
-}
-
-/* Wide enough to keep both: the map stays put and the ticket opens beneath it,
-   stacked rather than side by side, so the constellation never loses width and
-   the selected star stays where the eye left it. Still a container query, not a
-   viewport one — PreviewPanelShell sets an explicit pixel width. */
-@container (min-width: 720px) {
-  [data-star-map-split][data-level="ticket"] {
-    flex-direction: column;
-  }
-
-  [data-star-map-split][data-level="ticket"] > [data-star-map-mapside] {
-    display: flex;
-    flex: 1 1 55%;
-    min-height: 0;
-  }
-
-  [data-star-map-split][data-level="ticket"] > [data-star-map-detail] {
-    flex: 1 1 45%;
-    min-height: 0;
-    border-block-start: 1px solid var(--border);
-  }
-}
-
 /* Theme files are expressed in app color roles and mapped to the existing
    semantic surface tokens here. Keep this block after the sidebar-version
    compatibility overrides so both navigation implementations receive the
    same palette. Success, info, provider, and channel identity colors remain
    independent; error, warning, and update roles are themeable below. */
-
 /* The non-empty marker adds enough specificity to outrank the generated root
    dark variant without reintroducing raw `.dark` selectors. */
 html[data-theme-id]:not([data-theme-id=""]) {
@@ -1691,15 +1612,6 @@ body {
   padding: 0;
 }
 
-/* Explicit settings sizes replace utilities in shared settings layout code. */
-.settings-ui-text-sm {
-  font-size: 0.875rem;
-}
-
-.settings-ui-text-13 {
-  font-size: 0.8125rem;
-}
-
 html,
 body {
   min-height: calc(100svh + env(safe-area-inset-top));
@@ -1821,9 +1733,6 @@ code {
 
 /* Chat markdown rendering */
 
-/* Fork markdown consumers retain these semantic class hooks. Upstream moved
-   its own layout to direct utilities, but the fork's richer link, code-block,
-   and table renderers still need the named-class contract. */
 .chat-markdown > :first-child {
   margin-top: 0;
 }
@@ -2110,17 +2019,14 @@ code {
   --diff-deletion-foreground: light-dark(var(--color-red-600), var(--color-red-400));
 }
 
-/* Chat timeline and composer column width, set from the Chat width setting. */
-:root {
-  --chat-max-width: 48rem;
-}
-
+/* Chat width setting. Comfortable keeps the default --chat-content-max-width,
+   which sizes the timeline lane, the composer, and ChatCanvas's width probe. */
 :root[data-chat-width="wide"] {
-  --chat-max-width: 72rem;
+  --chat-content-max-width: 72rem;
 }
 
 :root[data-chat-width="full"] {
-  --chat-max-width: 100%;
+  --chat-content-max-width: 100%;
 }
 
 :root[data-diff-color-scheme="blue-orange"] {
@@ -2350,4 +2256,45 @@ code {
 
 .composer-tiptap li[data-checked] > div > p {
   margin: 0;
+}
+
+@layer components {
+  .chat-composer-lane {
+    padding-inline-start: calc(
+      env(safe-area-inset-left) + 0.75rem + var(--chat-lane-inset-start, 0px)
+    );
+    padding-inline-end: calc(
+      env(safe-area-inset-right) + 0.75rem + var(--chat-lane-inset-end, 0px)
+    );
+  }
+  [data-chat-canvas] .messages-timeline-scroll {
+    padding-inline-start: calc(
+      0.75rem + var(--chat-lane-inset-start, 0px) - var(--chat-timeline-gutter, 0px)
+    );
+    padding-inline-end: calc(
+      0.75rem + var(--chat-lane-inset-end, 0px) - var(--chat-timeline-gutter, 0px)
+    );
+  }
+  .chat-scroll-to-bottom {
+    inset-inline-start: var(--chat-lane-inset-start, 0px);
+    inset-inline-end: var(--chat-lane-inset-end, 0px);
+  }
+  @media (min-width: 640px) {
+    .chat-composer-lane {
+      padding-inline-start: calc(
+        env(safe-area-inset-left) + 1.25rem + var(--chat-lane-inset-start, 0px)
+      );
+      padding-inline-end: calc(
+        env(safe-area-inset-right) + 1.25rem + var(--chat-lane-inset-end, 0px)
+      );
+    }
+    [data-chat-canvas] .messages-timeline-scroll {
+      padding-inline-start: calc(
+        1.25rem + var(--chat-lane-inset-start, 0px) - var(--chat-timeline-gutter, 0px)
+      );
+      padding-inline-end: calc(
+        1.25rem + var(--chat-lane-inset-end, 0px) - var(--chat-timeline-gutter, 0px)
+      );
+    }
+  }
 }
