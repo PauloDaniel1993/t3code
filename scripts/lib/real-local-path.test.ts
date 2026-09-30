@@ -86,3 +86,10 @@ it("refuses Windows folded spellings before resolving existing or missing direct
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
 });
+
+it("refuses relative Windows paths and says a full path is required", async () => {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Real Windows path fixtures.
+  if (NodeOS.platform() !== "win32") return;
+  for (const candidate of [".\\v2home", "..\\x\\v2home", "v2home", "I:v2home", "\\v2home"])
+    assert.throws(() => resolveRealLocalPath(candidate), /full path is required/);
+});

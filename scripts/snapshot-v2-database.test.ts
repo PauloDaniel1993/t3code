@@ -73,6 +73,41 @@ it("snapshots committed WAL rows read-only, checks integrity and refuses overwri
   }
 });
 
+it("leaves no destination file and removes only its own temporary file when the snapshot fails midway", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-snapshot-failure-"));
+  try {
+    const home = NodePath.join(root, "user");
+    await NodeFSP.mkdir(home);
+    const corrupt = NodePath.join(root, "corrupt.sqlite");
+    await NodeFSP.writeFile(corrupt, "this is not a database ".repeat(200));
+    const directory = NodePath.join(root, "new state");
+    const destination = NodePath.join(directory, "state.sqlite");
+    // A file the developer already keeps beside the destination must survive the cleanup.
+    await NodeFSP.mkdir(directory);
+    const bystander = NodePath.join(directory, "state.sqlite.other.partial");
+    await NodeFSP.writeFile(bystander, "keep");
+    assert.throws(
+      () => snapshotV2Database(corrupt, destination, home),
+      /Removed only its own temporary file[\s\S]*was not created or changed/,
+    );
+    assert.deepEqual(await NodeFSP.readdir(directory), ["state.sqlite.other.partial"]);
+    assert.equal(await NodeFSP.readFile(bystander, "utf8"), "keep");
+
+    // A retry into the same destination then succeeds.
+    const source = NodePath.join(root, "source.sqlite");
+    const db = new NodeSqlite.DatabaseSync(source);
+    db.exec("CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('retry');");
+    db.close();
+    snapshotV2Database(source, destination, home);
+    assert.deepEqual((await NodeFSP.readdir(directory)).toSorted(), [
+      "state.sqlite",
+      "state.sqlite.other.partial",
+    ]);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
 it("runs the file command in Windows PowerShell 5.1 and PowerShell 7 without inline JavaScript", async () => {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Native PowerShell compatibility fixture.
   if (NodeOS.platform() !== "win32") return;

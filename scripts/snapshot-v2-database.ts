@@ -26,21 +26,35 @@ export function snapshotV2Database(
     }
   }
   const database = new NodeSqlite.DatabaseSync(source, { readOnly: true });
+  // Build beside the destination and link it into place on success, so a failure never leaves
+  // a destination file behind. `link` fails with EEXIST rather than replacing an existing one.
+  const partial = `${target}.${process.pid}.partial`;
   try {
     NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
-    // Reserve exclusively; VACUUM INTO accepts an empty file. No existing file can be replaced.
-    NodeFS.closeSync(NodeFS.openSync(target, "wx"));
-    database.prepare("VACUUM INTO ?").run(target);
+    // Reserve exclusively; VACUUM INTO accepts an empty file. Only a file this call created is removed.
+    NodeFS.closeSync(NodeFS.openSync(partial, "wx"));
+    try {
+      database.prepare("VACUUM INTO ?").run(partial);
+      const snapshot = new NodeSqlite.DatabaseSync(partial, { readOnly: true });
+      try {
+        const rows = snapshot.prepare("PRAGMA quick_check").all();
+        if (rows.length !== 1 || rows[0]?.quick_check !== "ok")
+          throw new Error("Snapshot quick_check failed.");
+      } finally {
+        snapshot.close();
+      }
+      NodeFS.linkSync(partial, target);
+    } finally {
+      NodeFS.rmSync(partial, { force: true });
+    }
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(
+      `${reason}\nSnapshot failed. Removed only its own temporary file, ${partial}; ${destination} was not created or changed.`,
+      { cause },
+    );
   } finally {
     database.close();
-  }
-  const snapshot = new NodeSqlite.DatabaseSync(target, { readOnly: true });
-  try {
-    const rows = snapshot.prepare("PRAGMA quick_check").all();
-    if (rows.length !== 1 || rows[0]?.quick_check !== "ok")
-      throw new Error("Snapshot quick_check failed; preserve it and do not launch.");
-  } finally {
-    snapshot.close();
   }
 }
 if (import.meta.main) {

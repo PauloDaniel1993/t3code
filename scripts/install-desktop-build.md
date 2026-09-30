@@ -201,8 +201,10 @@ T3 v2.local before replacing it. The installer does not migrate data or stop app
     Expect no paths and no comparison differences. Specifically, neither home
     should gain `statev2.sqlite*`, `attachments-v2`, its seed report/marker, or
     `appdata\t3code-v2-local`; no folded home sibling should appear. Confirm in
-    V2's own server log that the home/base directory is the selected `.t3.v2`
-    and its database is `.t3.v2\userdata\statev2.sqlite`. If anything appears or
+    V2's own server log, `.t3.v2\userdata\logs\server-child.log` (open it with
+    `Get-Content -Tail 50 (Join-Path $v2Home 'userdata\logs\server-child.log')`),
+    that the home/base directory is the selected `.t3.v2` and its database is
+    `.t3.v2\userdata\statev2.sqlite`. If anything appears or
     the log names another home, close **only V2**, preserve its home/logs and
     investigate before another launch. Leave stable and alpha.local running;
     never delete or repair their files as part of this check.

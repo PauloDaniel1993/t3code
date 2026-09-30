@@ -38,6 +38,11 @@ export function resolveRealLocalPath(
     if (filePath.includes("/") || /^\\\\[?.]\\/.test(filePath)) {
       throw new Error(`Refusing Windows path spelling ${filePath}. Use its ordinary local path.`);
     }
+    if (!/^(?:[a-z]:\\|\\\\)/i.test(filePath)) {
+      throw new Error(
+        `A full path is required, not ${filePath}. Start it with a drive such as C:\\.`,
+      );
+    }
     const segments = filePath.replace(/^[a-z]:/i, "").split("\\");
     if (segments.some((segment) => /[. ]$/.test(segment))) {
       throw new Error(
