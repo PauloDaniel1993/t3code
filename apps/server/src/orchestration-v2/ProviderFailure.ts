@@ -34,6 +34,9 @@ function causeMessage(cause: unknown): string | undefined {
       }
       if (typeof cause !== "object") break;
       switch ((cause as Record<string, unknown>)._tag) {
+        // fork(claude-executable): preserve the actionable launch-setting error.
+        case "ClaudeSdkExecutableResolutionError":
+          return stringField(cause, "message");
         case "ContextHandoffBudgetError":
           return new ContextHandoffBudgetError().message;
         case "ContextHandoffDeliveryUncertainError":

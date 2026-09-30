@@ -1,6 +1,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
+import { resolveClaudeTurnExecutablePath } from "./ClaudeAdapterV2Executable.ts";
 import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivity";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
@@ -6448,6 +6449,12 @@ export function makeClaudeAdapterV2(
             return existing;
           }
 
+          // fork(claude-executable): the SDK cannot spawn Windows npm launcher shims.
+          const executablePath = yield* resolveClaudeTurnExecutablePath(
+            adapterOptions.settings.binaryPath,
+            adapterOptions.environment,
+          );
+
           // openQuery owns one live process. Closing it for another native
           // thread kills that sibling's CLI; it can never emit a roster clear,
           // so drop its process-scoped Waiting/wake state immediately. Closing
@@ -6484,7 +6491,7 @@ export function makeClaudeAdapterV2(
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
                 cwd: turnInput.runtimePolicy.cwd,
                 attachmentsDir,
-                settings: adapterOptions.settings,
+                settings: { ...adapterOptions.settings, binaryPath: executablePath },
                 environment: adapterOptions.environment,
                 tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
                 ...mcpOverrides,
