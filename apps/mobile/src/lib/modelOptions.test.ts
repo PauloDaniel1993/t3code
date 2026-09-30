@@ -13,6 +13,38 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("uses Kimi's provider name and keeps configured account labels", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "kimi-work",
+          driver: "kimi",
+          displayName: "Kimi",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [{ slug: "kimi-live", name: "Live model", isCustom: false, capabilities: null }],
+        },
+      ],
+    } as unknown as ServerConfig;
+    expect(groupByProvider(buildModelOptions(config, null))).toMatchObject([
+      { providerKey: "kimi-work", providerLabel: "Kimi" },
+    ]);
+    expect(
+      groupByProvider(
+        buildModelOptions(
+          {
+            ...config,
+            providers: config.providers.map((provider) => ({
+              ...provider,
+              displayName: "Kimi Work",
+            })),
+          },
+          null,
+        ),
+      ),
+    ).toMatchObject([{ providerKey: "kimi-work", providerLabel: "Kimi Work" }]);
+  });
   it("groups models by provider and flags legacy entries", () => {
     const config = {
       providers: [

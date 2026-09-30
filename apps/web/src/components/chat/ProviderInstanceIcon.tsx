@@ -8,6 +8,7 @@ import {
   ClaudeAI,
   CursorIcon,
   GrokIcon,
+  KimiIcon,
   Icon,
   OpenAI,
   OpenCodeIcon,
@@ -27,6 +28,7 @@ const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("opencode")]: OpenCodeIcon,
   [ProviderDriverKind.make("cursor")]: CursorIcon,
   [ProviderDriverKind.make("grok")]: GrokIcon,
+  [ProviderDriverKind.make("kimi")]: KimiIcon,
   [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
   [ProviderDriverKind.make("pi")]: PiAgentIcon,
 };
