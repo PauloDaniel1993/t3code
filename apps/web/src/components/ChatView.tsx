@@ -402,6 +402,7 @@ import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
+import { dismissThreadError, presentThreadError } from "./chat/threadErrorDismissal";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -440,7 +441,6 @@ import {
   shouldShowProviderStatusBanner,
 } from "./chat/ProviderStatusBanner";
 import {
-  dismissThreadErrorBannerForSession,
   getThreadErrorBannerKey,
   isThreadErrorBannerDismissedForSession,
   shouldShowThreadErrorBanner,
@@ -2166,13 +2166,22 @@ export default function ChatView(props: ChatViewProps) {
     widthStorageKey: `t3code:preview-panel-width:${activeThreadKey}`,
   });
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
+  // A run that fails after a dismissal shows again with its own message, even
+  // when the mask above hides its text (see threadErrorDismissal).
+  const presentedThreadError = presentThreadError({
+    threadKey: routeThreadKey,
+    maskedError: visibleThreadError,
+    localError: isServerThread ? localServerError : localDraftError,
+    serverError: isServerThread ? (serverRuntime?.lastError ?? null) : null,
+    serverErrorClass: serverRuntime?.lastErrorClass ?? null,
+    projection: serverProjection,
+  });
   const timelineThreadError =
     serverRuntime?.status === "failed" &&
-    serverRuntime.lastErrorClass === "usage_limit" &&
     activeThreadShell?.latestRun &&
-    visibleThreadError === serverRuntime.lastError
+    presentedThreadError.errorClass === "usage_limit"
       ? null
-      : visibleThreadError;
+      : presentedThreadError.message;
 
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
@@ -10600,11 +10609,11 @@ export default function ChatView(props: ChatViewProps) {
                 errorClass={
                   localServerError === null && visibleThreadError === serverRuntime?.lastError
                     ? (serverRuntime?.lastErrorClass ?? null)
-                    : null
+                    : presentedThreadError.errorClass
                 }
                 onDismiss={() => {
                   setThreadError(activeThread.id, null);
-                  dismissThreadErrorBannerForSession(threadErrorBannerKey);
+                  dismissThreadError(presentedThreadError.dismissal);
                   setThreadErrorBannerDismissTick((tick) => tick + 1);
                 }}
               />
