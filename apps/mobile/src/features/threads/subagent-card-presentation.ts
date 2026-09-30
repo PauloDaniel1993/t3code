@@ -3,6 +3,14 @@ import type { OrchestrationV2Subagent } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 
+/** The live entity owns child navigation, including an explicitly cleared link. */
+export function resolveSubagentCardChildThreadId(
+  item: Pick<OrchestrationV2Subagent, "childThreadId">,
+  live: Pick<OrchestrationV2Subagent, "childThreadId"> | undefined,
+) {
+  return live ? live.childThreadId : item.childThreadId;
+}
+
 export function subagentCardDetail(detail: string | null): string | null {
   if (!detail || /^Child task ended with status\b/i.test(detail)) return null;
   return (

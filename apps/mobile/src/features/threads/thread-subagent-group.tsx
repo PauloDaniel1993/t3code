@@ -22,7 +22,11 @@ import type { ThreadFeedActivity } from "../../lib/threadActivity";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadDetails } from "../../state/threads";
 import { SubagentStatusDot } from "./SubagentStatusDot";
-import { subagentCardDetail, subagentCardElapsed } from "./subagent-card-presentation";
+import {
+  resolveSubagentCardChildThreadId,
+  subagentCardDetail,
+  subagentCardElapsed,
+} from "./subagent-card-presentation";
 import { resolveSubagentRowPresentation } from "./threadAgentsPresentation";
 import { WorkLogBlock } from "./work-log-layout";
 
@@ -99,6 +103,7 @@ export function ThreadSubagentGroup(props: {
       completedAt: live?.completedAt ?? item.completedAt,
       result: live?.result ?? item.result,
       progress: live?.progress ?? item.progress,
+      childThreadId: resolveSubagentCardChildThreadId(item, live),
     };
   });
   const grouped = agents.length > 1;

@@ -1,8 +1,33 @@
 import * as DateTime from "effect/DateTime";
+import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { subagentCardDetail, subagentCardElapsed } from "./subagent-card-presentation";
+import {
+  resolveSubagentCardChildThreadId,
+  subagentCardDetail,
+  subagentCardElapsed,
+} from "./subagent-card-presentation";
 
 describe("subagent card", () => {
+  it("opens a child link that arrives after the transcript item", () => {
+    const child = ThreadId.make("live-child");
+    expect(
+      resolveSubagentCardChildThreadId({ childThreadId: null }, { childThreadId: child }),
+    ).toBe(child);
+  });
+
+  it("does not reopen a stale child link cleared by the live entity", () => {
+    expect(
+      resolveSubagentCardChildThreadId(
+        { childThreadId: ThreadId.make("stale-child") },
+        { childThreadId: null },
+      ),
+    ).toBeNull();
+  });
+
+  it("uses the transcript link when no live entity is available", () => {
+    const child = ThreadId.make("snapshot-child");
+    expect(resolveSubagentCardChildThreadId({ childThreadId: child }, undefined)).toBe(child);
+  });
   it("shows readable result text and suppresses generic completion messages", () => {
     expect(
       subagentCardDetail(
