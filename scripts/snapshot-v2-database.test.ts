@@ -88,7 +88,7 @@ it("leaves no destination file and removes only its own temporary file when the 
     await NodeFSP.writeFile(bystander, "keep");
     assert.throws(
       () => snapshotV2Database(corrupt, destination, home),
-      /Removed only its own temporary file[\s\S]*was not created or changed/,
+      /No snapshot was written to[\s\S]*Removed its own temporary file/,
     );
     assert.deepEqual(await NodeFSP.readdir(directory), ["state.sqlite.other.partial"]);
     assert.equal(await NodeFSP.readFile(bystander, "utf8"), "keep");
@@ -103,6 +103,99 @@ it("leaves no destination file and removes only its own temporary file when the 
       "state.sqlite",
       "state.sqlite.other.partial",
     ]);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("says no temporary file was created when another file already holds the temporary name", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-snapshot-held-"));
+  try {
+    const home = NodePath.join(root, "user");
+    await NodeFSP.mkdir(home);
+    const source = NodePath.join(root, "source.sqlite");
+    const db = new NodeSqlite.DatabaseSync(source);
+    db.exec("CREATE TABLE evidence (value TEXT);");
+    db.close();
+    const destination = NodePath.join(root, "state.sqlite");
+    const held = `${destination}.${process.pid}.partial`;
+    await NodeFSP.writeFile(held, "keep");
+    assert.throws(
+      () => snapshotV2Database(source, destination, home),
+      /EEXIST[\s\S]*No snapshot was written to[\s\S]*No temporary file was created by this run/,
+    );
+    assert.equal(await NodeFSP.readFile(held, "utf8"), "keep");
+    assert.isFalse(NodeFS.existsSync(destination));
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+// Run the file command with removal of `.partial` files refused, as when Windows denies deleting a
+// file another process holds. The child also keeps the profile lookup inside the sandbox.
+async function runWithRefusedPartialRemoval(source: string, destination: string, home: string) {
+  const preload = NodePath.join(NodePath.dirname(home), "refuse-remove.cjs");
+  await NodeFSP.writeFile(
+    preload,
+    `const os = require('node:os'); const userInfo = os.userInfo; os.userInfo = (...args) => ({ ...userInfo(...args), homedir: ${JSON.stringify(home)} });
+const fs = require('node:fs'); const rmSync = fs.rmSync;
+fs.rmSync = (path, ...rest) => { if (String(path).endsWith('.partial')) throw Object.assign(new Error('EPERM: operation not permitted, unlink'), { code: 'EPERM' }); return rmSync(path, ...rest); };
+require('node:module').syncBuiltinESMExports();`,
+  );
+  const script = NodeURL.fileURLToPath(new URL("./snapshot-v2-database.ts", import.meta.url));
+  return NodeChildProcess.spawnSync(
+    process.execPath,
+    ["--require", preload, script, source, destination],
+    { encoding: "utf8" },
+  );
+}
+
+it("reports success and the surviving temporary file when it cannot be removed after publishing", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-snapshot-leftover-"));
+  try {
+    const home = NodePath.join(root, "user");
+    await NodeFSP.mkdir(home);
+    const source = NodePath.join(root, "source.sqlite");
+    const db = new NodeSqlite.DatabaseSync(source);
+    db.exec("CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('kept');");
+    db.close();
+    const destination = NodePath.join(root, "out", "state.sqlite");
+    const result = await runWithRefusedPartialRemoval(source, destination, home);
+    assert.equal(result.status, 0, result.stderr);
+    assert.include(result.stdout, "Snapshot quick_check: ok");
+    assert.include(result.stdout, `Snapshot written to ${destination}`);
+    const partials = (await NodeFSP.readdir(NodePath.dirname(destination))).filter((name) =>
+      name.endsWith(".partial"),
+    );
+    assert.lengthOf(partials, 1);
+    const leftover = NodePath.join(NodePath.dirname(destination), partials[0]!);
+    assert.include(result.stderr, `the temporary file ${leftover} could not be removed`);
+    assert.include(result.stderr, "deleted by hand");
+    const copy = new NodeSqlite.DatabaseSync(destination, { readOnly: true });
+    try {
+      assert.equal(copy.prepare("SELECT value FROM evidence").get()?.value, "kept");
+    } finally {
+      copy.close();
+    }
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("names the surviving temporary file and the untouched destination when a failed snapshot cannot clean up", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-snapshot-stuck-"));
+  try {
+    const home = NodePath.join(root, "user");
+    await NodeFSP.mkdir(home);
+    const corrupt = NodePath.join(root, "corrupt.sqlite");
+    await NodeFSP.writeFile(corrupt, "this is not a database ".repeat(200));
+    const destination = NodePath.join(root, "out", "state.sqlite");
+    const result = await runWithRefusedPartialRemoval(corrupt, destination, home);
+    assert.notEqual(result.status, 0);
+    assert.isFalse(NodeFS.existsSync(destination));
+    assert.include(result.stderr, `No snapshot was written to ${destination}.`);
+    assert.match(result.stderr, /Could not remove its own temporary file, .*\.partial \(EPERM/);
+    assert.notInclude(result.stderr, "Removed its own");
   } finally {
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
