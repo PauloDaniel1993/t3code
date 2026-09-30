@@ -60,6 +60,7 @@ import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import { openMediaFile, readMediaFileHeader, type OpenMediaFile } from "./MediaFile.ts";
+import { hasExactAttachmentFileName } from "./AttachmentFile.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 
@@ -269,7 +270,10 @@ const resolveCanonicalAttachmentFile = Effect.fn("AssetAccess.resolveCanonicalAt
     const path = yield* Path.Path;
     const root = yield* fs.realPath(input.workspaceRoot);
     const canonical = yield* resolveCanonicalWorkspaceFile({ ...input, workspaceRoot: root });
-    return canonical === path.join(root, input.relativePath) ? canonical : null;
+    return canonical === path.join(root, input.relativePath) &&
+      (yield* hasExactAttachmentFileName(canonical))
+      ? canonical
+      : null;
   },
 );
 

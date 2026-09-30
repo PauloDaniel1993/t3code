@@ -507,6 +507,53 @@ describe("signed attachment ownership", () => {
 });
 
 describe("attachment pruning through the effect outbox", () => {
+  for (const incomplete of [false, true]) {
+    it.effect(
+      `refuses a token whose ID only aliases stored filename casing (incomplete=${incomplete})`,
+      () =>
+        Effect.gen(function* () {
+          const { file } = yield* seedAttachment();
+          const other = yield* createThread(ThreadId.make("case-read-owner"));
+          const upper = { ...attachment, id: ChatAttachmentId.make(attachment.id.toUpperCase()) };
+          yield* (yield* EventSinkV2).write({
+            events: [yield* messageEvent("upper:read-reference", [upper], other.id)],
+          });
+          const sql = yield* SqlClient.SqlClient;
+          if (incomplete) {
+            yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+            yield* initializeAttachmentReferenceIndex();
+          }
+          const lowerToken = tokenOf((yield* issue()).relativeUrl);
+          const upperResource = { _tag: "attachment", attachmentId: upper.id } as const;
+          const refusal = yield* issueAssetUrl({ resource: upperResource }).pipe(Effect.flip);
+          expect(refusal._tag).toBe("AssetAttachmentNotFoundError");
+          expect(
+            yield* resolveAsset(
+              yield* signedClaim({
+                attachmentId: upper.id,
+                threadId: other.id,
+                relativePath: `${upper.id}.png`,
+              }),
+              "image.png",
+            ),
+          ).toBeNull();
+          expect(yield* resolveAsset(lowerToken, "image.png")).toMatchObject({ path: file });
+          // Reverse the stored casing: the old lower-ID token must now refuse.
+          const config = yield* ServerConfig;
+          const path = yield* Path.Path;
+          const upperFile = path.join(config.attachmentsDir, `${upper.id}.png`);
+          yield* (yield* FileSystem.FileSystem).rename(file, upperFile);
+          expect(yield* resolveAsset(lowerToken, "image.png")).toBeNull();
+          expect((yield* issue().pipe(Effect.flip))._tag).toBe(refusal._tag);
+          expect(
+            yield* resolveAsset(
+              tokenOf((yield* issueAssetUrl({ resource: upperResource })).relativeUrl),
+              "image.png",
+            ),
+          ).toMatchObject({ path: upperFile });
+        }).pipe(Effect.provide(testLayer)),
+    );
+  }
   it.effect(
     "reads only the bound file and owner throughout a rebuild, then prunes missed rows",
     () =>
@@ -575,11 +622,6 @@ describe("attachment pruning through the effect outbox", () => {
         const { file } = yield* seedAttachment();
         const fs = yield* FileSystem.FileSystem;
         const upper = { ...attachment, id: ChatAttachmentId.make(attachment.id.toUpperCase()) };
-        const path = yield* Path.Path;
-        const config = yield* ServerConfig;
-        const ignoresCase = yield* fs.exists(
-          path.join(config.attachmentsDir, `Thread-owner-00000000-0000-4000-8000-000000000001.png`),
-        );
         const other = yield* createThread(ThreadId.make("case-holder"));
         const sink = yield* EventSinkV2;
         yield* sink.write({
@@ -590,10 +632,10 @@ describe("attachment pruning through the effect outbox", () => {
         });
         const cleanup = yield* ResourceCleanup.ResourceCleanupService;
         yield* cleanup.cleanupAttachments([attachment.id]);
-        expect(yield* fs.exists(file)).toBe(ignoresCase);
+        expect(yield* fs.exists(file)).toBe(true);
         // Also check the case-folded index lookup on every platform.
         expect(
-          (yield* referencedAttachmentPaths([attachment.id], true)).has(`${attachment.id}.png`),
+          (yield* referencedAttachmentPaths([attachment.id])).has(`${attachment.id}.png`),
         ).toBe(true);
         yield* sink.write({
           events: [yield* messageEvent("case:last-reference-removed", [], other.id)],
@@ -621,7 +663,9 @@ describe("attachment pruning through the effect outbox", () => {
                     Effect.asVoid,
                     Effect.tapError(() =>
                       completion === "before parking"
-                        ? rebuildAttachmentReferenceIndex()
+                        ? rebuildAttachmentReferenceIndex().pipe(
+                            Effect.provideService(SqlClient.SqlClient, sql),
+                          )
                         : Effect.void,
                     ),
                     Effect.mapError(
