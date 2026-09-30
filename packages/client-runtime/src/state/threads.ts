@@ -47,7 +47,6 @@ import {
   type ThreadHistoryMeta,
 } from "./threadHistoryMerge.ts";
 import { ThreadSnapshotLoader, type ThreadSnapshotLoadResult } from "./threadSnapshotHttp.ts";
-import { retainKnownRuns, retainKnownSubagents } from "./subagentRetention.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
@@ -378,15 +377,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             : previous.history;
       return {
         ...previous,
-        data: Option.some(
-          options?.history !== undefined && Option.isSome(previous.data)
-            ? {
-                ...thread,
-                subagents: retainKnownSubagents(previous.data.value.subagents, thread.subagents),
-                runs: retainKnownRuns(previous.data.value.runs, thread.runs),
-              }
-            : thread,
-        ),
+        data: Option.some(thread),
         // Buffered values from a failed attempt can arrive after its error.
         status: Option.isSome(previous.error)
           ? ("cached" as const)
@@ -406,7 +397,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         persistence,
         snapshotToPersist(
           snapshotSequence,
-          next.data.pipe(Option.getOrElse(() => thread)),
+          thread,
           next.history,
           yield* Ref.get(acceptsBoundedSocketSnapshots),
         ),
