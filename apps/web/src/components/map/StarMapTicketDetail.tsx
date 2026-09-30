@@ -77,7 +77,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
   };
 
   const openAsTask = () => {
-    if (props.threadRef === null) return;
+    if (props.threadRef === null || taskUnavailable !== null) return;
     openStarMapTicketAsTask({
       threadRef: props.threadRef,
       node,
@@ -110,30 +110,30 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                 <FileText className="size-3.5" aria-hidden />
                 Open as file
               </button>
-              {/* A disabled button swallows pointer events, so the reason hangs off a focusable
-                  wrapper instead: hover or Tab reaches it while the button itself cannot be
-                  activated. */}
+              {/* Unavailable stays a focusable `aria-disabled` button, as the right panel launcher
+                  and the Git quick action do: the element Tab reaches carries the name and the
+                  reason, the tooltip opens on hover and focus, and activating it does nothing. */}
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <span
-                      className="inline-flex"
-                      tabIndex={taskUnavailable === null ? undefined : 0}
-                    />
+                    <button
+                      type="button"
+                      aria-disabled={taskUnavailable === null ? undefined : true}
+                      aria-describedby={taskUnavailable === null ? undefined : taskUnavailableId}
+                      onClick={openAsTask}
+                      className={cn(
+                        "flex h-6 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground",
+                        taskUnavailable === null
+                          ? "hover:bg-accent/60 hover:text-foreground"
+                          : "cursor-not-allowed opacity-50",
+                      )}
+                      aria-label={`Open ${node.label} as a task`}
+                    >
+                      <ListTodo className="size-3.5" aria-hidden />
+                      Open as task
+                    </button>
                   }
-                >
-                  <button
-                    type="button"
-                    disabled={taskUnavailable !== null}
-                    aria-describedby={taskUnavailable === null ? undefined : taskUnavailableId}
-                    onClick={openAsTask}
-                    className="flex h-6 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-                    aria-label={`Open ${node.label} as a task`}
-                  >
-                    <ListTodo className="size-3.5" aria-hidden />
-                    Open as task
-                  </button>
-                </TooltipTrigger>
+                />
                 {taskUnavailable === null ? null : (
                   <TooltipPopup side="bottom">{taskUnavailable}</TooltipPopup>
                 )}
