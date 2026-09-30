@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
 import { ThreadMetadataMcpService } from "../../ThreadMetadataMcpService.ts";
+import { forkTaskCancel, forkTaskCreate, forkTaskModels } from "../../ForkTaskAliases.ts";
 
 const handlers = {
   orchestrator_capabilities: () =>
@@ -28,7 +29,7 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext;
       const service = yield* OrchestratorMcpService;
-      return yield* service.cancelTask(scope, input);
+      return yield* forkTaskCancel(scope, input, service);
     }),
   schedule_task: (input) =>
     Effect.gen(function* () {
@@ -95,6 +96,24 @@ const handlers = {
       const scope = yield* McpInvocationContext;
       const service = yield* OrchestratorMcpService;
       return yield* service.interruptThread(scope, input);
+    }),
+  task_list: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const service = yield* OrchestratorMcpService;
+      return yield* service.listTasks(scope, input);
+    }),
+  task_models: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const service = yield* OrchestratorMcpService;
+      return yield* forkTaskModels(scope, input, service);
+    }),
+  task_create: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const service = yield* OrchestratorMcpService;
+      return yield* forkTaskCreate(scope, input, service);
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];
 

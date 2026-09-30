@@ -9,7 +9,7 @@ import {
 
 describe("T3 orchestration provider instructions", () => {
   it("distinguishes delegated subagents from ordinary top-level threads", () => {
-    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Use `delegate_task`");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Native `delegate_task` remains available");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "ordinary top-level T3 conversations");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Never use them merely");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "cross-provider");
@@ -19,6 +19,23 @@ describe("T3 orchestration provider instructions", () => {
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "structured object, never as JSON text");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, '"everyMs":3600000');
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "bindToCurrentThread=false");
+  });
+
+  it("routes task requests through T3 and describes recovery after compaction", () => {
+    const prompt = t3OrchestrationSystemPrompt(true)!;
+    assert.include(
+      prompt,
+      "prefer T3 tasks over native provider agents, including for same-provider work",
+    );
+    assert.include(prompt, "Use native agents when the user explicitly asks");
+    assert.include(prompt, "Call `task_models`");
+    assert.include(prompt, "Use `task_list` to recover task IDs and results after compaction");
+    assert.include(prompt, "V2 accepts only context='none', allows nested tasks");
+    assert.include(prompt, "shares the parent's workspace with children");
+    assert.include(prompt, "Async completion wakes the parent with task IDs, not results");
+    assert.include(prompt, "later completions from that turn no longer wake it");
+    assert.include(prompt, "A server restart cancels running tasks");
+    assert.notInclude(prompt, "Prefer native subagent tools for same-provider work");
   });
 
   it("injects prompt fallback only for an MCP-enabled first run", () => {

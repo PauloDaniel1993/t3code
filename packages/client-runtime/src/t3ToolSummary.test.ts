@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { resolveT3McpToolSummaryAction } from "@t3tools/shared/t3McpToolPresentation";
 
 import { summarizeT3ToolCalls, type T3ToolSummaryCall } from "./t3ToolSummary.ts";
 
@@ -7,6 +8,17 @@ function completed(input: unknown, output?: unknown): T3ToolSummaryCall {
 }
 
 describe("summarizeT3ToolCalls", () => {
+  it("describes task discovery as listing rather than checking individual status", () => {
+    expect(
+      summarizeT3ToolCalls(resolveT3McpToolSummaryAction("mcp__t3_code__task_list")!, [
+        completed({}),
+        completed({ status: "finished" }),
+      ]).label,
+    ).toBe("Listed tasks 2 times");
+    expect(summarizeT3ToolCalls("task-status", [completed({ taskId: "task-one" })]).label).toBe(
+      "Checked task status 1 time",
+    );
+  });
   it("counts registered projects, repository destinations, and accepted thread launches", () => {
     expect(
       summarizeT3ToolCalls("project-create", [
