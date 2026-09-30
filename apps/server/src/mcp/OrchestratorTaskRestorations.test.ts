@@ -281,6 +281,75 @@ function listFixture(
 }
 
 describe("task restorations on orchestration v2", () => {
+  for (const status of ["completed", "cancelled", "failed"] as const) {
+    for (const result of [null, "Imported task result."]) {
+      it.effect(
+        `reads imported ${status} tasks ${result === null ? "without" : "with"} results as settled`,
+        () => {
+          const imported = task(`imported-${status}-${result === null ? "empty" : "result"}`, {
+            runId: null,
+            status,
+            result,
+            completionDelivery: { state: "disposed", observedByRunId: null },
+          });
+          const records = recordsFor([imported]);
+          const childId = imported.childThreadId!;
+          const child = records.get(childId)!;
+          records.set(childId, {
+            ...child,
+            thread: { ...child.thread, historyOrigin: "v1_import" },
+            runs: [],
+          });
+          return Effect.gen(function* () {
+            const service = yield* OrchestratorMcpService;
+            const expected = status === "completed" ? "finished" : status;
+            const listed = yield* service.listTasks(scope, {});
+            expect(listed.tasks).toMatchObject([{ taskId: imported.id, status: expected }]);
+            expect((yield* service.listTasks(scope, { status: expected })).tasks).toHaveLength(1);
+            expect((yield* service.listTasks(scope, { status: "running" })).tasks).toEqual([]);
+            expect(yield* service.taskStatus(scope, imported.id)).toMatchObject({
+              status,
+              workState: "result_available",
+              summary: result,
+              childRunId: null,
+            });
+            expect(yield* service.cancelTask(scope, { taskId: imported.id })).toEqual({
+              taskId: imported.id,
+              status,
+            });
+            expect(records.get(parentId)!.subagents).toEqual([imported]);
+          }).pipe(Effect.provide(makeLayer(records)));
+        },
+      );
+    }
+  }
+
+  it.effect("cancels an already settled task without changing delivered completion state", () => {
+    const imported = task("imported-delivered", {
+      runId: null,
+      status: "cancelled",
+      result: null,
+      completionDelivery: {
+        state: "delivered",
+        observedByRunId: null,
+        deliveredAt: DateTime.formatIso(now),
+      },
+    });
+    const records = recordsFor([imported]);
+    const childId = imported.childThreadId!;
+    records.set(childId, { ...records.get(childId)!, runs: [] });
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService;
+      expect(yield* service.cancelTask(scope, { taskId: imported.id })).toEqual({
+        taskId: imported.id,
+        status: "cancelled",
+      });
+      expect(records.get(parentId)!.subagents[0]!.completionDelivery).toEqual(
+        imported.completionDelivery,
+      );
+    }).pipe(Effect.provide(makeLayer(records)));
+  });
+
   it.effect(
     "recovers direct tasks across turns and finished results without acknowledging delivery",
     () => {

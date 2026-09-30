@@ -190,7 +190,6 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
     // still needed for matches, including pending follow-ups and later results.
     if (
       input.status !== undefined &&
-      task.result !== null &&
       (task.status === "completed" ||
         task.status === "failed" ||
         task.status === "cancelled" ||

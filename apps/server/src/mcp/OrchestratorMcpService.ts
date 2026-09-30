@@ -1070,17 +1070,16 @@ const make = Effect.gen(function* () {
         messages: [...childControls.messages, ...resultRecords.messages],
         turnItems: resultRecords.turnItems,
       };
-      const workState = task.result !== null ? "result_available" : progress.state;
-      const status =
-        task.result !== null
-          ? taskStatusForRun(
-              task.status === "completed" ||
-                task.status === "failed" ||
-                task.status === "cancelled" ||
-                task.status === "interrupted"
-                ? { status: task.status }
-                : childRun,
-            )
+      const settled =
+        task.status === "completed" ||
+        task.status === "failed" ||
+        task.status === "cancelled" ||
+        task.status === "interrupted";
+      const workState = settled || task.result !== null ? "result_available" : progress.state;
+      const status = settled
+        ? taskStatusForRun({ status: task.status })
+        : task.result !== null
+          ? taskStatusForRun(childRun)
           : workState === "result_available"
             ? taskStatusForRun(progress.resultRun ?? childRun)
             : taskStatusForRun(childRun) === "queued"
@@ -1507,6 +1506,12 @@ const make = Effect.gen(function* () {
     cancelTask: (scope, input) =>
       Effect.gen(function* () {
         const current = yield* readTask(scope, input.taskId);
+        if (isTerminalTaskStatus(current.status)) {
+          return {
+            taskId: input.taskId,
+            status: current.status,
+          } satisfies OrchestratorMcpTaskCancelResult;
+        }
         const key = yield* requestKey(input.clientRequestId);
         const parentProjection = yield* loadProjection(scope.threadId);
         const parentTask = parentProjection.subagents.find(
@@ -1535,13 +1540,6 @@ const make = Effect.gen(function* () {
                     ),
                   ),
                 );
-        if (isTerminalTaskStatus(current.status)) {
-          yield* disposeCompletionDelivery;
-          return {
-            taskId: input.taskId,
-            status: current.status,
-          } satisfies OrchestratorMcpTaskCancelResult;
-        }
         const child = yield* loadProjection(current.childThreadId);
         const activeRun = latestActiveRun(child);
         if (activeRun === undefined) {
