@@ -4,7 +4,7 @@ import { isSidebarTaskThread } from "@t3tools/client-runtime/state/sidebar-task-
 import { useEffect } from "react";
 import { readThreadShell } from "../state/entities";
 import { useUiStateStore } from "../uiStateStore";
-import { sidebarTaskPresentationStore } from "./sidebarTaskPresentation";
+import { useSidebarTaskPresentationStore } from "./sidebarTaskPresentation";
 
 /** Record navigation, never streaming. Leaving also clears deliveries received while open. */
 export function SidebarTaskVisits({ threadRef }: { threadRef: ScopedThreadRef | null }) {
@@ -17,7 +17,7 @@ export function SidebarTaskVisits({ threadRef }: { threadRef: ScopedThreadRef | 
     const visit = () => {
       const thread = readThreadShell(ref);
       if (thread === null) return;
-      const known = sidebarTaskPresentationStore.getState().byParent.get(key);
+      const known = useSidebarTaskPresentationStore.getState().byParent.get(key);
       let deliveredAt = Date.parse(thread.source.latestTaskDeliveredAt ?? "") || 0;
       for (const task of known?.subagents ?? []) {
         if (task.origin === "app_owned")

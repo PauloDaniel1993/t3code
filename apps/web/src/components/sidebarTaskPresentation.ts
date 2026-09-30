@@ -30,7 +30,9 @@ export function mergeSidebarTaskPresentation(
   return { subagents, runs: nextRuns };
 }
 
-export const sidebarTaskPresentationStore = create<{
+// Keep the `use` prefix: the React Compiler memoizes calls to anything else, which
+// skips the store's hooks on later renders and breaks the caller's hook order.
+export const useSidebarTaskPresentationStore = create<{
   byParent: ReadonlyMap<string, Presentation>;
   remember: (key: string, presentation: Presentation) => void;
 }>((set) => ({
@@ -45,7 +47,7 @@ export const sidebarTaskPresentationStore = create<{
 
 export function useKnownSidebarTaskPresentation(ref: ScopedThreadRef) {
   const key = scopedThreadKey(ref);
-  return sidebarTaskPresentationStore((state) => state.byParent.get(key) ?? EMPTY_PRESENTATION);
+  return useSidebarTaskPresentationStore((state) => state.byParent.get(key) ?? EMPTY_PRESENTATION);
 }
 
 export function createSidebarTaskProjectionAtom(
@@ -79,8 +81,8 @@ export function useRememberSidebarTaskPresentation(
   presentation: Presentation | null,
 ) {
   const key = ref === null ? null : scopedThreadKey(ref);
-  const remember = sidebarTaskPresentationStore((state) => state.remember);
   useEffect(() => {
-    if (key !== null && presentation !== null) remember(key, presentation);
-  }, [key, presentation, remember]);
+    if (key !== null && presentation !== null)
+      useSidebarTaskPresentationStore.getState().remember(key, presentation);
+  }, [key, presentation]);
 }

@@ -85,6 +85,26 @@ const unitTestProject = {
   },
 } satisfies TestProjectInlineConfiguration;
 
+// reactCompilerPreset only compiles the client environment, so unit tests render
+// uncompiled code. `*.compiled.test.tsx` renders through the compiler, which can
+// change hook order (it memoizes calls to functions not named `use*`).
+const testReactCompilerPreset = reactCompilerPreset();
+const compiledTestProject = {
+  extends: true,
+  plugins: [
+    babel({
+      parserOpts: { plugins: ["typescript", "jsx"] },
+      presets: [
+        {
+          ...testReactCompilerPreset,
+          rolldown: { ...testReactCompilerPreset.rolldown, applyToEnvironmentHook: () => true },
+        },
+      ],
+    }),
+  ],
+  test: { ...unitTestProject.test, name: "compiled", include: ["src/**/*.compiled.test.tsx"] },
+};
+
 function resolveDevProxyTarget(
   backendPort: string | undefined,
   wsUrl: string | undefined,
@@ -284,7 +304,7 @@ export default defineConfig(() => {
       sourcemap: buildSourcemap,
     },
     test: {
-      projects: [defineProject(unitTestProject)],
+      projects: [defineProject(unitTestProject), defineProject(compiledTestProject)],
     },
   };
 });
