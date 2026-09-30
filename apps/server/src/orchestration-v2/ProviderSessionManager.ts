@@ -46,6 +46,12 @@ import {
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 
+import {
+  attachProviderEventFlow,
+  closeProviderEventFlow,
+  failProviderEventFlow,
+} from "./ProviderEventFlowRuntime.ts";
+
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
 const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
@@ -736,8 +742,13 @@ export const layerWithOptions = (
                   if (input.gracefulSubscribers === true) {
                     yield* endSubscribers(entry);
                   } else if (input.reason === "server_shutdown") {
+                    yield* closeProviderEventFlow(entry.exposedRuntime);
                     yield* closeSubscribers(entry);
                   } else {
+                    yield* failProviderEventFlow(
+                      entry.exposedRuntime,
+                      input.detail ?? `Provider session released: ${input.reason}.`,
+                    );
                     yield* failSubscribers(
                       entry,
                       input.detail ?? `Provider session released: ${input.reason}.`,
@@ -1649,7 +1660,12 @@ export const layerWithOptions = (
               const eventSubscribers = yield* Ref.make<
                 ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
               >(new Map());
-              const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
+              const flow = yield* attachProviderEventFlow(
+                runtime,
+                (staged) => decorateRuntime(staged, eventSubscribers),
+                sessionScope,
+              );
+              const exposedRuntime = flow.exposedRuntime;
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
@@ -1661,7 +1677,7 @@ export const layerWithOptions = (
                 supportsMultipleProviderThreads:
                   runtime.providerSession.capabilities.sessions
                     .supportsMultipleProviderThreadsPerSession,
-                runtime,
+                runtime: flow.runtime,
                 exposedRuntime,
                 eventSubscribers,
                 requestEventPermit: yield* Semaphore.make(1),
