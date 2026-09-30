@@ -1506,19 +1506,14 @@ const make = Effect.gen(function* () {
     cancelTask: (scope, input) =>
       Effect.gen(function* () {
         const current = yield* readTask(scope, input.taskId);
-        if (isTerminalTaskStatus(current.status)) {
-          return {
-            taskId: input.taskId,
-            status: current.status,
-          } satisfies OrchestratorMcpTaskCancelResult;
-        }
         const key = yield* requestKey(input.clientRequestId);
         const parentProjection = yield* loadProjection(scope.threadId);
         const parentTask = parentProjection.subagents.find(
           (task) => task.id === input.taskId && task.origin === "app_owned",
         );
         const disposeCompletionDelivery =
-          parentTask?.completionDelivery?.state === "disposed"
+          parentTask?.completionDelivery?.state === "disposed" ||
+          parentTask?.completionDelivery?.state === "delivered"
             ? Effect.void
             : threadManagement
                 .dispatch({
@@ -1540,6 +1535,13 @@ const make = Effect.gen(function* () {
                     ),
                   ),
                 );
+        if (isTerminalTaskStatus(current.status)) {
+          yield* disposeCompletionDelivery;
+          return {
+            taskId: input.taskId,
+            status: current.status,
+          } satisfies OrchestratorMcpTaskCancelResult;
+        }
         const child = yield* loadProjection(current.childThreadId);
         const activeRun = latestActiveRun(child);
         if (activeRun === undefined) {
