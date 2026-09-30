@@ -154,7 +154,7 @@ interface RebuildState {
   cursor: string | null;
 }
 
-const readState = Effect.fnUntraced(function* () {
+export const readAttachmentReferenceIndexState = Effect.fnUntraced(function* () {
   if (!(yield* hasExpectedSchema())) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const rows =
@@ -175,30 +175,43 @@ export class AttachmentReferenceIndexUnavailable extends Schema.TaggedError<Atta
 
 /** Call in the same SQL transaction as the reference lookup and unlink. */
 export const requireCompleteAttachmentReferenceIndex = Effect.fnUntraced(function* () {
-  if ((yield* readState())?.complete !== 1) return yield* new AttachmentReferenceIndexUnavailable();
+  if ((yield* readAttachmentReferenceIndexState())?.complete !== 1)
+    return yield* new AttachmentReferenceIndexUnavailable();
 });
 
 export const isCompleteAttachmentReferenceIndex = Effect.fnUntraced(function* () {
-  return (yield* readState())?.complete === 1;
+  return (yield* readAttachmentReferenceIndexState())?.complete === 1;
 });
 
 /** Source lookups during rebuilding only; never use them to authorize deletion. */
 export const attachmentSourceRows = Effect.fnUntraced(function* (
   threadId?: string,
   row?: { source: "message" | "item"; id: string },
+  remaining?: RebuildState,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const queries = sources
-    .filter((source) => row === undefined || source.name === row.source)
+    .filter(
+      (source, index) =>
+        (row === undefined || source.name === row.source) &&
+        (remaining === undefined || index >= remaining.source_index),
+    )
     .map((source) => {
       const column = source.name === "legacy" ? "attachments_json" : "payload_json";
       return sql`SELECT ${source.name} AS source, entry.thread_id,
       CASE WHEN json_valid(${sql(`entry.${column}`)}) THEN ${sql.unsafe(source.payload("entry"))} ELSE NULL END AS payload_json
       FROM ${sql(source.table)} AS entry
       WHERE ${threadId === undefined ? sql`1` : sql`entry.thread_id = ${threadId}`}
-        AND ${row === undefined ? sql`1` : sql`${sql(`entry.${source.key}`)} = ${row.id}`}`;
+        AND ${row === undefined ? sql`1` : sql`${sql(`entry.${source.key}`)} = ${row.id}`}
+        AND ${
+          remaining?.cursor != null && source === sources[remaining.source_index]
+            ? sql`${sql(`entry.${source.key}`)} > ${remaining.cursor}`
+            : sql`1`
+        }`;
     });
-  return sql.join(" UNION ALL ", false)(queries);
+  return queries.length === 0
+    ? sql`SELECT NULL AS source, NULL AS thread_id, NULL AS payload_json WHERE 0`
+    : sql.join(" UNION ALL ", false)(queries);
 });
 
 /** Idempotent migration/fallback: only DDL and indexed existence checks, no backfill. */
@@ -207,7 +220,7 @@ export const initializeAttachmentReferenceIndex = Effect.fnUntraced(function* ()
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
-        const state = yield* readState();
+        const state = yield* readAttachmentReferenceIndexState();
         if (state !== undefined) return state.complete === 1;
         // A missing trigger may have missed both inserts and deletes. Trust no old rows.
         for (const definition of definitions.toReversed())
@@ -239,7 +252,7 @@ export const rebuildAttachmentReferenceIndexPass = Effect.fnUntraced(function* (
     .withTransaction(
       Effect.gen(function* () {
         yield* initializeAttachmentReferenceIndex();
-        const state = yield* readState();
+        const state = yield* readAttachmentReferenceIndexState();
         if (state === undefined) return yield* new AttachmentReferenceIndexUnavailable();
         if (state.complete === 1) return true;
         const source = sources[state.source_index];

@@ -8,13 +8,16 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type { Fragment } from "effect/unstable/sql/Statement";
 
 import { attachmentRelativePath } from "../attachmentStore.ts";
 import { normalizeAttachmentRelativePath } from "../attachmentPaths.ts";
 import { EffectOutboxV2 } from "./EffectOutbox.ts";
 import {
   attachmentSourceRows,
+  initializeAttachmentReferenceIndex,
   isCompleteAttachmentReferenceIndex,
+  readAttachmentReferenceIndexState,
   requireCompleteAttachmentReferenceIndex,
 } from "./AttachmentReferenceIndex.ts";
 import type { ProjectionStoreV2Shape } from "./ProjectionStore.ts";
@@ -35,7 +38,7 @@ function attachmentReferences(payload: unknown): Array<{ id: string; relativePat
   return Predicate.isObject(payload) ? Object.values(payload).flatMap(attachmentReferences) : [];
 }
 
-/** Reads use current source metadata while the derived index is incomplete. */
+/** Prefer trusted partial rows; only unread rebuild rows need source JSON parsing. */
 export const findReadableAttachment = Effect.fnUntraced(function* (
   attachmentId: string,
   threadId?: string,
@@ -43,14 +46,14 @@ export const findReadableAttachment = Effect.fnUntraced(function* (
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const complete = yield* isCompleteAttachmentReferenceIndex();
-      const candidates = complete
-        ? sql`SELECT source, thread_id, attachment_id, attachment_json FROM fork_v2_attachment_references`
-        : sql`SELECT payload.source, payload.thread_id, json_extract(attachment.value, '$.id') AS attachment_id,
-            attachment.value AS attachment_json
-          FROM (${yield* attachmentSourceRows(threadId)}) AS payload, json_tree(payload.payload_json) AS attachment
-          WHERE attachment.type = 'object' AND json_extract(attachment.value, '$.id') = ${attachmentId}`;
-      const rows = yield* sql<{ thread_id: string; attachment_json: string }>`
+      let state = yield* readAttachmentReferenceIndexState();
+      if (state === undefined) {
+        // Broken triggers could leave stale rows: reset before trusting the partial index.
+        yield* initializeAttachmentReferenceIndex();
+        state = yield* readAttachmentReferenceIndexState();
+      }
+      if (state === undefined) return null;
+      const lookup = (candidates: Fragment) => sql<{ thread_id: string; attachment_json: string }>`
     SELECT reference.thread_id, reference.attachment_json
     FROM (${candidates}) AS reference
     JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = reference.thread_id
@@ -63,7 +66,19 @@ export const findReadableAttachment = Effect.fnUntraced(function* (
       AND (reference.source <> 'legacy' OR imported.transcript_imported_at IS NULL)
     ORDER BY reference.thread_id LIMIT 1
   `;
-      const row = rows[0];
+      const indexed = yield* lookup(
+        sql`SELECT source, thread_id, attachment_id, attachment_json FROM fork_v2_attachment_references`,
+      );
+      const row =
+        indexed[0] ??
+        (state.complete === 1
+          ? undefined
+          : (yield* lookup(sql`
+        SELECT payload.source, payload.thread_id, json_extract(attachment.value, '$.id') AS attachment_id,
+          attachment.value AS attachment_json
+        FROM (${yield* attachmentSourceRows(threadId, undefined, state)}) AS payload, json_tree(payload.payload_json) AS attachment
+        WHERE attachment.type = 'object' AND json_extract(attachment.value, '$.id') = ${attachmentId}
+      `))[0]);
       if (row === undefined) return null;
       const reference = attachmentReferences(decodePayload(row.attachment_json))[0];
       return reference === undefined

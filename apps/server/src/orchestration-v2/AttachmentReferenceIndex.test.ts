@@ -29,6 +29,8 @@ import {
   ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE,
   ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS,
   AttachmentReferenceIndexUnavailable,
+  attachmentSourceRows,
+  readAttachmentReferenceIndexState,
   initializeAttachmentReferenceIndex,
   rebuildAttachmentReferenceIndex,
   rebuildAttachmentReferenceIndexPass,
@@ -81,6 +83,115 @@ const smallFixture = Effect.gen(function* () {
 });
 
 describe("attachment reference index", () => {
+  it.effect("measures a partial-index hit and remaining-row misses on 300,000 live messages", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* smallFixture;
+        yield* sql`DELETE FROM orchestration_v2_projection_messages`;
+        yield* sql`WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i<299999)
+          INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
+          SELECT printf('message-%06d', i), 'thread-0', 'user', 0, '2026-01-01', '2026-01-01',
+            json_object('text', printf('%1600s','text'), 'attachments', json_array(json_object('type','image', 'id',printf('thread-0-00000000-0000-4000-8000-%012d',i),
+              'name','image.png','mimeType','image/png','sizeBytes',1))) FROM n`;
+        yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+        yield* initializeAttachmentReferenceIndex();
+        yield* rebuildAttachmentReferenceIndexPass();
+        const started = performance.now();
+        expect((yield* findReadableAttachment(id(0)))?.threadId).toBe("thread-0");
+        const indexedReadMs = performance.now() - started;
+        const timings = [];
+        for (const cursor of ["message-000000", "message-150000", "message-299998"]) {
+          // Synthetic verified positions isolate the query's remaining-row cost.
+          yield* sql`UPDATE fork_v2_attachment_reference_state SET cursor = ${cursor}`;
+          const before = performance.now();
+          expect(yield* findReadableAttachment("absent")).toBeNull();
+          timings.push({ cursor, missMs: performance.now() - before });
+        }
+        yield* Console.info("Fourth revision 300,000-message read cost", {
+          indexedReadMs,
+          timings,
+        });
+        const report = process.env.T3_ATTACHMENT_BENCHMARK_REPORT;
+        if (report !== undefined)
+          yield* fs.writeFileString(report, encodeBenchmark({ indexedReadMs, timings }));
+      }).pipe(Effect.provide(makeSqlitePersistenceLive(path.join(directory, "cost.sqlite"))));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+  it.effect(
+    "reads the partial index first and excludes indexed rows and sources from fallback",
+    () =>
+      Effect.gen(function* () {
+        yield* smallFixture;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json)
+        SELECT message_id, thread_id, 1, 'user_message', 'completed', updated_at, payload_json FROM orchestration_v2_projection_messages`;
+        yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+        yield* initializeAttachmentReferenceIndex();
+        yield* rebuildAttachmentReferenceIndexPass();
+        const state = yield* readAttachmentReferenceIndexState();
+        expect(state?.cursor).not.toBeNull();
+        const rows = yield* sql<{ source: string; payload_json: string }>`
+        SELECT source, payload_json FROM (${yield* attachmentSourceRows(undefined, undefined, state)})`;
+        const [query, parameters] =
+          sql`SELECT * FROM (${yield* attachmentSourceRows(undefined, undefined, state)})`.compile();
+        const plan = yield* sql.unsafe<{ detail: string }>(
+          `EXPLAIN QUERY PLAN ${query}`,
+          parameters,
+        );
+        expect(plan.some((row) => row.detail.includes("message_id>?"))).toBe(true);
+        const indexed = yield* sql<{
+          attachment_id: string;
+        }>`SELECT attachment_id FROM fork_v2_attachment_references`;
+        for (const entry of indexed)
+          expect(
+            rows
+              .filter((row) => row.source === "message")
+              .some((row) => row.payload_json.includes(entry.attachment_id)),
+          ).toBe(false);
+        expect(rows.filter((row) => row.source === "item")).toHaveLength(200);
+        let scans = 0;
+        const counted = new Proxy(sql, {
+          apply: (target, receiver, args) => {
+            const statement = Reflect.apply(target, receiver, args);
+            if (
+              Array.isArray(args[0]) &&
+              statement.compile()[0].includes("json_tree(payload.payload_json)")
+            )
+              scans++;
+            return statement;
+          },
+        });
+        expect(
+          (yield* findReadableAttachment(id(0)).pipe(
+            Effect.provideService(SqlClient.SqlClient, counted),
+          ))?.threadId,
+        ).toBe("thread-0");
+        expect(scans).toBe(0);
+        expect(
+          (yield* findReadableAttachment("thread-0-00000000-0000-4000-8000-000000000199"))
+            ?.threadId,
+        ).toBe("thread-0");
+        // Complete the messages, then stop part-way through the next source.
+        while ((yield* readAttachmentReferenceIndexState())?.source_index === 0)
+          yield* rebuildAttachmentReferenceIndexPass();
+        yield* rebuildAttachmentReferenceIndexPass();
+        const next = yield* readAttachmentReferenceIndexState();
+        const remaining = yield* sql<{ source: string; payload_json: string }>`
+        SELECT source, payload_json FROM (${yield* attachmentSourceRows(undefined, undefined, next)})`;
+        expect(remaining.every((row) => row.source === "item")).toBe(true);
+        const done = yield* sql<{
+          attachment_id: string;
+        }>`SELECT attachment_id FROM fork_v2_attachment_references WHERE source = 'item'`;
+        for (const entry of done)
+          expect(remaining.some((row) => row.payload_json.includes(entry.attachment_id))).toBe(
+            false,
+          );
+      }).pipe(Effect.provide(testLayer)),
+  );
   it.effect("shared CLI persistence prepares the index but only server startup rebuilds it", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -202,7 +313,8 @@ describe("attachment reference index", () => {
       expect(checks).toBe(3);
       // Source metadata still authorizes this same attachment despite index damage.
       yield* reads;
-      expect(checks).toBe(3);
+      // Read-side repair invalidates the DDL cookie once more.
+      expect(checks).toBe(4);
     }).pipe(Effect.provide(testLayer)),
   );
 
