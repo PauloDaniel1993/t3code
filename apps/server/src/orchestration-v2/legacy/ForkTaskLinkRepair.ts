@@ -16,7 +16,8 @@ import {
 import { forkLegacyTaskEvents } from "./ForkLegacyTasks.ts";
 
 const REPAIR_PREFIX = "migration:fork:task-links:v2:";
-const REPAIR_COMMAND = "fork.legacy-task-links.repair-v2";
+/** Its durable receipts are one of the writes the import check looks for. */
+export const REPAIR_COMMAND = "fork.legacy-task-links.repair-v2";
 
 export class ForkTaskLinkRepairError extends Schema.TaggedError<ForkTaskLinkRepairError>()(
   "ForkTaskLinkRepairError",

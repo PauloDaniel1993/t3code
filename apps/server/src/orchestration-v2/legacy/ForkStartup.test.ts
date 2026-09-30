@@ -105,6 +105,7 @@ for (const failure of [
   "orphan",
   "cycle",
   "bad-message",
+  "shell-unpatched",
   "partial-unpatched",
   "complete-unpatched",
 ] as const) {
@@ -114,8 +115,9 @@ for (const failure of [
       const projections = yield* ProjectionStoreV2;
       const hydration = yield* Deferred.make<void>();
       let recovered = false;
-      if (failure.endsWith("unpatched"))
-        yield* seedUnpatchedImport(failure !== "partial-unpatched");
+      if (failure === "shell-unpatched") yield* seedUnpatchedImport("shell");
+      else if (failure === "partial-unpatched") yield* seedUnpatchedImport("partial");
+      else if (failure === "complete-unpatched") yield* seedUnpatchedImport("complete");
       else {
         yield* seedThreads([
           ["root", null],

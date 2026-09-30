@@ -37,36 +37,42 @@ export const seedThreads = Effect.fnUntraced(function* (
   }
 });
 
-/** The reviewer's u1/r1/a1/u2/r2/a2 case, persisted with upstream's old ordinals. */
+/**
+ * An unpatched import stopped where the verification's three real ones were:
+ * shells only, some transcripts (here one without reasoning, as in the real
+ * partial database), or all of them. `root` is the reviewer's u1/r1/a1/u2/r2/a2
+ * case with upstream's old ordinals; its preview u2 and `second` carry sources.
+ */
 export const seedUnpatchedImport = Effect.fnUntraced(function* (
-  complete: boolean,
-  includeReasoning = true,
+  stage: "shell" | "partial" | "complete",
 ) {
-  yield* seedThreads([["root", null]]);
+  yield* seedThreads([
+    ["root", null],
+    ["second", null],
+  ]);
   const sql = yield* SqlClient.SqlClient;
-  for (const [id, role] of [
-    ["1-u", "user"],
-    ["2-r", "system"],
-    ["3-a", "assistant"],
-    ["4-u", "user"],
-    ["5-r", "system"],
-    ["6-a", "assistant"],
+  for (const [id, thread, role] of [
+    ["1-u", "root", "user"],
+    ["2-r", "root", "system"],
+    ["3-a", "root", "assistant"],
+    ["4-u", "root", "user"],
+    ["5-r", "root", "system"],
+    ["6-a", "root", "assistant"],
+    ["s-u", "second", "user"],
+    ["s-a", "second", "assistant"],
   ]) {
     yield* sql`INSERT INTO projection_thread_messages
       (message_id, thread_id, role, text, is_streaming, created_at, updated_at)
-      VALUES (${id}, 'root', ${role}, ${id}, 0, ${stamp}, ${stamp})`;
+      VALUES (${id}, ${thread}, ${role}, ${id}, 0, ${stamp}, ${stamp})`;
   }
-  // Both importers exclude system. Restore reasoning only after reserving the
-  // exact shell positions an unpatched importer writes (u2=3, a2=4).
+  // Both importers exclude system, and neither sees a source yet, so this writes
+  // what an unpatched importer does, down to its shell positions (u2=3, a2=4).
   const importer = yield* LegacyV1ThreadImporter;
   yield* importer.reconcileShells;
-  if (complete) yield* importer.ensureTranscript(ThreadId.make("root"));
-  if (includeReasoning)
-    yield* sql`UPDATE projection_thread_messages SET role = 'reasoning' WHERE role = 'system'`;
-  // The partial case has no source tags: only incompatible ordinals expose it.
-  // Without reasoning only lost provenance shows, which the check cannot tell from a payload rewrite.
-  if (complete)
-    yield* sql`UPDATE projection_thread_messages SET source = 'task-result' WHERE message_id = '4-u'`;
+  if (stage !== "shell") yield* importer.ensureTranscript(ThreadId.make("second"));
+  if (stage === "complete") yield* importer.ensureTranscript(ThreadId.make("root"));
+  yield* sql`UPDATE projection_thread_messages SET role = 'reasoning' WHERE role = 'system'`;
+  yield* sql`UPDATE projection_thread_messages SET source = 'task-result' WHERE message_id IN ('4-u', 's-u')`;
   // An unpatched build records no pass.
   yield* sql`DELETE FROM fork_v1_import_state`;
 });
