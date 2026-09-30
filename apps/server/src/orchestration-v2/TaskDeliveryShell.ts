@@ -34,13 +34,13 @@ export const withTaskDeliveryWatermarks = (sql: SqlClient.SqlClient) =>
     const deliveries = yield* rows.length === 1
       ? sql<{ thread_id: string; delivered_at: string | null }>`
       SELECT task.thread_id, MAX(json_extract(task.payload_json, '$.completionDelivery.deliveredAt')) AS delivered_at
-      FROM orchestration_v2_projection_subagents AS task INDEXED BY fork_v2_task_delivery_idx
+      FROM orchestration_v2_projection_subagents AS task
       WHERE task.origin = 'app_owned' AND task.thread_id = ${rows[0]!.thread_id}
       GROUP BY task.thread_id
     `
       : sql<{ thread_id: string; delivered_at: string | null }>`
       SELECT task.thread_id, MAX(json_extract(task.payload_json, '$.completionDelivery.deliveredAt')) AS delivered_at
-      FROM orchestration_v2_projection_subagents AS task INDEXED BY fork_v2_task_delivery_idx
+      FROM orchestration_v2_projection_subagents AS task
       WHERE task.origin = 'app_owned'
       GROUP BY task.thread_id
     `;

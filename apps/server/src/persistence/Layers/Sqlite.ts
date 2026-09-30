@@ -8,6 +8,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrations } from "../Migrations.ts";
 // fork(ticket-28:ledger): the fork's own migration ledger and V1 preparation.
 import { reconcileBaseMigrationLedger, runForkMigrations } from "../ForkMigrations.ts";
+import TaskDeliveryIndex from "../ForkMigrations/011_TaskDeliveryIndex.ts";
 import { initializeV2Database } from "../initializeV2Database.ts";
 import { initializeIsolatedAttachments } from "../../attachmentIsolation.ts";
 import { ServerConfig } from "../../config.ts";
@@ -31,6 +32,8 @@ const setup = Layer.effectDiscard(
     yield* runMigrations();
     // fork(ticket-28:ledger): fork migrations run after upstream's, in their own ledger.
     yield* runForkMigrations();
+    // Ticket 32: restore the task delivery index after any upstream table rebuild.
+    yield* TaskDeliveryIndex;
     // Ticket 36: the index is verified on every start, after the fork migrations.
     yield* initializeAttachmentReferenceIndex();
   }),

@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   EventId,
@@ -15,7 +20,10 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type * as Statement from "effect/unstable/sql/Statement";
 import TaskDeliveryIndex from "../persistence/ForkMigrations/011_TaskDeliveryIndex.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../persistence/Layers/Sqlite.ts";
 import { layer, ProjectionStoreV2, threadShellFromProjection } from "./ProjectionStore.ts";
 import { taskDeliveryFromSubagents, withTaskDeliveryWatermarks } from "./TaskDeliveryShell.ts";
 
@@ -174,6 +182,63 @@ it.effect("2000 shell watermarks use one batch query, with no task field on ordi
       ),
     );
   }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect(
+  "lists threads without the delivery index and restores it on the next persistence start",
+  () => {
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-task-delivery-index-"));
+    const persistence = makeSqlitePersistenceLive(NodePath.join(tempDir, "statev2.sqlite")).pipe(
+      Layer.provide(NodeServices.layer),
+    );
+    const testLayer = layer.pipe(Layer.provideMerge(persistence));
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const store = yield* ProjectionStoreV2;
+        const sql = yield* SqlClient.SqlClient;
+        yield* store.apply(created);
+        yield* store.apply({
+          id: EventId.make("delivery-before-index-loss"),
+          type: "subagent.updated",
+          threadId,
+          occurredAt: now,
+          payload: task,
+        });
+        yield* sql`DROP INDEX fork_v2_task_delivery_idx`;
+        assert.strictEqual(
+          (yield* store.getShellSnapshot()).threads[0]?.latestTaskDeliveredAt,
+          task.completionDelivery!.deliveredAt,
+        );
+        assert.strictEqual(
+          (yield* store.getThreadShell(threadId))?.latestTaskDeliveredAt,
+          task.completionDelivery!.deliveredAt,
+        );
+        const rows = [{ thread_id: threadId }, { thread_id: "ordinary" }];
+        const watermarks = yield* withTaskDeliveryWatermarks(sql)(rows);
+        const expected = [
+          { thread_id: threadId, latestTaskDeliveredAt: task.completionDelivery!.deliveredAt },
+          rows[1]!,
+        ];
+        assert.deepEqual(watermarks, expected);
+      }).pipe(Effect.provide(Layer.fresh(testLayer)));
+      yield* Effect.gen(function* () {
+        const store = yield* ProjectionStoreV2;
+        const sql = yield* SqlClient.SqlClient;
+        const indexes = yield* sql`SELECT name FROM sqlite_master WHERE type = 'index'
+        AND name = 'fork_v2_task_delivery_idx'`;
+        assert.lengthOf(indexes, 1);
+        const ledger = yield* sql`SELECT migration_id FROM fork_sql_migrations
+        WHERE migration_id = 11 AND name = 'TaskDeliveryIndex'`;
+        assert.lengthOf(ledger, 1);
+        assert.strictEqual(
+          (yield* store.getShellSnapshot()).threads[0]?.latestTaskDeliveredAt,
+          task.completionDelivery!.deliveredAt,
+        );
+      }).pipe(Effect.provide(Layer.fresh(testLayer)));
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  },
 );
 
 it.effect(
