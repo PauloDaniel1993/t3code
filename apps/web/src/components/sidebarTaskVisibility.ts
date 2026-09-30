@@ -1,24 +1,68 @@
 import { useEffect, useState } from "react";
 import { sidebarTaskLeases } from "./sidebarTaskLeases";
 
+const scrollRoots = new Map<HTMLElement, { users: number; release: () => void }>();
+
+/** One geometry refresh per scroll frame, shared by all expanded groups in a viewport. */
+function observeScroll(root: HTMLElement | null) {
+  if (root === null) return () => {};
+  const existing = scrollRoots.get(root);
+  if (existing !== undefined) existing.users++;
+  else {
+    let frame: number | undefined;
+    const scroll = () => {
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        sidebarTaskLeases.refreshPositions();
+      });
+    };
+    root.addEventListener("scroll", scroll, { passive: true });
+    scrollRoots.set(root, {
+      users: 1,
+      release: () => {
+        root.removeEventListener("scroll", scroll);
+        if (frame !== undefined) cancelAnimationFrame(frame);
+      },
+    });
+  }
+  return () => {
+    const entry = scrollRoots.get(root);
+    if (entry !== undefined && --entry.users === 0) {
+      entry.release();
+      scrollRoots.delete(root);
+    }
+  };
+}
+
 /** Observe expanded groups, not parent cards. A lease survives short viewport exits. */
 export function useSidebarTaskVisibility(enabled: boolean, key: string) {
   const [row, rowRef] = useState<HTMLElement | null>(null);
   const [visibility, setVisibility] = useState<{ row: HTMLElement; visible: boolean } | null>(null);
   const [leased, setLeased] = useState(false);
-  useEffect(() => sidebarTaskLeases.register(key, setLeased), [key]);
+  useEffect(
+    () =>
+      sidebarTaskLeases.register(key, setLeased, () =>
+        row === null
+          ? Infinity
+          : (row.closest<HTMLElement>("li") ?? row).getBoundingClientRect().top,
+      ),
+    [key, row],
+  );
   useEffect(() => {
     if (!enabled || row === null) {
       sidebarTaskLeases.update(key, false);
       return;
     }
-    const update = (onScreen: boolean, distance = 0) => {
+    const viewport = row.closest<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    const target = row.closest<HTMLElement>("li") ?? row;
+    const update = (onScreen: boolean, top = 0) => {
       setVisibility((previous) =>
         previous?.row === row && previous.visible === onScreen
           ? previous
           : { row, visible: onScreen },
       );
-      sidebarTaskLeases.update(key, onScreen, distance);
+      sidebarTaskLeases.update(key, onScreen, top);
     };
     if (typeof IntersectionObserver === "undefined") {
       update(true);
@@ -26,19 +70,15 @@ export function useSidebarTaskVisibility(enabled: boolean, key: string) {
     }
     const observer = new IntersectionObserver(
       ([entry]) => {
-        const bounds = entry?.boundingClientRect;
-        const viewport = entry?.rootBounds;
-        const distance =
-          bounds === undefined || viewport == null
-            ? 0
-            : Math.abs((bounds.top + bounds.bottom - viewport.top - viewport.bottom) / 2);
-        update(entry?.isIntersecting === true, distance);
+        update(entry?.isIntersecting === true, entry?.boundingClientRect?.top ?? 0);
       },
-      { root: row.closest<HTMLElement>('[data-slot="scroll-area-viewport"]') },
+      { root: viewport },
     );
-    observer.observe(row.closest<HTMLElement>("li") ?? row);
+    observer.observe(target);
+    const releaseScroll = observeScroll(viewport);
     return () => {
       observer.disconnect();
+      releaseScroll();
       sidebarTaskLeases.update(key, false);
     };
   }, [enabled, row, key]);

@@ -56,3 +56,46 @@ it("a flick across expanded groups and a brief return cause no open/cancel churn
   remove();
   clock.advance(4000);
 });
+
+it("ranks current viewport positions on scroll and keeps the choice stable while idle", () => {
+  const clock = new SidebarTaskTestClock();
+  const leases = createSidebarTaskLeases(clock);
+  const open = new Set<string>();
+  const top = [10, 20, 30, 40, 50];
+  const removals = top.map((position, index) => {
+    const key = `parent-${index}`;
+    const remove = leases.register(
+      key,
+      (leased) => (leased ? open.add(key) : open.delete(key)),
+      () => top[index]!,
+    );
+    leases.update(key, true, position);
+    return remove;
+  });
+  clock.advance(250);
+  expect([...open].sort()).toEqual(["parent-0", "parent-1", "parent-2"]);
+  top.reverse();
+  clock.advance(10_000);
+  expect([...open].sort()).toEqual(["parent-0", "parent-1", "parent-2"]);
+  leases.refreshPositions();
+  expect([...open].sort()).toEqual(["parent-2", "parent-3", "parent-4"]);
+  clock.advance(10_000);
+  expect([...open].sort()).toEqual(["parent-2", "parent-3", "parent-4"]);
+  removals.forEach((remove) => remove());
+});
+
+it("retains a shared parent lease until its last mounted subscriber leaves", () => {
+  const clock = new SidebarTaskTestClock();
+  const leases = createSidebarTaskLeases(clock);
+  const first: boolean[] = [],
+    second: boolean[] = [];
+  const removeFirst = leases.register("parent", (open) => first.push(open));
+  const removeSecond = leases.register("parent", (open) => second.push(open));
+  leases.update("parent", true, 0);
+  clock.advance(250);
+  removeFirst();
+  expect(first).toEqual([true, false]);
+  expect(second).toEqual([true]);
+  removeSecond();
+  expect(second).toEqual([true, false]);
+});

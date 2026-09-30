@@ -136,6 +136,7 @@ import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
+// Ticket 32: fork-owned sidebar grouping and task surfaces.
 import {
   createSidebarTaskGrouper,
   isSidebarTaskThread,
@@ -183,6 +184,7 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
+  // Ticket 32: bulk actions use the rendered roster.
   selectRenderedSidebarThreads,
   filterSidebarProjectScopeItems,
   formatWorkingDurationLabel,
@@ -1050,6 +1052,7 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 
 const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   thread: SidebarThreadSummary;
+  // Ticket 32: stable task inputs keep ordinary parent rows memoized.
   taskThreads: ReadonlyArray<EnvironmentThreadShell>;
   hasTaskGroup: boolean;
   nativeThreads: ReadonlyArray<EnvironmentThreadShell>;
@@ -1150,6 +1153,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   );
   const threadKey = scopedThreadKey(threadRef);
   const { leaseLiveStatus, rowRef } = useSidebarRowSubscriptionLease(props.isActive);
+  // Ticket 32: attach the group to the parent lifecycle and drag row.
   const taskGroup = props.hasTaskGroup ? (
     <SidebarTaskGroup
       parent={thread}
@@ -1623,21 +1627,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       {thread.title}
     </span>
   );
-  const accessibleTitle = isRenaming ? null : (
-    <button
-      type="button"
-      aria-label={accessibility.label}
-      aria-current={accessibility.current}
-      onClick={(event) => {
-        event.stopPropagation();
-        handleClick(event);
-      }}
-      onKeyDown={handleKeyDown}
-      className="pointer-events-none absolute inset-0 rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-    >
-      <span className="sr-only">{thread.title}</span>
-    </button>
-  );
+  const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
+  // Ticket 32: the parent retains upstream navigation semantics; disclosure is separate.
   const taskDisclosure = props.hasTaskGroup ? (
     <SidebarTaskDisclosure
       parent={thread}
@@ -1736,8 +1727,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         {...(fileDropHandlers ?? {})}
         className={cn(
           // Matches the h-9 row so unrendered rows never shift the list when they paint.
-          "list-none",
-          !props.hasTaskGroup && "[content-visibility:auto] [contain-intrinsic-size:auto_36px]",
+          "list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]",
+          // Ticket 32: an expanded group must contribute its actual height.
+          props.hasTaskGroup && "[content-visibility:visible]!",
           sortable?.isDragging && "relative z-20",
         )}
       >
@@ -1746,6 +1738,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             render={
               <div
                 ref={rowRef}
+                role="button"
+                tabIndex={0}
+                aria-label={accessibility.label}
+                aria-current={accessibility.current}
                 data-testid="sidebar-row-slim"
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
@@ -1772,6 +1768,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {title}
             {pinIndicator}
             {terminalStatusIcon}
+            {/* Ticket 32: slim parent task count. */}
             {taskDisclosure}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
@@ -1877,6 +1874,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           </TooltipTrigger>
           {detailsTooltip}
         </Tooltip>
+        {/* Ticket 32: tasks remain after the parent navigation row. */}
         {taskGroup}
       </li>
     );
@@ -1891,8 +1889,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       {...(fileDropHandlers ?? {})}
       className={cn(
         // Matches the h-[4.875rem] content box; the py-0.5 padding is added on top.
-        "list-none py-0.5",
-        !props.hasTaskGroup && "[content-visibility:auto] [contain-intrinsic-size:auto_78px]",
+        "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
+        // Ticket 32: groups travel with their parent card.
+        props.hasTaskGroup && "[content-visibility:visible]!",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -1901,6 +1900,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           render={
             <div
               ref={rowRef}
+              role="button"
+              tabIndex={0}
+              aria-label={accessibility.label}
+              aria-current={accessibility.current}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
@@ -2088,6 +2091,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 <span className="flex-1" />
               )}
               {terminalStatusIcon}
+              {/* Ticket 32: slim parent task count. */}
               {taskDisclosure}
               {prBadge}
               {diff ? (
@@ -2120,6 +2124,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>
+      {/* Ticket 32: attached task collection. */}
       {taskGroup}
     </li>
   );
@@ -2300,6 +2305,7 @@ export default function Sidebar() {
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
+  // Ticket 32: device-local task display preference.
   const threadTasksEnabled = useClientSettings((s) => s.threadTasksEnabled);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
@@ -2611,7 +2617,11 @@ export default function Sidebar() {
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey, threadTasksEnabled]);
+  }, [clearSelection, projectScopeKey]);
+  // Ticket 32: grouping changes invalidate selection without altering the scope effect.
+  useEffect(() => {
+    clearSelection();
+  }, [clearSelection, threadTasksEnabled]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2662,6 +2672,7 @@ export default function Sidebar() {
         override holds until all of them appear in canonical state. */
     readonly assignedKeys: ReadonlyMap<string, string>;
   } | null>(null);
+  // Ticket 32: partition the visible shell roster once per update.
   const taskGrouper = useMemo(() => createSidebarTaskGrouper(), []);
   const {
     topLevel: sidebarTopLevelThreads,
@@ -2694,6 +2705,7 @@ export default function Sidebar() {
     // memo exactly at the next wake boundary.
     void snoozeWakeTick;
     const preciseNow = new Date().toISOString();
+    // Ticket 32: children occupy only their parent group.
     const visible = sidebarTopLevelThreads;
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
@@ -2784,6 +2796,7 @@ export default function Sidebar() {
       settledThreads: sortSettledThreads(settled),
       snoozeNow: preciseNow,
     };
+    // Ticket 32: grouping already applies the environment/project filter.
   }, [nowMinute, optimisticDrop, serverConfigs, snoozeWakeTick, sidebarTopLevelThreads]);
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
@@ -2975,13 +2988,12 @@ export default function Sidebar() {
         : threadByKey,
     [isSearchingThreads, threadSearchResults, threadByKey],
   );
-  const bulkThreadByKeyRef = useRef(bulkThreadByKey);
-  bulkThreadByKeyRef.current = bulkThreadByKey;
   // Handlers read these through refs: depending on per-update Map/Set
   // identities would give every row a fresh callback prop on each shell
   // event and defeat row memoization during streaming.
   const threadByKeyRef = useRef(threadByKey);
-  threadByKeyRef.current = threadByKey;
+  // Ticket 32: bulk handlers see only rendered rows, including the search filter.
+  threadByKeyRef.current = bulkThreadByKey;
   // handleNewThread is inherently unstable (depends on the projects list);
   // a ref keeps it out of attemptSettle's dependency array.
   const handleNewThreadRef = useRef(newThreadContext.handleNewThread);
@@ -3027,6 +3039,7 @@ export default function Sidebar() {
   // starting a session un-settles server-side.
   const navigateToThread = useCallback(
     (threadRef: ScopedThreadRef) => {
+      // Ticket 32: navigation dismisses the task peek.
       closeSidebarTaskPeek();
       if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
         clearSelection();
@@ -3042,6 +3055,7 @@ export default function Sidebar() {
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
+  // Ticket 32: route the group footer through ticket 31's task dialog.
   const handleNewSidebarTask = useCallback((threadRef: ScopedThreadRef) => {
     openNewThreadTaskDialog({ threadRef });
   }, []);
@@ -4007,10 +4021,8 @@ export default function Sidebar() {
       // thread deletion elsewhere) and the menu labels must count only what
       // the actions will touch.
       const selectedThreadKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
-      const selection = selectRenderedSidebarThreads(
-        selectedThreadKeys,
-        bulkThreadByKeyRef.current,
-      );
+      // Ticket 32: exclude collapsed tasks and filtered parents from bulk actions.
+      const selection = selectRenderedSidebarThreads(selectedThreadKeys, threadByKeyRef.current);
       const threadKeys = selection.map((entry) => entry.threadKey);
       if (threadKeys.length === 0) return;
       const count = threadKeys.length;
@@ -4154,7 +4166,7 @@ export default function Sidebar() {
         // clears the pin as part of settling, so they park like the rest.
         const coSettlingKeys = new Set(threadKeys);
         for (const threadKey of threadKeys) {
-          const thread = bulkThreadByKeyRef.current.get(threadKey);
+          const thread = threadByKeyRef.current.get(threadKey);
           if (!thread || thread.settledOverride === "settled") continue;
           attemptSettle(scopeThreadRef(thread.environmentId, thread.id), { coSettlingKeys });
         }
@@ -4163,7 +4175,7 @@ export default function Sidebar() {
       }
       if (clicked.value === "mark-unread") {
         for (const threadKey of threadKeys) {
-          const thread = bulkThreadByKeyRef.current.get(threadKey);
+          const thread = threadByKeyRef.current.get(threadKey);
           if (thread) markThreadUnread(scopeThreadRef(thread.environmentId, thread.id));
         }
         clearSelection();
@@ -4185,7 +4197,7 @@ export default function Sidebar() {
       const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
         entries: threadKeys.map((threadKey) => ({ threadKey })),
         delete: async ({ threadKey }, deletedThreadKeys) => {
-          const thread = bulkThreadByKeyRef.current.get(threadKey);
+          const thread = threadByKeyRef.current.get(threadKey);
           if (!thread) return null;
           return deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
             deletedThreadKeys,
@@ -4235,6 +4247,7 @@ export default function Sidebar() {
           await handleMultiSelectContextMenu(position);
           return;
         }
+        // Ticket 32: task menus resolve their own shell outside the bulk map.
         const thread =
           readThreadShell(threadRef) ??
           taskThreadByKeyRef.current.get(threadKey) ??
@@ -4277,6 +4290,7 @@ export default function Sidebar() {
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
+              // Ticket 32: tasks expose only their safe action subset.
               isTask: isSidebarTaskThread(thread),
               branch: thread.branch ?? null,
               projectFilter: threadProjectGroup
@@ -4637,6 +4651,7 @@ export default function Sidebar() {
   return (
     <>
       <ThreadContextDragGhost />
+      {/* Ticket 32: one task peek and device-local visit bridge. */}
       <SidebarTaskPeek onOpenThread={navigateToThread} />
       {threadTasksEnabled ? <SidebarTaskVisits threadRef={routeThreadRef} /> : null}
       <SidebarChromeHeader isElectron={isElectron} />
@@ -4925,7 +4940,10 @@ export default function Sidebar() {
                             // sortable wrapper keeps its identity during a drag.
                             key={`${threadKey}:${rowVariant}`}
                             thread={thread}
-                            taskThreads={tasksByParent.get(threadKey) ?? EMPTY_SIDEBAR_TASKS}
+                            taskThreads={
+                              /* Ticket 32: grouped child shells. */ tasksByParent.get(threadKey) ??
+                              EMPTY_SIDEBAR_TASKS
+                            }
                             hasTaskGroup={
                               threadTasksEnabled &&
                               serverConfigs.get(thread.environmentId)?.environment.capabilities

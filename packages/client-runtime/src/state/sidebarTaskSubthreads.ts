@@ -86,8 +86,19 @@ export function createSidebarTaskGrouper() {
         continue;
       }
       if (isSidebarTaskThread(thread) && input.supportsTasks(thread) && parentId !== null) {
-        const key = scopedThreadKey({ environmentId: thread.environmentId, threadId: parentId });
-        const parent = findParent(thread, parentId);
+        let parent = findParent(thread, parentId);
+        // V2 can delegate below a task. Flatten that lineage to the nearest
+        // displayed ancestor rather than creating a third level or losing work.
+        const seen = new Set([thread.id]);
+        while (parent !== undefined && isSidebarTaskThread(parent) && input.supportsTasks(parent)) {
+          if (seen.has(parent.id)) {
+            parent = undefined;
+            break;
+          }
+          seen.add(parent.id);
+          const ancestorId = parent.lineage.parentThreadId;
+          parent = ancestorId === null ? undefined : findParent(thread, ancestorId);
+        }
         // Older servers may retain children after parent removal. Only their
         // surviving work belongs at top level, within the project filter.
         if (parent === undefined) {
@@ -95,9 +106,7 @@ export function createSidebarTaskGrouper() {
             topLevel.push(thread);
           continue;
         }
-        if (isSidebarTaskThread(parent)) {
-          continue;
-        }
+        const key = scopedThreadKey({ environmentId: thread.environmentId, threadId: parent.id });
         const group = grouped.get(key);
         if (group === undefined) grouped.set(key, [thread]);
         else group.push(thread);

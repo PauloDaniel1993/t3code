@@ -2,12 +2,12 @@ import { Debouncer } from "@tanstack/react-pacer";
 import type { PullRequestMergeMethod } from "@t3tools/contracts";
 import { create } from "zustand";
 import { normalizeProjectPathForComparison } from "./lib/projectPaths";
+// Ticket 32: sidebar task subthreads and delivery state.
 import {
   nextLocalEditTime,
   visitConflictEdits,
   syncSidebarTaskUiState,
 } from "./sidebarTaskUiState";
-export { mergeUiStateRecords } from "./sidebarTaskUiState";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
 // Version 1 stored card visibility, not folder expansion.
@@ -26,6 +26,7 @@ const LEGACY_PERSISTED_STATE_KEYS = [
 ] as const;
 
 export interface PersistedUiState {
+  // Ticket 32: sidebar task subthreads and delivery state.
   sidebarTaskGroupsExpandedById?: Record<string, boolean>;
   sidebarTaskGroupsExpandedAtById?: Record<string, string>;
   threadVisitEditsAtById?: Record<string, string>;
@@ -53,6 +54,7 @@ export interface UiProjectState {
 }
 
 export interface UiThreadState {
+  // Ticket 32: sidebar task subthreads and delivery state.
   sidebarTaskGroupsExpandedById: Record<string, boolean>;
   sidebarTaskGroupsExpandedAtById?: Record<string, string>;
   threadVisitEditsAtById?: Record<string, string>;
@@ -73,6 +75,7 @@ export interface UiState
   extends UiProjectState, UiThreadState, UiEndpointState, UiPullRequestState {}
 
 const initialState: UiState = {
+  // Ticket 32: sidebar task subthreads and delivery state.
   sidebarTaskGroupsExpandedById: {},
   projectExpandedById: {},
   projectOrder: [],
@@ -162,6 +165,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
 
   return {
     projectExpandedById,
+    // Ticket 32: sidebar task subthreads and delivery state.
     sidebarTaskGroupsExpandedById: sanitizeBooleanRecord(parsed.sidebarTaskGroupsExpandedById),
     sidebarTaskGroupsExpandedAtById: sanitizeTimestampRecord(
       parsed.sidebarTaskGroupsExpandedAtById,
@@ -245,6 +249,7 @@ export function persistState(state: UiState): void {
     window.localStorage.setItem(
       PERSISTED_STATE_KEY,
       JSON.stringify({
+        // Ticket 32: sidebar task subthreads and delivery state.
         sidebarTaskGroupsExpandedById: state.sidebarTaskGroupsExpandedById,
         sidebarTaskGroupsExpandedAtById: state.sidebarTaskGroupsExpandedAtById ?? {},
         threadVisitEditsAtById: state.threadVisitEditsAtById ?? {},
@@ -270,6 +275,7 @@ export function persistState(state: UiState): void {
   }
 }
 
+// Ticket 32: sidebar task subthreads and delivery state.
 const debouncedPersistState = new Debouncer(() => persistState(useUiStateStore.getState()), {
   wait: 500,
 });
@@ -294,6 +300,7 @@ export function markThreadVisited(state: UiState, threadId: string, visitedAt: s
       ...state.threadLastVisitedAtById,
       [threadId]: visitedAt,
     },
+    // Ticket 32: sidebar task subthreads and delivery state.
     ...visitConflictEdits(state, threadId, false),
   };
 }
@@ -316,6 +323,7 @@ export function markThreadUnread(
   }
   return {
     ...state,
+    // Ticket 32: sidebar task subthreads and delivery state.
     ...visitConflictEdits(state, threadId, true),
     threadLastVisitedAtById: {
       ...state.threadLastVisitedAtById,
@@ -453,6 +461,7 @@ export function reorderProjects(
 }
 
 interface UiStateStore extends UiState {
+  // Ticket 32: sidebar task subthreads and delivery state.
   setSidebarTaskGroupExpanded: (threadKey: string, expanded: boolean) => void;
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
@@ -470,6 +479,7 @@ interface UiStateStore extends UiState {
 
 export const useUiStateStore = create<UiStateStore>((set) => ({
   ...readPersistedState(),
+  // Ticket 32: sidebar task subthreads and delivery state.
   setSidebarTaskGroupExpanded: (threadKey, expanded) =>
     set((state) => ({
       sidebarTaskGroupsExpandedById: {
@@ -500,6 +510,7 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     ),
 }));
 
+// Ticket 32: sidebar task subthreads and delivery state.
 const taskSync = syncSidebarTaskUiState({
   key: PERSISTED_STATE_KEY,
   store: useUiStateStore,

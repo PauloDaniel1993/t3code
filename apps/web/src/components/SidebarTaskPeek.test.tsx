@@ -2,7 +2,15 @@
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  NodeId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { makeThreadFixture } from "../test-fixtures";
 import { SidebarTaskTestClock } from "./sidebarTaskTestClock";
 import { sidebarTaskLeaseClock } from "./sidebarTaskLeases";
@@ -94,4 +102,40 @@ it("hydrates only after hover dwell, skips flicked rows and retains detail throu
   expect(subscriptions.closed).not.toHaveBeenCalled();
   act(() => clock.advance(1));
   expect(subscriptions.closed).toHaveBeenCalledTimes(2);
+});
+
+it("explains the native roster as all active agents plus the newest 12 inactive agents", () => {
+  const now = DateTime.makeUnsafe("2026-09-29T00:00:00Z");
+  act(() =>
+    openSidebarTaskPeek({
+      anchor,
+      thread: task("parent"),
+      task: undefined,
+      nativeAgent: {
+        id: NodeId.make("native"),
+        threadId: parentId,
+        runId: null,
+        parentNodeId: NodeId.make("root"),
+        origin: "provider_native",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerThreadId: null,
+        childThreadId: null,
+        nativeTaskRef: null,
+        prompt: "Work",
+        title: "Native agent",
+        model: null,
+        status: "completed",
+        result: "Done",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      },
+    }),
+  );
+  act(() => clock.advance(260));
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    "Provider-owned agent · All active agents plus the newest 12 inactive agents",
+  );
 });

@@ -15,11 +15,11 @@ export function createSidebarTaskLeases(clock = sidebarTaskLeaseClock) {
   const entries = new Map<
     string,
     {
-      notify: (leased: boolean) => void;
+      subscribers: Map<(leased: boolean) => void, () => number>;
       visible: boolean;
       ready: boolean;
       leased: boolean;
-      distance: number;
+      top: number;
       cancel?: () => void;
     }
   >();
@@ -28,38 +28,59 @@ export function createSidebarTaskLeases(clock = sidebarTaskLeaseClock) {
       .filter(([, entry]) => entry.ready)
       .sort(
         ([, left], [, right]) =>
-          Number(right.visible) - Number(left.visible) || left.distance - right.distance,
+          Number(right.visible) - Number(left.visible) || left.top - right.top,
       );
     const allowed = new Set(getSidebarThreadIdsToPrewarm(candidates.map(([key]) => key)));
     // Release first, so replacing a lease never briefly exceeds the cap.
     for (const [key, entry] of entries) {
       if (entry.leased && !allowed.has(key)) {
         entry.leased = false;
-        entry.notify(false);
+        for (const notify of entry.subscribers.keys()) notify(false);
       }
     }
     for (const [key, entry] of entries)
       if (!entry.leased && allowed.has(key)) {
         entry.leased = true;
-        entry.notify(true);
+        for (const notify of entry.subscribers.keys()) notify(true);
       }
   };
   return {
-    register(key: string, notify: (leased: boolean) => void) {
-      const entry = { notify, visible: false, ready: false, leased: false, distance: Infinity };
-      entries.set(key, entry);
+    register(key: string, notify: (leased: boolean) => void, position = () => Infinity) {
+      let entry = entries.get(key);
+      if (entry === undefined) {
+        entry = {
+          subscribers: new Map(),
+          visible: false,
+          ready: false,
+          leased: false,
+          top: Infinity,
+        };
+        entries.set(key, entry);
+      }
+      entry.subscribers.set(notify, position);
+      if (entry.leased) notify(true);
       return () => {
-        const removed = entries.get(key);
-        removed?.cancel?.();
-        if (removed?.leased) removed.notify(false);
-        entries.delete(key);
+        entry.subscribers.delete(notify);
+        if (entry.leased) notify(false);
+        if (entry.subscribers.size === 0) {
+          entry.cancel?.();
+          entries.delete(key);
+        }
         reconcile();
       };
     },
-    update(key: string, visible: boolean, distance = Infinity) {
+    // Measure only on scrolling/visibility changes, keeping the shortlist stable at rest.
+    refreshPositions() {
+      for (const entry of entries.values()) {
+        if (entry.visible)
+          entry.top = Math.min(...[...entry.subscribers.values()].map((position) => position()));
+      }
+      reconcile();
+    },
+    update(key: string, visible: boolean, top = Infinity) {
       const entry = entries.get(key);
       if (entry === undefined) return;
-      entry.distance = distance;
+      entry.top = top;
       if (visible === entry.visible) {
         if (entry.ready) reconcile();
         return;

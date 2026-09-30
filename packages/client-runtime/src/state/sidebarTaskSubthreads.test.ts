@@ -77,6 +77,49 @@ function agent(overrides: Partial<OrchestrationV2Subagent> = {}): OrchestrationV
 }
 
 describe("sidebar delegated task grouping", () => {
+  it("flattens deeper tasks under the nearest displayed ancestor without a third level", () => {
+    const parent = thread("parent");
+    const first = child("first");
+    const nested = child("nested", {
+      lineage: { ...first.lineage, parentThreadId: first.id },
+    });
+    const deepest = child("deepest", {
+      lineage: { ...first.lineage, parentThreadId: nested.id },
+    });
+    const result = createSidebarTaskGrouper()({
+      threads: [deepest, nested, first, parent],
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+    });
+    expect(result.topLevel).toEqual([parent]);
+    expect(result.tasksByParent.size).toBe(1);
+    expect(result.tasksByParent.get("local:parent")).toEqual([deepest, nested, first]);
+  });
+  it("terminates malformed cycles and does not attach nested tasks across environments or a filtered ancestor", () => {
+    const first = child("first", {
+      lineage: { ...child("first").lineage, parentThreadId: ThreadId.make("second") },
+    });
+    const second = child("second", { lineage: { ...first.lineage, parentThreadId: first.id } });
+    const nested = child("nested", { lineage: { ...first.lineage, parentThreadId: first.id } });
+    const group = createSidebarTaskGrouper();
+    expect(
+      group({
+        threads: [first, second, nested],
+        scopedProjectKeys: null,
+        supportsTasks: () => true,
+      }).tasksByParent.size,
+    ).toBe(0);
+    const hidden = thread("parent", { projectId: ProjectId.make("hidden") });
+    const local = child("first");
+    const remote = child("remote", { environmentId: EnvironmentId.make("remote") });
+    const filtered = group({
+      threads: [hidden, local, nested, remote],
+      scopedProjectKeys: new Set([`local:${local.projectId}`]),
+      supportsTasks: () => true,
+    });
+    expect(filtered.topLevel).toEqual([]);
+    expect(filtered.tasksByParent.get("local:first")).toBeUndefined();
+  });
   it("uses lineage even without task metadata and preserves forks as ordinary threads", () => {
     const fork = child("fork", {
       lineage: {
