@@ -2306,7 +2306,7 @@ export default function Sidebar() {
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   // Ticket 32: device-local task display preference.
-  const threadTasksEnabled = useClientSettings((s) => s.threadTasksEnabled);
+  const sidebarTaskSubthreadsEnabled = useClientSettings((s) => s.sidebarTaskSubthreadsEnabled);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
@@ -2621,7 +2621,7 @@ export default function Sidebar() {
   // Ticket 32: grouping changes invalidate selection without altering the scope effect.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, threadTasksEnabled]);
+  }, [clearSelection, sidebarTaskSubthreadsEnabled]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2684,11 +2684,11 @@ export default function Sidebar() {
       taskGrouper({
         threads,
         scopedProjectKeys,
-        enabled: threadTasksEnabled,
+        enabled: sidebarTaskSubthreadsEnabled,
         supportsTasks: (thread) =>
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadTasks === true,
       }),
-    [taskGrouper, threads, scopedProjectKeys, threadTasksEnabled, serverConfigs],
+    [taskGrouper, threads, scopedProjectKeys, sidebarTaskSubthreadsEnabled, serverConfigs],
   );
   const {
     pinnedThreads,
@@ -4659,7 +4659,7 @@ export default function Sidebar() {
       <ThreadContextDragGhost />
       {/* Ticket 32: one task peek and device-local visit bridge. */}
       <SidebarTaskPeek onOpenThread={navigateToThread} />
-      {threadTasksEnabled ? <SidebarTaskVisits threadRef={routeThreadRef} /> : null}
+      {sidebarTaskSubthreadsEnabled ? <SidebarTaskVisits threadRef={routeThreadRef} /> : null}
       <SidebarChromeHeader isElectron={isElectron} />
       <SidebarContent
         className="min-h-full"
@@ -4951,7 +4951,7 @@ export default function Sidebar() {
                               EMPTY_SIDEBAR_TASKS
                             }
                             hasTaskGroup={
-                              threadTasksEnabled &&
+                              sidebarTaskSubthreadsEnabled &&
                               serverConfigs.get(thread.environmentId)?.environment.capabilities
                                 .threadTasks === true &&
                               (tasksByParent.has(threadKey) || nativeParentKeys.has(threadKey))

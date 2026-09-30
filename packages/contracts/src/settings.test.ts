@@ -22,14 +22,24 @@ const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 // Ticket 32: sidebar task subthreads and delivery state.
 describe("task sidebar preference", () => {
+  it("ignores the V1 preference even when it disabled task grouping", () => {
+    const settings = decodeClientSettings({ threadTasksEnabled: false });
+    expect(settings.sidebarTaskSubthreadsEnabled).toBe(true);
+    expect(encodeClientSettings(settings)).not.toHaveProperty("threadTasksEnabled");
+    expect(decodeClientSettingsPatch({ threadTasksEnabled: false })).toEqual({});
+  });
+
   it("defaults on and round-trips an explicit local opt-out", () => {
-    expect(decodeClientSettings({}).threadTasksEnabled).toBe(true);
+    expect(decodeClientSettings({}).sidebarTaskSubthreadsEnabled).toBe(true);
     expect(
       decodeClientSettings(
-        encodeClientSettings(decodeClientSettings({ threadTasksEnabled: false })),
-      ).threadTasksEnabled,
+        encodeClientSettings(decodeClientSettings({ sidebarTaskSubthreadsEnabled: false })),
+      ).sidebarTaskSubthreadsEnabled,
     ).toBe(false);
-    expect(decodeClientSettingsPatch({ threadTasksEnabled: false }).threadTasksEnabled).toBe(false);
+    expect(
+      decodeClientSettingsPatch({ sidebarTaskSubthreadsEnabled: false })
+        .sidebarTaskSubthreadsEnabled,
+    ).toBe(false);
   });
 });
 

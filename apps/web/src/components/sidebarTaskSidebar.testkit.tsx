@@ -67,7 +67,7 @@ vi.mock("../hooks/useSettings", async () => {
     useClientSettings: (selector: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
       selector({
         ...DEFAULT_CLIENT_SETTINGS,
-        threadTasksEnabled: sidebarHarness.enabled,
+        sidebarTaskSubthreadsEnabled: sidebarHarness.enabled,
         confirmThreadDelete: false,
       }),
   };
