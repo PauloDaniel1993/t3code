@@ -1,3 +1,5 @@
+// Ticket 32: preserve the fork's parent/task lifecycle through the existing command sink.
+import { withTaskThreadLifecycle } from "./TaskThreadLifecycle.ts";
 import {
   latestExecutedRun,
   latestRootProviderFailure,
@@ -9124,6 +9126,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     const plan = yield* dispatchOnce(command).pipe(
+      // Ticket 32: add child plans to the parent's single durable receipt.
+      Effect.flatMap(withTaskThreadLifecycle(command, projectionStore, idAllocator, dispatchOnce)),
+      mapDispatchError(command),
       Effect.flatMap((planned) =>
         // A Stop can race with terminal provider events. Its empty plan is an
         // accepted idempotent outcome; every other command must still mutate.
