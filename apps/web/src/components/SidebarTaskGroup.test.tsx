@@ -62,7 +62,7 @@ vi.mock("./SidebarTaskMark", () => ({
 }));
 import { SidebarTaskDisclosure, SidebarTaskGroup } from "./SidebarTaskGroup";
 import { SidebarTaskVisits } from "./SidebarTaskVisits";
-import { sidebarTaskPresentationStore } from "./sidebarTaskPresentation";
+import { useSidebarTaskPresentationStore } from "./sidebarTaskPresentation";
 
 const create: typeof createRenderer = (element, options) =>
   createRenderer(element, {
@@ -122,7 +122,7 @@ beforeEach(() => {
   hooks.projection.mockReturnValue(null);
   hooks.shell.mockReturnValue(null);
   marks.mockClear();
-  sidebarTaskPresentationStore.setState({ byParent: new Map() });
+  useSidebarTaskPresentationStore.setState({ byParent: new Map() });
 });
 afterEach(() => {
   act(() => renderer?.unmount());
@@ -162,7 +162,7 @@ describe("sidebar task disclosure", () => {
       completionDelivery: { state: "delivered", observedByRunId: null, deliveredAt },
     };
     hooks.projection.mockReturnValue({ projection: { subagents: [delivered], runs: [] } });
-    sidebarTaskPresentationStore
+    useSidebarTaskPresentationStore
       .getState()
       .remember("local:parent", { subagents: [delivered], runs: [] });
     const view = (threadId = finished.id) => (
@@ -434,7 +434,7 @@ describe.each(["cold shell", "remembered roster"] as const)(
         latestRun: null,
       }));
       if (source === "remembered roster") {
-        sidebarTaskPresentationStore.getState().remember("local:parent", {
+        useSidebarTaskPresentationStore.getState().remember("local:parent", {
           runs: [],
           subagents: children.map((child) => ({
             ...completedTaskRecord(child),
@@ -517,7 +517,7 @@ describe.each(["cold shell", "remembered roster"] as const)(
 it("collapsed native counts include new child shells absent from the remembered roster", () => {
   const known = { ...task("known"), latestRun: null };
   const record = { ...completedTaskRecord(known), origin: "provider_native" as const };
-  sidebarTaskPresentationStore
+  useSidebarTaskPresentationStore
     .getState()
     .remember("local:parent", { subagents: [record], runs: [] });
   useUiStateStore.setState({ sidebarTaskGroupsExpandedById: { "local:parent": false } });
