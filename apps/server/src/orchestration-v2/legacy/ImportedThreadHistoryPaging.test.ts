@@ -2,15 +2,18 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
+  NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -326,3 +329,121 @@ it.effect(
     ),
   120_000,
 );
+
+/**
+ * 90 completed commands with one tool node each and no task records, sized so
+ * the 1 MiB budget falls between 69 and 70 rows.
+ */
+const taskFreeProjection = () => {
+  const threadId = ThreadId.make("task-free");
+  const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
+  const nodes = Array.from({ length: 90 }, (_, index): OrchestrationV2ExecutionNode => ({
+    id: NodeId.make(`node-${index}`),
+    threadId,
+    runId: null,
+    parentNodeId: null,
+    rootNodeId: NodeId.make(`node-${index}`),
+    kind: "tool_call",
+    status: "completed",
+    countsForRun: true,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    runtimeRequestId: null,
+    checkpointScopeId: null,
+    startedAt: now,
+    completedAt: now,
+  }));
+  const rows = nodes.map((node, index): OrchestrationV2ProjectedTurnItem => {
+    const id = TurnItemId.make(`item-${index}`);
+    return {
+      position: index,
+      visibility: "local",
+      sourceThreadId: threadId,
+      sourceItemId: id,
+      item: {
+        id,
+        type: "command_execution",
+        threadId,
+        runId: null,
+        nodeId: node.id,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: index + 1,
+        status: "completed",
+        title: `Command ${index}`,
+        input: `cmd-${index}`,
+        output: "x".repeat(6_850),
+        exitCode: 0,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      },
+    };
+  });
+  return {
+    thread: {
+      id: threadId,
+      projectId: "project-1",
+      title: "Thread",
+      providerInstanceId: "codex",
+      modelSelection: { instanceId: "codex", model: "gpt-5" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      forkedFrom: null,
+      createdBy: "user",
+      creationSource: "web",
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      deletedAt: null,
+      settledOverride: null,
+      settledAt: null,
+    },
+    runs: [],
+    attempts: [],
+    nodes,
+    subagents: [],
+    providerSessions: [],
+    providerThreads: [],
+    providerTurns: [],
+    runtimeRequests: [],
+    messages: [],
+    plans: [],
+    turnItems: rows.map((row) => row.item),
+    checkpointScopes: [],
+    checkpoints: [],
+    contextHandoffs: [],
+    contextTransfers: [],
+    visibleTurnItems: rows,
+    updatedAt: now,
+  } as unknown as OrchestrationV2ThreadProjection;
+};
+
+it("pages a thread without task records exactly as upstream does", () => {
+  const projection = taskFreeProjection();
+  const first = buildBoundedThreadProjection({ projection, snapshotSequence: 1 });
+  const older = selectHistoryPageFromCursor({
+    items: projection.visibleTurnItems,
+    cursor: first.historyCursor!,
+    snapshotSequence: 1,
+  });
+  const ordinals = (rows: ReadonlyArray<OrchestrationV2ProjectedTurnItem>) =>
+    rows.map((row) => row.item.ordinal);
+  const range = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, index) => from + index);
+
+  // Upstream 977bf4a4 opens on ordinals 22..90 and loads 1..21 earlier.
+  assert.isFalse(first.payloadBudgetExceeded);
+  assert.isTrue(first.hasMoreHistory);
+  assert.deepEqual(ordinals(first.projection.visibleTurnItems), range(22, 90));
+  assert.deepEqual(ordinals(older.items), range(1, 21));
+  assert.isNull(older.nextCursor);
+  assert.isFalse(older.hasMoreHistory);
+});
