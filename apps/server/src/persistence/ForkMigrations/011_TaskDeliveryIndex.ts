@@ -1,5 +1,4 @@
-// Ticket 32: register [11, "TaskDeliveryIndex", migration] in ticket 28's fork ledger on integration.
-// Standalone startup runs the same idempotent DDL after upstream's migrations.
+// Ticket 32: registered as fork migration 11 in ForkMigrations.ts.
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 

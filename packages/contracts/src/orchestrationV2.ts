@@ -1,6 +1,8 @@
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+// fork(ticket-28:source): retain exact legacy provenance once, on the timeline item.
+import { LegacyMessageSource } from "./legacyMessageSource.ts";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaGetter from "effect/SchemaGetter";
 
@@ -1212,6 +1214,8 @@ export type OrchestrationV2UserMessageInputIntent =
   typeof OrchestrationV2UserMessageInputIntent.Type;
 
 const OrchestrationV2TurnItemBaseFields = {
+  // fork(ticket-28:source): shared by runtime and JSON schemas, including reasoning.
+  legacyMessageSource: Schema.optional(LegacyMessageSource),
   toolSurface: Schema.optional(ToolActivitySurface),
   toolIcon: Schema.optional(ToolActivityIcon),
   toolSource: Schema.optional(ToolActivitySource),

@@ -6,12 +6,12 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "../Migrations.ts";
+// fork(ticket-28:ledger): the fork's own migration ledger and V1 preparation.
+import { reconcileBaseMigrationLedger, runForkMigrations } from "../ForkMigrations.ts";
 import { initializeV2Database } from "../initializeV2Database.ts";
 import { initializeIsolatedAttachments } from "../../attachmentIsolation.ts";
 import { ServerConfig } from "../../config.ts";
 import { initializeAttachmentReferenceIndex } from "../../orchestration-v2/AttachmentReferenceIndex.ts";
-// Ticket 32: standalone fallback until migration 011 joins the fork ledger.
-import TaskDeliveryIndex from "../ForkMigrations/011_TaskDeliveryIndex.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
 export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -26,9 +26,12 @@ const setup = Layer.effectDiscard(
     // PASSIVE checkpoints never shrink the -wal file, so it otherwise keeps its
     // largest size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
+    // fork(ticket-28:ledger): clear old fork ledger rows and bad project JSON before upstream's migrations.
+    yield* reconcileBaseMigrationLedger();
     yield* runMigrations();
-    // Ticket 32: idempotent, including when the fork ledger already applied 011.
-    yield* TaskDeliveryIndex;
+    // fork(ticket-28:ledger): fork migrations run after upstream's, in their own ledger.
+    yield* runForkMigrations();
+    // Ticket 36: the index is verified on every start, after the fork migrations.
     yield* initializeAttachmentReferenceIndex();
   }),
 );
