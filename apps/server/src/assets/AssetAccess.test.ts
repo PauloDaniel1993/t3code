@@ -773,6 +773,43 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues usable attachment URLs for malformed Unicode filenames", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000001-pdf";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.pdf`);
+      yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fs.writeFileString(attachmentPath, "document");
+      for (const [fileName, expectedName] of [
+        ["high-\ud800.pdf", "high-\ufffd.pdf"],
+        ["low-\udc00.pdf", "low-\ufffd.pdf"],
+        ["paired-\ud83d\uddbc.pdf", "paired-\ud83d\uddbc.pdf"],
+      ] as const) {
+        const result = yield* issueAssetUrl({
+          resource: { _tag: "attachment", attachmentId, fileName },
+        });
+        const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+        const separator = suffix.indexOf("/");
+        expect(decodeURIComponent(suffix.slice(separator + 1))).toBe(expectedName);
+        const asset = yield* resolveAsset(suffix.slice(0, separator), suffix.slice(separator + 1));
+        expect(asset).toMatchObject({
+          kind: "file",
+          path: yield* fs.realPath(attachmentPath),
+          fileName,
+          download: true,
+        });
+        if (asset?.kind !== "file") return yield* Effect.die("Expected an attachment file");
+        const response = yield* assetFileResponse(asset);
+        expect(response.status).toBe(200);
+        expect(yield* Effect.promise(() => HttpServerResponse.toWeb(response).text())).toBe(
+          "document",
+        );
+      }
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("serves video attachments inline", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
