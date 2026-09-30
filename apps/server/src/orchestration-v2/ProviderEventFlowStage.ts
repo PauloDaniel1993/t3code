@@ -117,7 +117,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
   };
   const warn = () => {
     if (pressure.warned || (pressure.items <= budget.items && pressure.bytes <= budget.bytes))
-      return Effect.void;
+      return undefined;
     pressure.warned = true;
     return Effect.logWarning("orchestration-v2.provider-event-backlog", {
       driver: input.driver,
@@ -140,38 +140,41 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
     inFlight = undefined;
     lookupReady = false;
   };
+  // The shared pump already has an Effect boundary. It can admit all subscribers
+  // synchronously, then evaluate the optional warning in its current fiber.
+  const offerUnsafe = (raw: ProviderAdapterV2Event) => {
+    if (ended || !admit(raw)) return undefined;
+    const event = sanitizeProviderEvent(raw);
+    if (pending.size === 0) lookupReady = false;
+    // A consumer keeping up never needs a replacement key.
+    // Materialize lookup only when another snapshot is actually waiting.
+    if (pending.size > 0 && !lookupReady) {
+      for (const entry of pending.values()) {
+        entry.key = replacementKey(entry.event);
+        if (entry.key === undefined) replaceable.clear();
+        else replaceable.set(entry.key, entry);
+      }
+      lookupReady = true;
+    }
+    const key = pending.size === 0 ? undefined : replacementKey(event);
+    const previous = key === undefined ? undefined : replaceable.get(key);
+    const bytes = pending.size === 0 ? 0 : eventBytes(event);
+    if (previous) {
+      adjust(0, bytes - previous.bytes);
+      previous.event = event;
+      previous.bytes = bytes;
+    } else {
+      const entry = { event, key, bytes };
+      adjust(1, bytes);
+      pending.set(nextId++, entry);
+      if (key === undefined) replaceable.clear();
+      else replaceable.set(key, entry);
+    }
+    notify();
+    return warn();
+  };
   const offer = (raw: ProviderAdapterV2Event) =>
-    Effect.suspend(() => {
-      if (ended || !admit(raw)) return Effect.void;
-      const event = sanitizeProviderEvent(raw);
-      if (pending.size === 0) lookupReady = false;
-      // A consumer keeping up never needs a replacement key.
-      // Materialize lookup only when another snapshot is actually waiting.
-      if (pending.size > 0 && !lookupReady) {
-        for (const entry of pending.values()) {
-          entry.key = replacementKey(entry.event);
-          if (entry.key === undefined) replaceable.clear();
-          else replaceable.set(entry.key, entry);
-        }
-        lookupReady = true;
-      }
-      const key = pending.size === 0 ? undefined : replacementKey(event);
-      const previous = key === undefined ? undefined : replaceable.get(key);
-      const bytes = pending.size === 0 ? 0 : eventBytes(event);
-      if (previous) {
-        adjust(0, bytes - previous.bytes);
-        previous.event = event;
-        previous.bytes = bytes;
-      } else {
-        const entry = { event, key, bytes };
-        adjust(1, bytes);
-        pending.set(nextId++, entry);
-        if (key === undefined) replaceable.clear();
-        else replaceable.set(key, entry);
-      }
-      notify();
-      return warn();
-    });
+    Effect.suspend(() => offerUnsafe(raw) ?? Effect.void);
   const end = Effect.sync(() => {
     ended = true;
     notify();
@@ -203,6 +206,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
   });
   return {
     offer,
+    offerUnsafe,
     fail: (cause: Cause.Cause<ProviderAdapterV2Error>) =>
       Effect.sync(() => {
         if (ended) return;

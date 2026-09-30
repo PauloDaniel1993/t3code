@@ -80,7 +80,12 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
         return sanitizeProviderEvent(event);
       }),
       Stream.tap((event) =>
-        Effect.forEach(stages, (stage) => stage.offer(event), { discard: true }),
+        Effect.suspend(() => {
+          let warning = Effect.void;
+          // All lanes share pressure, so at most one session warning is returned.
+          for (const stage of stages) warning = stage.offerUnsafe(event) ?? warning;
+          return warning;
+        }),
       ),
       Stream.onError((cause) =>
         seal(
