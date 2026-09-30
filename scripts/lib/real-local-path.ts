@@ -24,6 +24,24 @@ function directoryIdentity(filePath: string): string | undefined {
   }
 }
 
+/**
+ * For commands a person runs at a prompt: a relative option, argument or environment value means
+ * relative to the current directory, so make it a full path before the guard sees it. Only
+ * `resolveRealLocalPath` decides whether that full path is acceptable; it stays strict so nothing
+ * inside the app can pass it a relative path. Spellings that are not plainly relative (`/`
+ * separators, `C:name`, `\name`, `\\?\`) are returned unchanged for the guard to refuse.
+ */
+export function resolveCommandLinePath(
+  value: string,
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Command line boundary, before Effect layers.
+  platform: NodeJS.Platform = NodeOS.platform(),
+  cwd = process.cwd(),
+): string {
+  if (platform !== "win32") return NodePath.posix.resolve(cwd, value);
+  if (value.includes("/") || /^[a-z]:|^\\/i.test(value)) return value;
+  return NodePath.win32.resolve(cwd, value);
+}
+
 /** Junctions and local SMB shares compare as their real local paths, including missing children. */
 export function resolveRealLocalPath(
   filePath: string,

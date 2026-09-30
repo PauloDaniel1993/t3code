@@ -73,10 +73,7 @@ it.effect("resolves the Start Menu and default state outside an inherited alpha.
       vi.stubEnv("T3CODE_HOME", alphaHome);
       const shortcut = yield* Effect.promise(() => resolveWindowsStartMenuShortcut());
       assert.equal(shortcut, NodePath.join(folders.programs, "T3 v2.local.lnk"));
-      const options = parseInstallDesktopBuildArgs([
-        "--install-dir",
-        NodePath.join(NodeOS.tmpdir(), "fixture-install"),
-      ]);
+      const options = parseInstallDesktopBuildArgs(["--install-dir", "fixture-install"]);
       assert.equal(options.stateDir, NodePath.join(folders.home, ".t3.v2"));
       assert.notInclude(shortcut, alphaHome);
     } finally {
@@ -99,14 +96,7 @@ it("refuses install/state/output nesting in both directions, naming the conflict
       }),
     );
     const safe = parseInstallDesktopBuildArgs(
-      [
-        "--install-dir",
-        NodePath.join(root, "safe-install"),
-        "--state-dir",
-        NodePath.join(root, "safe-state"),
-        "--output-dir",
-        NodePath.join(root, "safe-output"),
-      ],
+      ["--install-dir", "safe-install", "--state-dir", "safe-state", "--output-dir", "safe-output"],
       {},
       root,
       "win32",
@@ -140,14 +130,7 @@ it("finds custom installs above and below the selected directories without a kno
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-markers-"));
   try {
     const safe = parseInstallDesktopBuildArgs(
-      [
-        "--install-dir",
-        NodePath.join(root, "safe-install"),
-        "--state-dir",
-        NodePath.join(root, "safe-state"),
-        "--output-dir",
-        NodePath.join(root, "safe-output"),
-      ],
+      ["--install-dir", "safe-install", "--state-dir", "safe-state", "--output-dir", "safe-output"],
       {},
       root,
       "win32",
@@ -188,14 +171,7 @@ it("allows updates when state worktrees contain desktop artifacts, without inspe
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-state-worktrees-"));
   try {
     const safe = parseInstallDesktopBuildArgs(
-      [
-        "--install-dir",
-        NodePath.join(root, "install"),
-        "--state-dir",
-        NodePath.join(root, "state"),
-        "--output-dir",
-        NodePath.join(root, "output"),
-      ],
+      ["--install-dir", "install", "--state-dir", "state", "--output-dir", "output"],
       {},
       root,
       "win32",
@@ -248,14 +224,7 @@ it("refuses UNC and junction aliases of another install or its home before repla
       JSON.stringify({ t3Home: otherHome, displayName: "T3 alpha.local" }),
     );
     const safe = parseInstallDesktopBuildArgs(
-      [
-        "--install-dir",
-        NodePath.join(root, "install"),
-        "--state-dir",
-        NodePath.join(root, "state"),
-        "--output-dir",
-        NodePath.join(root, "output"),
-      ],
+      ["--install-dir", "install", "--state-dir", "state", "--output-dir", "output"],
       {},
       root,
       "win32",
@@ -323,7 +292,7 @@ it("refuses folded Windows CLI and environment spellings before normalization", 
       assert.throws(
         () =>
           parseInstallDesktopBuildArgs(
-            ["--install-dir", NodePath.join(root, "install"), flag, candidate],
+            ["--install-dir", "install", flag, candidate],
             {},
             root,
             "win32",
@@ -335,7 +304,7 @@ it("refuses folded Windows CLI and environment spellings before normalization", 
     assert.throws(
       () =>
         parseInstallDesktopBuildArgs(
-          ["--install-dir", NodePath.join(root, "install")],
+          ["--install-dir", "install"],
           { T3CODE_DESKTOP_LOCAL_STATE_DIR: candidate },
           root,
           "win32",
@@ -395,7 +364,7 @@ it("swaps fixture updates, rolls back a failed rename, and leaves refused target
 
 it("requests an unpacked artifact with the V2 local identity", () => {
   const options = parseInstallDesktopBuildArgs(
-    ["--install-dir", NodePath.join(NodePath.resolve("fixtures"), "installed")],
+    ["--install-dir", "installed"],
     {},
     NodePath.resolve("fixtures"),
     "win32",
@@ -511,20 +480,67 @@ it("resolves junctions before allowing state paths, using only fixture homes", a
     await NodeFSP.mkdir(protectedDir, { recursive: true });
     await NodeFSP.symlink(protectedDir, alias, "junction");
     const options = parseInstallDesktopBuildArgs(
-      [
-        "--install-dir",
-        NodePath.join(root, "installed"),
-        "--output-dir",
-        NodePath.join(root, "artifacts"),
-        "--state-dir",
-        alias,
-      ],
+      ["--install-dir", "installed", "--output-dir", "artifacts", "--state-dir", alias],
       {},
       root,
       "win32",
       homeDir,
     );
     await expect(assertCanonicalInstallPaths(options, homeDir)).rejects.toThrow(/live home/);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("resolves relative directories against the working directory, then guards the full path", async () => {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Windows path fixtures.
+  if (NodeOS.platform() !== "win32") return;
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-relative-guard-"));
+  try {
+    const cwd = NodePath.join(root, "work");
+    const homeDir = NodePath.join(root, "pretend-home");
+    await NodeFSP.mkdir(cwd);
+    await NodeFSP.mkdir(NodePath.join(homeDir, ".t3.local"), { recursive: true });
+    await NodeFSP.mkdir(NodePath.join(homeDir, ".t3"));
+    await NodeFSP.symlink(homeDir, NodePath.join(cwd, "link-to-pretend-home"), "junction");
+    const parse = (stateDir: string, env: NodeJS.ProcessEnv = {}) =>
+      parseInstallDesktopBuildArgs(
+        [
+          "--install-dir",
+          "installed",
+          "--output-dir",
+          ".\\release",
+          ...(stateDir ? ["--state-dir", stateDir] : []),
+        ],
+        env,
+        cwd,
+        "win32",
+        homeDir,
+      );
+
+    const accepted = parse(".\\new-v2-home");
+    assert.equal(accepted.installDir, NodePath.join(cwd, "installed"));
+    assert.equal(accepted.outputDir, NodePath.join(cwd, "release"));
+    assert.equal(accepted.stateDir, NodePath.join(cwd, "new-v2-home"));
+    await assertCanonicalInstallPaths(accepted, homeDir);
+
+    for (const relative of ["..\\pretend-home", ".\\link-to-pretend-home"]) {
+      const options = parse(relative);
+      await expect(assertCanonicalInstallPaths(options, homeDir)).rejects.toThrow(/live home/);
+    }
+    const viaEnvironment = parse("", { T3CODE_DESKTOP_LOCAL_STATE_DIR: "..\\pretend-home" });
+    assert.equal(viaEnvironment.stateDir, homeDir);
+    await expect(assertCanonicalInstallPaths(viaEnvironment, homeDir)).rejects.toThrow(/live home/);
+
+    // A trailing dot or space in a segment stays refused, and the message names the full path.
+    for (const spelling of [".\\home.", ".\\home ", "sub.\\home"]) {
+      const fullPath = NodePath.join(cwd, spelling.replace(/^\.\\/, ""));
+      assert.throws(() => parse(spelling), Error, `trailing dots and spaces in ${fullPath}`);
+    }
+    // Spellings that are not plainly relative are still refused rather than reinterpreted.
+    assert.throws(() => parse("I:home"), /full path is required/);
+    assert.throws(() => parse("\\home"), /full path is required/);
+    assert.throws(() => parse("sub/home"), /Refusing Windows path spelling/);
   } finally {
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
@@ -539,14 +555,7 @@ it("protects a live-home fixture that is itself a junction to an external direct
     await NodeFSP.mkdir(protectedTarget, { recursive: true });
     await NodeFSP.symlink(protectedTarget, NodePath.join(homeDir, ".t3.local"), "junction");
     const options = parseInstallDesktopBuildArgs(
-      [
-        "--install-dir",
-        NodePath.join(root, "install"),
-        "--output-dir",
-        NodePath.join(root, "output"),
-        "--state-dir",
-        protectedTarget,
-      ],
+      ["--install-dir", "install", "--output-dir", "output", "--state-dir", protectedTarget],
       {},
       root,
       "win32",
@@ -564,7 +573,7 @@ it("protects a live-home fixture that is itself a junction to an external direct
 it("parses the install directory and host platform defaults", () => {
   const cwd = NodePath.resolve("fixtures");
   const options = parseInstallDesktopBuildArgs(
-    ["--install-dir", NodePath.join(cwd, "installed"), "--arch=x64", "--launch"],
+    ["--install-dir", "installed", "--arch=x64", "--launch"],
     {},
     cwd,
     "win32",
@@ -583,7 +592,7 @@ it("parses the install directory and host platform defaults", () => {
 it("parses the reuse-artifact installer shortcut", () => {
   const cwd = NodePath.resolve("fixtures");
   const options = parseInstallDesktopBuildArgs(
-    ["--install-dir", NodePath.join(cwd, "installed"), "--reuse-artifact"],
+    ["--install-dir", "installed", "--reuse-artifact"],
     {},
     cwd,
     "win32",
@@ -599,10 +608,10 @@ it("reads install defaults from the environment", () => {
   const options = parseInstallDesktopBuildArgs(
     [],
     {
-      T3CODE_DESKTOP_INSTALL_DIR: NodePath.join(cwd, "env-install"),
+      T3CODE_DESKTOP_INSTALL_DIR: "env-install",
       T3CODE_DESKTOP_PLATFORM: "linux",
       T3CODE_DESKTOP_ARCH: "arm64",
-      T3CODE_DESKTOP_LOCAL_STATE_DIR: NodePath.join(cwd, "env-state"),
+      T3CODE_DESKTOP_LOCAL_STATE_DIR: "env-state",
       T3CODE_DESKTOP_VERSION: "0.0.0-local",
     },
     cwd,

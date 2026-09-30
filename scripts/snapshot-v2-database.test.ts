@@ -201,6 +201,65 @@ it("names the surviving temporary file and the untouched destination when a fail
   }
 });
 
+it("resolves a relative destination against the working directory, then refuses live homes", async () => {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Windows-only path fixture.
+  if (NodeOS.platform() !== "win32") return;
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-snapshot-relative-"));
+  try {
+    const cwd = NodePath.join(root, "work");
+    const home = NodePath.join(root, "pretend-home");
+    await NodeFSP.mkdir(cwd);
+    await NodeFSP.mkdir(NodePath.join(home, ".t3.local"), { recursive: true });
+    await NodeFSP.mkdir(NodePath.join(home, ".t3"));
+    await NodeFSP.symlink(home, NodePath.join(cwd, "link-to-pretend-home"), "junction");
+    const source = NodePath.join(root, "source.sqlite");
+    const db = new NodeSqlite.DatabaseSync(source);
+    db.exec("CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('relative');");
+    db.close();
+    // Keep the command's profile lookup inside the sandbox.
+    const preload = NodePath.join(root, "profile.cjs");
+    await NodeFSP.writeFile(
+      preload,
+      `const os = require('node:os'); const userInfo = os.userInfo; os.userInfo = (...args) => ({ ...userInfo(...args), homedir: ${JSON.stringify(home)} }); require('node:module').syncBuiltinESMExports();`,
+    );
+    const script = NodeURL.fileURLToPath(new URL("./snapshot-v2-database.ts", import.meta.url));
+    const run = (destination: string) =>
+      NodeChildProcess.spawnSync(
+        process.execPath,
+        ["--require", preload, script, source, destination],
+        {
+          cwd,
+          encoding: "utf8",
+        },
+      );
+
+    for (const relative of [
+      `..\\pretend-home\\.t3.local\\state.sqlite`,
+      `.\\link-to-pretend-home\\.t3\\state.sqlite`,
+    ]) {
+      const refused = run(relative);
+      assert.notEqual(refused.status, 0);
+      assert.include(refused.stderr, "Refusing snapshot destination");
+      assert.include(refused.stderr, home);
+    }
+    assert.deepEqual(await NodeFSP.readdir(NodePath.join(home, ".t3.local")), []);
+    assert.deepEqual(await NodeFSP.readdir(NodePath.join(home, ".t3")), []);
+
+    const accepted = run(`.\\new-v2-home\\state.sqlite`);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    const full = NodePath.join(cwd, "new-v2-home", "state.sqlite");
+    assert.include(accepted.stdout, `Snapshot written to ${full}`);
+    const copy = new NodeSqlite.DatabaseSync(full, { readOnly: true });
+    try {
+      assert.equal(copy.prepare("SELECT value FROM evidence").get()?.value, "relative");
+    } finally {
+      copy.close();
+    }
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+});
+
 it("runs the file command in Windows PowerShell 5.1 and PowerShell 7 without inline JavaScript", async () => {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Native PowerShell compatibility fixture.
   if (NodeOS.platform() !== "win32") return;

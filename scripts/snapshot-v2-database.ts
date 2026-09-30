@@ -3,7 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { resolveRealLocalPath } from "./lib/real-local-path.ts";
+import { resolveCommandLinePath, resolveRealLocalPath } from "./lib/real-local-path.ts";
 
 /**
  * Snapshot live V1 data without opening it for writes or replacing another snapshot. Returns the
@@ -25,7 +25,7 @@ export function snapshotV2Database(
         !relative.startsWith(`..${NodePath.sep}`) &&
         !NodePath.isAbsolute(relative))
     ) {
-      throw new Error(`Refusing snapshot destination under ${protectedHome}.`);
+      throw new Error(`Refusing snapshot destination ${target}, which is under ${protectedHome}.`);
     }
   }
   const database = new NodeSqlite.DatabaseSync(source, { readOnly: true });
@@ -90,8 +90,10 @@ if (import.meta.main) {
   const [source, destination, extra] = process.argv.slice(2);
   if (!source || !destination || extra)
     throw new Error("Usage: node scripts/snapshot-v2-database.ts <source> <destination>");
-  const { leftoverPartial } = snapshotV2Database(source, destination);
-  process.stdout.write(`Snapshot quick_check: ok\nSnapshot written to ${destination}\n`);
+  // A relative destination means relative to the current directory; name the full path from here on.
+  const fullDestination = resolveCommandLinePath(destination);
+  const { leftoverPartial } = snapshotV2Database(source, fullDestination);
+  process.stdout.write(`Snapshot quick_check: ok\nSnapshot written to ${fullDestination}\n`);
   if (leftoverPartial)
     process.stderr.write(
       `Warning: the snapshot is complete, but the temporary file ${leftoverPartial} could not be removed. It can be deleted by hand.\n`,

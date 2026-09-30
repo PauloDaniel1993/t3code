@@ -4,7 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { assert, it } from "@effect/vitest";
-import { resolveRealLocalPath } from "./real-local-path.ts";
+import { resolveCommandLinePath, resolveRealLocalPath } from "./real-local-path.ts";
 
 it("resolves junctions and missing children to their local directory", async () => {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-real-path-"));
@@ -92,4 +92,29 @@ it("refuses relative Windows paths and says a full path is required", async () =
   if (NodeOS.platform() !== "win32") return;
   for (const candidate of [".\\v2home", "..\\x\\v2home", "v2home", "I:v2home", "\\v2home"])
     assert.throws(() => resolveRealLocalPath(candidate), /full path is required/);
+});
+
+it("makes a relative command line path a full path against the working directory", () => {
+  const cwd = "C:\\work\\here";
+  assert.equal(resolveCommandLinePath(".\\new-home", "win32", cwd), "C:\\work\\here\\new-home");
+  assert.equal(resolveCommandLinePath("..\\other\\home", "win32", cwd), "C:\\work\\other\\home");
+  assert.equal(resolveCommandLinePath("state", "win32", cwd), "C:\\work\\here\\state");
+  assert.equal(resolveCommandLinePath("D:\\full\\path", "win32", cwd), "D:\\full\\path");
+  const unc = "\\\\server\\share\\home";
+  assert.equal(resolveCommandLinePath(unc, "win32", cwd), unc);
+  // Segments the guard must still see are kept, not folded away.
+  assert.equal(resolveCommandLinePath("home.\\x", "win32", cwd), "C:\\work\\here\\home.\\x");
+  // Not plainly relative: left for the guard to refuse.
+  for (const candidate of ["I:home", "\\home", "sub/home", "\\\\?\\C:\\home"])
+    assert.equal(resolveCommandLinePath(candidate, "win32", cwd), candidate);
+});
+
+it("keeps the guard strict about relative paths on Windows", () => {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Real Windows path fixtures.
+  if (NodeOS.platform() !== "win32") return;
+  for (const candidate of [".\\home", "..\\home", "home"])
+    assert.throws(
+      () => resolveRealLocalPath(candidate, [], "win32", "C:\\work"),
+      /full path is required/,
+    );
 });

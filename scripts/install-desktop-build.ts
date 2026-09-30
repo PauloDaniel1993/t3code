@@ -8,7 +8,7 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { extractFile } from "@electron/asar";
 import { LOCAL_DESKTOP_IDENTITY, hasLocalDesktopBootstrap } from "./lib/local-desktop-identity.ts";
-import { resolveRealLocalPath } from "./lib/real-local-path.ts";
+import { resolveCommandLinePath, resolveRealLocalPath } from "./lib/real-local-path.ts";
 import * as Schema from "effect/Schema";
 import {
   getWindowsUserDirectories,
@@ -141,7 +141,8 @@ function consumesNextValue(argv: ReadonlyArray<string>, index: number, flag: str
 }
 
 function resolveInputPath(value: string, cwd: string): string {
-  return resolveRealLocalPath(value, [], readCliHostPlatform(), cwd);
+  const platform = readCliHostPlatform();
+  return resolveRealLocalPath(resolveCommandLinePath(value, platform, cwd), [], platform, cwd);
 }
 
 function defaultStateDir(homeDir: string): string {
