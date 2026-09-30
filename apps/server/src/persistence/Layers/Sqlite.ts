@@ -8,6 +8,8 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrations } from "../Migrations.ts";
 import { initializeV2Database } from "../initializeV2Database.ts";
 import { ServerConfig } from "../../config.ts";
+// Ticket 32: standalone fallback until migration 011 joins the fork ledger.
+import TaskDeliveryIndex from "../ForkMigrations/011_TaskDeliveryIndex.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
 export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -23,6 +25,8 @@ const setup = Layer.effectDiscard(
     // largest size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
     yield* runMigrations();
+    // Ticket 32: idempotent, including when the fork ledger already applied 011.
+    yield* TaskDeliveryIndex;
   }),
 );
 

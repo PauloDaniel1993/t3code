@@ -13,6 +13,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type * as Statement from "effect/unstable/sql/Statement";
+import TaskDeliveryIndex from "../persistence/ForkMigrations/011_TaskDeliveryIndex.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { layer, ProjectionStoreV2, threadShellFromProjection } from "./ProjectionStore.ts";
 import { taskDeliveryFromSubagents, withTaskDeliveryWatermarks } from "./TaskDeliveryShell.ts";
@@ -129,10 +131,12 @@ it.effect("2000 shell watermarks use one batch query, with no task field on ordi
       payload: task,
     });
     let queries = 0;
+    let statement: Statement.Statement<unknown> | undefined;
     const countedSql = new Proxy(sql, {
       apply(target, thisArg, args) {
         queries++;
-        return Reflect.apply(target, thisArg, args);
+        statement = Reflect.apply(target, thisArg, args);
+        return statement;
       },
     });
     const rows = Array.from({ length: 2000 }, (_, index) => ({
@@ -147,5 +151,56 @@ it.effect("2000 shell watermarks use one batch query, with no task field on ordi
     };
     assert.deepEqual(result[0], expected);
     assert.deepEqual(result[1999], rows[1999]);
+    const [query, bindings] = statement!.compile();
+    const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, bindings);
+    assert.isTrue(plan.some((row) => row.detail.includes("fork_v2_task_delivery_idx")));
+    const instructions = yield* sql.unsafe<{ opcode: string; p4: string | null }>(
+      `EXPLAIN ${query}`,
+      bindings,
+    );
+    assert.isFalse(
+      instructions.some((row) => row.opcode === "Function" && row.p4?.includes("json_extract")),
+    );
   }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect(
+  "fork migration 011 backfills once and maintains timestamps on update, acknowledgement and deletion",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP INDEX fork_v2_task_delivery_idx`;
+      yield* store.apply(created);
+      yield* store.apply({
+        id: EventId.make("legacy"),
+        type: "subagent.updated",
+        threadId,
+        occurredAt: now,
+        payload: task,
+      });
+      yield* TaskDeliveryIndex;
+      yield* TaskDeliveryIndex;
+      const latest = "2026-09-29T00:09:00.000Z";
+      for (const state of ["delivered", "acknowledged"] as const) {
+        yield* store.apply({
+          id: EventId.make(`update:${state}`),
+          type: "subagent.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            ...task,
+            prompt: "p".repeat(8192),
+            result: "r".repeat(24576),
+            completionDelivery: { state, observedByRunId: null, deliveredAt: latest },
+          },
+        });
+        assert.strictEqual((yield* store.getThreadShell(threadId))?.latestTaskDeliveredAt, latest);
+      }
+      yield* sql`DELETE FROM orchestration_v2_projection_subagents WHERE subagent_id = ${task.id}`;
+      assert.isUndefined((yield* store.getThreadShell(threadId))?.latestTaskDeliveredAt);
+      const upstream =
+        yield* sql`SELECT migration_id FROM effect_sql_migrations WHERE name = 'TaskDeliveryIndex'`;
+      assert.lengthOf(upstream, 0);
+    }).pipe(Effect.provide(TestLayer)),
 );

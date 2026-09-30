@@ -355,6 +355,7 @@ it.layer(TestLayer)("delegated completion delivery repairs", (it) => {
         messageId,
       });
       const accepted = yield* orchestrator.getThreadProjection(threadId);
+      // Ticket 32: sidebar task subthreads and delivery state.
       const deliveredAt = accepted.subagents.find((row) => row.id === taskId)?.completionDelivery
         ?.deliveredAt;
       assert.isTrue(Number.isFinite(Date.parse(deliveredAt ?? "")));
@@ -378,6 +379,7 @@ it.layer(TestLayer)("delegated completion delivery repairs", (it) => {
         messageId,
       });
       const duplicate = yield* orchestrator.getThreadProjection(threadId);
+      // Ticket 32: sidebar task subthreads and delivery state.
       assert.equal(
         duplicate.subagents.find((row) => row.id === taskId)?.completionDelivery?.deliveredAt,
         deliveredAt,

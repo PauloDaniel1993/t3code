@@ -1809,6 +1809,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...task,
         completionDelivery: {
           state,
+          // Ticket 32: sidebar task subthreads and delivery state.
           ...(task.completionDelivery?.deliveredAt === undefined
             ? {}
             : { deliveredAt: task.completionDelivery.deliveredAt }),
@@ -8592,6 +8593,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         nextTaskStates.set(task.id, {
           state: deliveryRun.status === "cancelled" ? "pending" : "delivered",
           observedByRunId: null,
+          // Ticket 32: sidebar task subthreads and delivery state.
           ...(deliveryRun.status === "cancelled" ? {} : { deliveredAt: DateTime.formatIso(now) }),
         });
       }
@@ -8758,6 +8760,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: task.driver,
         providerInstanceId: task.providerInstanceId,
         occurredAt: now,
+        // Ticket 32: sidebar task subthreads and delivery state.
         payload: {
           ...task,
           completionDelivery: {

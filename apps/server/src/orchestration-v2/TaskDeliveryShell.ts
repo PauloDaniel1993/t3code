@@ -1,9 +1,6 @@
 import type { OrchestrationV2Subagent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
-
-const encodeThreadIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 /** Omit empty watermarks so ordinary shells pay no wire cost. */
 export function taskDeliveryShellFields(fields: object) {
@@ -32,11 +29,14 @@ export const withTaskDeliveryWatermarks = (sql: SqlClient.SqlClient) =>
     rows: ReadonlyArray<Row>,
   ) {
     if (rows.length === 0) return rows;
+    // These internal IDs are already typed; avoid a schema traversal on every shell read.
+    // @effect-diagnostics-next-line preferSchemaOverJson:off
+    const threadIds = JSON.stringify(rows.map((row) => row.thread_id));
     const deliveries = yield* sql<{ thread_id: string; delivered_at: string | null }>`
       SELECT task.thread_id, MAX(json_extract(task.payload_json, '$.completionDelivery.deliveredAt')) AS delivered_at
-      FROM json_each(${encodeThreadIds(rows.map((row) => row.thread_id))}) AS requested
-      JOIN orchestration_v2_projection_subagents AS task ON task.thread_id = requested.value
+      FROM orchestration_v2_projection_subagents AS task INDEXED BY fork_v2_task_delivery_idx
       WHERE task.origin = 'app_owned'
+        AND task.thread_id IN (SELECT value FROM json_each(${threadIds}))
       GROUP BY task.thread_id
     `;
     if (deliveries.length === 0) return rows;

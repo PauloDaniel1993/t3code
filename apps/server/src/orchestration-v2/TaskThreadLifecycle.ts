@@ -35,17 +35,34 @@ export function withTaskThreadLifecycle<E, R>(
       command.type !== "thread.delete"
     )
       return parentPlan;
-    const snapshot = yield* projectionStore.getShellSnapshot();
-    const children = [...snapshot.threads, ...snapshot.archivedThreads].filter(
-      (thread) =>
+    const parent = yield* projectionStore.getThreadRecords(command.threadId, ["subagents"]);
+    const childIds = new Set(
+      parent.subagents.flatMap((task) =>
+        task.origin === "app_owned" && task.childThreadId !== null ? [task.childThreadId] : [],
+      ),
+    );
+    // The common path reads only this parent's indexed records, never any shell list.
+    if (childIds.size === 0) return parentPlan;
+    const children = [];
+    for (const id of childIds) {
+      const thread = yield* projectionStore
+        .getThread(id)
+        .pipe(
+          Effect.catchTag("ProjectionStoreThreadNotFoundError", () => Effect.succeed(undefined)),
+        );
+      if (
+        thread !== undefined &&
+        thread.deletedAt === null &&
         thread.lineage.parentThreadId === command.threadId &&
         thread.lineage.relationshipToParent === "subagent" &&
         !isProviderNativeSubagentThread(thread) &&
         (command.type === "thread.delete" ||
           (command.type === "thread.archive"
             ? thread.archivedAt === null
-            : thread.archivedAt !== null)),
-    );
+            : thread.archivedAt !== null))
+      )
+        children.push(thread);
+    }
     if (children.length === 0) return parentPlan;
     const events: OrchestrationV2DomainEvent[] = [];
     const effects: PendingOrchestrationEffectV2[] = [];
@@ -101,7 +118,6 @@ export function withTaskThreadLifecycle<E, R>(
     events.push(...parentPlan.events);
     effects.push(...parentPlan.effects);
     if (command.type === "thread.archive") {
-      const parent = yield* projectionStore.getThreadRecords(command.threadId, ["subagents"]);
       const childIds = new Set(children.map((child) => child.id));
       const now = yield* DateTime.now;
       for (const task of parent.subagents) {

@@ -19,6 +19,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type * as Statement from "effect/unstable/sql/Statement";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import { ServerConfig } from "../config.ts";
@@ -35,6 +37,9 @@ import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { OrchestratorV2 } from "./Orchestrator.ts";
+import { IdAllocatorV2, layer as idAllocatorLayer } from "./IdAllocator.ts";
+import { ProjectionStoreV2, layer as projectionLayer } from "./ProjectionStore.ts";
+import { withTaskThreadLifecycle } from "./TaskThreadLifecycle.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import {
   OrchestrationV2EventSinkLayerLive,
@@ -133,6 +138,96 @@ const TestLayer = Layer.mergeAll(OrchestrationV2LayerLive, OrchestrationV2EventS
   Layer.provide(ServerSettingsService.layerTest()),
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(PlatformTestLayer),
+);
+
+it.effect(
+  "no-task archive, unarchive and delete read only the parent's keyed records and preserve the upstream plan",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const statements: string[] = [];
+      const countedSql = new Proxy(sql, {
+        apply(target, thisArg, args) {
+          const statement: Statement.Statement<unknown> = Reflect.apply(target, thisArg, args);
+          statements.push(statement.compile()[0]);
+          return statement;
+        },
+      });
+      const program = Effect.gen(function* () {
+        const store = yield* ProjectionStoreV2;
+        const allocator = yield* IdAllocatorV2;
+        const id = ThreadId.make("ordinary");
+        const now = yield* DateTime.now;
+        yield* store.apply({
+          id: EventId.make("ordinary:create"),
+          type: "thread.created",
+          threadId: id,
+          occurredAt: now,
+          payload: {
+            id,
+            projectId: ProjectId.make("project"),
+            title: "Ordinary",
+            createdBy: "user",
+            creationSource: "web",
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: { parentThreadId: null, rootThreadId: id, relationshipToParent: null },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+        const reads: unknown[] = [];
+        const countedStore = {
+          ...store,
+          getShellSnapshot: () => Effect.die("lifecycle must never read a shell list"),
+          getThread: () => Effect.die("no task IDs means no child reads"),
+          getThreadRecords: ((...args: Parameters<typeof store.getThreadRecords>) => {
+            reads.push(args);
+            return store.getThreadRecords(...args);
+          }) satisfies typeof store.getThreadRecords,
+        };
+        for (const type of ["thread.archive", "thread.unarchive", "thread.delete"] as const) {
+          statements.length = 0;
+          const parentPlan = { events: [], effects: [] };
+          const result = yield* withTaskThreadLifecycle(
+            { type, threadId: id, commandId: CommandId.make(type) },
+            countedStore,
+            allocator,
+            () => Effect.die("no children means no additional plans"),
+          )(parentPlan);
+          assert.strictEqual(result, parentPlan);
+          assert.isTrue(
+            statements.every(
+              (query) =>
+                !query.trimStart().startsWith("SELECT") ||
+                (query.includes("thread_id =") && !query.includes("projection_runs")),
+            ),
+          );
+        }
+        assert.deepEqual(
+          reads,
+          Array.from({ length: 3 }, () => [id, ["subagents"]]),
+        );
+      });
+      yield* program.pipe(
+        Effect.provide(
+          Layer.merge(projectionLayer, idAllocatorLayer).pipe(
+            Layer.provide(Layer.succeed(SqlClient.SqlClient, countedSql)),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(SqlitePersistenceMemory)),
 );
 
 it.effect(
