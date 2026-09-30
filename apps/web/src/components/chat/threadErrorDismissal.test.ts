@@ -7,7 +7,6 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  dismissThreadErrorBannerForSession,
   getThreadErrorBannerKey,
   isThreadErrorBannerDismissedForSession,
   shouldShowThreadErrorBanner,
@@ -126,10 +125,7 @@ function dismiss(
   projection: OrchestrationV2ThreadProjection,
   localError?: string,
 ) {
-  const threadError = localError ?? deriveThreadRuntime(projection)?.lastError ?? null;
-  const shown = banner(threadKey, projection, localError);
-  dismissThreadErrorBannerForSession(getThreadErrorBannerKey(threadKey, threadError));
-  dismissThreadError(shown.dismissal);
+  dismissThreadError(banner(threadKey, projection, localError).dismissal);
 }
 
 describe("dismissing a thread error", () => {
@@ -358,6 +354,19 @@ describe("dismissing a thread error", () => {
     expect(
       onScreen(key, thread(first, failedRun("run-2", 2, "Authentication expired"), running, old)),
     ).toBe("Authentication expired");
+  });
+
+  it("shows saved failures with the text of a dismissed client-local error", () => {
+    const key = "env:local-then-saved";
+    const idle = thread(run("run-1", 1, "completed"));
+    expect(onScreen(key, idle, "Provider crashed")).toBe("Provider crashed");
+    dismiss(key, idle, "Provider crashed");
+    expect(onScreen(key, idle)).toBeNull();
+
+    const once = [run("run-1", 1, "completed"), ...failedRun("run-2", 2, "Provider crashed")];
+    expect(onScreen(key, thread(once, session("Provider crashed", 22)))).toBe("Provider crashed");
+    const twice = [...once, ...failedRun("run-3", 3, "Provider crashed")];
+    expect(onScreen(key, thread(twice, session("Provider crashed", 32)))).toBe("Provider crashed");
   });
 
   it("keeps a dismissal after two hundred and one dismissals on other threads", () => {

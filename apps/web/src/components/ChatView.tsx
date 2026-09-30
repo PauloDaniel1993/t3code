@@ -441,7 +441,6 @@ import {
   shouldShowProviderStatusBanner,
 } from "./chat/ProviderStatusBanner";
 import {
-  dismissThreadErrorBannerForSession,
   getThreadErrorBannerKey,
   isThreadErrorBannerDismissedForSession,
   shouldShowThreadErrorBanner,
@@ -10614,7 +10613,6 @@ export default function ChatView(props: ChatViewProps) {
                 }
                 onDismiss={() => {
                   setThreadError(activeThread.id, null);
-                  dismissThreadErrorBannerForSession(threadErrorBannerKey);
                   dismissThreadError(presentedThreadError.dismissal);
                   setThreadErrorBannerDismissTick((tick) => tick + 1);
                 }}

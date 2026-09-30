@@ -33,7 +33,9 @@ import { dismissThreadErrorBannerForSession, getThreadErrorBannerKey } from "./T
  * is shown with its own message and class, even while the session still holds
  * older text, which V2's `threadErrorSummary` would otherwise prefer.
  *
- * Client-local errors always show; the dismiss handler clears them.
+ * Client-local errors always show; the dismiss handler clears them. Dismissing
+ * one records nothing here and masks no text, so a saved failure with the same
+ * text still shows.
  *
  * State is renderer memory, one entry per environment-scoped thread key, and
  * is lost on reload, as upstream's mask is. A dismissal replaces the thread's
