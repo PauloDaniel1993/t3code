@@ -469,6 +469,9 @@ export type OrchestrationV2DelegatedCompletionTaskDeliveryState =
 export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Struct({
   state: OrchestrationV2DelegatedCompletionTaskDeliveryState,
   observedByRunId: Schema.NullOr(RunId),
+  // Ticket 32: sidebar task subthreads and delivery state.
+  /** Last actual provider acceptance; independent of later task/status updates. */
+  deliveredAt: Schema.optional(IsoDateTime),
 });
 export type OrchestrationV2DelegatedCompletionTaskDelivery =
   typeof OrchestrationV2DelegatedCompletionTaskDelivery.Type;
@@ -1664,6 +1667,8 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  // Ticket 32: older clients and servers may omit the task delivery watermark.
+  latestTaskDeliveredAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,

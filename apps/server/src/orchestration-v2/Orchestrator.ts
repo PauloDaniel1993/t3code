@@ -1,3 +1,5 @@
+// Ticket 32: preserve the fork's parent/task lifecycle through the existing command sink.
+import { withTaskThreadLifecycle } from "./TaskThreadLifecycle.ts";
 import {
   latestExecutedRun,
   latestRootProviderFailure,
@@ -1807,6 +1809,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...task,
         completionDelivery: {
           state,
+          // Ticket 32: sidebar task subthreads and delivery state.
+          ...(task.completionDelivery?.deliveredAt === undefined
+            ? {}
+            : { deliveredAt: task.completionDelivery.deliveredAt }),
           observedByRunId:
             command.type === "delegated_task.completion-delivery.acknowledge"
               ? command.observedByRunId
@@ -8587,6 +8593,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         nextTaskStates.set(task.id, {
           state: deliveryRun.status === "cancelled" ? "pending" : "delivered",
           observedByRunId: null,
+          // Ticket 32: sidebar task subthreads and delivery state.
+          ...(deliveryRun.status === "cancelled" ? {} : { deliveredAt: DateTime.formatIso(now) }),
         });
       }
       const pendingTaskIds = projection.subagents
@@ -8752,7 +8760,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: task.driver,
         providerInstanceId: task.providerInstanceId,
         occurredAt: now,
-        payload: { ...task, completionDelivery: { state, observedByRunId: null }, updatedAt: now },
+        // Ticket 32: sidebar task subthreads and delivery state.
+        payload: {
+          ...task,
+          completionDelivery: {
+            state,
+            observedByRunId: null,
+            ...(state === "delivered" ? { deliveredAt: DateTime.formatIso(now) } : {}),
+          },
+          updatedAt: now,
+        },
       });
     }
     // Provider acceptance drains this batch but does not acknowledge its results.
@@ -9112,6 +9129,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     const plan = yield* dispatchOnce(command).pipe(
+      // Ticket 32: add child plans to the parent's single durable receipt.
+      Effect.flatMap(withTaskThreadLifecycle(command, projectionStore, idAllocator, dispatchOnce)),
+      mapDispatchError(command),
       Effect.flatMap((planned) =>
         // A Stop can race with terminal provider events. Its empty plan is an
         // accepted idempotent outcome; every other command must still mutate.

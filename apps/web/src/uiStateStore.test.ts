@@ -20,6 +20,11 @@ import {
 
 function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
+    // Ticket 32: sidebar task subthreads and delivery state.
+    sidebarTaskGroupsExpandedById: {},
+    sidebarTaskGroupsExpandedAtById: {},
+    threadVisitEditsAtById: {},
+    threadVisitIsUnreadById: {},
     projectExpandedById: {},
     projectOrder: [],
     sidebarProjectScopeKey: null,
@@ -193,6 +198,11 @@ describe("parsePersistedState", () => {
     });
 
     expect(parsed).toEqual({
+      // Ticket 32: sidebar task subthreads and delivery state.
+      sidebarTaskGroupsExpandedById: {},
+      sidebarTaskGroupsExpandedAtById: {},
+      threadVisitEditsAtById: {},
+      threadVisitIsUnreadById: {},
       projectExpandedById: {
         logical: false,
       },
@@ -315,6 +325,11 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(persisted).toEqual({
+      // Ticket 32: sidebar task subthreads and delivery state.
+      sidebarTaskGroupsExpandedById: {},
+      sidebarTaskGroupsExpandedAtById: {},
+      threadVisitEditsAtById: {},
+      threadVisitIsUnreadById: {},
       projectExpandedById: {
         logical: false,
       },

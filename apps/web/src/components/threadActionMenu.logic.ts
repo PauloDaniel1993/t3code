@@ -31,6 +31,8 @@ export type ThreadActionMenuId =
   | "delete";
 
 export interface ThreadActionMenuState {
+  // Ticket 32: sidebar task subthreads and delivery state.
+  readonly isTask?: boolean;
   readonly branch: string | null;
   /**
    * Project scoping for the thread list. Null on surfaces with no scoped
@@ -69,6 +71,16 @@ export interface ThreadActionMenuState {
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,
 ): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> {
+  // Ticket 32: sidebar task subthreads and delivery state.
+  if (state.isTask)
+    return [
+      ...(state.isPinned && state.supports.pinning
+        ? [{ id: "unpin" as const, label: "Unpin task", icon: "pin-off" }]
+        : []),
+      { id: "rename", label: "Rename task", icon: "pencil" },
+      { id: "copy-thread-id", label: "Copy thread ID", icon: "hash" },
+      { id: "delete", label: "Delete", destructive: true, icon: "trash", separatorBefore: true },
+    ];
   return [
     ...(state.branch
       ? [

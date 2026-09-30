@@ -280,6 +280,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
     searchTerms: ["combine matching repositories environments sidebar"],
   },
+  // Ticket 32: sidebar task subthreads and delivery state.
+  {
+    id: "task-subthreads",
+    title: "Task subthreads",
+    to: "/settings/general",
+    searchTerms: ["thread list sidebar delegated tasks children nesting sub-threads"],
+  },
   {
     id: "snooze-limited-threads",
     title: "Snooze limited threads",

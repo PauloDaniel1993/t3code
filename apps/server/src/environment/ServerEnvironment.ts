@@ -214,6 +214,8 @@ export const make = Effect.gen(function* () {
     serverVersion: packageJson.version,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
+      // Ticket 32: sidebar task subthreads and delivery state.
+      threadTasks: true,
       repositoryIdentity: true,
       connectionProbe: true,
       attachmentUploads: true,

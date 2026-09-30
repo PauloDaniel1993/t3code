@@ -2229,6 +2229,32 @@ export function GeneralSettingsPanel() {
     <SettingsPageContainer>
       <ProjectDefaultsSettings category="general" />
       <SettingsSection id="organization" title="Organization">
+        {/* Ticket 32: device-local sidebar task display preference. */}
+        <SettingsRow
+          {...searchableSetting("task-subthreads")}
+          description="Show delegated tasks beneath their parent threads in the sidebar."
+          resetAction={
+            settings.threadTasksEnabled !== DEFAULT_UNIFIED_SETTINGS.threadTasksEnabled ? (
+              <SettingResetButton
+                label="task subthreads"
+                onClick={() =>
+                  updateSettings({
+                    threadTasksEnabled: DEFAULT_UNIFIED_SETTINGS.threadTasksEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.threadTasksEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ threadTasksEnabled: Boolean(checked) })
+              }
+              aria-label="Task subthreads"
+            />
+          }
+        />
         <SettingsRow
           {...searchableSetting("project-grouping")}
           description="Combine matching repositories across environments."

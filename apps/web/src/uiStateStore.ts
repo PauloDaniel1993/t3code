@@ -2,6 +2,12 @@ import { Debouncer } from "@tanstack/react-pacer";
 import type { PullRequestMergeMethod } from "@t3tools/contracts";
 import { create } from "zustand";
 import { normalizeProjectPathForComparison } from "./lib/projectPaths";
+// Ticket 32: sidebar task subthreads and delivery state.
+import {
+  nextLocalEditTime,
+  visitConflictEdits,
+  syncSidebarTaskUiState,
+} from "./sidebarTaskUiState";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
 // Version 1 stored card visibility, not folder expansion.
@@ -20,6 +26,11 @@ const LEGACY_PERSISTED_STATE_KEYS = [
 ] as const;
 
 export interface PersistedUiState {
+  // Ticket 32: sidebar task subthreads and delivery state.
+  sidebarTaskGroupsExpandedById?: Record<string, boolean>;
+  sidebarTaskGroupsExpandedAtById?: Record<string, string>;
+  threadVisitEditsAtById?: Record<string, string>;
+  threadVisitIsUnreadById?: Record<string, boolean>;
   projectExpandedById?: Record<string, boolean>;
   projectOrder?: string[];
   threadLastVisitedAtById?: Record<string, string>;
@@ -43,6 +54,11 @@ export interface UiProjectState {
 }
 
 export interface UiThreadState {
+  // Ticket 32: sidebar task subthreads and delivery state.
+  sidebarTaskGroupsExpandedById: Record<string, boolean>;
+  sidebarTaskGroupsExpandedAtById?: Record<string, string>;
+  threadVisitEditsAtById?: Record<string, string>;
+  threadVisitIsUnreadById?: Record<string, boolean>;
   threadLastVisitedAtById: Record<string, string>;
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
 }
@@ -59,6 +75,8 @@ export interface UiState
   extends UiProjectState, UiThreadState, UiEndpointState, UiPullRequestState {}
 
 const initialState: UiState = {
+  // Ticket 32: sidebar task subthreads and delivery state.
+  sidebarTaskGroupsExpandedById: {},
   projectExpandedById: {},
   projectOrder: [],
   sidebarProjectScopeKey: null,
@@ -147,6 +165,13 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
 
   return {
     projectExpandedById,
+    // Ticket 32: sidebar task subthreads and delivery state.
+    sidebarTaskGroupsExpandedById: sanitizeBooleanRecord(parsed.sidebarTaskGroupsExpandedById),
+    sidebarTaskGroupsExpandedAtById: sanitizeTimestampRecord(
+      parsed.sidebarTaskGroupsExpandedAtById,
+    ),
+    threadVisitEditsAtById: sanitizeTimestampRecord(parsed.threadVisitEditsAtById),
+    threadVisitIsUnreadById: sanitizeBooleanRecord(parsed.threadVisitIsUnreadById),
     projectOrder,
     threadLastVisitedAtById: sanitizeTimestampRecord(parsed.threadLastVisitedAtById),
     threadChangedFilesExpandedById:
@@ -224,6 +249,11 @@ export function persistState(state: UiState): void {
     window.localStorage.setItem(
       PERSISTED_STATE_KEY,
       JSON.stringify({
+        // Ticket 32: sidebar task subthreads and delivery state.
+        sidebarTaskGroupsExpandedById: state.sidebarTaskGroupsExpandedById,
+        sidebarTaskGroupsExpandedAtById: state.sidebarTaskGroupsExpandedAtById ?? {},
+        threadVisitEditsAtById: state.threadVisitEditsAtById ?? {},
+        threadVisitIsUnreadById: state.threadVisitIsUnreadById ?? {},
         projectExpandedById,
         projectOrder: state.projectOrder,
         threadLastVisitedAtById: state.threadLastVisitedAtById,
@@ -245,7 +275,10 @@ export function persistState(state: UiState): void {
   }
 }
 
-const debouncedPersistState = new Debouncer(persistState, { wait: 500 });
+// Ticket 32: sidebar task subthreads and delivery state.
+const debouncedPersistState = new Debouncer(() => persistState(useUiStateStore.getState()), {
+  wait: 500,
+});
 
 export function markThreadVisited(state: UiState, threadId: string, visitedAt: string): UiState {
   const visitedAtMs = Date.parse(visitedAt);
@@ -267,6 +300,8 @@ export function markThreadVisited(state: UiState, threadId: string, visitedAt: s
       ...state.threadLastVisitedAtById,
       [threadId]: visitedAt,
     },
+    // Ticket 32: sidebar task subthreads and delivery state.
+    ...visitConflictEdits(state, threadId, false),
   };
 }
 
@@ -288,6 +323,8 @@ export function markThreadUnread(
   }
   return {
     ...state,
+    // Ticket 32: sidebar task subthreads and delivery state.
+    ...visitConflictEdits(state, threadId, true),
     threadLastVisitedAtById: {
       ...state.threadLastVisitedAtById,
       [threadId]: unreadVisitedAt,
@@ -424,6 +461,8 @@ export function reorderProjects(
 }
 
 interface UiStateStore extends UiState {
+  // Ticket 32: sidebar task subthreads and delivery state.
+  setSidebarTaskGroupExpanded: (threadKey: string, expanded: boolean) => void;
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
@@ -440,6 +479,18 @@ interface UiStateStore extends UiState {
 
 export const useUiStateStore = create<UiStateStore>((set) => ({
   ...readPersistedState(),
+  // Ticket 32: sidebar task subthreads and delivery state.
+  setSidebarTaskGroupExpanded: (threadKey, expanded) =>
+    set((state) => ({
+      sidebarTaskGroupsExpandedById: {
+        ...state.sidebarTaskGroupsExpandedById,
+        [threadKey]: expanded,
+      },
+      sidebarTaskGroupsExpandedAtById: {
+        ...state.sidebarTaskGroupsExpandedAtById,
+        [threadKey]: nextLocalEditTime(state.sidebarTaskGroupsExpandedAtById?.[threadKey]),
+      },
+    })),
   markThreadVisited: (threadId, visitedAt) =>
     set((state) => markThreadVisited(state, threadId, visitedAt)),
   markThreadUnread: (threadId, latestTurnCompletedAt) =>
@@ -459,7 +510,16 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     ),
 }));
 
-useUiStateStore.subscribe((state) => debouncedPersistState.maybeExecute(state));
+// Ticket 32: sidebar task subthreads and delivery state.
+const taskSync = syncSidebarTaskUiState({
+  key: PERSISTED_STATE_KEY,
+  store: useUiStateStore,
+  parse: parsePersistedState,
+  repair: () => debouncedPersistState.maybeExecute(),
+});
+useUiStateStore.subscribe(() => {
+  if (!taskSync.isApplying()) debouncedPersistState.maybeExecute();
+});
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener("beforeunload", () => {

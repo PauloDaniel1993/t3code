@@ -533,3 +533,21 @@ describe("settings sidebar scope", () => {
     expect(isSettingsOverviewVisible({ project: "project", checkout: "checkout" })).toBe(true);
   });
 });
+// Ticket 32: sidebar task subthreads and delivery state.
+
+it.each(["task subthreads", "delegated tasks", "nesting"])(
+  "finds the device-local task setting for %s",
+  (query) => {
+    const result = searchSettings(query)[0];
+    expect(result).toMatchObject({
+      id: "task-subthreads",
+      title: "Task subthreads",
+      to: "/settings/general",
+    });
+    expect(result?.scope).toBeUndefined();
+    expect(searchableSetting("task-subthreads")).toMatchObject({
+      id: result?.id,
+      title: result?.title,
+    });
+  },
+);
