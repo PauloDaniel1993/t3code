@@ -2,7 +2,13 @@ import type { SidebarTaskState } from "@t3tools/client-runtime/state/sidebar-tas
 import { sidebarTaskStatusWord } from "@t3tools/client-runtime/state/sidebar-task-subthreads";
 import { CheckIcon, ChevronDownIcon, LoaderIcon, CircleHelpIcon, XIcon } from "lucide-react";
 
-export function SidebarTaskMark({ state }: { state: SidebarTaskState }) {
+export function SidebarTaskMark({
+  state,
+  animate = true,
+}: {
+  state: SidebarTaskState;
+  animate?: boolean;
+}) {
   const running = state === "queued" || state === "running";
   const Icon = running
     ? LoaderIcon
@@ -29,7 +35,9 @@ export function SidebarTaskMark({ state }: { state: SidebarTaskState }) {
     >
       <Icon
         aria-hidden
-        className={running ? "size-3.5 animate-spin motion-reduce:animate-none" : "size-3.5"}
+        className={
+          running && animate ? "size-3.5 animate-spin motion-reduce:animate-none" : "size-3.5"
+        }
       />
     </span>
   );

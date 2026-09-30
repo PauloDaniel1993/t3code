@@ -144,7 +144,6 @@ import { EMPTY_SIDEBAR_TASKS, SidebarTaskDisclosure, SidebarTaskGroup } from "./
 import { closeSidebarTaskPeek, SidebarTaskPeek } from "./SidebarTaskPeek";
 import { SidebarTaskVisits } from "./SidebarTaskVisits";
 import { openNewThreadTaskDialog } from "../newThreadTaskBus";
-import { useSidebarTaskVisibility } from "./sidebarTaskVisibility";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -1151,22 +1150,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   );
   const threadKey = scopedThreadKey(threadRef);
   const { leaseLiveStatus, rowRef } = useSidebarRowSubscriptionLease(props.isActive);
-  const { visible: taskGroupVisible, rowRef: taskRowRef } = useSidebarTaskVisibility(
-    props.hasTaskGroup,
-  );
-  const attachRow = useCallback(
-    (row: HTMLElement | null) => {
-      rowRef(row);
-      taskRowRef(row);
-    },
-    [rowRef, taskRowRef],
-  );
   const taskGroup = props.hasTaskGroup ? (
     <SidebarTaskGroup
       parent={thread}
       tasks={props.taskThreads}
       nativeThreads={props.nativeThreads}
-      visible={taskGroupVisible}
       onOpenThread={props.onThreadActivate}
       onContextMenu={props.onContextMenu}
       onCommitRename={props.onCommitRename}
@@ -1757,7 +1745,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           <TooltipTrigger
             render={
               <div
-                ref={attachRow}
+                ref={rowRef}
                 data-testid="sidebar-row-slim"
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
@@ -1912,7 +1900,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         <TooltipTrigger
           render={
             <div
-              ref={attachRow}
+              ref={rowRef}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}

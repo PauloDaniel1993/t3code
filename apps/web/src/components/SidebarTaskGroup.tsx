@@ -24,6 +24,7 @@ import {
 import { useUiStateStore } from "../uiStateStore";
 import { cn } from "../lib/utils";
 import { useSidebarTaskClock } from "./sidebarTaskClock";
+import { useSidebarTaskVisibility } from "./sidebarTaskVisibility";
 import { SidebarTaskMark } from "./SidebarTaskMark";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { closeSidebarTaskPeek, leaveSidebarTaskPeek, openSidebarTaskPeek } from "./SidebarTaskPeek";
@@ -47,7 +48,11 @@ function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: Gr
   const override = useUiStateStore((state) => state.sidebarTaskGroupsExpandedById[key]);
   const setExpanded = useUiStateStore((state) => state.setSidebarTaskGroupExpanded);
   const visitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[key]);
-  const unread = sidebarHasUnreadTaskResults(subagents, visitedAt);
+  const delivered = Date.parse(parent.source.latestTaskDeliveredAt ?? "");
+  const unread =
+    sidebarHasUnreadTaskResults(subagents, visitedAt) ||
+    (Number.isFinite(delivered) &&
+      (!Number.isFinite(Date.parse(visitedAt ?? "")) || delivered > Date.parse(visitedAt!)));
   const defaultOpen =
     unread ||
     tasks.some((thread) => {
@@ -56,15 +61,29 @@ function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: Gr
     }) ||
     rollup.groups.some((group) => group.summary.runningCount > 0) ||
     nativeThreads.some((thread) => resolveSidebarTaskState(thread) === "running");
-  // Shells supply discovery/counts before this parent has ever been opened.
-  const liveNativeCount = nativeThreads.filter((thread) => {
+  // Add shells not yet learned by the bounded detail roster, including while collapsed.
+  const knownNativeChildren = new Set(
+    subagents
+      .filter((agent) => agent.origin === "provider_native")
+      .map((agent) => agent.childThreadId),
+  );
+  const unknown = nativeThreads.filter((thread) => !knownNativeChildren.has(thread.id));
+  const liveNativeCount = unknown.filter((thread) => {
     const state = resolveSidebarTaskState(thread);
     return state === "queued" || state === "running";
   }).length;
-  const agentCount = subagents.some((agent) => agent.origin === "provider_native")
-    ? rollup.agentCount
-    : liveNativeCount +
-      Math.min(NATIVE_AGENT_SETTLED_WINDOW, nativeThreads.length - liveNativeCount);
+  const agentCount =
+    rollup.agentCount +
+    liveNativeCount +
+    Math.min(
+      Math.max(
+        0,
+        NATIVE_AGENT_SETTLED_WINDOW -
+          (rollup.agentCount -
+            rollup.groups.reduce((count, group) => count + group.summary.runningCount, 0)),
+      ),
+      unknown.length - liveNativeCount,
+    );
   return {
     parentRef,
     key,
@@ -115,7 +134,6 @@ export const SidebarTaskDisclosure = memo(
 );
 
 export type TaskGroupProps = GroupProps & {
-  visible?: boolean;
   onOpenThread: (ref: ScopedThreadRef) => void;
   onContextMenu: (ref: ScopedThreadRef, position: { x: number; y: number }) => void;
   onCommitRename: (ref: ScopedThreadRef, title: string, originalTitle: string) => void;
@@ -129,8 +147,11 @@ export type TaskGroupProps = GroupProps & {
 export const SidebarTaskGroup = memo(
   function SidebarTaskGroup(props: TaskGroupProps) {
     const { parentRef, subagents, rollup, expanded, agentCount } = useTaskGroup(props);
-    const visible = props.visible ?? true;
-    const projection = useSidebarTaskProjection(expanded && visible ? parentRef : null);
+    const { visible, leased, rowRef } = useSidebarTaskVisibility(
+      expanded,
+      scopedThreadKey(parentRef),
+    );
+    const projection = useSidebarTaskProjection(leased ? parentRef : null);
     useRememberSidebarTaskPresentation(parentRef, projection);
     const [turnOverrides, setTurnOverrides] = useState<Record<string, boolean>>({});
     const [openedAt] = useState(() => Date.now());
@@ -157,6 +178,7 @@ export const SidebarTaskGroup = memo(
     if (!expanded || (props.tasks.length === 0 && agentCount === 0)) return null;
     return (
       <div
+        ref={rowRef}
         className="group/sidebar-task-group relative ml-3 pl-3"
         onPointerDown={(event) => event.stopPropagation()}
         onDragOver={(event) => event.stopPropagation()}
@@ -180,6 +202,7 @@ export const SidebarTaskGroup = memo(
                 key={key}
                 thread={thread}
                 task={tasksByThreadId.get(thread.id)}
+                animate={visible}
                 elapsed={formatSidebarTaskElapsed(thread, tasksByThreadId.get(thread.id), now)}
                 onOpenThread={props.onOpenThread}
                 onContextMenu={props.onContextMenu}
@@ -243,6 +266,7 @@ export const SidebarTaskGroup = memo(
                           className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground outline-none hover:bg-sidebar-row-hover focus-visible:bg-sidebar-row-hover"
                         >
                           <SidebarTaskMark
+                            animate={visible}
                             state={
                               agent.status === "completed"
                                 ? "finished"
@@ -293,6 +317,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
   thread: EnvironmentThreadShell;
   task: OrchestrationV2Subagent | undefined;
   elapsed: string;
+  animate: boolean;
   onOpenThread: TaskGroupProps["onOpenThread"];
   onContextMenu: TaskGroupProps["onContextMenu"];
   onCommitRename: TaskGroupProps["onCommitRename"];
@@ -343,7 +368,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
       </li>
     );
   return (
-    <li className="list-none">
+    <li className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]">
       <button
         type="button"
         onClick={() => {
@@ -364,7 +389,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
         onBlur={leaveSidebarTaskPeek}
         className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none hover:bg-sidebar-row-hover focus-visible:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <SidebarTaskMark state={resolveSidebarTaskState(thread, task)} />
+        <SidebarTaskMark state={resolveSidebarTaskState(thread, task)} animate={props.animate} />
         <span className="min-w-0 flex-1 truncate">{thread.title}</span>
         {returned ? (
           <Tooltip>

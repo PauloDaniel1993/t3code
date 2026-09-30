@@ -2,11 +2,17 @@ import { act } from "react";
 import { create } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { useSidebarTaskVisibility } from "./sidebarTaskVisibility";
+import { sidebarTaskLeaseClock } from "./sidebarTaskLeases";
+import { SidebarTaskTestClock } from "./sidebarTaskTestClock";
 
-afterEach(() => vi.unstubAllGlobals());
-
-it("uses the scroll viewport without overscan and invalidates a renewed lease", () => {
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+it("observes only expanded groups; dwell and grace do not change the viewport clock gate", () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const clock = new SidebarTaskTestClock();
+  vi.spyOn(sidebarTaskLeaseClock, "after").mockImplementation(clock.after);
   const scrollRoot = {};
   const parentWithTasks = {};
   const observe = vi.fn();
@@ -25,28 +31,31 @@ it("uses the scroll viewport without overscan and invalidates a renewed lease", 
     },
   );
   function View({ enabled }: { enabled: boolean }) {
-    const { visible, rowRef } = useSidebarTaskVisibility(enabled);
-    return <div ref={rowRef}>{visible ? "leased" : "released"}</div>;
+    const { visible, leased, rowRef } = useSidebarTaskVisibility(enabled, "test:parent");
+    return <div ref={rowRef}>{`${visible}:${leased}`}</div>;
   }
   let tree: ReturnType<typeof create>;
   act(() => {
-    tree = create(<View enabled />, {
+    tree = create(<View enabled={false} />, {
       createNodeMock: () => ({
         closest: (selector: string) => (selector === "li" ? parentWithTasks : scrollRoot),
       }),
     });
   });
+  expect(observe).not.toHaveBeenCalled();
+  act(() => tree!.update(<View enabled />));
   expect(options[0]?.root).toBe(scrollRoot);
   expect(options[0]?.rootMargin).toBeUndefined();
   expect(observe).toHaveBeenCalledWith(parentWithTasks);
-  expect(tree!.root.findByType("div").children).toEqual(["released"]);
   act(() => callbacks[0]!([{ isIntersecting: true }]));
-  expect(tree!.root.findByType("div").children).toEqual(["leased"]);
+  expect(tree!.root.findByType("div").children).toEqual(["true:false"]);
+  act(() => clock.advance(250));
+  expect(tree!.root.findByType("div").children).toEqual(["true:true"]);
   act(() => callbacks[0]!([{ isIntersecting: false }]));
-  expect(tree!.root.findByType("div").children).toEqual(["released"]);
+  expect(tree!.root.findByType("div").children).toEqual(["false:true"]);
+  act(() => clock.advance(4000));
+  expect(tree!.root.findByType("div").children).toEqual(["false:false"]);
   act(() => tree!.update(<View enabled={false} />));
-  act(() => tree!.update(<View enabled />));
-  expect(tree!.root.findByType("div").children).toEqual(["released"]);
+  expect(disconnect).toHaveBeenCalledOnce();
   act(() => tree!.unmount());
-  expect(disconnect).toHaveBeenCalledTimes(2);
 });

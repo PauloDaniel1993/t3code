@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 let now = Date.now();
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -26,9 +26,11 @@ const stoppedSnapshot = () => 0;
 
 /** Only rollups subscribe, so ordinary parent rows never receive the five-second tick. */
 export function useSidebarTaskClock(enabled = true) {
-  return useSyncExternalStore(
+  const [initialNow] = useState(Date.now);
+  const clock = useSyncExternalStore(
     enabled ? subscribe : noSubscription,
     enabled ? snapshot : stoppedSnapshot,
     stoppedSnapshot,
   );
+  return enabled && timer === undefined ? initialNow : clock;
 }

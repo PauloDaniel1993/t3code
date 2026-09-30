@@ -1,30 +1,50 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { sidebarTaskLeases } from "./sidebarTaskLeases";
 
-/** Task detail has no overscan: lease it only while the parent is on screen. */
-export function useSidebarTaskVisibility(enabled: boolean) {
+/** Observe expanded groups, not parent cards. A lease survives short viewport exits. */
+export function useSidebarTaskVisibility(enabled: boolean, key: string) {
   const [row, rowRef] = useState<HTMLElement | null>(null);
-  const lease = useMemo(() => ({ row, enabled }), [row, enabled]);
-  const [observation, setObservation] = useState<{ lease: typeof lease; visible: boolean } | null>(
-    null,
-  );
+  const [visibility, setVisibility] = useState<{ row: HTMLElement; visible: boolean } | null>(null);
+  const [leased, setLeased] = useState(false);
+  useEffect(() => sidebarTaskLeases.register(key, setLeased), [key]);
   useEffect(() => {
-    if (!enabled || row === null) return;
-    if (typeof IntersectionObserver === "undefined") return;
+    if (!enabled || row === null) {
+      sidebarTaskLeases.update(key, false);
+      return;
+    }
+    const update = (onScreen: boolean, distance = 0) => {
+      setVisibility((previous) =>
+        previous?.row === row && previous.visible === onScreen
+          ? previous
+          : { row, visible: onScreen },
+      );
+      sidebarTaskLeases.update(key, onScreen, distance);
+    };
+    if (typeof IntersectionObserver === "undefined") {
+      update(true);
+      return () => sidebarTaskLeases.update(key, false);
+    }
     const observer = new IntersectionObserver(
-      ([entry]) => setObservation({ lease, visible: entry?.isIntersecting === true }),
-      {
-        root: row.closest<HTMLElement>('[data-slot="scroll-area-viewport"]'),
+      ([entry]) => {
+        const bounds = entry?.boundingClientRect;
+        const viewport = entry?.rootBounds;
+        const distance =
+          bounds === undefined || viewport == null
+            ? 0
+            : Math.abs((bounds.top + bounds.bottom - viewport.top - viewport.bottom) / 2);
+        update(entry?.isIntersecting === true, distance);
       },
+      { root: row.closest<HTMLElement>('[data-slot="scroll-area-viewport"]') },
     );
-    // Children can still be on screen after the parent header scrolls away.
     observer.observe(row.closest<HTMLElement>("li") ?? row);
-    return () => observer.disconnect();
-  }, [enabled, row, lease]);
+    return () => {
+      observer.disconnect();
+      sidebarTaskLeases.update(key, false);
+    };
+  }, [enabled, row, key]);
   return {
-    visible:
-      enabled &&
-      (typeof IntersectionObserver === "undefined" ||
-        (observation?.lease === lease && observation.visible)),
+    visible: enabled && visibility?.row === row && visibility?.visible === true,
+    leased,
     rowRef,
   };
 }

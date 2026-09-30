@@ -293,7 +293,7 @@ export const ChatWidth = Schema.Literals(["comfortable", "wide", "full"]);
 export type ChatWidth = typeof ChatWidth.Type;
 
 export const ClientSettingsSchema = Schema.Struct({
-  /** Off by default; disabling nesting leaves delegated threads in the ordinary list. */
+  /** On by default; disabling hides delegated threads from the sidebar. */
   threadTasksEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),

@@ -1,5 +1,5 @@
 import { act } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { create as createRenderer, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   EnvironmentId,
@@ -26,6 +26,7 @@ const hooks = vi.hoisted(() => ({
 vi.mock("../state/entities", () => ({
   useThreadProjection: hooks.projection,
   useThreadShell: hooks.shell,
+  readThreadShell: hooks.shell,
 }));
 vi.mock("./SidebarTaskPeek", () => ({
   closeSidebarTaskPeek: () => {},
@@ -63,6 +64,11 @@ import { SidebarTaskDisclosure, SidebarTaskGroup } from "./SidebarTaskGroup";
 import { SidebarTaskVisits } from "./SidebarTaskVisits";
 import { sidebarTaskPresentationStore } from "./sidebarTaskPresentation";
 
+const create: typeof createRenderer = (element, options) =>
+  createRenderer(element, {
+    ...options,
+    createNodeMock: () => ({ closest: () => null }),
+  });
 const env = EnvironmentId.make("local");
 const parent = makeThreadFixture({ environmentId: env, id: ThreadId.make("parent") });
 function task(id: string): EnvironmentThreadShell {
@@ -284,6 +290,7 @@ it("keeps the return mark and unread dot after acknowledgement and a bounded rep
   act(() => {
     renderer = create(render([child]));
   });
+  act(() => vi.advanceTimersByTime(250));
   expect(
     renderer!.root.findAllByProps({ "aria-label": "Returned results to the parent thread" }),
   ).toHaveLength(1);
@@ -345,30 +352,6 @@ it("opens no detail streams or clocks for 54 collapsed groups", () => {
   interval.mockRestore();
 });
 
-it("releases the detail lease and clock when an expanded group leaves the screen", () => {
-  const tasks = [task("visible")];
-  const view = (visible: boolean) => (
-    <SidebarTaskGroup
-      parent={parent}
-      tasks={tasks}
-      visible={visible}
-      {...callbacks}
-      renamingThreadKey={null}
-      renamingTitle=""
-    />
-  );
-  act(() => {
-    renderer = create(view(false));
-  });
-  expect(hooks.projection).not.toHaveBeenCalled();
-  act(() => renderer!.update(view(true)));
-  expect(hooks.projection).toHaveBeenCalled();
-  hooks.projection.mockClear();
-  act(() => renderer!.update(view(false)));
-  act(() => vi.advanceTimersByTime(5000));
-  expect(hooks.projection).not.toHaveBeenCalled();
-});
-
 it("ignores file drops on child rows so they cannot attach to the parent", () => {
   act(() => {
     renderer = create(render([task("one")]));
@@ -416,4 +399,42 @@ it("keeps IME Enter in the rename editor, commits once, and cancels without a bl
   input.props.onBlur();
   expect(callbacks.onCancelRename).toHaveBeenCalledOnce();
   expect(callbacks.onCommitRename).toHaveBeenCalledTimes(1);
+});
+
+it("cold collapsed parents show a shell delivery dot without loading detail, and keep explicit collapse", () => {
+  const coldParent = {
+    ...parent,
+    source: { ...parent.source, latestTaskDeliveredAt: "2026-09-29T00:08:00.000Z" },
+  };
+  const child = { ...task("cold"), latestRun: null };
+  useUiStateStore.setState({ sidebarTaskGroupsExpandedById: { "local:parent": false } });
+  act(() => {
+    renderer = create(<SidebarTaskDisclosure parent={coldParent} tasks={[child]} />);
+  });
+  expect(renderer!.root.findByType("button").props["aria-label"]).toBe(
+    "Show 1 task, New task results",
+  );
+  expect(hooks.projection).not.toHaveBeenCalled();
+  act(() => useUiStateStore.setState({ sidebarTaskGroupsExpandedById: {} }));
+  expect(renderer!.root.findByType("button").props["aria-label"]).toBe(
+    "Hide 1 task, New task results",
+  );
+  expect(hooks.projection).not.toHaveBeenCalled();
+});
+it("collapsed native counts include new child shells absent from the remembered roster", () => {
+  const known = { ...task("known"), latestRun: null };
+  const record = { ...completedTaskRecord(known), origin: "provider_native" as const };
+  sidebarTaskPresentationStore
+    .getState()
+    .remember("local:parent", { subagents: [record], runs: [] });
+  useUiStateStore.setState({ sidebarTaskGroupsExpandedById: { "local:parent": false } });
+  const view = (rows: ReadonlyArray<EnvironmentThreadShell>) => (
+    <SidebarTaskDisclosure parent={parent} tasks={[]} nativeThreads={rows} />
+  );
+  act(() => {
+    renderer = create(view([known]));
+  });
+  expect(renderer!.root.findByType("button").props["aria-label"]).toBe("Show 1 agent");
+  act(() => renderer!.update(view([known, task("new-native")])));
+  expect(renderer!.root.findByType("button").props["aria-label"]).toBe("Show 2 agents");
 });

@@ -22,6 +22,7 @@ import {
 import { toastManager } from "./ui/toast";
 import { Button } from "./ui/button";
 import { SidebarTaskMark } from "./SidebarTaskMark";
+import { sidebarTaskLeaseClock } from "./sidebarTaskLeases";
 
 type Peek = {
   anchor: HTMLElement;
@@ -30,38 +31,50 @@ type Peek = {
   nativeAgent?: OrchestrationV2Subagent;
 };
 const usePeek = create<{ entry: Peek | null }>(() => ({ entry: null }));
-let opening: ReturnType<typeof setTimeout> | undefined;
-let closing: ReturnType<typeof setTimeout> | undefined;
+let opening: (() => void) | undefined;
+let closing: (() => void) | undefined;
 export function closeSidebarTaskPeek() {
-  clearTimeout(opening);
-  clearTimeout(closing);
+  opening?.();
+  closing?.();
   usePeek.setState({ entry: null });
 }
 export function keepSidebarTaskPeekOpen() {
-  clearTimeout(closing);
+  closing?.();
 }
 export function leaveSidebarTaskPeek() {
-  clearTimeout(opening);
-  clearTimeout(closing);
-  closing = setTimeout(closeSidebarTaskPeek, 220);
+  opening?.();
+  closing?.();
+  closing = sidebarTaskLeaseClock.after(220, closeSidebarTaskPeek);
 }
 export function openSidebarTaskPeek(entry: Peek) {
-  clearTimeout(opening);
-  clearTimeout(closing);
+  opening?.();
+  closing?.();
   if (usePeek.getState().entry !== null) usePeek.setState({ entry });
-  else opening = setTimeout(() => usePeek.setState({ entry }), 260);
+  else opening = sidebarTaskLeaseClock.after(260, () => usePeek.setState({ entry }));
 }
 
 function usePeekClock(anchor: HTMLElement) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    const timer = setInterval(() => {
+    let cancel: (() => void) | undefined;
+    const tick = () => {
       if (!anchor.isConnected) closeSidebarTaskPeek();
-      else setNow(Date.now());
-    }, 1000);
-    return () => clearInterval(timer);
+      else {
+        setNow(Date.now());
+        cancel = sidebarTaskLeaseClock.after(1000, tick);
+      }
+    };
+    cancel = sidebarTaskLeaseClock.after(1000, tick);
+    return () => cancel?.();
   }, [anchor]);
   return now;
+}
+
+/** Chrome switches immediately; a fleeting hover never hydrates a transcript. */
+function usePeekDetailDwell(key: string) {
+  const [readyKey, setReadyKey] = useState<string | null>(null);
+  useEffect(() => sidebarTaskLeaseClock.after(150, () => setReadyKey(key)), [key]);
+  return readyKey === key;
 }
 
 export function SidebarTaskPeek({
@@ -89,8 +102,11 @@ function NativePeek({
   entry: Peek;
   agent: OrchestrationV2Subagent;
 }) {
+  const ready = usePeekDetailDwell(
+    `${entry.thread.environmentId}:${entry.thread.id}:${initialAgent.id}`,
+  );
   const parent = useThreadProjection(
-    scopeThreadRef(entry.thread.environmentId, entry.thread.id),
+    ready ? scopeThreadRef(entry.thread.environmentId, entry.thread.id) : null,
   )?.projection;
   const agent =
     parent?.subagents.find((candidate) => candidate.id === initialAgent.id) ?? initialAgent;
@@ -188,7 +204,7 @@ function NativePeek({
         {elapsed === null ? "" : ` · ${formatDuration(elapsed)}`}
       </p>
       <p className="mt-2 text-xs text-muted-foreground">
-        Provider-owned agent · Latest turn plus anything still running
+        Provider-owned agent · All active agents plus the newest 12 inactive agents
       </p>
       <p className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap text-xs">{agent.prompt}</p>
       <p className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
@@ -208,12 +224,13 @@ function TaskPeek({
 }) {
   const ref = scopeThreadRef(entry.thread.environmentId, entry.thread.id);
   const shell = useThreadShell(ref) ?? entry.thread;
-  const detail = useThreadProjection(ref)?.projection;
+  const ready = usePeekDetailDwell(`${ref.environmentId}:${ref.threadId}`);
+  const detail = useThreadProjection(ready ? ref : null)?.projection;
   const parentRef =
     shell.lineage.parentThreadId === null
       ? null
       : scopeThreadRef(shell.environmentId, shell.lineage.parentThreadId);
-  const parent = useThreadProjection(parentRef)?.projection;
+  const parent = useThreadProjection(ready ? parentRef : null)?.projection;
   const task =
     parent?.subagents.find(
       (agent) => agent.origin === "app_owned" && agent.childThreadId === shell.id,

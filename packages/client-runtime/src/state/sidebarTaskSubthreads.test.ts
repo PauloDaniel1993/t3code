@@ -124,7 +124,7 @@ describe("sidebar delegated task grouping", () => {
       enabled: true,
     });
     expect(restored.tasksByParent.get("local:parent")?.map((task) => task.id)).toEqual(["task"]);
-    expect(restored.topLevel).toEqual([parent, orphan, fork]);
+    expect(restored.topLevel).toEqual([parent, fork]);
   });
   it("scopes joins by environment, filters projects before joining, and leaves orphans hidden", () => {
     const local = child("child");
@@ -324,7 +324,17 @@ describe("task status and run duration", () => {
 
 it("keeps surviving tasks reachable after parent archive or deletion, and nests again on restoration", () => {
   const parent = thread("parent");
-  const task = child("child");
+  const task = child("child", {
+    latestRun: {
+      runId: RunId.make("running"),
+      status: "running",
+      requestedAt: epoch,
+      startedAt: epoch,
+      completedAt: null,
+      assistantMessageId: null,
+    },
+  });
+  const finished = child("finished");
   const group = createSidebarTaskGrouper();
   for (const missing of [
     [],
@@ -332,8 +342,11 @@ it("keeps surviving tasks reachable after parent archive or deletion, and nests 
     [{ ...parent, deletedAt: epoch }],
   ]) {
     expect(
-      group({ threads: [...missing, task], scopedProjectKeys: null, supportsTasks: () => true })
-        .topLevel,
+      group({
+        threads: [...missing, task, finished],
+        scopedProjectKeys: null,
+        supportsTasks: () => true,
+      }).topLevel,
     ).toEqual([task]);
   }
   expect(
@@ -360,4 +373,53 @@ it("preserves the top-level list identity when only one child shell changes", ()
   });
   expect(next.topLevel).toBe(first.topLevel);
   expect(next.tasksByParent.get("local:parent")?.[0]?.title).toBe("Updated");
+});
+
+it("ignores streaming churn but updates every compact display input", () => {
+  const parent = thread("parent");
+  const task = child("child");
+  const group = createSidebarTaskGrouper();
+  const groupRows = (row: EnvironmentThreadShell) =>
+    group({
+      threads: [parent, row],
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+    }).tasksByParent.get("local:parent");
+  const first = groupRows(task);
+  expect(groupRows({ ...task, updatedAt: "2026-09-29T00:10:00Z", itemCount: 120 })).toBe(first);
+  expect(groupRows({ ...task, title: "Renamed" })).not.toBe(first);
+  expect(
+    groupRows({
+      ...task,
+      latestRun: {
+        runId: RunId.make("new"),
+        status: "running",
+        requestedAt: epoch,
+        startedAt: epoch,
+        completedAt: null,
+        assistantMessageId: null,
+      },
+    }),
+  ).not.toBe(first);
+});
+it("a newer terminal shell overrides remembered running status and timing", () => {
+  const task = child("child", {
+    latestRun: {
+      runId: RunId.make("latest"),
+      status: "completed",
+      requestedAt: epoch,
+      startedAt: epoch,
+      completedAt: "2026-09-29T00:09:00Z",
+      assistantMessageId: null,
+    },
+  });
+  const stale = agent({ status: "running", completedAt: null });
+  expect(resolveSidebarTaskState(task, stale)).toBe("finished");
+  expect(
+    resolveSidebarTaskState(task, {
+      ...stale,
+      updatedAt: DateTime.makeUnsafe(task.latestRun!.completedAt!),
+    }),
+  ).toBe("finished");
+  expect(formatSidebarTaskElapsed(task, stale, Date.parse("2026-09-29T00:10:00Z"))).toBe("9m");
 });

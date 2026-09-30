@@ -41,15 +41,20 @@ export function createSidebarTaskGrouper() {
     const grouped = new Map<string, Thread[]>();
     const nativeParentKeys = new Set<string>();
     const nativeGrouped = new Map<string, Thread[]>();
-    const eligible = input.threads.filter(
-      (thread) => thread.archivedAt === null && thread.deletedAt === null,
-    );
-    const eligibleByKey = new Map(
-      eligible.map((thread) => [
-        scopedThreadKey({ environmentId: thread.environmentId, threadId: thread.id }),
-        thread,
-      ]),
-    );
+    let parents: Map<Thread["environmentId"], Map<Thread["id"], Thread>> | undefined;
+    const findParent = (thread: Thread, parentId: Thread["id"]) => {
+      if (parents === undefined) {
+        parents = new Map();
+        for (const candidate of input.threads) {
+          if (candidate.archivedAt !== null || candidate.deletedAt !== null) continue;
+          let environment = parents.get(candidate.environmentId);
+          if (environment === undefined)
+            parents.set(candidate.environmentId, (environment = new Map()));
+          environment.set(candidate.id, candidate);
+        }
+      }
+      return parents.get(thread.environmentId)?.get(parentId);
+    };
     for (const thread of input.threads) {
       if (
         thread.archivedAt !== null ||
@@ -59,6 +64,10 @@ export function createSidebarTaskGrouper() {
       )
         continue;
       const parentId = thread.lineage.parentThreadId;
+      if (thread.lineage.relationshipToParent !== "subagent" && parentId === null) {
+        topLevel.push(thread);
+        continue;
+      }
       // Match upstream's list when the local grouping preference is off.
       if (input.enabled === false && isSidebarTaskThread(thread)) continue;
       if (
@@ -78,15 +87,15 @@ export function createSidebarTaskGrouper() {
       }
       if (isSidebarTaskThread(thread) && input.supportsTasks(thread) && parentId !== null) {
         const key = scopedThreadKey({ environmentId: thread.environmentId, threadId: parentId });
-        const parent = eligibleByKey.get(key);
-        // V2 leaves delegated children alive. Keep missing/archived/deleted
-        // parents' surviving work reachable, without bypassing project filters.
+        const parent = findParent(thread, parentId);
+        // Older servers may retain children after parent removal. Only their
+        // surviving work belongs at top level, within the project filter.
         if (parent === undefined) {
-          topLevel.push(thread);
+          if (sidebarTaskIsLive(thread) || thread.latestRun?.status === "queued")
+            topLevel.push(thread);
           continue;
         }
         if (isSidebarTaskThread(parent)) {
-          topLevel.push(thread);
           continue;
         }
         const group = grouped.get(key);
@@ -98,6 +107,11 @@ export function createSidebarTaskGrouper() {
     for (const [key, tasks] of grouped) {
       tasks.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
       const old = previous.get(key);
+      for (let index = 0; index < tasks.length; index++) {
+        const retained = old?.[index];
+        if (retained !== undefined && sidebarTaskDisplayEqual(retained, tasks[index]!))
+          tasks[index] = retained;
+      }
       tasksByParent.set(key, old !== undefined && arrayElementsEqual(old, tasks) ? old : tasks);
     }
     previous = tasksByParent;
@@ -106,13 +120,43 @@ export function createSidebarTaskGrouper() {
       const old = previousNative.get(key);
       nativeThreadsByParent.set(
         key,
-        old !== undefined && arrayElementsEqual(old, rows) ? old : rows,
+        old !== undefined &&
+          old.length === rows.length &&
+          old.every((row, index) => sidebarTaskDisplayEqual(row, rows[index]!))
+          ? old
+          : rows,
       );
     }
     previousNative = nativeThreadsByParent;
     if (!arrayElementsEqual(previousTopLevel, topLevel)) previousTopLevel = topLevel;
     return { topLevel: previousTopLevel, tasksByParent, nativeParentKeys, nativeThreadsByParent };
   };
+}
+
+/** Retain shells while everything the compact row draws is unchanged. Peek reads the live shell. */
+function sidebarTaskDisplayEqual(left: Thread, right: Thread) {
+  return (
+    left.environmentId === right.environmentId &&
+    left.id === right.id &&
+    left.title === right.title &&
+    left.createdAt === right.createdAt &&
+    left.runtime?.activeRunId === right.runtime?.activeRunId &&
+    left.runtime?.status === right.runtime?.status &&
+    left.latestRun?.status === right.latestRun?.status &&
+    left.latestRun?.runId === right.latestRun?.runId &&
+    left.latestRun?.requestedAt === right.latestRun?.requestedAt &&
+    left.latestRun?.startedAt === right.latestRun?.startedAt &&
+    left.latestRun?.completedAt === right.latestRun?.completedAt
+  );
+}
+
+function currentSidebarTaskRecord(thread: Thread, task?: OrchestrationV2Subagent) {
+  return task !== undefined &&
+    !sidebarTaskIsLive(thread) &&
+    thread.latestRun?.completedAt != null &&
+    Date.parse(thread.latestRun.completedAt) >= DateTime.toEpochMillis(task.updatedAt)
+    ? undefined
+    : task;
 }
 
 export function sidebarTaskIsLive(thread: Thread): boolean {
@@ -131,7 +175,7 @@ export function resolveSidebarTaskState(
   task?: OrchestrationV2Subagent,
 ): SidebarTaskState {
   if (sidebarTaskIsLive(thread)) return "running";
-  const status = task?.status ?? thread.latestRun?.status;
+  const status = currentSidebarTaskRecord(thread, task)?.status ?? thread.latestRun?.status;
   switch (status) {
     case "queued":
     case "pending":
@@ -171,6 +215,7 @@ export function formatSidebarTaskElapsed(
   task: OrchestrationV2Subagent | undefined,
   nowMs: number,
 ): string {
+  task = currentSidebarTaskRecord(thread, task);
   const revived = sidebarTaskIsLive(thread);
   const state = resolveSidebarTaskState(thread, task);
   const start = revived
