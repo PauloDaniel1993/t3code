@@ -225,15 +225,9 @@ export const attachmentSourceRows = Effect.fnUntraced(function* (
     )
     .map((source) => {
       const column = source.name === "legacy" ? "attachments_json" : "payload_json";
-      // Live-thread joins must not replace the cursor range with a whole-thread scan.
       return sql`SELECT ${source.name} AS source, entry.thread_id,
       CASE WHEN json_valid(${sql(`entry.${column}`)}) THEN ${sql.unsafe(source.payload("entry"))} ELSE NULL END AS payload_json
       FROM ${sql(source.table)} AS entry
-      ${
-        remaining?.cursor != null && source === sources[remaining.source_index]
-          ? sql.unsafe(`INDEXED BY sqlite_autoindex_${source.table}_1`)
-          : sql``
-      }
       WHERE ${threadId === undefined ? sql`1` : sql`entry.thread_id = ${threadId}`}
         AND ${row === undefined ? sql`1` : sql`${sql(`entry.${source.key}`)} = ${row.id}`}
         AND ${

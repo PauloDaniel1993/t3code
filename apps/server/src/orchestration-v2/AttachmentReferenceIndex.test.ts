@@ -167,12 +167,14 @@ describe("attachment reference index", () => {
         const rows = yield* sql<{ source: string; payload_json: string }>`
         SELECT source, payload_json FROM (${yield* attachmentSourceRows(undefined, undefined, state)})`;
         const [query, parameters] =
-          sql`SELECT * FROM (${yield* attachmentSourceRows(undefined, undefined, state)})`.compile();
+          sql`SELECT * FROM (${yield* attachmentSourceRows("thread-0", undefined, state)})`.compile();
         const plan = yield* sql.unsafe<{ detail: string }>(
           `EXPLAIN QUERY PLAN ${query}`,
           parameters,
         );
-        expect(plan.some((row) => row.detail.includes("message_id>?"))).toBe(true);
+        expect(
+          plan.some((row) => row.detail.includes("messages_thread_created_idx (thread_id=?)")),
+        ).toBe(true);
         const indexed = yield* sql<{
           attachment_id: string;
         }>`SELECT attachment_id FROM fork_v2_attachment_references`;
@@ -205,17 +207,27 @@ describe("attachment reference index", () => {
           ))?.threadId,
         ).toBe("thread-0");
         expect(scans).toBe(0);
-        expect(
-          (yield* findReadableAttachment("thread-0-00000000-0000-4000-8000-000000000199").pipe(
-            Effect.provideService(SqlClient.SqlClient, counted),
-          ))?.threadId,
-        ).toBe("thread-0");
-        const [readSql, readParameters] = readQuery.compile();
-        const readPlan = yield* sql.unsafe<{ detail: string }>(
-          `EXPLAIN QUERY PLAN ${readSql}`,
-          readParameters,
-        );
-        expect(readPlan.some((row) => row.detail.includes("message_id>?"))).toBe(true);
+        for (const owner of [undefined, "thread-0"]) {
+          expect(
+            (yield* findReadableAttachment(
+              "thread-0-00000000-0000-4000-8000-000000000199",
+              owner,
+            ).pipe(Effect.provideService(SqlClient.SqlClient, counted)))?.threadId,
+          ).toBe("thread-0");
+          const [readSql, readParameters] = readQuery.compile();
+          const readPlan = yield* sql.unsafe<{ detail: string }>(
+            `EXPLAIN QUERY PLAN ${readSql}`,
+            readParameters,
+          );
+          for (const index of [
+            "messages_thread_created_idx",
+            "turn_items_thread_run_idx",
+            "idx_projection_thread_messages_thread_created_id",
+          ])
+            expect(readPlan.some((row) => row.detail.includes(`${index} (thread_id=?)`))).toBe(
+              true,
+            );
+        }
         // Complete the messages, then stop part-way through the next source.
         while ((yield* readAttachmentReferenceIndexState())?.source_index === 0)
           yield* rebuildAttachmentReferenceIndexPass();
@@ -233,6 +245,40 @@ describe("attachment reference index", () => {
           );
       }).pipe(Effect.provide(testLayer)),
   );
+  it.effect("uses the ID segment only to narrow an unindexed mint, never to grant ownership", () =>
+    Effect.gen(function* () {
+      yield* smallFixture;
+      const sql = yield* SqlClient.SqlClient;
+      const inherited = "thread-original-00000000-0000-4000-8000-000000000001";
+      yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = json_set(payload_json, '$.attachments[0].id', ${inherited}) WHERE message_id = 'message-199'`;
+      yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+      yield* initializeAttachmentReferenceIndex();
+      expect(yield* findReadableAttachment(inherited)).toBeNull();
+      expect((yield* findReadableAttachment(inherited, "thread-0"))?.threadId).toBe("thread-0");
+      expect(yield* findReadableAttachment(id(5), "thread-original")).toBeNull();
+      let scans = 0;
+      const counted = new Proxy(sql, {
+        apply(target, receiver, args) {
+          const statement = Reflect.apply(target, receiver, args);
+          if (
+            Array.isArray(args[0]) &&
+            statement.compile()[0].includes("json_tree(payload.payload_json)")
+          )
+            scans++;
+          return statement;
+        },
+      });
+      expect(
+        yield* findReadableAttachment("unparseable").pipe(
+          Effect.provideService(SqlClient.SqlClient, counted),
+        ),
+      ).toBeNull();
+      expect(scans).toBe(0);
+      yield* rebuildAttachmentReferenceIndex();
+      expect((yield* findReadableAttachment(inherited))?.threadId).toBe("thread-0");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("shared CLI persistence prepares the index but only server startup rebuilds it", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

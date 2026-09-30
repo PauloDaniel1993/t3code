@@ -10,7 +10,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { Fragment } from "effect/unstable/sql/Statement";
 
-import { attachmentRelativePath } from "../attachmentStore.ts";
+import { attachmentRelativePath, parseThreadSegmentFromAttachmentId } from "../attachmentStore.ts";
 import { normalizeAttachmentRelativePath } from "../attachmentPaths.ts";
 import { EffectOutboxV2 } from "./EffectOutbox.ts";
 import {
@@ -38,7 +38,7 @@ function attachmentReferences(payload: unknown): Array<{ id: string; relativePat
   return Predicate.isObject(payload) ? Object.values(payload).flatMap(attachmentReferences) : [];
 }
 
-/** Prefer trusted partial rows; only unread rebuild rows need source JSON parsing. */
+/** Prefer trusted partial rows; fallback parses only one thread's unread source rows. */
 export const findReadableAttachment = Effect.fnUntraced(function* (
   attachmentId: string,
   threadId?: string,
@@ -69,14 +69,16 @@ export const findReadableAttachment = Effect.fnUntraced(function* (
       const indexed = yield* lookup(
         sql`SELECT source, thread_id, attachment_id, attachment_json FROM fork_v2_attachment_references`,
       );
+      // Client input narrows the fallback; only exact persisted, live references grant access.
+      const fallbackThread = threadId ?? parseThreadSegmentFromAttachmentId(attachmentId);
       const row =
         indexed[0] ??
-        (state.complete === 1
+        (state.complete === 1 || fallbackThread === null
           ? undefined
           : (yield* lookup(sql`
         SELECT payload.source, payload.thread_id, json_extract(attachment.value, '$.id') AS attachment_id,
           attachment.value AS attachment_json
-        FROM (${yield* attachmentSourceRows(threadId, undefined, state)}) AS payload, json_tree(payload.payload_json) AS attachment
+        FROM (${yield* attachmentSourceRows(fallbackThread, undefined, state)}) AS payload, json_tree(payload.payload_json) AS attachment
         WHERE attachment.type = 'object' AND json_extract(attachment.value, '$.id') = ${attachmentId}
       `))[0]);
       if (row === undefined) return null;

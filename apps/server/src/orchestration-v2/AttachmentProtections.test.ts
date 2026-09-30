@@ -509,6 +509,66 @@ describe("signed attachment ownership", () => {
 describe("attachment pruning through the effect outbox", () => {
   for (const incomplete of [false, true]) {
     it.effect(
+      `refuses cross-file tokens and unowned thread hints identically (incomplete=${incomplete})`,
+      () =>
+        Effect.gen(function* () {
+          const { file } = yield* seedAttachment();
+          const other = yield* createThread(ThreadId.make("thread-other"));
+          const foreign = {
+            ...attachment,
+            id: ChatAttachmentId.make("thread-other-00000000-0000-4000-8000-000000000002"),
+          };
+          yield* (yield* EventSinkV2).write({
+            events: [yield* messageEvent("foreign:reference", [foreign], other.id)],
+          });
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const config = yield* ServerConfig;
+          yield* fs.writeFile(
+            path.join(config.attachmentsDir, `${foreign.id}.png`),
+            new Uint8Array([4, 5, 6]),
+          );
+          const sql = yield* SqlClient.SqlClient;
+          if (incomplete) {
+            yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+            yield* initializeAttachmentReferenceIndex();
+          }
+          const own = tokenOf((yield* issue()).relativeUrl);
+          expect(yield* resolveAsset(own, "image.png")).toMatchObject({ path: file });
+          const claims = decodeTestClaims(
+            Buffer.from(own.split(".")[0]!, "base64url").toString("utf8"),
+          );
+          // Even valid signatures cannot pair a foreign ID with this token's owner/path.
+          for (const changed of [
+            { attachmentId: foreign.id },
+            { attachmentId: foreign.id, threadId: other.id },
+            { threadId: other.id },
+          ])
+            expect(
+              yield* resolveAsset(yield* signedClaim({ ...claims, ...changed }), "image.png"),
+            ).toBeNull();
+          const missing = "thread-other-00000000-0000-4000-8000-000000000003";
+          const absent = yield* issueAssetUrl({
+            resource: { _tag: "attachment", attachmentId: missing },
+          }).pipe(Effect.flip);
+          const malformed = yield* issueAssetUrl({
+            resource: { _tag: "attachment", attachmentId: "unparseable" },
+          }).pipe(Effect.flip);
+          expect(absent._tag).toBe("AssetAttachmentNotFoundError");
+          expect(malformed._tag).toBe(absent._tag);
+          expect(malformed.message).toBe(absent.message);
+          expect(
+            yield* resolveAsset(
+              yield* signedClaim({ ...claims, attachmentId: missing }),
+              "image.png",
+            ),
+          ).toBeNull();
+        }).pipe(Effect.provide(testLayer)),
+    );
+  }
+
+  for (const incomplete of [false, true]) {
+    it.effect(
       `refuses a token whose ID only aliases stored filename casing (incomplete=${incomplete})`,
       () =>
         Effect.gen(function* () {
@@ -545,6 +605,13 @@ describe("attachment pruning through the effect outbox", () => {
           yield* (yield* FileSystem.FileSystem).rename(file, upperFile);
           expect(yield* resolveAsset(lowerToken, "image.png")).toBeNull();
           expect((yield* issue().pipe(Effect.flip))._tag).toBe(refusal._tag);
+          if (incomplete) {
+            // The upper descriptor lives in a different thread than its ID names.
+            expect((yield* issueAssetUrl({ resource: upperResource }).pipe(Effect.flip))._tag).toBe(
+              refusal._tag,
+            );
+            yield* rebuildAttachmentReferenceIndex();
+          }
           expect(
             yield* resolveAsset(
               tokenOf((yield* issueAssetUrl({ resource: upperResource })).relativeUrl),
@@ -754,9 +821,8 @@ describe("attachment pruning through the effect outbox", () => {
         expect(yield* fs.exists(file)).toBe(true);
         // Stale ownership also cannot authorize a download with an old token.
         expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "image.png")).toBeNull();
-        expect(
-          yield* resolveAsset(tokenOf((yield* issue()).relativeUrl), "image.png"),
-        ).toMatchObject({ path: file });
+        // Only the inherited holder remains; unindexed mints cannot search unrelated threads.
+        expect((yield* issue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
         yield* initializeAttachmentReferenceIndex();
         yield* rebuildAttachmentReferenceIndexPass();
         expect((yield* cleanup.cleanupAttachments([attachment.id]).pipe(Effect.flip))._tag).toBe(
