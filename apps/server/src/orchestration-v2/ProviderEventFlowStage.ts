@@ -141,10 +141,9 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
     lookupReady = false;
   };
   // The shared pump already has an Effect boundary. It can admit all subscribers
-  // synchronously, then evaluate the optional warning in its current fiber.
-  const offerUnsafe = (raw: ProviderAdapterV2Event) => {
-    if (ended || !admit(raw)) return undefined;
-    const event = sanitizeProviderEvent(raw);
+  // synchronously with sanitized events, then evaluate the optional warning in its current fiber.
+  const offerUnsafe = (event: ProviderAdapterV2Event) => {
+    if (ended || !admit(event)) return undefined;
     if (pending.size === 0) lookupReady = false;
     // A consumer keeping up never needs a replacement key.
     // Materialize lookup only when another snapshot is actually waiting.
@@ -174,7 +173,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
     return warn();
   };
   const offer = (raw: ProviderAdapterV2Event) =>
-    Effect.suspend(() => offerUnsafe(raw) ?? Effect.void);
+    Effect.suspend(() => offerUnsafe(sanitizeProviderEvent(raw)) ?? Effect.void);
   const end = Effect.sync(() => {
     ended = true;
     notify();

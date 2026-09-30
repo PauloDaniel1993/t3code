@@ -451,8 +451,7 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
       return item;
   }
 }
-const sanitizedEvents = new WeakMap<ProviderAdapterV2Event, ProviderAdapterV2Event>();
-/** Cached per immutable adapter event, so fan-out does not repeat the traversal. */
+/** Sanitize once in the runtime before fan-out to subscriber stages. */
 export function sanitizeProviderEvent(event: ProviderAdapterV2Event): ProviderAdapterV2Event {
   if (event.type !== "turn_item.updated") return event;
   switch (event.turnItem.type) {
@@ -465,13 +464,5 @@ export function sanitizeProviderEvent(event: ProviderAdapterV2Event): ProviderAd
     default:
       return event;
   }
-  const cached = sanitizedEvents.get(event);
-  if (cached) return cached;
-  const sanitized =
-    event.type === "turn_item.updated"
-      ? { ...event, turnItem: sanitizeToolItem(event.turnItem) }
-      : event;
-  sanitizedEvents.set(event, sanitized);
-  sanitizedEvents.set(sanitized, sanitized);
-  return sanitized;
+  return { ...event, turnItem: sanitizeToolItem(event.turnItem) };
 }
