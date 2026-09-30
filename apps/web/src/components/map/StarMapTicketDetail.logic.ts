@@ -1,20 +1,18 @@
-import type { StarMapGraphNode } from "./starMapGraph";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 
-/**
- * Longest prompt a task draft may carry. This is the fork's `THREAD_TASK_TOOL_PROMPT_MAX_CHARS`;
- * V2 has no shared constant yet, so whoever attaches the New task dialog should replace it
- * with that dialog's own limit.
- */
-export const STAR_MAP_TASK_PROMPT_MAX_CHARS = 100_000;
+import { openNewThreadTaskDialog } from "../../newThreadTaskBus";
+import {
+  TASK_PROMPT_MAX_LENGTH,
+  TASK_TITLE_MAX_LENGTH,
+  type NewThreadTaskDraft,
+} from "../NewThreadTaskDialog.logic";
+import type { StarMapGraphNode } from "./starMapGraph";
 
 const TRUNCATED_CONTEXT_NOTE =
   "The embedded ticket context is truncated. Read the full source file before starting.";
 
-/** The part of a New task dialog draft a map ticket can fill in. */
-export interface StarMapTicketTaskDraft {
-  readonly title: string;
-  readonly prompt: string;
-}
+/** The part of a New task dialog draft a map ticket fills in; thread context stays the user's choice. */
+export type StarMapTicketTaskDraft = Pick<NewThreadTaskDraft, "title" | "prompt">;
 
 /**
  * Turn the ticket being read into an editable manual-task draft. The source
@@ -45,11 +43,31 @@ export function buildStarMapTicketTaskDraft(input: {
     context,
   ].join("\n");
 
-  return { title: input.node.label, prompt: clampTaskPrompt(prompt, source) };
+  return {
+    title: input.node.label.slice(0, TASK_TITLE_MAX_LENGTH),
+    prompt: clampTaskPrompt(prompt, source),
+  };
+}
+
+/**
+ * The Open as task action: ask the app-level New task host to open its dialog on `threadRef`,
+ * prefilled from the ticket. Nothing is created until the user confirms in the dialog. It runs
+ * from a click, so the prompt (which embeds the ticket body) is never built while rendering.
+ */
+export function openStarMapTicketAsTask(
+  input: Parameters<typeof buildStarMapTicketTaskDraft>[0] & {
+    readonly threadRef: ScopedThreadRef;
+  },
+  open: typeof openNewThreadTaskDialog = openNewThreadTaskDialog,
+): void {
+  open({ threadRef: input.threadRef, initialDraft: buildStarMapTicketTaskDraft(input) });
 }
 
 function clampTaskPrompt(prompt: string, source: string): string {
-  if (prompt.length <= STAR_MAP_TASK_PROMPT_MAX_CHARS) return prompt;
+  if (prompt.length <= TASK_PROMPT_MAX_LENGTH) return prompt;
   const ending = `\n\n[Embedded ticket context truncated for the task prompt.]\nRead the full ticket at ${source} before starting.`;
-  return `${prompt.slice(0, STAR_MAP_TASK_PROMPT_MAX_CHARS - ending.length).trimEnd()}${ending}`;
+  const kept = prompt.slice(0, TASK_PROMPT_MAX_LENGTH - ending.length);
+  // Never leave half of a surrogate pair at the cut.
+  const whole = /[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept;
+  return `${whole.trimEnd()}${ending}`;
 }
