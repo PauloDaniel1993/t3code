@@ -1666,6 +1666,8 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  // Ticket 32: older clients and servers may omit the task delivery watermark.
+  latestTaskDeliveredAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,

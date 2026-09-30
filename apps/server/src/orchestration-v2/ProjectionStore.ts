@@ -1,3 +1,5 @@
+// Ticket 32: shell watermarks are derived in fork-owned code, without a migration.
+import * as TaskDeliveryShell from "./TaskDeliveryShell.ts";
 import {
   latestRootProviderFailure,
   threadErrorSummary,
@@ -1335,6 +1337,8 @@ export function threadShellFromProjection(
     runs: projection.runs,
   });
   return {
+    // Ticket 32: full projections preserve the same optional shell watermark.
+    ...TaskDeliveryShell.taskDeliveryFromSubagents(projection.subagents),
     createdBy: projection.thread.createdBy,
     creationSource: projection.thread.creationSource,
     id: projection.thread.id,
@@ -1567,6 +1571,8 @@ function shellFromState(input: {
   readonly visibleItemCount: number;
 }): OrchestrationV2ThreadShell {
   return {
+    // Ticket 32: forward the batch-read watermark without extending upstream state types.
+    ...TaskDeliveryShell.taskDeliveryShellFields(input.state),
     createdBy: input.state.thread.createdBy,
     creationSource: input.state.thread.creationSource,
     id: input.state.thread.id,
@@ -4921,7 +4927,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : sql``
             }
             ORDER BY t.updated_at ASC, t.thread_id ASC
-          `;
+          `
+        // Ticket 32: one additional indexed batch, never one query per shell.
+        .pipe(Effect.flatMap(TaskDeliveryShell.withTaskDeliveryWatermarks(sql)));
 
     const selectShellRunRows = (threadIds?: ReadonlyArray<ThreadId>) =>
       threadIds === undefined
@@ -5258,6 +5266,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           }),
         ];
         return {
+          // Ticket 32: retain the optional watermark while decoding the shell state.
+          ...TaskDeliveryShell.taskDeliveryShellFields(row),
           thread,
           latestRunId,
           latestRunStatus,

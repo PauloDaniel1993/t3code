@@ -30,6 +30,18 @@ it("repairs simultaneous window writes and adopts newer per-thread preferences",
   const first = await import("./uiStateStore");
   vi.resetModules();
   const second = await import("./uiStateStore");
+  first.useUiStateStore.setState({
+    sidebarProjectScopeKey: "first-scope",
+    projectOrder: ["first-project"],
+    defaultAdvertisedEndpointKey: "first-endpoint",
+    pullRequestMergeMethod: "squash",
+  });
+  second.useUiStateStore.setState({
+    sidebarProjectScopeKey: "second-scope",
+    projectOrder: ["second-project"],
+    defaultAdvertisedEndpointKey: "second-endpoint",
+    pullRequestMergeMethod: "rebase",
+  });
   first.useUiStateStore.getState().markThreadVisited("local:parent", "2026-09-29T00:09:00Z");
   first.useUiStateStore.getState().setSidebarTaskGroupExpanded("local:parent", false);
   unloadListeners[0]!();
@@ -45,6 +57,18 @@ it("repairs simultaneous window writes and adopts newer per-thread preferences",
   unloadListeners[0]!();
   storageListeners[1]!({ key: first.PERSISTED_STATE_KEY, newValue: saved! });
 
+  expect(first.useUiStateStore.getState()).toMatchObject({
+    sidebarProjectScopeKey: "first-scope",
+    projectOrder: ["first-project"],
+    defaultAdvertisedEndpointKey: "first-endpoint",
+    pullRequestMergeMethod: "squash",
+  });
+  expect(second.useUiStateStore.getState()).toMatchObject({
+    sidebarProjectScopeKey: "second-scope",
+    projectOrder: ["second-project"],
+    defaultAdvertisedEndpointKey: "second-endpoint",
+    pullRequestMergeMethod: "rebase",
+  });
   const restored = first.parsePersistedState(JSON.parse(saved!));
   expect(restored.threadLastVisitedAtById).toEqual({
     "local:parent": "2026-09-29T00:09:00Z",
@@ -57,4 +81,14 @@ it("repairs simultaneous window writes and adopts newer per-thread preferences",
   expect(second.useUiStateStore.getState().sidebarTaskGroupsExpandedById["local:parent"]).toBe(
     false,
   );
+  // A pending preference save must include task records received in the meantime.
+  second.useUiStateStore.setState({ sidebarProjectScopeKey: "pending-scope" });
+  first.useUiStateStore.getState().markThreadVisited("local:new-task", "2026-09-29T01:11:00Z");
+  unloadListeners[0]!();
+  storageListeners[1]!({ key: first.PERSISTED_STATE_KEY, newValue: saved! });
+  unloadListeners[1]!();
+  expect(
+    second.parsePersistedState(JSON.parse(saved!)).threadLastVisitedAtById["local:new-task"],
+  ).toBe("2026-09-29T01:11:00Z");
+  expect(second.useUiStateStore.getState().sidebarProjectScopeKey).toBe("pending-scope");
 });

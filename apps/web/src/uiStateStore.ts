@@ -2,6 +2,12 @@ import { Debouncer } from "@tanstack/react-pacer";
 import type { PullRequestMergeMethod } from "@t3tools/contracts";
 import { create } from "zustand";
 import { normalizeProjectPathForComparison } from "./lib/projectPaths";
+import {
+  nextLocalEditTime,
+  visitConflictEdits,
+  syncSidebarTaskUiState,
+} from "./sidebarTaskUiState";
+export { mergeUiStateRecords } from "./sidebarTaskUiState";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
 // Version 1 stored card visibility, not folder expansion.
@@ -226,73 +232,11 @@ function sanitizePersistedThreadChangedFilesExpanded(
   return nextState;
 }
 
-/** Reconcile browser windows by scoped key; stale snapshots cannot undo newer edits. */
-export function mergeUiStateRecords(previous: UiState, incoming: UiState): UiState {
-  const visits = { ...previous.threadLastVisitedAtById };
-  for (const [key, time] of Object.entries(incoming.threadLastVisitedAtById)) {
-    const oldEdit = Date.parse(previous.threadVisitEditsAtById?.[key] ?? "");
-    const newEdit = Date.parse(incoming.threadVisitEditsAtById?.[key] ?? "");
-    const incomingUnread = incoming.threadVisitIsUnreadById?.[key] === true;
-    const previousUnread = previous.threadVisitIsUnreadById?.[key] === true;
-    if (
-      visits[key] === undefined ||
-      (incomingUnread && (!Number.isFinite(oldEdit) || newEdit > oldEdit)) ||
-      (!incomingUnread &&
-        (!previousUnread || newEdit > oldEdit) &&
-        Date.parse(time) > Date.parse(visits[key]!))
-    )
-      visits[key] = time;
-  }
-  const expanded = { ...previous.sidebarTaskGroupsExpandedById };
-  const unread = { ...previous.threadVisitIsUnreadById };
-  for (const [key, value] of Object.entries(incoming.threadVisitIsUnreadById ?? {})) {
-    if (
-      Date.parse(incoming.threadVisitEditsAtById?.[key] ?? "") >=
-        Date.parse(previous.threadVisitEditsAtById?.[key] ?? "") ||
-      previous.threadVisitEditsAtById?.[key] === undefined
-    )
-      unread[key] = value;
-  }
-  for (const [key, value] of Object.entries(incoming.sidebarTaskGroupsExpandedById)) {
-    const oldTime = Date.parse(previous.sidebarTaskGroupsExpandedAtById?.[key] ?? "");
-    const newTime = Date.parse(incoming.sidebarTaskGroupsExpandedAtById?.[key] ?? "");
-    if (expanded[key] === undefined || !Number.isFinite(oldTime) || newTime >= oldTime)
-      expanded[key] = value;
-  }
-  const newest = (a: Record<string, string> = {}, b: Record<string, string> = {}) => {
-    const result = { ...a };
-    for (const [key, time] of Object.entries(b))
-      if (result[key] === undefined || Date.parse(time) > Date.parse(result[key]!))
-        result[key] = time;
-    return result;
-  };
-  const files = { ...previous.threadChangedFilesExpandedById };
-  for (const [key, values] of Object.entries(incoming.threadChangedFilesExpandedById))
-    files[key] = { ...files[key], ...values };
-  return {
-    ...incoming,
-    projectExpandedById: { ...previous.projectExpandedById, ...incoming.projectExpandedById },
-    threadChangedFilesExpandedById: files,
-    threadLastVisitedAtById: visits,
-    threadVisitEditsAtById: newest(
-      previous.threadVisitEditsAtById,
-      incoming.threadVisitEditsAtById,
-    ),
-    threadVisitIsUnreadById: unread,
-    sidebarTaskGroupsExpandedById: expanded,
-    sidebarTaskGroupsExpandedAtById: newest(
-      previous.sidebarTaskGroupsExpandedAtById,
-      incoming.sidebarTaskGroupsExpandedAtById,
-    ),
-  };
-}
-
-export function persistState(current: UiState): void {
+export function persistState(state: UiState): void {
   if (typeof window === "undefined") {
     return;
   }
   try {
-    const state = mergeUiStateRecords(readPersistedState(), current);
     const projectExpandedById = Object.fromEntries(
       Object.entries(state.projectExpandedById).filter(
         ([key]) => key !== LEGACY_PROJECT_EXPANSION_DEFAULT_KEY,
@@ -326,7 +270,9 @@ export function persistState(current: UiState): void {
   }
 }
 
-const debouncedPersistState = new Debouncer(persistState, { wait: 500 });
+const debouncedPersistState = new Debouncer(() => persistState(useUiStateStore.getState()), {
+  wait: 500,
+});
 
 export function markThreadVisited(state: UiState, threadId: string, visitedAt: string): UiState {
   const visitedAtMs = Date.parse(visitedAt);
@@ -348,11 +294,7 @@ export function markThreadVisited(state: UiState, threadId: string, visitedAt: s
       ...state.threadLastVisitedAtById,
       [threadId]: visitedAt,
     },
-    threadVisitEditsAtById: {
-      ...state.threadVisitEditsAtById,
-      [threadId]: nextLocalEditTime(state.threadVisitEditsAtById?.[threadId]),
-    },
-    threadVisitIsUnreadById: { ...state.threadVisitIsUnreadById, [threadId]: false },
+    ...visitConflictEdits(state, threadId, false),
   };
 }
 
@@ -374,11 +316,7 @@ export function markThreadUnread(
   }
   return {
     ...state,
-    threadVisitEditsAtById: {
-      ...state.threadVisitEditsAtById,
-      [threadId]: nextLocalEditTime(state.threadVisitEditsAtById?.[threadId]),
-    },
-    threadVisitIsUnreadById: { ...state.threadVisitIsUnreadById, [threadId]: true },
+    ...visitConflictEdits(state, threadId, true),
     threadLastVisitedAtById: {
       ...state.threadLastVisitedAtById,
       [threadId]: unreadVisitedAt,
@@ -540,10 +478,7 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
       },
       sidebarTaskGroupsExpandedAtById: {
         ...state.sidebarTaskGroupsExpandedAtById,
-        [threadKey]: nextLocalEditTime(
-          state.sidebarTaskGroupsExpandedAtById?.[threadKey],
-          readPersistedState().sidebarTaskGroupsExpandedAtById?.[threadKey],
-        ),
+        [threadKey]: nextLocalEditTime(state.sidebarTaskGroupsExpandedAtById?.[threadKey]),
       },
     })),
   markThreadVisited: (threadId, visitedAt) =>
@@ -565,54 +500,18 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     ),
 }));
 
-let applyingStorageState = false;
-useUiStateStore.subscribe((state) => {
-  if (!applyingStorageState) debouncedPersistState.maybeExecute(state);
+const taskSync = syncSidebarTaskUiState({
+  key: PERSISTED_STATE_KEY,
+  store: useUiStateStore,
+  parse: parsePersistedState,
+  repair: () => debouncedPersistState.maybeExecute(),
+});
+useUiStateStore.subscribe(() => {
+  if (!taskSync.isApplying()) debouncedPersistState.maybeExecute();
 });
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("storage", (event) => {
-    if (event.key !== PERSISTED_STATE_KEY || event.newValue === null) return;
-    try {
-      const incoming = parsePersistedState(JSON.parse(event.newValue) as PersistedUiState);
-      const next = mergeUiStateRecords(useUiStateStore.getState(), incoming);
-      applyingStorageState = true;
-      useUiStateStore.setState(next);
-      // Two windows can both read before either writes. Repair a stale write
-      // with the keys this window retained, without echoing an identical record.
-      if (
-        !sameRecord(next.threadLastVisitedAtById, incoming.threadLastVisitedAtById) ||
-        !sameRecord(next.threadVisitEditsAtById, incoming.threadVisitEditsAtById) ||
-        !sameRecord(next.threadVisitIsUnreadById, incoming.threadVisitIsUnreadById) ||
-        !sameRecord(next.sidebarTaskGroupsExpandedById, incoming.sidebarTaskGroupsExpandedById) ||
-        !sameRecord(next.sidebarTaskGroupsExpandedAtById, incoming.sidebarTaskGroupsExpandedAtById)
-      )
-        debouncedPersistState.maybeExecute(next);
-    } catch {
-      // A malformed value from another window cannot invalidate local state.
-    } finally {
-      applyingStorageState = false;
-    }
-  });
   window.addEventListener("beforeunload", () => {
     debouncedPersistState.flush();
   });
-}
-
-function sameRecord(a: Record<string, unknown> = {}, b: Record<string, unknown> = {}) {
-  return (
-    Object.keys(a).length === Object.keys(b).length &&
-    Object.entries(a).every(([key, value]) => b[key] === value)
-  );
-}
-
-function nextLocalEditTime(...previous: (string | undefined)[]) {
-  return new Date(
-    Math.max(
-      Date.now(),
-      ...previous.map((time) =>
-        Number.isFinite(Date.parse(time ?? "")) ? Date.parse(time!) + 1 : 0,
-      ),
-    ),
-  ).toISOString();
 }
