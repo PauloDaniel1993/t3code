@@ -285,6 +285,7 @@ import {
 import { cn, randomUUID } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { recoverFailedSendDraft, removeFailedOptimisticMessage } from "./chat/failedSendRecovery";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -9305,6 +9306,32 @@ export default function ChatView(props: ChatViewProps) {
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
       if (
+        recoverFailedSendDraft({
+          target: composerDraftTarget,
+          threadRef: scopeThreadRef(environmentId, threadIdForSend),
+          messageId: messageIdForSend,
+          failedDraft: {
+            prompt: messageTextForSend,
+            images: composerImagesSnapshot,
+            files: composerFilesSnapshot,
+            terminalContexts: composerTerminalContextsSnapshot,
+            previewAnnotations: composerPreviewAnnotationsSnapshot,
+            reviewComments: composerReviewCommentsSnapshot,
+            threadContexts: composerThreadContextsSnapshot,
+          },
+          isOriginalRoute: () => currentRouteThreadKeyRef.current === routeThreadKey,
+          onRestored: (draft) => {
+            promptRef.current = draft.prompt;
+            composerImagesRef.current = draft.images;
+            composerFilesRef.current = draft.files;
+            composerTerminalContextsRef.current = draft.terminalContexts;
+          },
+        })
+      ) {
+        setOptimisticUserMessages((existing) =>
+          removeFailedOptimisticMessage(existing, messageIdForSend),
+        );
+      } else if (
         backgroundDraftOpened
           ? !composerDraftHasUserContent(
               useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
