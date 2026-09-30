@@ -160,6 +160,8 @@ describe("attachment reference index", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* smallFixture;
         yield* sql`DELETE FROM orchestration_v2_projection_messages`;
+        // Seed old source rows directly; their index is built only by the measured pass.
+        yield* sql`DROP TRIGGER fork_v2_attachment_message_insert`;
         yield* sql`WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i<299999)
           INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
           SELECT printf('message-%06d', i), 'thread-0', 'user', 0, '2026-01-01', '2026-01-01',
@@ -225,14 +227,18 @@ describe("attachment reference index", () => {
           ).toBe(false);
         expect(rows.filter((row) => row.source === "item")).toHaveLength(200);
         let scans = 0;
+        let readQuery = sql`SELECT 1`;
         const counted = new Proxy(sql, {
           apply: (target, receiver, args) => {
             const statement = Reflect.apply(target, receiver, args);
             if (
               Array.isArray(args[0]) &&
               statement.compile()[0].includes("json_tree(payload.payload_json)")
-            )
+            ) {
               scans++;
+              if (statement.compile()[0].includes("JOIN orchestration_v2_projection_threads"))
+                readQuery = statement;
+            }
             return statement;
           },
         });
@@ -243,9 +249,16 @@ describe("attachment reference index", () => {
         ).toBe("thread-0");
         expect(scans).toBe(0);
         expect(
-          (yield* findReadableAttachment("thread-0-00000000-0000-4000-8000-000000000199"))
-            ?.threadId,
+          (yield* findReadableAttachment("thread-0-00000000-0000-4000-8000-000000000199").pipe(
+            Effect.provideService(SqlClient.SqlClient, counted),
+          ))?.threadId,
         ).toBe("thread-0");
+        const [readSql, readParameters] = readQuery.compile();
+        const readPlan = yield* sql.unsafe<{ detail: string }>(
+          `EXPLAIN QUERY PLAN ${readSql}`,
+          readParameters,
+        );
+        expect(readPlan.some((row) => row.detail.includes("message_id>?"))).toBe(true);
         // Complete the messages, then stop part-way through the next source.
         while ((yield* readAttachmentReferenceIndexState())?.source_index === 0)
           yield* rebuildAttachmentReferenceIndexPass();
