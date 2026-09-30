@@ -23,20 +23,25 @@ export function taskDeliveryFromSubagents(subagents: ReadonlyArray<Orchestration
   return taskDeliveryShellFields({ latestTaskDeliveredAt });
 }
 
-/** One indexed batch per shell read, independent of thread count or detail/history windows. */
+/** Read delivery times from compact index keys, outside detail/history windows. */
 export const withTaskDeliveryWatermarks = (sql: SqlClient.SqlClient) =>
   Effect.fnUntraced(function* <Row extends { readonly thread_id: string }>(
     rows: ReadonlyArray<Row>,
   ) {
     if (rows.length === 0) return rows;
-    // These internal IDs are already typed; avoid a schema traversal on every shell read.
-    // @effect-diagnostics-next-line preferSchemaOverJson:off
-    const threadIds = JSON.stringify(rows.map((row) => row.thread_id));
-    const deliveries = yield* sql<{ thread_id: string; delivered_at: string | null }>`
+    // Full lists scan only compact index keys, returning immediately for an
+    // empty index. Single-thread live reads stay bounded to that parent's keys.
+    const deliveries = yield* rows.length === 1
+      ? sql<{ thread_id: string; delivered_at: string | null }>`
+      SELECT task.thread_id, MAX(json_extract(task.payload_json, '$.completionDelivery.deliveredAt')) AS delivered_at
+      FROM orchestration_v2_projection_subagents AS task INDEXED BY fork_v2_task_delivery_idx
+      WHERE task.origin = 'app_owned' AND task.thread_id = ${rows[0]!.thread_id}
+      GROUP BY task.thread_id
+    `
+      : sql<{ thread_id: string; delivered_at: string | null }>`
       SELECT task.thread_id, MAX(json_extract(task.payload_json, '$.completionDelivery.deliveredAt')) AS delivered_at
       FROM orchestration_v2_projection_subagents AS task INDEXED BY fork_v2_task_delivery_idx
       WHERE task.origin = 'app_owned'
-        AND task.thread_id IN (SELECT value FROM json_each(${threadIds}))
       GROUP BY task.thread_id
     `;
     if (deliveries.length === 0) return rows;

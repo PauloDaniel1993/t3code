@@ -161,6 +161,18 @@ it.effect("2000 shell watermarks use one batch query, with no task field on ordi
     assert.isFalse(
       instructions.some((row) => row.opcode === "Function" && row.p4?.includes("json_extract")),
     );
+    const single = yield* withTaskDeliveryWatermarks(countedSql)([rows[0]!]);
+    assert.deepEqual(single[0], expected);
+    const [liveQuery, liveBindings] = statement!.compile();
+    const livePlan = yield* sql.unsafe<{ detail: string }>(
+      `EXPLAIN QUERY PLAN ${liveQuery}`,
+      liveBindings,
+    );
+    assert.isTrue(
+      livePlan.some((row) =>
+        row.detail.includes("SEARCH task USING INDEX fork_v2_task_delivery_idx (thread_id=?)"),
+      ),
+    );
   }).pipe(Effect.provide(TestLayer)),
 );
 
