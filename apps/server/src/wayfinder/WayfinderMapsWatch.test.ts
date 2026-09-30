@@ -1,11 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -78,6 +80,11 @@ describe("isWayfinderMapChange", () => {
     ["rename", ".scratch/eff", true],
     ["rename", ".plan/eff/tickets", true],
     ["rename", ".plan", true],
+    // Where the containers overlap: the `.plan` effort named `maps`.
+    ["change", ".plan/maps/map.md", true],
+    ["change", ".PLAN\\MAPS\\MAP.MD", true],
+    ["change", ".plan/maps/tickets/01-a.md", true],
+    ["rename", ".plan/maps/deep", true],
     // A folder's own `change` is the timestamp of a file written inside it.
     ["change", ".scratch/noise", false],
     ["change", ".scratch", false],
@@ -188,5 +195,112 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps watching", (it
 
         expect(changed.maps.map((map) => map.title)).toEqual(["Upper after"]);
       }),
+  );
+
+  it.effect("publishes a change to the map of a .plan effort named maps", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeProject;
+      yield* writeText(cwd, ".plan/maps/map.md", mapMarkdown("Maps before"));
+      const { snapshots, initial } = yield* subscribe(cwd);
+      expect(initial.maps.find((map) => map.id === "maps")?.title).toBe("Maps before");
+
+      yield* writeText(cwd, ".plan/maps/map.md", mapMarkdown("Maps after"));
+      const changed = yield* Queue.take(snapshots);
+
+      expect(changed.maps.find((map) => map.id === "maps")?.title).toBe("Maps after");
+    }),
+  );
+});
+
+/** Every path the reader resolves: each listing, existence check and read resolves its path. */
+class Resolved extends Context.Service<Resolved, Ref.Ref<ReadonlyArray<string>>>()(
+  "t3/wayfinder/WayfinderMapsWatch.test/Resolved",
+) {
+  static readonly layer = Layer.effect(Resolved, Ref.make<ReadonlyArray<string>>([]));
+}
+
+const recordingPlatform = Layer.provideMerge(
+  Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const resolved = yield* Resolved;
+      return FileSystem.make({
+        ...fileSystem,
+        realPath: (path) =>
+          Ref.update(resolved, (all) => [...all, path]).pipe(
+            Effect.andThen(fileSystem.realPath(path)),
+          ),
+      });
+    }),
+  ),
+  Layer.merge(NodeServices.layer, Resolved.layer),
+);
+const recordingWorkspace = Layer.merge(
+  recordingPlatform,
+  WorkspacePaths.layer.pipe(Layer.provide(recordingPlatform)),
+);
+const RecordingLayer = Layer.merge(
+  recordingWorkspace,
+  WayfinderMaps.layer.pipe(Layer.provide(recordingWorkspace), Layer.provide(quickTuning)),
+);
+
+it.layer(RecordingLayer, { excludeTestServices: true })("WayfinderMaps watch filter", (it) => {
+  it.effect("counts a change to every path discovery reads, in any letter case", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const resolved = yield* Resolved;
+      const cwd = yield* fileSystem
+        .makeTempDirectoryScoped({ prefix: "t3code-wayfinder-agree-" })
+        .pipe(Effect.flatMap((directory) => fileSystem.realPath(directory)));
+      // Every layout discovery reads, including where its containers overlap.
+      const layouts = [
+        "wayfinder-map.md",
+        ".plan/tickets/01-root.md",
+        ".plan/tickets/map.md",
+        ".plan/maps/map.md",
+        ".plan/maps/tickets/01-a.md",
+        ".plan/maps/deep/map.md",
+        ".plan/maps/deep/tickets/01-b.md",
+        ".plan/Eff/map.md",
+        ".plan/Eff/tickets/01-C.MD",
+        ".scratch/eff/map.md",
+        ".scratch/eff/issues/01-d.md",
+      ];
+      for (const relativePath of layouts) {
+        yield* writeText(
+          cwd,
+          relativePath,
+          relativePath.endsWith("map.md") ? mapMarkdown(relativePath) : ticketMarkdown("T"),
+        );
+      }
+      yield* Ref.set(resolved, []);
+
+      const maps = yield* WayfinderMaps.WayfinderMaps;
+      yield* maps.stream(cwd).pipe(Stream.runHead);
+
+      const read = (yield* Ref.get(resolved))
+        .map((absolutePath) => path.relative(cwd, absolutePath))
+        .filter((relativePath) => relativePath !== "");
+      expect(read).toEqual(expect.arrayContaining(layouts.map((layout) => path.normalize(layout))));
+      for (const relativePath of new Set(read)) {
+        const info = yield* fileSystem.stat(path.join(cwd, relativePath)).pipe(Effect.option);
+        // A path discovery looked for but did not find arrives as a rename when it is made.
+        const expected =
+          info._tag === "None"
+            ? expect.stringMatching(/^(file|folder)$/)
+            : info.value.type === "File"
+              ? "file"
+              : "folder";
+        expect([relativePath, WayfinderMaps.wayfinderPathKind(relativePath)]).toEqual([
+          relativePath,
+          expected,
+        ]);
+        expect([relativePath, WayfinderMaps.wayfinderPathKind(relativePath.toUpperCase())]).toEqual(
+          [relativePath, expected],
+        );
+      }
+    }),
   );
 });

@@ -183,6 +183,8 @@ const MAP_CONTAINERS = [
  * ticket names with it and the watchers filter every event with it. Names compare without
  * case, because discovery's fixed names (`map.md`, `wayfinder-map.md`, `tickets`) also match
  * other spellings on Windows and macOS; on Linux the extra match costs a scan, nothing else.
+ * The containers overlap (`.plan/maps/map.md` is the map of the `.plan` effort `maps`), so a
+ * file match in any container wins over a folder match in another.
  */
 export function wayfinderPathKind(relativePath: string): "file" | "folder" | null {
   const segments = relativePath
@@ -198,19 +200,21 @@ export function wayfinderPathKind(relativePath: string): "file" | "folder" | nul
   if (first === ".plan" && second === "tickets" && third?.endsWith(".md") && deeper.length === 0) {
     return "file";
   }
+  let kind: "folder" | null = null;
   for (const container of MAP_CONTAINERS) {
     if (!container.segments.every((name, index) => segments[index] === name)) continue;
     const [effort, entry, ticket, ...rest] = segments.slice(container.segments.length);
     if (rest.length > 0) continue;
-    if (effort === undefined || entry === undefined) return "folder";
-    if (ticket === undefined) {
+    if (effort === undefined || entry === undefined) {
+      kind = "folder";
+    } else if (ticket === undefined) {
       if (entry === "map.md") return "file";
-      if (entry === container.tickets) return "folder";
-      continue;
+      if (entry === container.tickets) kind = "folder";
+    } else if (entry === container.tickets && ticket.endsWith(".md")) {
+      return "file";
     }
-    if (entry === container.tickets && ticket.endsWith(".md")) return "file";
   }
-  return null;
+  return kind;
 }
 
 /**
