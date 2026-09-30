@@ -5,7 +5,6 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 
@@ -33,7 +32,9 @@ import type { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
  * "[TRUNCATED: depth limit]" so the store's native JSON encoder can persist it.
  * Titles/names/paths use 4 KiB; command arguments use 16 KiB. Running
  * output uses 16 KiB to match ACP; command output keeps the latest tail.
- * Search queries share 16 KiB, with 4 KiB per query: normal questions survive.
+ * File-change text and path descriptors have separate running budgets, so the
+ * text envelope ACP already bounded is not charged for its path metadata again.
+ * Search queries share 16 KiB of input, including their array but no field wrapper.
  * Traversal charges every inspected field; JS own-key enumeration, adapter
  * decoding and the incoming raw object are outside this allocation guarantee.
  */
@@ -201,6 +202,12 @@ function boundToolResult(
       (frame.sensitivePair && (isArray ? key === "1" : /^value$/i.test(key)))
         ? "[REDACTED]"
         : Reflect.get(frame.source, key);
+    // JSON omits these object fields; optional adapter fields must not become null.
+    if (
+      !isArray &&
+      (current === undefined || typeof current === "function" || typeof current === "symbol")
+    )
+      continue;
     const minimum = Predicate.isString(current)
       ? 2
       : (Array.isArray(current) || Predicate.isObject(current)) && !ancestors.has(current)
@@ -291,7 +298,8 @@ function criticalToolResult(
     value.isError === true ||
     value.is_error === true ||
     value.error != null ||
-    value._tag === "OrchestratorMcpFailure"
+    value._tag === "OrchestratorMcpFailure" ||
+    nested?.isError === true
       ? true
       : Predicate.isBoolean(value.isError)
         ? value.isError
@@ -300,11 +308,11 @@ function criticalToolResult(
   return Object.keys(result).length === 0 ? undefined : result;
 }
 
-const decodeFileChange = Schema.decodeUnknownOption(OrchestrationV2FileChangeDetail);
-const decodeFileSearchResult = Schema.decodeUnknownOption(OrchestrationV2FileSearchResult);
-const decodeWebSearchResult = Schema.decodeUnknownOption(OrchestrationV2WebSearchResult);
-function boundedResults<A>(values: unknown, decode: (value: unknown) => Option.Option<A>): A[] {
-  return Array.isArray(values) ? values.flatMap((value) => Option.toArray(decode(value))) : [];
+const isFileChange = Schema.is(OrchestrationV2FileChangeDetail);
+const isFileSearchResult = Schema.is(OrchestrationV2FileSearchResult);
+const isWebSearchResult = Schema.is(OrchestrationV2WebSearchResult);
+function boundedResults<A>(values: unknown, is: (value: unknown) => value is A): A[] {
+  return Array.isArray(values) ? values.filter(is) : [];
 }
 function isFinal(item: OrchestrationV2TurnItem): boolean {
   return (
@@ -362,7 +370,7 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
       const { diffStr, oldStr, newStr, changes } = item;
       const result = boundProviderToolResult(
         {
-          ...(changes === undefined ? {} : { changes }),
+          ...(final && changes !== undefined ? { changes } : {}),
           ...(diffStr === undefined ? {} : { diffStr }),
           ...(oldStr === undefined ? {} : { oldStr }),
           ...(newStr === undefined ? {} : { newStr }),
@@ -379,8 +387,14 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
         if (Predicate.isString(text)) bounded[key] = text;
         else delete bounded[key];
       }
-      if (Predicate.isObject(result) && Array.isArray(result.changes))
-        bounded.changes = boundedResults(result.changes, decodeFileChange);
+      const boundedChanges =
+        final && Predicate.isObject(result)
+          ? result.changes
+          : changes === undefined
+            ? undefined
+            : boundProviderToolResult(changes, PROVIDER_TOOL_RUNNING_OUTPUT_BYTES);
+      if (Array.isArray(boundedChanges))
+        bounded.changes = boundedResults(boundedChanges, isFileChange);
       else delete bounded.changes;
       return bounded;
     }
@@ -391,7 +405,7 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
         title,
         ...(item.pattern === undefined
           ? {}
-          : { pattern: boundedString(item.pattern, PROVIDER_TOOL_DETAIL_BYTES) }),
+          : { pattern: boundedString(item.pattern, PROVIDER_TOOL_INPUT_BYTES) }),
         ...(results !== undefined
           ? {
               results: boundedResults(
@@ -399,7 +413,7 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
                   results,
                   final ? PROVIDER_TOOL_RESULT_BYTES : PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
                 ),
-                decodeFileSearchResult,
+                isFileSearchResult,
               ),
             }
           : {}),
@@ -410,10 +424,11 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
       const queries: string[] = [];
       let remaining = PROVIDER_SEARCH_QUERY_BYTES - 2;
       for (const pattern of patterns ?? []) {
-        if (remaining < 8) break;
-        const query = boundedString(pattern, Math.min(PROVIDER_TOOL_DETAIL_BYTES, remaining - 1));
+        const separator = queries.length > 0 ? 1 : 0;
+        if (remaining - separator < 2) break;
+        const query = boundedString(pattern, remaining - separator);
         queries.push(query);
-        remaining -= Buffer.byteLength(JSON.stringify(query)) + 1;
+        remaining -= Buffer.byteLength(JSON.stringify(query)) + separator;
       }
       return {
         ...item,
@@ -426,7 +441,7 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
                   results,
                   final ? PROVIDER_TOOL_RESULT_BYTES : PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
                 ),
-                decodeWebSearchResult,
+                isWebSearchResult,
               ),
             }
           : {}),

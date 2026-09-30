@@ -708,6 +708,87 @@ describe("ACP redaction parity", () => {
 });
 
 describe("bounded live tool data", () => {
+  it("preserves optional undefined fields and typed result property order on the wire", () => {
+    const value = {
+      present: "kept",
+      optional: undefined,
+      nested: { value: undefined },
+      array: [undefined],
+    };
+    expect(JSON.stringify(boundProviderToolResult(value))).toBe(JSON.stringify(value));
+    const baseEvent = decodeEvent({
+      type: "turn_item.updated",
+      driver: "acp",
+      turnItem: {
+        ...base,
+        status: "running",
+        type: "file_change",
+        fileName: "a.ts",
+        changes: [],
+      },
+    });
+    if (baseEvent.type !== "turn_item.updated" || baseEvent.turnItem.type !== "file_change")
+      throw new Error("Expected file change");
+    const event = {
+      ...baseEvent,
+      turnItem: {
+        ...baseEvent.turnItem,
+        changes: [{ path: "a.ts", operation: "modify", oldPath: undefined }],
+      },
+    };
+    expect(JSON.stringify(sanitizeProviderEvent(event))).toBe(JSON.stringify(event));
+  });
+  it("preserves ACP's exact running diff envelope independently of path metadata", () => {
+    const value = {
+      ...base,
+      status: "running",
+      type: "file_change",
+      fileName: "a.ts",
+      diffStr: "x".repeat(16_384 - 14),
+      changes: [{ operation: "modify", path: "a.ts" }],
+    };
+    expect(Buffer.byteLength(JSON.stringify({ diffStr: value.diffStr }))).toBe(16_384);
+    const event = decodeEvent({ type: "turn_item.updated", driver: "acp", turnItem: value });
+    expect(JSON.stringify(sanitizeProviderEvent(event))).toBe(JSON.stringify(event));
+  });
+
+  it("preserves queries above 4 KiB and the exact 16 KiB query array", () => {
+    const pattern = "q".repeat(8000);
+    const patterns = ["q".repeat(16_384 - 4)];
+    expect(Buffer.byteLength(JSON.stringify(patterns))).toBe(16_384);
+    for (const value of [
+      { ...base, status: "running", type: "file_search", pattern },
+      { ...base, status: "running", type: "web_search", patterns },
+    ]) {
+      const event = decodeEvent({ type: "turn_item.updated", driver: "acp", turnItem: value });
+      expect(JSON.stringify(sanitizeProviderEvent(event))).toBe(JSON.stringify(event));
+    }
+  });
+
+  it("keeps a nested failure even when the outer envelope has isError false", () => {
+    const output = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            padding: "x".repeat(70_000),
+            threadId: "child",
+            taskId: "task",
+            isError: true,
+          }),
+        },
+      ],
+      isError: false,
+    };
+    const item = sanitize({ ...base, type: "dynamic_tool", toolName: "mcp", input: {}, output });
+    if (item.type !== "dynamic_tool") throw new Error("Expected dynamic tool");
+    expect(compactDynamicToolOutput(item.output)).toEqual({
+      threadId: "child",
+      taskId: "task",
+      isError: true,
+    });
+    expect(item.output).toMatchObject({ isError: true });
+  });
   it.each([
     [
       "running dynamic output",
