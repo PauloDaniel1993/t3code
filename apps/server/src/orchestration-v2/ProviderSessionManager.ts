@@ -32,6 +32,7 @@ import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import { EventSinkV2 } from "./EventSink.ts";
+import { makeIdleReleaseTracer } from "./ForkProviderSessionReleaseLogging.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
 import { makeKeyedSerialExecutor } from "./KeyedSerialExecutor.ts";
 import { ProviderEventIngestorV2 } from "./ProviderEventIngestor.ts";
@@ -862,6 +863,7 @@ export const layerWithOptions = (
           ),
         );
 
+      const idleReleaseTracer = makeIdleReleaseTracer({ sessions, idleTimeoutMs, maxIdlePinMs });
       // Annotated to break the releaseIfStillIdle <-> scheduleIdleReleaseInternal
       // inference cycle introduced by the pin re-arm below.
       const releaseIfStillIdle = (input: {
@@ -872,6 +874,7 @@ export const layerWithOptions = (
           const current = yield* Ref.get(sessions);
           const key = sessionKey(input.providerSessionId);
           const entry = current.get(key);
+          const trace = yield* idleReleaseTracer.begin(key, input, entry);
           if (
             entry === undefined ||
             entry.busyCount > 0 ||
@@ -886,6 +889,7 @@ export const layerWithOptions = (
             probedRuntime.hasPendingBackgroundWork === undefined
               ? false
               : yield* probedRuntime.hasPendingBackgroundWork.pipe(
+                  trace.observePendingWorkCheck,
                   Effect.catchCause(() => Effect.succeed(false)),
                 );
           if (hasPendingWork) {
@@ -907,6 +911,7 @@ export const layerWithOptions = (
                 return [true, updated] as const;
               });
               if (!shouldContinuePin) {
+                yield* trace.changedDuringBackgroundProbe();
                 // Generation or runtime advanced while we probed pending work;
                 // the current owner of the entry owns idle release.
                 return;
@@ -915,6 +920,7 @@ export const layerWithOptions = (
                 providerSessionId: input.providerSessionId,
                 pinnedForMs: now - pinnedSinceMs,
               });
+              yield* trace.deferredForBackgroundWork(now - pinnedSinceMs);
               // Re-check on this fiber after another idle window. Do not call
               // scheduleIdleReleaseInternal: that cancels entry.idleFiber, which
               // is this fiber, and can self-deadlock on Fiber.interrupt.
@@ -925,6 +931,7 @@ export const layerWithOptions = (
               providerSessionId: input.providerSessionId,
               pinnedForMs: now - pinnedSinceMs,
             });
+            yield* trace.pinExpired(now - pinnedSinceMs);
           }
           // hasPendingBackgroundWork yields to the adapter, so the idle
           // decision above can go stale; the generation guard revalidates
@@ -936,6 +943,7 @@ export const layerWithOptions = (
             cancelIdleFiber: false,
             onlyIfIdleGeneration: input.generation,
           }).pipe(
+            trace.observeStop,
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.driver-session.idle-release-failed", {
                 providerSessionId: input.providerSessionId,
