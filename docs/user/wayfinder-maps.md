@@ -27,8 +27,11 @@ Choose a map, then choose a star or list item to open its ticket. Use **Back** t
 Pressing `Escape` also moves back one level instead of closing the right panel. When a ticket names
 a blocker, choose that blocker to open its ticket.
 
-From a ticket, choose **Open as file** to open its source in the Files surface. **Open as task** is
-shown but not available yet.
+From a ticket, choose **Open as file** to open its source in the Files surface. Choose **Open as
+task** to open the New task dialog on the thread you are in, with the ticket title and a prompt built
+from the ticket already filled in. Nothing is created until you confirm; cancel the dialog to leave
+the map as it was. The action is unavailable, with the reason on hover, when that thread cannot take
+a task right now.
 
 ## Read the Dependency Flow
 

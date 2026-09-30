@@ -1,16 +1,15 @@
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { FileText, ListTodo, TriangleAlert } from "lucide-react";
+import { useId } from "react";
 
 import ChatMarkdown from "~/components/ChatMarkdown";
 import { useProjectFileQuery } from "~/components/files/projectFilesQueryState";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
+import { useNewThreadTaskAvailability } from "~/hooks/useNewThreadTaskAvailability";
 import { useRightPanelStore } from "~/rightPanelStore";
 
-import {
-  buildStarMapTicketTaskDraft,
-  type StarMapTicketTaskDraft,
-} from "./StarMapTicketDetail.logic";
+import { openStarMapTicketAsTask } from "./StarMapTicketDetail.logic";
 import type { StarMapGraph, StarMapGraphNode } from "./starMapGraph";
 
 export interface StarMapTicketDetailProps {
@@ -22,21 +21,6 @@ export interface StarMapTicketDetailProps {
   readonly threadRef: ScopedThreadRef | null;
   readonly onSelectTicket: (ticketId: string) => void;
 }
-
-/**
- * Open as task is waiting on the New task dialog host (ticket 31). Flip this once
- * `requestOpenAsTask` below is wired: the button then becomes live and drops its tooltip.
- */
-const OPEN_AS_TASK_AVAILABLE = false as boolean;
-
-/**
- * THE ONE CALL SITE for ticket 31. The host takes an open request that names the parent thread
- * and can carry a prefilled title and prompt: send it `threadRef` and `draft` from here.
- */
-function requestOpenAsTask(_request: {
-  readonly threadRef: ScopedThreadRef;
-  readonly draft: StarMapTicketTaskDraft;
-}): void {}
 
 function statusText(node: StarMapGraphNode): string {
   switch (node.status) {
@@ -71,8 +55,12 @@ function blockersOf(graph: StarMapGraph, nodeId: string): ReadonlyArray<StarMapG
  */
 export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
   const { node } = props;
+  const taskUnavailableId = useId();
   const fileQuery = useProjectFileQuery(props.environmentId, props.cwd, node.relativePath);
   const blockers = blockersOf(props.graph, node.id);
+  // The parent is this panel's own thread, whichever thread it is. The New task host's shared
+  // guard decides whether that thread can take a task, and says why when it cannot.
+  const { problem: taskUnavailable } = useNewThreadTaskAvailability(props.threadRef);
   const openAsFile = () => {
     if (props.threadRef === null) return;
     // 9.2 decision — accepted and documented: `openFile` removes an open
@@ -89,14 +77,12 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
   };
 
   const openAsTask = () => {
-    if (props.threadRef === null) return;
-    requestOpenAsTask({
+    if (props.threadRef === null || taskUnavailable !== null) return;
+    openStarMapTicketAsTask({
       threadRef: props.threadRef,
-      draft: buildStarMapTicketTaskDraft({
-        node,
-        contents: fileQuery.data?.contents ?? null,
-        truncated: fileQuery.data?.truncated ?? false,
-      }),
+      node,
+      contents: fileQuery.data?.contents ?? null,
+      truncated: fileQuery.data?.truncated ?? false,
     });
   };
 
@@ -124,39 +110,39 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                 <FileText className="size-3.5" aria-hidden />
                 Open as file
               </button>
-              {/* A disabled button swallows pointer events, so the tooltip hangs off a focusable
-                  wrapper instead: hover or Tab reaches the explanation while the button itself
-                  cannot be clicked or activated from the keyboard. */}
+              {/* Unavailable stays a focusable `aria-disabled` button, as the right panel launcher
+                  and the Git quick action do: the element Tab reaches carries the name and the
+                  reason, the tooltip opens on hover and focus, and activating it does nothing. */}
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <span
-                      className="inline-flex"
-                      tabIndex={OPEN_AS_TASK_AVAILABLE ? undefined : 0}
-                    />
+                    <button
+                      type="button"
+                      aria-disabled={taskUnavailable === null ? undefined : true}
+                      aria-describedby={taskUnavailable === null ? undefined : taskUnavailableId}
+                      onClick={openAsTask}
+                      className={cn(
+                        "flex h-6 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground",
+                        taskUnavailable === null
+                          ? "hover:bg-accent/60 hover:text-foreground"
+                          : "cursor-not-allowed opacity-50",
+                      )}
+                      aria-label={`Open ${node.label} as a task`}
+                    >
+                      <ListTodo className="size-3.5" aria-hidden />
+                      Open as task
+                    </button>
                   }
-                >
-                  <button
-                    type="button"
-                    disabled={!OPEN_AS_TASK_AVAILABLE}
-                    onClick={openAsTask}
-                    className="flex h-6 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-                    aria-label={
-                      OPEN_AS_TASK_AVAILABLE
-                        ? `Open ${node.label} as a task`
-                        : `Open ${node.label} as a task (not available yet)`
-                    }
-                  >
-                    <ListTodo className="size-3.5" aria-hidden />
-                    Open as task
-                  </button>
-                </TooltipTrigger>
-                {OPEN_AS_TASK_AVAILABLE ? null : (
-                  <TooltipPopup side="bottom">
-                    Opening a ticket as a task is not available yet
-                  </TooltipPopup>
+                />
+                {taskUnavailable === null ? null : (
+                  <TooltipPopup side="bottom">{taskUnavailable}</TooltipPopup>
                 )}
               </Tooltip>
+              {taskUnavailable === null ? null : (
+                <span id={taskUnavailableId} className="sr-only">
+                  {taskUnavailable}
+                </span>
+              )}
             </div>
           ) : null}
         </div>
