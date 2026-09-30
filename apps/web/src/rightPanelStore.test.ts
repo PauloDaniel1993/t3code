@@ -12,6 +12,7 @@ import {
   selectThreadPanelOpen,
   selectThreadPanelVisibility,
   selectThreadRightPanelState,
+  type ThreadRightPanelState,
   useRightPanelStore,
 } from "./rightPanelStore";
 
@@ -557,86 +558,48 @@ describe("rightPanelStore", () => {
     });
   });
 
-  describe("hydrating layouts saved by another build", () => {
-    // Writes what the persist middleware would have stored, then hydrates from it, so both
-    // the version-changing migration and the same-version path are the real ones.
+  describe("hydrating a layout saved by another build", () => {
+    // Writes what the persist middleware would have stored, then hydrates from it, so the
+    // version-changing migration and the same-version path are the real ones.
     const hydrateFrom = async (version: number, state: unknown) => {
       const options = useRightPanelStore.persist.getOptions();
       await options.storage?.setItem(options.name ?? "", { version, state: state as never });
       await useRightPanelStore.persist.rehydrate();
     };
+    const savedSurfaces = async (threadKey: string) => {
+      const options = useRightPanelStore.persist.getOptions();
+      const saved = (await options.storage?.getItem(options.name ?? ""))?.state as
+        | { byThreadKey: Record<string, ThreadRightPanelState> }
+        | undefined;
+      return saved?.byThreadKey[threadKey]?.surfaces;
+    };
 
-    it("keeps a fork V1 layout's supported surfaces when it names surfaces this build lacks", async () => {
-      // The fork's V1 build (storage version 13) had an agents surface, and a stale or
-      // hand-edited entry can also be null or name a kind that no build has.
-      await hydrateFrom(13, {
-        byThreadKey: {
-          "env-1:thread-A": {
-            isOpen: true,
-            activeSurfaceId: "agents",
-            surfaces: [
-              { id: "agents", kind: "agents" },
-              null,
-              { id: "retired", kind: "retired" },
-              { id: "map", kind: "map" },
-              { id: "diff", kind: "diff" },
-            ],
+    // Version 13 is the fork's V1 build, which goes through `migrate`; 14 is this build's own.
+    it.each([13, 14])(
+      "keeps a surface this build does not know in what it saves (version %i)",
+      async (version) => {
+        await hydrateFrom(version, {
+          byThreadKey: {
+            "env-1:thread-A": {
+              isOpen: true,
+              activeSurfaceId: "map",
+              surfaces: [
+                { id: "future-tool", kind: "future-tool" },
+                { id: "map", kind: "map" },
+              ],
+            },
           },
-        },
-      });
+        });
 
-      expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-        isOpen: true,
-        activeSurfaceId: "map",
-        surfaces: [
+        // Any later change saves the whole layout again.
+        useRightPanelStore.getState().open(refB, "diff");
+
+        expect(await savedSurfaces("env-1:thread-A")).toEqual([
+          { id: "future-tool", kind: "future-tool" },
           { id: "map", kind: "map" },
-          { id: "diff", kind: "diff" },
-        ],
-      });
-    });
-
-    it("keeps a V2 layout saved without the map when a rollback leaves unknown surfaces in it", async () => {
-      // Same storage version as this build, so `migrate` does not run for it.
-      await hydrateFrom(14, {
-        byThreadKey: {
-          "env-1:thread-A": {
-            isOpen: true,
-            activeSurfaceId: "future-tool",
-            surfaces: [
-              { id: "future-tool", kind: "future-tool" },
-              { id: "files", kind: "files" },
-              null,
-              { id: "diff", kind: "diff" },
-            ],
-          },
-          "env-1:thread-B": {
-            isOpen: true,
-            activeSurfaceId: "files",
-            surfaces: [{ id: "files", kind: "files" }],
-          },
-        },
-        threadPanelVisibilityByThreadKey: {
-          "env-1:thread-B": { inlineOpen: false, popoverOpen: false },
-        },
-      });
-
-      const { byThreadKey, threadPanelVisibilityByThreadKey } = useRightPanelStore.getState();
-      expect(selectThreadRightPanelState(byThreadKey, refA)).toEqual({
-        isOpen: true,
-        activeSurfaceId: "files",
-        surfaces: [
-          { id: "files", kind: "files" },
-          { id: "diff", kind: "diff" },
-        ],
-      });
-      expect(selectThreadRightPanelState(byThreadKey, refB).surfaces).toEqual([
-        { id: "files", kind: "files" },
-      ]);
-      expect(selectThreadPanelVisibility(threadPanelVisibilityByThreadKey, refB)).toEqual({
-        inlineOpen: false,
-        popoverOpen: false,
-      });
-    });
+        ]);
+      },
+    );
   });
 
   it("keeps files as a singleton surface", () => {
