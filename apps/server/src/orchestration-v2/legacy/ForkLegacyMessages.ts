@@ -15,7 +15,14 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { recordForkImportWarning } from "../../persistence/ForkImportDiagnostics.ts";
 
+/** The V1 roles the importer carries; every fork query over legacy messages uses this list. */
 export const forkLegacyMessageRoles = ["user", "assistant", "reasoning"] as const;
+
+const LegacyMessageSource = Schema.required(
+  OrchestrationV2TurnItem.members[0].fields.legacyMessageSource,
+);
+/** The exact fork provenance values, as the contract defines them. */
+export const forkLegacyMessageSources = LegacyMessageSource.literals;
 
 interface MessageRow {
   readonly message_id: string;
@@ -30,9 +37,7 @@ interface MessageRow {
   readonly ordinal: number;
 }
 
-const decodeSource = Schema.decodeUnknownOption(
-  OrchestrationV2TurnItem.members[0].fields.legacyMessageSource,
-);
+const decodeSource = Schema.decodeUnknownOption(LegacyMessageSource);
 const decodeArray = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.Unknown)));
 const decodeAttachment = Schema.decodeUnknownOption(ChatAttachment);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
