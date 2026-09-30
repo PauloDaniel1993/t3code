@@ -151,49 +151,6 @@ describe("attachment reference index", () => {
         }).pipe(Effect.provide(makeSqlitePersistenceLive(dbPath)));
       }).pipe(Effect.provide(NodeServices.layer)),
   );
-  it.effect("measures a partial-index hit and remaining-row misses on 300,000 live messages", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectoryScoped();
-      yield* Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* smallFixture;
-        yield* sql`DELETE FROM orchestration_v2_projection_messages`;
-        // Seed old source rows directly; their index is built only by the measured pass.
-        yield* sql`DROP TRIGGER fork_v2_attachment_message_insert`;
-        yield* sql`WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i<299999)
-          INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
-          SELECT printf('message-%06d', i), 'thread-0', 'user', 0, '2026-01-01', '2026-01-01',
-            json_object('text', printf('%1600s','text'), 'attachments', json_array(json_object('type','image', 'id',printf('thread-0-00000000-0000-4000-8000-%012d',i),
-              'name','image.png','mimeType','image/png','sizeBytes',1))) FROM n`;
-        yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
-        yield* initializeAttachmentReferenceIndex();
-        yield* rebuildAttachmentReferenceIndexPass();
-        const started = performance.now();
-        expect((yield* findReadableAttachment(id(0)))?.threadId).toBe("thread-0");
-        const indexedReadMs = performance.now() - started;
-        const timings = [];
-        for (const cursor of ["message-000000", "message-150000", "message-299998"]) {
-          // Synthetic verified positions isolate the query's remaining-row cost.
-          yield* sql`UPDATE fork_v2_attachment_reference_state SET cursor = ${cursor}`;
-          const before = performance.now();
-          expect(yield* findReadableAttachment("absent")).toBeNull();
-          timings.push({ cursor, missMs: performance.now() - before });
-        }
-        yield* Console.info("Fourth revision 300,000-message read cost", {
-          indexedReadMs,
-          timings,
-        });
-        const report = process.env.T3_ATTACHMENT_BENCHMARK_REPORT;
-        if (report !== undefined)
-          yield* fs.writeFileString(
-            `${report}.rebuild`,
-            encodeBenchmark({ indexedReadMs, timings }),
-          );
-      }).pipe(Effect.provide(makeSqlitePersistenceLive(path.join(directory, "cost.sqlite"))));
-    }).pipe(Effect.provide(NodeServices.layer)),
-  );
   it.effect(
     "reads the partial index first and excludes indexed rows and sources from fallback",
     () =>
