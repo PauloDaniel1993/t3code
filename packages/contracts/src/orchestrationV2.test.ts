@@ -1035,6 +1035,15 @@ describe("orchestration V2 contracts", () => {
     });
 
     expect(shell.pendingBackgroundTasks).toEqual([]);
+    expect(shell.legacyImportedAt).toBeUndefined();
+    const imported = decodeOrchestrationV2ThreadShell({
+      ...shell,
+      historyOrigin: "v1_import",
+      latestTaskDeliveredAt: "2026-04-19T00:00:00.000Z",
+      legacyImportedAt: "2026-04-20T00:00:00.000Z",
+    });
+    expect(imported.latestTaskDeliveredAt).toBe("2026-04-19T00:00:00.000Z");
+    expect(imported.legacyImportedAt).toBe("2026-04-20T00:00:00.000Z");
   });
 });
 

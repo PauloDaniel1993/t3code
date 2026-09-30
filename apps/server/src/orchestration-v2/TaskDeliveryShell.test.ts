@@ -126,6 +126,53 @@ it.effect(
     }).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect(
+  "imported task parents expose their shell import time without rewriting delivery or visits",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const importedAt = "2026-09-29T00:10:00.000Z";
+      yield* store.apply({
+        ...created,
+        payload: { ...created.payload, historyOrigin: "v1_import" },
+      });
+      yield* sql`INSERT INTO orchestration_v2_legacy_imports
+      (thread_id, source_updated_at, shell_imported_at, transcript_imported_at)
+      VALUES (${threadId}, ${DateTime.formatIso(now)}, ${importedAt}, NULL)`;
+      yield* store.apply({
+        id: EventId.make("imported-delivery"),
+        type: "subagent.updated",
+        threadId,
+        occurredAt: now,
+        payload: task,
+      });
+      const historical = yield* store.getThreadShell(threadId);
+      assert.strictEqual(historical?.legacyImportedAt, importedAt);
+      assert.strictEqual(historical?.lastVisitedAt, null);
+      assert.strictEqual(historical?.latestTaskDeliveredAt, task.completionDelivery!.deliveredAt);
+      assert.strictEqual(
+        (yield* store.getShellSnapshot()).threads[0]?.legacyImportedAt,
+        importedAt,
+      );
+      assert.deepEqual((yield* store.getThreadProjection(threadId)).subagents[0], task);
+      // Hydrating a transcript later must not move the cutoff past new deliveries.
+      yield* sql`UPDATE orchestration_v2_legacy_imports
+      SET transcript_imported_at = '2026-09-29T01:00:00.000Z' WHERE thread_id = ${threadId}`;
+      const deliveredAt = "2026-09-29T00:11:00.000Z";
+      yield* store.apply({
+        id: EventId.make("delivery-after-import"),
+        type: "subagent.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...task, completionDelivery: { ...task.completionDelivery!, deliveredAt } },
+      });
+      const live = yield* store.getThreadShell(threadId);
+      assert.strictEqual(live?.legacyImportedAt, importedAt);
+      assert.strictEqual(live?.latestTaskDeliveredAt, deliveredAt);
+    }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("2000 shell watermarks use one batch query, with no task field on ordinary rows", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStoreV2;
