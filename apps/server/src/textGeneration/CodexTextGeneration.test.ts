@@ -5,11 +5,13 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { createModelSelection } from "@t3tools/shared/model";
-import { expect } from "vite-plus/test";
+import { expect, vi } from "vite-plus/test";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { CodexSettings, ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
 
@@ -638,48 +640,74 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
-  it.effect("ignores missing attachment ids for codex image inputs", () =>
-    withFakeCodexEnv(
-      {
-        output: JSON.stringify({
-          branch: "fix/ui-regression",
-        }),
-        requireImage: true,
-      },
-      (textGeneration) =>
+  for (const operation of ["generateBranchName", "generateThreadTitle"] as const) {
+    for (const failure of ["unresolved", "missing", "unreadable", "non-file"] as const) {
+      it.effect(`rejects ${failure} images before Codex ${operation}`, () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const { attachmentsDir } = yield* ServerConfig.ServerConfig;
-          const missingAttachmentId = "thread-missing-attachment";
-          const missingPath = path.join(attachmentsDir, `${missingAttachmentId}.png`);
-          yield* fs.remove(missingPath).pipe(Effect.ignore);
-
-          const result = yield* textGeneration
-            .generateBranchName({
-              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
-              cwd: process.cwd(),
-              message: "Fix layout bug from screenshot.",
-              attachments: [
-                {
-                  type: "image",
-                  id: missingAttachmentId,
-                  name: "outside.png",
-                  mimeType: "image/png",
-                  sizeBytes: 5,
-                },
-              ],
-            })
-            .pipe(Effect.result);
-
+          const validId = `${operation}-${failure}-valid`;
+          const invalidId =
+            failure === "unresolved" ? "../outside" : `${operation}-${failure}-invalid`;
+          const invalidPath = path.join(attachmentsDir, `${invalidId}.png`);
+          yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+          yield* fs.writeFileString(path.join(attachmentsDir, `${validId}.png`), "image");
+          if (failure === "non-file") yield* fs.makeDirectory(invalidPath);
+          if (failure === "unreadable") yield* fs.writeFileString(invalidPath, "image");
+          const cause = PlatformError.systemError({
+            _tag: "PermissionDenied",
+            module: "FileSystem",
+            method: "access",
+            pathOrDescriptor: invalidPath,
+          });
+          const spawn = vi.fn(() => Effect.die("Codex must not run with an invalid image"));
+          const textGeneration = yield* makeCodexTextGeneration(decodeCodexSettings({})).pipe(
+            Effect.provide(Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({ spawn })),
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              access: (filePath, options) =>
+                failure === "unreadable" && filePath === invalidPath
+                  ? Effect.fail(cause)
+                  : fs.access(filePath, options),
+            }),
+          );
+          const input = {
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            cwd: process.cwd(),
+            message: "Describe these screenshots.",
+            attachments: [validId, invalidId].map((id) => ({
+              type: "image" as const,
+              id,
+              name: `${id === validId ? "valid" : "invalid"}.png`,
+              mimeType: "image/png",
+              sizeBytes: 5,
+            })),
+          };
+          const result = yield* (
+            operation === "generateBranchName"
+              ? textGeneration.generateBranchName(input).pipe(Effect.asVoid)
+              : textGeneration.generateThreadTitle(input).pipe(Effect.asVoid)
+          ).pipe(Effect.result);
           expect(Result.isFailure(result)).toBe(true);
           if (Result.isFailure(result)) {
             expect(result.failure).toBeInstanceOf(TextGenerationError);
-            expect(result.failure.message).toContain("missing --image input");
+            expect(result.failure.operation).toBe(operation);
+            expect(result.failure.detail).toContain("Image attachment 'invalid.png'");
+            expect(result.failure.detail).toContain(
+              failure === "unresolved"
+                ? "could not be resolved"
+                : failure === "non-file"
+                  ? "is not a file"
+                  : "could not be read",
+            );
+            if (failure === "unreadable") expect(result.failure.cause).toBe(cause);
           }
+          expect(spawn).not.toHaveBeenCalled();
         }),
-    ),
-  );
+      );
+    }
+  }
 
   it.effect(
     "fails with typed TextGenerationError when codex returns wrong branch payload shape",
