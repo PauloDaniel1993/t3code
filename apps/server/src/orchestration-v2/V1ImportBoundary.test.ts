@@ -83,6 +83,8 @@ it("keeps the legacy importer out of reach of new code", () => {
   // Startup imports pending transcripts, the V2 runtime wires the importer, and
   // thread and project services hydrate a V1 transcript before they act on it.
   assert.deepEqual(importers, [
+    // Ticket 36: the existing attachment index facade protects unhydrated legacy bytes.
+    "orchestration-v2/AttachmentReferenceIndex.ts",
     "orchestration-v2/ThreadManagementService.ts",
     "orchestration-v2/runtimeLayer.ts",
     "project/ProjectService.ts",
