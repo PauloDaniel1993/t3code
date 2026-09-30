@@ -15,10 +15,13 @@ import type { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
  * Tool payload limits apply before persistence and before live fan-out, including
  * runless artifacts. They do not modify the provider's own context. Messages,
  * reasoning, errors and approval/input requests are never clipped or redacted.
- * Redaction uses ACP's case-insensitive field words across camel/snake/kebab
- * spelling, including name/value or key/value pairs. Free text (source, commands,
- * diffs and JSON strings) is never
- * searched for secrets. A secret inside a command line is stored as written.
+ * Split names at camelCase/acronym boundaries and separators, ignore case, and
+ * match only the last word (authorization, cookie, credential, password, passwd,
+ * secret, token) or pair (api/private/secret/access key), including plurals.
+ * A plural preceded by max, min, total, num or count denotes a quantity and stays
+ * intact. Name/value and key/value objects use the same rule; two-string tuples
+ * count only inside headers or *Headers fields. Free text (source, commands,
+ * diffs and JSON strings) is never searched. A command secret is stored as written.
  * Redaction is idempotent and preserves ACP's already-redacted values.
  *
  * Final tool output has its own 64 KiB encoded JSON budget, including keys and
@@ -29,47 +32,62 @@ import type { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
  * Nesting beyond 128 containers becomes
  * "[TRUNCATED: depth limit]" so the store's native JSON encoder can persist it.
  * Titles/names/paths use 4 KiB; command arguments use 16 KiB. Running
- * dynamic input uses 16 KiB to match ACP, with no output.
+ * output uses 16 KiB to match ACP; command output keeps the latest tail.
  * Search queries share 16 KiB, with 4 KiB per query: normal questions survive.
  * Traversal charges every inspected field; JS own-key enumeration, adapter
  * decoding and the incoming raw object are outside this allocation guarantee.
  */
 export const PROVIDER_TOOL_DETAIL_BYTES = 4 * 1024;
 export const PROVIDER_TOOL_INPUT_BYTES = 16 * 1024;
+export const PROVIDER_TOOL_RUNNING_OUTPUT_BYTES = 16 * 1024;
 export const PROVIDER_TOOL_RESULT_BYTES = 64 * 1024;
 export const PROVIDER_SEARCH_QUERY_BYTES = 16 * 1024;
 export const PROVIDER_TOOL_RESULT_MAX_DEPTH = 128;
 const SENSITIVE_FIELD =
-  /(?:^|_)(?:authorization|cookies?|credentials?|password|passwd|secret|token|api_key|private_key)(?:_|$)/;
+  /(?:^|_)(?:authorizations?|cookies?|credentials?|passwords?|passwds?|secrets?|tokens?|(?:api|private|secret|access)_keys?)$/;
+const QUANTITY_FIELD =
+  /(?:^|_)(?:max|min|total|num|count)_(?:authorizations|cookies|credentials|passwords|passwds|secrets|tokens)$/;
 function sensitiveField(key: string): boolean {
-  return SENSITIVE_FIELD.test(
-    key
-      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-      .replace(/[^a-z0-9]+/gi, "_")
-      .toLowerCase(),
-  );
+  const words = key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return SENSITIVE_FIELD.test(words) && !QUANTITY_FIELD.test(words);
+}
+
+function safeCut(value: string, index: number, tail: boolean): number {
+  const marker = value.lastIndexOf("[REDACTED]", index);
+  if (marker >= 0 && index > marker && index < marker + 10) index = tail ? marker + 10 : marker;
+  if (tail && /[\uDC00-\uDFFF]/u.test(value[index] ?? "")) index += 1;
+  if (!tail && /[\uD800-\uDBFF]/u.test(value[index - 1] ?? "")) index -= 1;
+  return index;
 }
 
 /** Includes JSON escaping; only materializes a bounded prefix of large text. */
-function boundedString(value: string, maxBytes: number): string {
-  const prefix = value.slice(0, maxBytes + 1024);
+function boundedString(value: string, maxBytes: number, tail = false): string {
+  const prefix = tail ? value.slice(-(maxBytes + 1024)) : value.slice(0, maxBytes + 1024);
   // Six bytes per UTF-16 unit covers JSON escaping and UTF-8 without encoding
   // the usual short title/argument strings on the shared pump.
   if (prefix.length === value.length && prefix.length * 6 + 2 <= maxBytes) return prefix;
   if (prefix.length === value.length && Buffer.byteLength(JSON.stringify(prefix)) <= maxBytes)
     return prefix;
   if (maxBytes < 5) return "";
+  const slice = (length: number) =>
+    tail ? `…${prefix.slice(prefix.length - length)}` : `${prefix.slice(0, length)}…`;
   let low = 0;
   let high = Math.min(prefix.length, maxBytes);
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(JSON.stringify(`${prefix.slice(0, middle)}…`)) <= maxBytes) low = middle;
+    if (Buffer.byteLength(JSON.stringify(slice(middle))) <= maxBytes) low = middle;
     else high = middle - 1;
   }
-  if (low > 0 && /[\uD800-\uDBFF]/u.test(prefix[low - 1]!)) low -= 1;
+  low = tail
+    ? prefix.length - safeCut(prefix, prefix.length - low, true)
+    : safeCut(prefix, low, false);
   // Copy UTF-16 units, including lone surrogates, out of any source-backed slice.
-  return Buffer.from(`${prefix.slice(0, low)}…`, "utf16le").toString("utf16le");
+  return Buffer.from(slice(low), "utf16le").toString("utf16le");
 }
 
 /** Iterative cloning preserves JSON within the byte and persistence-safe depth limits. */
@@ -88,6 +106,7 @@ function boundToolResult(
     keys: Iterator<string>;
     count: number;
     sensitivePair: boolean;
+    headerPairs: boolean;
   };
   const stack: Frame[] = [];
   function* keys(source: object): Generator<string> {
@@ -97,7 +116,7 @@ function boundToolResult(
       for (const key in source) yield key;
     }
   }
-  const visit = (current: unknown): unknown => {
+  const visit = (current: unknown, headerPairs = false): unknown => {
     if (Predicate.isString(current)) {
       const text = boundedString(current, remaining);
       if (text !== current) truncated = true;
@@ -120,14 +139,25 @@ function boundToolResult(
     const target: Container = Array.isArray(current) ? [] : {};
     remaining -= 2;
     ancestors.add(current);
-    const sensitivePair =
-      !Array.isArray(current) &&
-      Object.getOwnPropertyNames(current).some((key) => {
-        if (!/^(?:name|key)$/i.test(key)) return false;
-        const name = Reflect.get(current, key);
-        return Predicate.isString(name) && sensitiveField(name);
-      });
-    stack.push({ source: current, target, keys: keys(current), count: 0, sensitivePair });
+    const sensitivePair = Array.isArray(current)
+      ? headerPairs &&
+        current.length === 2 &&
+        typeof current[0] === "string" &&
+        typeof current[1] === "string" &&
+        sensitiveField(current[0])
+      : Object.getOwnPropertyNames(current).some((key) => {
+          if (!/^(?:name|key)$/i.test(key)) return false;
+          const name = Reflect.get(current, key);
+          return Predicate.isString(name) && sensitiveField(name);
+        });
+    stack.push({
+      source: current,
+      target,
+      keys: keys(current),
+      count: 0,
+      sensitivePair,
+      headerPairs,
+    });
     return target;
   };
   const result = visit(value);
@@ -165,7 +195,8 @@ function boundToolResult(
       continue;
     }
     const current =
-      !isArray && (sensitiveField(key) || (frame.sensitivePair && /^value$/i.test(key)))
+      (!isArray && sensitiveField(key)) ||
+      (frame.sensitivePair && (isArray ? key === "1" : /^value$/i.test(key)))
         ? "[REDACTED]"
         : Reflect.get(frame.source, key);
     const minimum = Predicate.isString(current)
@@ -182,7 +213,10 @@ function boundToolResult(
       continue;
     }
     remaining -= cost;
-    const child = visit(current);
+    const child = visit(
+      current,
+      isArray ? frame.headerPairs : /^headers$/i.test(key) || key.endsWith("Headers"),
+    );
     Object.defineProperty(frame.target, key, {
       value: child,
       enumerable: true,
@@ -283,15 +317,21 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
   const title = item.title === null ? null : boundedString(item.title, PROVIDER_TOOL_DETAIL_BYTES);
   switch (item.type) {
     case "dynamic_tool": {
-      const { input, output, ...detail } = item;
-      let result = final && output !== undefined ? boundToolResult(output) : undefined;
-      if (result?.truncated) {
+      const { input, output } = item;
+      let result =
+        output === undefined
+          ? undefined
+          : boundToolResult(
+              output,
+              final ? PROVIDER_TOOL_RESULT_BYTES : PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
+            );
+      if (final && result?.truncated) {
         const critical = criticalToolResult(output);
         if (critical !== undefined)
           result = boundToolResult({ ...critical, preview: result.value });
       }
       return {
-        ...detail,
+        ...item,
         title,
         toolName:
           item.toolName === null ? null : boundedString(item.toolName, PROVIDER_TOOL_DETAIL_BYTES),
@@ -300,57 +340,71 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
       };
     }
     case "command_execution": {
-      const { output, ...detail } = item;
+      const { output } = item;
       return {
-        ...detail,
+        ...item,
         title,
         input: boundedString(item.input, PROVIDER_TOOL_INPUT_BYTES),
-        ...(final && output !== undefined
-          ? { output: boundedString(output, PROVIDER_TOOL_RESULT_BYTES) }
-          : {}),
-      };
-    }
-    case "file_change": {
-      const { diffStr, oldStr, newStr, changes, ...detail } = item;
-      const result = final
-        ? boundProviderToolResult({
-            ...(changes === undefined ? {} : { changes }),
-            ...(diffStr === undefined ? {} : { diffStr }),
-            ...(oldStr === undefined ? {} : { oldStr }),
-            ...(newStr === undefined ? {} : { newStr }),
-          })
-        : null;
-      return {
-        ...detail,
-        title,
-        fileName: boundedString(item.fileName, PROVIDER_TOOL_DETAIL_BYTES),
-        ...(Predicate.isObject(result)
+        ...(output !== undefined
           ? {
-              ...(Predicate.isString(result.diffStr) ? { diffStr: result.diffStr } : {}),
-              ...(Predicate.isString(result.oldStr) ? { oldStr: result.oldStr } : {}),
-              ...(Predicate.isString(result.newStr) ? { newStr: result.newStr } : {}),
-              ...(Array.isArray(result.changes)
-                ? { changes: boundedResults(result.changes, decodeFileChange) }
-                : {}),
+              output: boundedString(
+                output,
+                final ? PROVIDER_TOOL_RESULT_BYTES : PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
+                !final,
+              ),
             }
           : {}),
       };
     }
+    case "file_change": {
+      const { diffStr, oldStr, newStr, changes } = item;
+      const result = boundProviderToolResult(
+        {
+          ...(changes === undefined ? {} : { changes }),
+          ...(diffStr === undefined ? {} : { diffStr }),
+          ...(oldStr === undefined ? {} : { oldStr }),
+          ...(newStr === undefined ? {} : { newStr }),
+        },
+        final ? PROVIDER_TOOL_RESULT_BYTES : PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
+      );
+      const bounded = {
+        ...item,
+        title,
+        fileName: boundedString(item.fileName, PROVIDER_TOOL_DETAIL_BYTES),
+      };
+      for (const key of ["diffStr", "oldStr", "newStr"] as const) {
+        const text = Predicate.isObject(result) ? result[key] : undefined;
+        if (Predicate.isString(text)) bounded[key] = text;
+        else delete bounded[key];
+      }
+      if (Predicate.isObject(result) && Array.isArray(result.changes))
+        bounded.changes = boundedResults(result.changes, decodeFileChange);
+      else delete bounded.changes;
+      return bounded;
+    }
     case "file_search": {
-      const { results, ...detail } = item;
+      const { results } = item;
       return {
-        ...detail,
+        ...item,
         title,
         ...(item.pattern === undefined
           ? {}
           : { pattern: boundedString(item.pattern, PROVIDER_TOOL_DETAIL_BYTES) }),
-        ...(final && results !== undefined
-          ? { results: boundedResults(boundProviderToolResult(results), decodeFileSearchResult) }
+        ...(results !== undefined
+          ? {
+              results: boundedResults(
+                boundProviderToolResult(
+                  results,
+                  final ? PROVIDER_TOOL_RESULT_BYTES : PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
+                ),
+                decodeFileSearchResult,
+              ),
+            }
           : {}),
       };
     }
     case "web_search": {
-      const { results, patterns, ...detail } = item;
+      const { results, patterns } = item;
       const queries: string[] = [];
       let remaining = PROVIDER_SEARCH_QUERY_BYTES - 2;
       for (const pattern of patterns ?? []) {
@@ -360,11 +414,19 @@ function sanitizeToolItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnIte
         remaining -= Buffer.byteLength(JSON.stringify(query)) + 1;
       }
       return {
-        ...detail,
+        ...item,
         title,
         ...(patterns === undefined ? {} : { patterns: queries }),
-        ...(final && results !== undefined
-          ? { results: boundedResults(boundProviderToolResult(results), decodeWebSearchResult) }
+        ...(results !== undefined
+          ? {
+              results: boundedResults(
+                boundProviderToolResult(
+                  results,
+                  final ? PROVIDER_TOOL_RESULT_BYTES : PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
+                ),
+                decodeWebSearchResult,
+              ),
+            }
           : {}),
       };
     }

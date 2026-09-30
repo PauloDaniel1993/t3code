@@ -108,7 +108,7 @@ it.effect(
         type: "dynamic_tool",
         toolName: "fixture",
         input: { api_key: "secret-input" },
-        output: { rawOutput: "secret=secret-output" },
+        output: { rawOutput: "step 1 of 10", password: "secret-running" },
       } as const;
       for (let index = 0; index < 10_000; index++) {
         yield* stage.offer({
@@ -140,16 +140,19 @@ it.effect(
       expect(testJson(stored)).not.toContain("secret-");
       const intermediate = stored[0]?.event;
       expect(intermediate).toMatchObject({
-        payload: { status: "running", input: { api_key: "[REDACTED]" } },
+        payload: {
+          status: "running",
+          title: "Tool 9999",
+          input: { api_key: "[REDACTED]" },
+          output: { rawOutput: "step 1 of 10", password: "[REDACTED]" },
+        },
       });
-      if (intermediate?.type === "turn-item.updated")
-        expect("output" in intermediate.payload).toBe(false);
       const final = stored[1]?.event;
       if (final?.type !== "turn-item.updated" || final.payload.type !== "dynamic_tool")
         throw new Error("Expected final tool snapshot");
-      expect(
-        Buffer.byteLength(testJson({ input: final.payload.input, output: final.payload.output })),
-      ).toBeLessThanOrEqual(PROVIDER_TOOL_RESULT_BYTES);
+      expect(Buffer.byteLength(testJson(final.payload.output))).toBeLessThanOrEqual(
+        PROVIDER_TOOL_RESULT_BYTES,
+      );
       expect(final.payload.output).toMatchObject({ password: "[REDACTED]" });
       const projection = yield* projections.getThreadProjection(threadId);
       expect(projection.turnItems).toHaveLength(1);

@@ -30,6 +30,7 @@ import {
   boundProviderToolResult,
   PROVIDER_TOOL_DETAIL_BYTES,
   PROVIDER_TOOL_RESULT_BYTES,
+  PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
   sanitizeProviderEvent,
 } from "./ProviderEventPayload.ts";
 
@@ -444,7 +445,7 @@ describe("provider event flow stage", () => {
 });
 
 describe("provider tool payloads", () => {
-  it("removes intermediate data and caps final output in UTF-8 bytes without mutating adapter state", () => {
+  it("keeps bounded live output and caps final output without mutating adapter state", () => {
     const base = progress(1);
     const input = {
       ...base,
@@ -466,7 +467,12 @@ describe("provider tool payloads", () => {
       final.turnItem.type !== "command_execution"
     )
       throw new Error("Unexpected event");
-    expect("output" in running.turnItem).toBe(false);
+    if (running.turnItem.type !== "command_execution") throw new Error("Unexpected item");
+    expect(Buffer.byteLength(testJson(running.turnItem.output))).toBeLessThanOrEqual(
+      PROVIDER_TOOL_RUNNING_OUTPUT_BYTES,
+    );
+    expect(running.turnItem.output).toMatch(/^…/);
+    expect(input.turnItem.output.endsWith(running.turnItem.output!.slice(1))).toBe(true);
     expect(Buffer.byteLength(running.turnItem.title!)).toBeLessThanOrEqual(
       PROVIDER_TOOL_DETAIL_BYTES,
     );
@@ -512,7 +518,11 @@ describe("provider tool payloads", () => {
       turnItem: { input: { password: "[REDACTED]", api_key: "[REDACTED]" } },
     });
     if (running.type !== "turn_item.updated") throw new Error("Unexpected event");
-    expect("output" in running.turnItem).toBe(false);
+    expect(running).toMatchObject({
+      turnItem: {
+        output: { rawOutput: tool.turnItem.output.rawOutput, authorization: "[REDACTED]" },
+      },
+    });
   });
 
   it("bounds large, deep and circular result structures including escaped characters", () => {

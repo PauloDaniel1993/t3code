@@ -63,11 +63,6 @@ describe("provider payload preservation", () => {
     };
     const expected = {
       ...value,
-      ssoTokenId: "[REDACTED]",
-      "sso-token-id": "[REDACTED]",
-      SSO_TOKEN_ID: "[REDACTED]",
-      ApiKeyHeader: "[REDACTED]",
-      passwordType: "[REDACTED]",
       pairs: [
         { NAME: "GitHubToken", VALUE: "[REDACTED]", description: "keep" },
         { Key: "PRIVATE_KEY", Value: "[REDACTED]" },
@@ -485,7 +480,6 @@ describe("provider payload preservation", () => {
     const expected = {
       ...value,
       nested: Object.fromEntries(names.map((name) => [name, "[REDACTED]"])),
-      passwordType: "[REDACTED]",
     };
     expect(boundProviderToolResult(value)).toEqual(expected);
     expect(boundProviderToolResult(expected)).toEqual(expected);
@@ -510,5 +504,385 @@ describe("provider payload preservation", () => {
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(65_536);
 
     expect(inspected).toBeLessThan(100);
+  });
+});
+
+// Expected values captured from ticket 35's isSensitiveAcpField at 7246930db5.
+const acpFieldCases = [
+  ["max_tokens", false],
+  ["token_count", false],
+  ["tokenLimit", false],
+  ["tokenizer", false],
+  ["idToken", true],
+  ["x-api-key", true],
+  ["accessTokens", true],
+  ["passwordHint", false],
+  ["maxTokens", false],
+  ["inputTokens", true],
+  ["total_secrets", false],
+  ["tokens", true],
+  ["secrets", true],
+  ["passwords", true],
+  ["apiKeys", true],
+  ["api_keys", true],
+  ["access_key", true],
+  ["accessKey", true],
+  ["secretKey", true],
+  ["secret_key", true],
+  ["token_type", false],
+  ["api_key_id", false],
+  ["privateKeyPath", false],
+  ["authorizationUrl", false],
+  ["cookieJar", false],
+  ["ssoTokenId", false],
+  ["ApiKeyHeader", false],
+  ["passwordType", false],
+  ["secret_name", false],
+  ["Authorization", true],
+  ["Cookie", true],
+  ["Set-Cookie", true],
+  ["password", true],
+  ["passwd", true],
+  ["clientSecret", true],
+  ["GITHUB_TOKEN", true],
+  ["sessionToken", true],
+  ["AWS_SECRET_ACCESS_KEY", true],
+  ["privateKey", true],
+  ["X-Auth-Token", true],
+  ["monkey", false],
+  ["keyboard", false],
+  ["author", false],
+  ["secretary", false],
+] as const;
+
+describe("ACP redaction parity", () => {
+  it.each(acpFieldCases)("matches ACP for %s (sensitive=%s)", (name, sensitive) => {
+    const value = { [name]: "v" };
+    const expected = { [name]: sensitive ? "[REDACTED]" : "v" };
+    expect(boundProviderToolResult(value)).toEqual(expected);
+    for (const status of ["running", "completed"] as const) {
+      const item = sanitize({
+        ...base,
+        type: "dynamic_tool",
+        toolName: "test",
+        status,
+        input: value,
+        output: value,
+      });
+      expect(item).toMatchObject({ input: expected, output: expected });
+      expect(sanitize(item)).toEqual(item);
+    }
+  });
+
+  it.each([
+    [
+      "headerObjects",
+      {
+        headers: [
+          { name: "Authorization", value: "Bearer abc" },
+          { name: "x-api-key", value: "k" },
+          { name: "Accept", value: "json" },
+        ],
+      },
+      {
+        headers: [
+          { name: "Authorization", value: "[REDACTED]" },
+          { name: "x-api-key", value: "[REDACTED]" },
+          { name: "Accept", value: "json" },
+        ],
+      },
+    ],
+    [
+      "headerTuples",
+      {
+        headers: [
+          ["Authorization", "Bearer abc"],
+          ["x-api-key", "k"],
+          ["Accept", "json"],
+        ],
+      },
+      {
+        headers: [
+          ["Authorization", "[REDACTED]"],
+          ["x-api-key", "[REDACTED]"],
+          ["Accept", "json"],
+        ],
+      },
+    ],
+    [
+      "requestHeadersTuples",
+      {
+        requestHeaders: [
+          ["Cookie", "c=1"],
+          ["accessTokens", "t"],
+        ],
+      },
+      {
+        requestHeaders: [
+          ["Cookie", "[REDACTED]"],
+          ["accessTokens", "[REDACTED]"],
+        ],
+      },
+    ],
+    [
+      "bareTuples",
+      { args: [["Authorization", "Bearer abc"]] },
+      { args: [["Authorization", "Bearer abc"]] },
+    ],
+    [
+      "countPair",
+      [
+        { name: "max_tokens", value: 4096 },
+        { name: "passwordHint", value: "first pet" },
+        { key: "accessTokens", value: "x" },
+      ],
+      [
+        { name: "max_tokens", value: 4096 },
+        { name: "passwordHint", value: "first pet" },
+        { key: "accessTokens", value: "[REDACTED]" },
+      ],
+    ],
+    [
+      "headerObjectMap",
+      { headers: { Authorization: "Bearer abc", "x-api-key": "k", Accept: "json" } },
+      { headers: { Authorization: "[REDACTED]", "x-api-key": "[REDACTED]", Accept: "json" } },
+    ],
+  ])("matches ACP's header and pair fixture %s", (_name, value, expected) => {
+    expect(boundProviderToolResult(value)).toEqual(expected);
+    expect(boundProviderToolResult(expected)).toEqual(expected);
+  });
+
+  it("recognizes only complete two-string tuples in headers and suffix Headers fields", () => {
+    const pairs = [
+      ["Authorization", "hidden"],
+      ["Cookie", 3],
+      ["Authorization", "one", "two"],
+    ];
+    const redacted = [
+      ["Authorization", "[REDACTED]"],
+      ["Cookie", 3],
+      ["Authorization", "one", "two"],
+    ];
+    expect(
+      boundProviderToolResult({
+        HEADERS: pairs,
+        responseHeaders: pairs,
+        responseheaders: pairs,
+        args: pairs,
+      }),
+    ).toEqual({
+      HEADERS: redacted,
+      responseHeaders: redacted,
+      responseheaders: pairs,
+      args: pairs,
+    });
+    expect(boundProviderToolResult(["Authorization", "hidden"])).toEqual([
+      "Authorization",
+      "hidden",
+    ]);
+  });
+
+  it.each(["max", "min", "total", "num", "count"])(
+    "keeps %s plural quantities across word spellings",
+    (quantity) => {
+      for (const plural of [
+        "authorizations",
+        "cookies",
+        "credentials",
+        "passwords",
+        "passwds",
+        "secrets",
+        "tokens",
+      ]) {
+        const names = [
+          `${quantity}_${plural}`,
+          `${quantity}-${plural}`,
+          `${quantity}${plural[0]!.toUpperCase()}${plural.slice(1)}`,
+          `__${quantity.toUpperCase()}_${plural.toUpperCase()}__`,
+        ];
+        const value = Object.fromEntries(names.map((name) => [name, 10]));
+        expect(boundProviderToolResult(value)).toEqual(value);
+      }
+    },
+  );
+});
+
+describe("bounded live tool data", () => {
+  it.each([
+    [
+      "running dynamic output",
+      {
+        ...base,
+        status: "running",
+        type: "dynamic_tool",
+        toolName: "mcp",
+        input: { blob: "x".repeat(10_000) },
+        output: { progress: "step 3 of 9" },
+      },
+    ],
+    [
+      "exact 16 KiB input",
+      {
+        ...base,
+        status: "running",
+        type: "dynamic_tool",
+        toolName: "mcp",
+        input: { blob: "y".repeat(16_384 - 11) },
+      },
+    ],
+    [
+      "ACP input envelope",
+      {
+        ...base,
+        status: "running",
+        type: "dynamic_tool",
+        toolName: "mcp",
+        input: {
+          command: "ls",
+          truncated: true,
+          limitBytes: 16_384,
+          preview: `{"blob":"${"x".repeat(16_000)}…`,
+        },
+      },
+    ],
+    [
+      "running command output",
+      {
+        ...base,
+        status: "running",
+        type: "command_execution",
+        input: "echo progress",
+        output: "line\n".repeat(100),
+      },
+    ],
+    [
+      "exact 16 KiB running output",
+      {
+        ...base,
+        status: "running",
+        type: "command_execution",
+        input: "echo",
+        output: "y".repeat(16_384 - 2),
+      },
+    ],
+    [
+      "final command",
+      {
+        ...base,
+        type: "command_execution",
+        input: "GITHUB_TOKEN=ghp_abc echo secret",
+        output: "done",
+      },
+    ],
+    [
+      "JSON inside code",
+      {
+        ...base,
+        type: "dynamic_tool",
+        toolName: "mcp",
+        input: { code: 'const data = {"password":"literal"};' },
+        output: { content: [{ type: "text", text: '{"secret":"literal"}' }] },
+      },
+    ],
+    [
+      "separate final budgets",
+      {
+        ...base,
+        type: "dynamic_tool",
+        toolName: "mcp",
+        input: { q: "i".repeat(12_000) },
+        output: { text: "o".repeat(60_000) },
+      },
+    ],
+    [
+      "usage counts",
+      {
+        ...base,
+        type: "dynamic_tool",
+        toolName: "mcp",
+        input: {},
+        output: { token_count: 12, tokenLimit: 99, max_tokens: 5, inputTokens: "[REDACTED]" },
+      },
+    ],
+    [
+      "running .env diff",
+      {
+        ...base,
+        status: "running",
+        type: "file_change",
+        fileName: ".env",
+        diffStr: "+GITHUB_TOKEN=literal",
+        changes: [],
+      },
+    ],
+    [
+      "final .env diff",
+      {
+        ...base,
+        type: "file_change",
+        fileName: ".env",
+        diffStr: "+AWS_SECRET_ACCESS_KEY=literal",
+        oldStr: "old",
+        newStr: "new",
+      },
+    ],
+    [
+      "running file search",
+      {
+        ...base,
+        status: "running",
+        type: "file_search",
+        pattern: "foo",
+        results: [{ fileName: "a.ts", line: 3, preview: "foo()" }],
+      },
+    ],
+    [
+      "running web search",
+      {
+        ...base,
+        status: "running",
+        type: "web_search",
+        patterns: ["foo"],
+        results: [{ url: "https://example.com", title: "Example", snippet: "foo" }],
+      },
+    ],
+  ])("leaves already-normalized %s bytes unchanged", (_name, value) => {
+    const event = decodeEvent({ type: "turn_item.updated", driver: "acp", turnItem: value });
+    expect(JSON.stringify(sanitizeProviderEvent(event))).toBe(JSON.stringify(event));
+  });
+
+  it.each(["running", "completed", "failed", "interrupted", "cancelled"] as const)(
+    "applies the 16 KiB limit to the input itself at %s",
+    (status) => {
+      const input = { blob: "x".repeat(16_384 - 11) };
+      expect(Buffer.byteLength(JSON.stringify(input))).toBe(16_384);
+      const item = sanitize({
+        ...base,
+        status,
+        type: "dynamic_tool",
+        toolName: "mcp",
+        input,
+        output: { text: "y".repeat(12_000) },
+      });
+      expect(item).toMatchObject({ input });
+    },
+  );
+
+  it("keeps the latest command output tail within 16 KiB, with whole redaction marks", () => {
+    const output = `${"界\\\u0000[REDACTED]".repeat(5000)}latest progress`;
+    const item = sanitize({
+      ...base,
+      status: "running",
+      type: "command_execution",
+      input: "echo",
+      output,
+    });
+    if (item.type !== "command_execution" || item.output === undefined)
+      throw new Error("Expected command output");
+    expect(Buffer.byteLength(JSON.stringify(item.output))).toBeLessThanOrEqual(16_384);
+    expect(item.output).toMatch(/^…/);
+    expect(item.output.endsWith("latest progress")).toBe(true);
+    expect(output.endsWith(item.output.slice(1))).toBe(true);
+    expect(item.output.replaceAll("[REDACTED]", "")).not.toMatch(/REDACTED|REDACT|ACTED\]/);
   });
 });
