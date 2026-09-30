@@ -6,10 +6,14 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { EventSinkV2, EventSinkWriteError } from "../EventSink.ts";
-import { ProjectionStoreV2 } from "../ProjectionStore.ts";
+import {
+  ProjectionStoreReadError,
+  ProjectionStoreThreadNotFoundError,
+  ProjectionStoreV2,
+} from "../ProjectionStore.ts";
 import { ProjectionMaintenanceV2 } from "../ProjectionMaintenance.ts";
 import { LegacyV1ThreadImporter, layer as importerLayer } from "./LegacyV1ThreadImporter.ts";
-import { repairForkTaskLinks } from "./ForkTaskLinkRepair.ts";
+import { assertForkTaskLinksRepaired, repairForkTaskLinks } from "./ForkTaskLinkRepair.ts";
 
 import { TestLayer, stamp, seedThreads } from "./ForkDataCarryOver.testkit.ts";
 
@@ -257,5 +261,46 @@ it.effect("records missing shells without creating them and permits later hydrat
     yield* repairForkTaskLinks();
     yield* importer.ensureTranscript(ThreadId.make("child"));
     assert.equal(yield* importer.pendingThreadCount, 1);
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("retries a database error and clears a skip warning once the link is repaired", () =>
+  Effect.gen(function* () {
+    yield* seedThreads([
+      ["root", null],
+      ["child", "root"],
+    ]);
+    yield* (yield* LegacyV1ThreadImporter).reconcileShells;
+    const sql = yield* SqlClient.SqlClient;
+    const projections = yield* ProjectionStoreV2;
+    const child = ThreadId.make("child");
+    const readingChildFails = (
+      error: ProjectionStoreReadError | ProjectionStoreThreadNotFoundError,
+    ) =>
+      repairForkTaskLinks().pipe(
+        Effect.provideService(ProjectionStoreV2, {
+          ...projections,
+          getThread: (id) => (id === child ? Effect.fail(error) : projections.getThread(id)),
+        }),
+      );
+    const childWarnings = sql`SELECT reason FROM fork_v1_import_warnings
+      WHERE entity_id = 'child' AND field = 'parent_thread_id'`;
+    // A database error may pass: fail the phase, record nothing, keep compaction closed.
+    const busy = yield* Effect.flip(sql`SELECT * FROM missing_table_for_busy_database`);
+    const failed = yield* Effect.exit(
+      readingChildFails(new ProjectionStoreReadError({ threadId: child, cause: busy })),
+    );
+    assert.equal(failed._tag, "Failure");
+    assert.lengthOf(yield* childWarnings, 0);
+    assert.equal((yield* Effect.exit(assertForkTaskLinksRepaired()))._tag, "Failure");
+    // A missing shell is a lasting condition: warn, and let compaction account for it.
+    yield* readingChildFails(new ProjectionStoreThreadNotFoundError({ threadId: child }));
+    assert.lengthOf(yield* childWarnings, 1);
+    yield* assertForkTaskLinksRepaired();
+    // Once the shell reads, the link is repaired and the warning no longer applies.
+    assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 1 });
+    assert.lengthOf(yield* childWarnings, 0);
+    assert.equal((yield* projections.getThread(child)).lineage.parentThreadId, "root");
+    yield* assertForkTaskLinksRepaired();
   }).pipe(Effect.provide(TestLayer)),
 );

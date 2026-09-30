@@ -1,14 +1,18 @@
-import { CommandId, EventId, ThreadId } from "@t3tools/contracts";
+import { CommandId, EventId, ThreadId, type OrchestrationV2AppThread } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { isSqlError } from "effect/unstable/sql/SqlError";
 
 import { EventSinkV2 } from "../EventSink.ts";
-import { ProjectionStoreV2 } from "../ProjectionStore.ts";
-import { recordForkImportWarning } from "../../persistence/ForkImportDiagnostics.ts";
+import { ProjectionStoreV2, type ProjectionStoreV2Error } from "../ProjectionStore.ts";
+import {
+  clearForkImportWarning,
+  recordForkImportWarning,
+} from "../../persistence/ForkImportDiagnostics.ts";
 import { forkLegacyTaskEvents } from "./ForkLegacyTasks.ts";
 
 const REPAIR_PREFIX = "migration:fork:task-links:v2:";
@@ -20,6 +24,19 @@ export class ForkTaskLinkRepairError extends Schema.TaggedError<ForkTaskLinkRepa
 ) {}
 
 const isRepairError = Schema.is(ForkTaskLinkRepairError);
+
+/**
+ * A missing or undecodable shell stays missing on every start, so it becomes a
+ * warning. A database error may pass, so it fails the phase for the next start.
+ */
+const readShell = (read: Effect.Effect<OrchestrationV2AppThread, ProjectionStoreV2Error>) =>
+  read.pipe(
+    Effect.catch((error) =>
+      error._tag === "ProjectionStoreReadError" && isSqlError(error.cause)
+        ? Effect.fail(error)
+        : Effect.succeed(undefined),
+    ),
+  );
 
 export class ForkTaskLinkRepair extends Context.Service<
   ForkTaskLinkRepair,
@@ -130,12 +147,8 @@ export const repairForkTaskLinks = Effect.fn("repairForkTaskLinks")(
         yield* skip(`Legacy task ${threadId} has no import marker; no V2 record was changed.`);
         continue;
       }
-      const current = yield* projections
-        .getThread(threadId)
-        .pipe(Effect.catch(() => Effect.succeed(undefined)));
-      const parent = yield* projections
-        .getThread(ThreadId.make(row.parent_thread_id))
-        .pipe(Effect.catch(() => Effect.succeed(undefined)));
+      const current = yield* readShell(projections.getThread(threadId));
+      const parent = yield* readShell(projections.getThread(ThreadId.make(row.parent_thread_id)));
       if (current === undefined || parent === undefined) {
         yield* skip("Missing or unreadable imported shell; kept available threads top-level.");
         continue;
@@ -165,7 +178,9 @@ export const repairForkTaskLinks = Effect.fn("repairForkTaskLinks")(
         row.task_json,
         row.provider_name,
       );
-      const result = yield* sink.commitCommand({
+      // A warning from an earlier start (such as a shell imported only later)
+      // would otherwise outlive this repair and mislead the compaction gate.
+      const commit = sink.commitCommand({
         commandId,
         commandType: REPAIR_COMMAND,
         threadId,
@@ -192,6 +207,9 @@ export const repairForkTaskLinks = Effect.fn("repairForkTaskLinks")(
         ],
         effects: [],
       });
+      const result = yield* sql.withTransaction(
+        clearForkImportWarning(threadId, "parent_thread_id").pipe(Effect.andThen(commit)),
+      );
       if (result.committed) repairedThreadCount += 1;
     }
     return { repairedThreadCount };
