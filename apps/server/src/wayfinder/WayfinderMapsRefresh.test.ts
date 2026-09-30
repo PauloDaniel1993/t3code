@@ -101,26 +101,23 @@ const observedFileSystem = Layer.effect(
               )
             : fileSystem.realPath(path),
       stat: (path) =>
-        Ref.getAndUpdate(probe.slowStat, (slow) => (slow?.path === path ? null : slow))
-          .pipe(
-            Effect.flatMap((slow) =>
-              slow?.path === path
-                ? Deferred.succeed(slow.entered, undefined).pipe(
-                    Effect.andThen(Effect.sleep(slow.delay)),
-                  )
-                : Effect.void,
-            ),
-            Effect.andThen(fileSystem.stat(path)),
-          )
-          .pipe(
-            Effect.tap(() =>
-              Ref.get(probe.workspaceRoot).pipe(
-                Effect.flatMap((root) =>
-                  path === root ? Queue.offer(probe.rootStatted, undefined) : Effect.void,
-                ),
+        Ref.getAndUpdate(probe.slowStat, (slow) => (slow?.path === path ? null : slow)).pipe(
+          Effect.flatMap((slow) =>
+            slow?.path === path
+              ? Deferred.succeed(slow.entered, undefined).pipe(
+                  Effect.andThen(Effect.sleep(slow.delay)),
+                )
+              : Effect.void,
+          ),
+          Effect.andThen(fileSystem.stat(path)),
+          Effect.tap(() =>
+            Ref.get(probe.workspaceRoot).pipe(
+              Effect.flatMap((root) =>
+                path === root ? Queue.offer(probe.rootStatted, undefined) : Effect.void,
               ),
             ),
           ),
+        ),
     });
   }),
 );
@@ -150,6 +147,17 @@ const writeText = Effect.fn("writeText")(function* (
   yield* fileSystem.writeFileString(absolutePath, contents).pipe(Effect.orDie);
 });
 
+/** Subscribes for the rest of the test, so the root stays live, once its first snapshot is in. */
+const holdRoot = Effect.fn("holdRoot")(function* (cwd: string) {
+  const maps = yield* WayfinderMaps.WayfinderMaps;
+  const first = yield* Deferred.make<void>();
+  yield* maps.stream(cwd).pipe(
+    Stream.runForEach(() => Deferred.succeed(first, undefined)),
+    Effect.forkScoped,
+  );
+  yield* Deferred.await(first);
+});
+
 it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps refresh work", (it) => {
   it.effect("runs one scan for concurrent refreshes and spaces scans by the interval", () =>
     Effect.gen(function* () {
@@ -167,7 +175,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps refresh work",
       expect(yield* Ref.get(probe.mapLookups)).toEqual([]);
 
       // Subscribing is one scan, not an initialisation scan plus one.
-      yield* maps.stream(cwd).pipe(Stream.runHead);
+      yield* holdRoot(cwd);
       expect(scanTimes(yield* Ref.get(probe.mapLookups))).toEqual([0]);
 
       // Callers arriving together share the next scan, which has to wait out the interval.
@@ -264,7 +272,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps refresh work",
       const start = yield* Clock.currentTimeMillis;
 
       // The victim is watched and scanned once. Then two other roots take both scan slots.
-      yield* maps.stream(victim).pipe(Stream.runHead);
+      yield* holdRoot(victim);
       const entered = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       yield* Ref.set(probe.heldCount, 0);

@@ -53,10 +53,12 @@ fixed entry count; reaching any of them marks the snapshot truncated. Scans of o
 coalesced and start at least a second apart, measured from when a scan actually starts, and two
 scans run at once across all roots.
 
-Roots are keyed by real path, so every spelling of a folder shares one root. Only a subscription
-creates a root; a refresh of a root nobody watches does nothing. The server holds at most 32 live
-roots and a connection at most 16 subscriptions; past either cap the request fails with
-`capacity_reached`, which the panel shows. A root closes a minute after its last subscriber.
+Roots are keyed by real path, so every spelling of a folder shares one root. A root lives only
+while a subscription holds it: it closes, watches and all, when its last subscriber leaves or that
+subscriber's connection closes, and a refresh never creates or revives one. A connection holds at
+most 16 subscriptions; past that a subscription fails with `capacity_reached`, which the panel
+shows. There is deliberately no server-wide cap: roots are released promptly and the scan gate
+bounds disk work across clients, so a server cap would only let one client shut the others out.
 
 The header reload action sends a workspace-scoped RPC through the active environment. It runs the
 same refresh as the watchers and publishes a snapshot only when the parsed content changed, so

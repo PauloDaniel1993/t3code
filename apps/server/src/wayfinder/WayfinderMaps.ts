@@ -11,7 +11,6 @@ import * as LayerMap from "effect/LayerMap";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
-import * as RcMap from "effect/RcMap";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -41,13 +40,12 @@ export const WAYFINDER_MAPS_MAX_DISCOVERY_ENTRIES = 256;
 export const WAYFINDER_MAPS_MAX_CANDIDATES = 128;
 export const WAYFINDER_MAPS_MAX_TICKET_DIRECTORY_ENTRIES = 512;
 export const WAYFINDER_MAPS_MAX_CONCURRENT_SCANS = 2;
-// Admission: what one server holds for all clients, and what one connection may hold of it.
-export const WAYFINDER_MAPS_MAX_LIVE_ROOTS = 32;
+// Admission: a root lives only while a subscription holds it, so this bounds what one
+// connection keeps watched and scanned.
 export const WAYFINDER_MAPS_MAX_SUBSCRIPTIONS_PER_CONNECTION = 16;
 export const WAYFINDER_MAPS_BOOTSTRAP_PROBE_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_MIN_SCAN_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_WATCH_DEBOUNCE = Duration.millis(100);
-export const WAYFINDER_MAPS_IDLE_TIME_TO_LIVE = "1 minute";
 
 /** Timing knobs. Production uses the defaults; tests provide shorter ones. */
 export class WayfinderMapsTuning extends Context.Reference<{
@@ -71,7 +69,7 @@ class WayfinderScanGate extends Context.Service<WayfinderScanGate, Semaphore.Sem
   );
 }
 
-/** A new root or subscription was refused because its admission cap is reached. */
+/** A new subscription was refused because its connection holds as many as it may. */
 export class WayfinderMapsCapacityError extends Data.TaggedError("WayfinderMapsCapacityError")<{
   readonly message: string;
 }> {}
@@ -561,7 +559,7 @@ export class WayfinderMapsMap extends LayerMap.Service<WayfinderMapsMap>()(
   {
     lookup: rootLayer,
     dependencies: [WayfinderScanGate.layer],
-    idleTimeToLive: WAYFINDER_MAPS_IDLE_TIME_TO_LIVE,
+    // No idle time-to-live: a root closes, watches and all, when its last subscription ends.
   },
 ) {}
 
@@ -576,7 +574,6 @@ export class WayfinderMaps extends Context.Service<
 export const make = Effect.gen(function* () {
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const maps = yield* WayfinderMapsMap;
-  const admission = yield* Semaphore.make(1);
 
   // Roots are keyed by real path, so every spelling of one folder (letter case, a link to
   // it) shares one set of watches, one throttle and one scan. A path that cannot be resolved
@@ -587,22 +584,8 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((root) => workspacePaths.normalizeWorkspaceRoot(root)),
     );
 
-  /** A root that is live or can still be admitted under the live-root cap. */
-  const acquireRoot = (workspaceRoot: string) =>
-    admission.withPermits(1)(
-      Effect.gen(function* () {
-        const live = Array.from(yield* RcMap.keys(maps.rcMap));
-        if (!live.includes(workspaceRoot) && live.length >= WAYFINDER_MAPS_MAX_LIVE_ROOTS) {
-          return yield* new WayfinderMapsCapacityError({
-            message: `This server is already showing maps for ${WAYFINDER_MAPS_MAX_LIVE_ROOTS} folders. Close some map panels and try again in a minute.`,
-          });
-        }
-        return yield* maps.contextEffect(workspaceRoot);
-      }),
-    );
-
-  // A refresh only rescans a root that is live: with nobody subscribed there is nothing to
-  // update, so it never creates a root.
+  // A refresh only rescans a root someone is subscribed to: it never creates or revives one,
+  // and holds it only while its own scan runs.
   const refresh: WayfinderMaps["Service"]["refresh"] = Effect.fn("WayfinderMaps.refresh")(
     function* (cwd) {
       const context = yield* maps.contextEffectOption(yield* rootKey(cwd));
@@ -616,7 +599,7 @@ export const make = Effect.gen(function* () {
   const stream: WayfinderMaps["Service"]["stream"] = (cwd) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        const context = yield* acquireRoot(yield* rootKey(cwd));
+        const context = yield* maps.contextEffect(yield* rootKey(cwd));
         return Context.get(context, WayfinderMapsRoot).stream;
       }),
     );

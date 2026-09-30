@@ -4,6 +4,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -12,8 +14,8 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as WayfinderMaps from "./WayfinderMaps.ts";
@@ -43,13 +45,20 @@ const observedFileSystem = Layer.effect(
   }),
 );
 
-// The test clock never reaches the idle time-to-live, so every root stays live.
 const platform = Layer.provideMerge(
   observedFileSystem,
-  Layer.mergeAll(NodeServices.layer, TestClock.layer(), Scans.layer),
+  Layer.mergeAll(NodeServices.layer, Scans.layer),
 );
 const workspace = Layer.merge(platform, WorkspacePaths.layer.pipe(Layer.provide(platform)));
-const TestLayer = Layer.merge(workspace, WayfinderMaps.layer.pipe(Layer.provide(workspace)));
+// Refreshes of a live root scan at once, so each one is visible in `Scans` without waiting.
+const quickTuning = Layer.succeed(WayfinderMaps.WayfinderMapsTuning, {
+  minScanInterval: Duration.zero,
+  watchDebounce: WayfinderMaps.WAYFINDER_MAPS_DEFAULT_WATCH_DEBOUNCE,
+});
+const TestLayer = Layer.merge(
+  workspace,
+  WayfinderMaps.layer.pipe(Layer.provide(workspace), Layer.provide(quickTuning)),
+);
 
 const makeProject = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -59,6 +68,19 @@ const makeProject = Effect.gen(function* () {
     .writeFileString(path.join(cwd, "wayfinder-map.md"), "# Admission")
     .pipe(Effect.orDie);
   return yield* fileSystem.realPath(cwd);
+});
+
+/** Runs a subscription in the background and returns once its first snapshot is in. */
+const hold = Effect.fn("hold")(function* <E>(
+  snapshots: Stream.Stream<unknown, E>,
+  fork: <A>(effect: Effect.Effect<A, E>) => Effect.Effect<Fiber.Fiber<A, E>, never, never>,
+) {
+  const first = yield* Deferred.make<void>();
+  const fiber = yield* fork(
+    snapshots.pipe(Stream.runForEach(() => Deferred.succeed(first, undefined))),
+  );
+  yield* Deferred.await(first);
+  return fiber;
 });
 
 it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps admission", (it) => {
@@ -81,7 +103,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps admission", (i
       yield* Ref.set(scans, []);
 
       for (const spelling of spellings) {
-        yield* maps.stream(spelling).pipe(Stream.runHead);
+        yield* hold(maps.stream(spelling), Effect.forkChild);
       }
 
       expect(yield* Ref.get(scans)).toEqual([root]);
@@ -120,26 +142,70 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps admission", (i
     }),
   );
 
-  it.effect("refuses a root past the live-root cap and keeps serving the live ones", () =>
+  it.effect("closes a root with its last subscriber; a refresh neither keeps nor revives it", () =>
     Effect.gen(function* () {
       const maps = yield* WayfinderMaps.WayfinderMaps;
-      // Earlier tests left roots live; fill whatever room remains.
-      const first = yield* makeProject;
-      yield* maps.stream(first).pipe(Stream.runHead);
-      const extra: Array<string> = [];
-      let refused: Exit.Exit<unknown, WayfinderMaps.WayfinderMapsError> = Exit.void;
-      while (Exit.isSuccess(refused)) {
-        const cwd = yield* makeProject;
-        refused = yield* maps.stream(cwd).pipe(Stream.runHead, Effect.exit);
-        if (Exit.isSuccess(refused)) extra.push(cwd);
-        expect(extra.length).toBeLessThan(WayfinderMaps.WAYFINDER_MAPS_MAX_LIVE_ROOTS);
-      }
+      const scans = yield* Scans;
+      const cwd = yield* makeProject;
+      const first = yield* hold(maps.stream(cwd), Effect.forkChild);
+      const second = yield* hold(maps.stream(cwd), Effect.forkChild);
 
-      expect(Exit.isFailure(refused) && refused.cause.toString()).toContain(
-        "WayfinderMapsCapacityError",
-      );
-      // A live root is not a new one: it is still served.
-      expect(yield* maps.stream(first).pipe(Stream.runHead, Effect.exit)).toSatisfy(Exit.isSuccess);
+      yield* Fiber.interrupt(first);
+      yield* Ref.set(scans, []);
+      yield* maps.refresh(cwd);
+      // The other subscriber still holds it.
+      expect(yield* Ref.get(scans)).toEqual([cwd]);
+
+      yield* Fiber.interrupt(second);
+      yield* Ref.set(scans, []);
+      yield* maps.refresh(cwd);
+      yield* maps.refresh(cwd);
+      expect(yield* Ref.get(scans)).toEqual([]);
     }),
+  );
+
+  it.effect(
+    "lets no connection shut another out, by holding roots or by churning through them",
+    () =>
+      Effect.gen(function* () {
+        const maps = yield* WayfinderMaps.WayfinderMaps;
+        const scans = yield* Scans;
+        const perConnection = WayfinderMaps.WAYFINDER_MAPS_MAX_SUBSCRIPTIONS_PER_CONNECTION;
+
+        // One connection opens and closes more folders than two connections can hold at once,
+        // refreshing each after closing it.
+        const churner = yield* makeWayfinderRpcHandlers;
+        for (let index = 0; index < 3 * perConnection; index++) {
+          const cwd = yield* makeProject;
+          yield* churner.subscribe({ cwd }).pipe(Stream.runHead);
+          yield* churner.refresh({ cwd });
+        }
+
+        // Two connections, from one client, each hold their full allowance.
+        const connections = [yield* Scope.make(), yield* Scope.make()];
+        const held: Array<string> = [];
+        for (const connection of connections) {
+          const handlers = yield* makeWayfinderRpcHandlers;
+          for (let index = 0; index < perConnection; index++) {
+            const cwd = yield* makeProject;
+            held.push(cwd);
+            yield* hold(handlers.subscribe({ cwd }), Effect.forkIn(connection));
+          }
+        }
+
+        const other = yield* makeWayfinderRpcHandlers;
+        const otherCwd = yield* makeProject;
+        expect(
+          yield* other.subscribe({ cwd: otherCwd }).pipe(Stream.runHead, Effect.exit),
+        ).toSatisfy(Exit.isSuccess);
+
+        // Closing a connection releases every root it held.
+        yield* Effect.forEach(connections, (connection) => Scope.close(connection, Exit.void), {
+          discard: true,
+        });
+        yield* Ref.set(scans, []);
+        yield* Effect.forEach(held, (cwd) => maps.refresh(cwd), { discard: true });
+        expect(yield* Ref.get(scans)).toEqual([]);
+      }),
   );
 });

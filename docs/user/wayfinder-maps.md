@@ -79,5 +79,5 @@ warnings instead of the no-map message. If only part of a map can be read, the u
 appear and the warnings remain available. A map or ticket file that cannot be opened at all, or one
 that is a link to somewhere outside the project, is skipped rather than reported.
 
-A server shows maps for a limited number of folders at once. If the Map surface says that limit is
-reached, close map panels you no longer need and try again a minute later.
+Each connected app can keep a limited number of maps open at once. If the Map surface says that
+limit is reached, close map panels you no longer need and try again.
