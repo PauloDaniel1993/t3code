@@ -6,7 +6,7 @@ const decodeRule = Schema.decodeSync(KeybindingRule);
 
 it("accepts the delegated task shortcut command", () => {
   const rule = decodeRule({
-    key: "mod+alt+n",
+    key: "mod+alt+t",
     command: "thread.newTask",
     when: "!terminalFocus",
   });

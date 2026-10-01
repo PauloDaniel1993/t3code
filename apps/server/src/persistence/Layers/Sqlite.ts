@@ -11,7 +11,7 @@ import { reconcileBaseMigrationLedger, runForkMigrations } from "../ForkMigratio
 import TaskDeliveryIndex from "../ForkMigrations/011_TaskDeliveryIndex.ts";
 import { initializeV2Database } from "../initializeV2Database.ts";
 import { initializeIsolatedAttachments } from "../../attachmentIsolation.ts";
-import { ServerConfig } from "../../config.ts";
+import * as ServerConfig from "../../config.ts";
 import { initializeAttachmentReferenceIndex } from "../../orchestration-v2/AttachmentReferenceIndex.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
@@ -65,7 +65,7 @@ export const SqlitePersistenceMemory = Layer.provideMerge(
 
 export const layerConfig = Layer.unwrap(
   Effect.gen(function* () {
-    const config = yield* ServerConfig;
+    const config = yield* ServerConfig.ServerConfig;
     yield* initializeV2Database(config.dbPath);
     yield* initializeIsolatedAttachments(config);
     return makeSqlitePersistenceLive(config.dbPath);

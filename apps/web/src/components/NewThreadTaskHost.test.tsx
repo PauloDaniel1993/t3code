@@ -166,8 +166,8 @@ afterEach(async () => {
 });
 async function shortcut(options: KeyboardEventInit = {}) {
   const event = new KeyboardEvent("keydown", {
-    key: "n",
-    code: "KeyN",
+    key: "t",
+    code: "KeyT",
     ctrlKey: true,
     altKey: true,
     bubbles: true,
@@ -304,7 +304,7 @@ describe("shared task host", () => {
     const panel = vi.spyOn(useRightPanelStore, "getState");
 
     for (const options of [
-      { key: "n", code: "KeyN", ctrlKey: false, altKey: false },
+      { key: "t", code: "KeyT", ctrlKey: false, altKey: false },
       { key: "x", code: "KeyX" },
     ]) {
       const event = new KeyboardEvent("keydown", {

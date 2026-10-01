@@ -37,16 +37,23 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
-import { ThreadMetadataMcpService } from "../../ThreadMetadataMcpService.ts";
-import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
-import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
+import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
+import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 
-const dependencies = [McpInvocationContext.McpInvocationContext, OrchestratorMcpService];
-const forkTaskDependencies = [...dependencies, ThreadManagementService, ProviderRegistry];
+const dependencies = [
+  McpInvocationContext.McpInvocationContext,
+  OrchestratorMcpService.OrchestratorMcpService,
+];
+const forkTaskDependencies = [
+  ...dependencies,
+  ThreadManagementService.ThreadManagementService,
+  ProviderRegistry.ProviderRegistry,
+];
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
-  ThreadMetadataMcpService,
+  ThreadMetadataMcpService.ThreadMetadataMcpService,
 ];
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {

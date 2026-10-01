@@ -39,7 +39,7 @@ in Settings.
 ## Delegate a task
 
 In an existing thread on web or desktop, choose **New task** in the chat header
-or command palette, or press `mod+alt+n`. Choose the task's provider instance,
+or command palette, or press `mod+alt+t`. Choose the task's provider instance,
 model and reasoning level, then describe the work. The parent agent receives a
 request to delegate, queued behind any active turn. Creating the child depends
 on the agent following that request.
@@ -153,7 +153,8 @@ through the pages you have visited, like a browser's back and forward buttons.
 
 `chat.new` may ask you to choose a project when there is more than one.
 `chat.newLocal` skips that chooser. Both use your
-[new-thread defaults](./thread-sidebar.md#start-a-thread).
+[new-thread defaults](./thread-sidebar.md#start-a-thread). `chat.newWithoutProject`
+(`mod+alt+n`) starts a thread [without a project](./thread-sidebar.md#start-without-a-project).
 
 ## Reserved shortcuts
 

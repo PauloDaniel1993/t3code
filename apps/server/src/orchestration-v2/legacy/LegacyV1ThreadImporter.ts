@@ -29,7 +29,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { EventSinkV2 } from "../EventSink.ts";
+import * as EventSink from "../EventSink.ts";
 import { makeKeyedSerialExecutor } from "../KeyedSerialExecutor.ts";
 import { randomUuidV4 } from "../RandomUuid.ts";
 
@@ -361,7 +361,7 @@ function chunks<A>(items: ReadonlyArray<A>, size: number): Array<ReadonlyArray<A
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const eventSink = yield* EventSinkV2;
+  const eventSink = yield* EventSink.EventSinkV2;
   const transcriptImports = yield* makeKeyedSerialExecutor<ThreadId>();
   // fork(ticket-28:messages): capture persistence for per-entry import diagnostics.
   const forkMessageEvents = yield* makeForkLegacyMessageEvents<LegacyMessageRow>(messageEvents);
@@ -877,5 +877,8 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer: Layer.Layer<LegacyV1ThreadImporter, never, EventSinkV2 | SqlClient.SqlClient> =
-  Layer.effect(LegacyV1ThreadImporter, make);
+export const layer: Layer.Layer<
+  LegacyV1ThreadImporter,
+  never,
+  EventSink.EventSinkV2 | SqlClient.SqlClient
+> = Layer.effect(LegacyV1ThreadImporter, make);

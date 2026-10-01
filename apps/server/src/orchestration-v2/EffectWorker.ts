@@ -17,26 +17,21 @@ import {
   orchestrationEffectClaimsTotal,
   orchestrationEffectQueueWait,
 } from "../observability/Metrics.ts";
-import { RunFinalizationService } from "./RunFinalizationService.ts";
-import { ResourceCleanupService, ResourceCleanupError } from "./ResourceCleanupService.ts";
+import * as RunFinalizationService from "./RunFinalizationService.ts";
+import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import {
   AttachmentReferenceIndexUnavailable,
   deferAttachmentCleanup,
 } from "./AttachmentReferenceIndex.ts";
-import {
-  EffectOutboxV2,
-  EffectOutboxError,
-  REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS,
-  type OrchestrationEffectV2,
-} from "./EffectOutbox.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
-import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
-import { ProviderTurnControlServiceV2 } from "./ProviderTurnControlService.ts";
-import { ProviderTurnStartServiceV2 } from "./ProviderTurnStartService.ts";
-import { RuntimeRequestServiceV2 } from "./RuntimeRequestService.ts";
-import { ThreadTitleRegenerationService } from "./ThreadTitleRegenerationService.ts";
-import { ThreadManagementService } from "./ThreadManagementService.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
+import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
+import * as RuntimeRequestService from "./RuntimeRequestService.ts";
+import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
+import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
@@ -48,7 +43,7 @@ export class OrchestrationEffectExecutionError extends Schema.TaggedError<Orches
   },
 ) {}
 const isExecutionError = Schema.is(OrchestrationEffectExecutionError);
-const isCleanupError = Schema.is(ResourceCleanupError);
+const isCleanupError = Schema.is(ResourceCleanupService.ResourceCleanupError);
 const isIndexUnavailable = Schema.is(AttachmentReferenceIndexUnavailable);
 
 /**
@@ -81,7 +76,7 @@ export interface OrchestrationEffectExecutorV2Shape {
    * failure, so a step can fail and try again instead of settling the run.
    */
   readonly execute: (
-    effect: OrchestrationEffectV2,
+    effect: EffectOutbox.OrchestrationEffectV2,
     options?: { readonly willRetry: boolean },
   ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
 }
@@ -94,29 +89,30 @@ export class OrchestrationEffectExecutorV2 extends Context.Service<
 export const executorLayer: Layer.Layer<
   OrchestrationEffectExecutorV2,
   never,
-  | ProviderSessionManagerV2
-  | RunFinalizationService
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | RunFinalizationService.RunFinalizationService
   | CheckpointRollbackService.CheckpointRollbackServiceV2
-  | ProviderTurnControlServiceV2
-  | ProviderTurnStartServiceV2
-  | RuntimeRequestServiceV2
-  | ThreadTitleRegenerationService
-  | ThreadManagementService
-  | ServerSettingsService
+  | ProviderTurnControlService.ProviderTurnControlServiceV2
+  | ProviderTurnStartService.ProviderTurnStartServiceV2
+  | RuntimeRequestService.RuntimeRequestServiceV2
+  | ThreadTitleRegenerationService.ThreadTitleRegenerationService
+  | ThreadManagementService.ThreadManagementService
+  | ServerSettings.ServerSettingsService
 > = Layer.effect(
   OrchestrationEffectExecutorV2,
   Effect.gen(function* () {
-    const runFinalization = yield* RunFinalizationService;
-    const resourceCleanup = yield* ResourceCleanupService;
-    const cleanupOutbox = yield* Effect.serviceOption(EffectOutboxV2);
+    const runFinalization = yield* RunFinalizationService.RunFinalizationService;
+    const resourceCleanup = yield* ResourceCleanupService.ResourceCleanupService;
+    const cleanupOutbox = yield* Effect.serviceOption(EffectOutbox.EffectOutboxV2);
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
-    const providerSessions = yield* ProviderSessionManagerV2;
-    const providerTurnControl = yield* ProviderTurnControlServiceV2;
-    const providerTurnStart = yield* ProviderTurnStartServiceV2;
-    const runtimeRequests = yield* RuntimeRequestServiceV2;
-    const threadTitleRegeneration = yield* ThreadTitleRegenerationService;
-    const threads = yield* ThreadManagementService;
-    const settings = yield* ServerSettingsService;
+    const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const providerTurnControl = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+    const providerTurnStart = yield* ProviderTurnStartService.ProviderTurnStartServiceV2;
+    const runtimeRequests = yield* RuntimeRequestService.RuntimeRequestServiceV2;
+    const threadTitleRegeneration =
+      yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const settings = yield* ServerSettings.ServerSettingsService;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
@@ -126,8 +122,8 @@ export const executorLayer: Layer.Layer<
               threadId: effect.threadId,
               sourceRunId: effect.request.sourceRunId,
             }).pipe(
-              Effect.provideService(ThreadManagementService, threads),
-              Effect.provideService(ServerSettingsService, settings),
+              Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+              Effect.provideService(ServerSettings.ServerSettingsService, settings),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationEffectExecutionError({
@@ -430,7 +426,7 @@ export const executorLayer: Layer.Layer<
                     : Option.match(cleanupOutbox, {
                         onNone: () =>
                           Effect.fail(
-                            new EffectOutboxError({
+                            new EffectOutbox.EffectOutboxError({
                               operation: "continue-attachment-cleanup",
                               effectId: effect.id,
                               cause: "Attachment cleanup continuation requires the effect outbox.",
@@ -519,12 +515,12 @@ export const layerWithOptions = (
 ): Layer.Layer<
   OrchestrationEffectWorkerV2,
   never,
-  EffectOutboxV2 | OrchestrationEffectExecutorV2
+  EffectOutbox.EffectOutboxV2 | OrchestrationEffectExecutorV2
 > =>
   Layer.effect(
     OrchestrationEffectWorkerV2,
     Effect.gen(function* () {
-      const outbox = yield* EffectOutboxV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
       const attachmentSql = yield* Effect.serviceOption(SqlClient.SqlClient);
       const executor = yield* OrchestrationEffectExecutorV2;
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
@@ -539,7 +535,10 @@ export const layerWithOptions = (
             }),
           ),
         );
-      const requeueClaim = (effect: OrchestrationEffectV2, cause: Cause.Cause<unknown>) =>
+      const requeueClaim = (
+        effect: EffectOutbox.OrchestrationEffectV2,
+        cause: Cause.Cause<unknown>,
+      ) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.void
           : outbox
@@ -569,7 +568,10 @@ export const layerWithOptions = (
                   }),
                 ),
               );
-      const terminalizeClaim = (effect: OrchestrationEffectV2, cause: Cause.Cause<unknown>) => {
+      const terminalizeClaim = (
+        effect: EffectOutbox.OrchestrationEffectV2,
+        cause: Cause.Cause<unknown>,
+      ) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.void;
         return outbox
           .fail({
@@ -605,10 +607,10 @@ export const layerWithOptions = (
           );
       };
       const recoverPostSuccessSettlement = (
-        effect: OrchestrationEffectV2,
+        effect: EffectOutbox.OrchestrationEffectV2,
         cause: Cause.Cause<unknown>,
       ) =>
-        REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS.some(
+        EffectOutbox.REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS.some(
           (effectType) => effectType === effect.request.type,
         )
           ? requeueClaim(effect, cause)
@@ -707,7 +709,7 @@ export const layerWithOptions = (
               });
             const rescheduled = yield* deferAttachmentCleanup(effect.id, workerId, error).pipe(
               Effect.provideService(SqlClient.SqlClient, attachmentSql.value),
-              Effect.provideService(EffectOutboxV2, outbox),
+              Effect.provideService(EffectOutbox.EffectOutboxV2, outbox),
               Effect.onError((cause) => requeueClaim(effect, cause)),
             );
             if (!rescheduled && !(yield* wasCancelled(effect.id)))
