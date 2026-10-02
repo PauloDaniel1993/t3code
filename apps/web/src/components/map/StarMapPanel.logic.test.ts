@@ -2,6 +2,7 @@ import type { WayfinderMap, WayfinderMapsSnapshot, WayfinderNode } from "@t3tool
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  buildStartTicketsAsTasksPrompt,
   initialStarMapPanelState,
   starMapPanelReducer,
   type StarMapPanelState,
@@ -197,5 +198,30 @@ describe("starMapPanelReducer", () => {
         initialStarMapPanelState,
       );
     });
+  });
+});
+
+describe("buildStartTicketsAsTasksPrompt", () => {
+  const map = { title: "V2 integration", mapRelativePath: ".scratch/v2/map.md" };
+
+  it("lists the tickets in ordinal order with their files", () => {
+    const prompt = buildStartTicketsAsTasksPrompt(map, [
+      { ordinal: 12, label: "Port tasks", relativePath: ".scratch/v2/issues/12.md" },
+      { ordinal: 3, label: "Brief adapters", relativePath: ".scratch/v2/issues/03.md" },
+    ]);
+    expect(prompt).toContain(
+      'these 2 tickets from the map "V2 integration" (`.scratch/v2/map.md`)',
+    );
+    expect(prompt.indexOf("- 3. Brief adapters (`.scratch/v2/issues/03.md`)")).toBeLessThan(
+      prompt.indexOf("- 12. Port tasks (`.scratch/v2/issues/12.md`)"),
+    );
+    expect(prompt).toContain("task_models");
+  });
+
+  it("names a single ticket in the singular", () => {
+    const prompt = buildStartTicketsAsTasksPrompt(map, [
+      { ordinal: 1, label: "Only", relativePath: "a.md" },
+    ]);
+    expect(prompt).toContain("Start this ticket from the map");
   });
 });

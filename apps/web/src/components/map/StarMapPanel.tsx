@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   CircleCheck,
   Focus,
+  ListTodo,
   Map as MapIcon,
   RefreshCw,
   TriangleAlert,
@@ -32,11 +33,16 @@ import {
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
+import { Button } from "~/components/ui/button";
+import { Checkbox } from "~/components/ui/checkbox";
 import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { cn } from "~/lib/utils";
+import { useNewThreadTaskAvailability } from "~/hooks/useNewThreadTaskAvailability";
+import { cn, newMessageId } from "~/lib/utils";
 import { selectActiveRightPanel, useRightPanelStore } from "~/rightPanelStore";
+import { useThreadShell } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
+import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { wayfinderEnvironment } from "~/state/wayfinder";
 import { resolveThreadRouteTarget } from "~/threadRoutes";
@@ -71,7 +77,11 @@ import {
 } from "./starMapInteraction";
 import { layoutStarMap } from "./starMapLayout";
 import { StarMapRenderer, detectPrefersReducedMotion } from "./starMapRenderer";
-import { initialStarMapPanelState, starMapPanelReducer } from "./StarMapPanel.logic";
+import {
+  buildStartTicketsAsTasksPrompt,
+  initialStarMapPanelState,
+  starMapPanelReducer,
+} from "./StarMapPanel.logic";
 
 export interface StarMapPanelProps {
   readonly environmentId: EnvironmentId;
@@ -82,6 +92,8 @@ export interface StarMapPanelProps {
    */
   readonly cwd: string;
 }
+
+const EMPTY_TICKET_IDS: ReadonlySet<string> = new Set();
 
 function ticketStatusText(node: WayfinderNode): string {
   const status = (() => {
@@ -174,6 +186,9 @@ function TicketList(props: {
   selectedTicketId: string | null;
   onSelectTicket: (ticketId: string) => void;
   onFocusTicket: (ticketId: string | null) => void;
+  /** Tickets picked to start as tasks; only ready (frontier) tickets can be picked. */
+  checkedTicketIds: ReadonlySet<string>;
+  onToggleChecked: (ticketId: string) => void;
 }) {
   const listRef = useRef<HTMLUListElement>(null);
   const ordered = [...props.graph.nodes].sort(
@@ -192,7 +207,15 @@ function TicketList(props: {
       {ordered.map((node) => {
         const selected = node.id === props.selectedTicketId;
         return (
-          <li key={node.id}>
+          <li key={node.id} className="flex items-center gap-1">
+            <Checkbox
+              aria-label={`Start ${node.label} as a task`}
+              title={node.isFrontier ? "Start as a task" : "Only ready tickets can start"}
+              disabled={!node.isFrontier}
+              checked={node.isFrontier && props.checkedTicketIds.has(node.id)}
+              onCheckedChange={() => props.onToggleChecked(node.id)}
+              className="ml-1"
+            />
             <button
               type="button"
               data-ticket-id={node.id}
@@ -202,7 +225,7 @@ function TicketList(props: {
               onFocus={() => props.onFocusTicket(node.id)}
               onBlur={() => props.onFocusTicket(null)}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60",
+                "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60",
                 selected && "bg-accent/60 ring-1 ring-ring/40",
               )}
             >
@@ -330,6 +353,68 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     state.selectedTicket !== null && graph !== null
       ? (graph.nodeById.get(state.selectedTicket) ?? null)
       : null;
+
+  // Picked tickets belong to the map they were picked on, so switching maps
+  // starts empty. A ticket that stopped being ready after it was picked drops
+  // out of the count instead of being sent.
+  const [checked, setChecked] = useState<{
+    readonly mapId: string | null;
+    readonly ticketIds: ReadonlySet<string>;
+  }>(() => ({ mapId: null, ticketIds: new Set() }));
+  const checkedTicketIds =
+    checked.mapId === state.selectedMapId ? checked.ticketIds : EMPTY_TICKET_IDS;
+  const readyTickets = useMemo(() => graph?.nodes.filter((node) => node.isFrontier) ?? [], [graph]);
+  const checkedTickets = readyTickets.filter((node) => checkedTicketIds.has(node.id));
+  const toggleChecked = (ticketId: string) => {
+    const next = new Set(checkedTicketIds);
+    if (!next.delete(ticketId)) next.add(ticketId);
+    setChecked({ mapId: state.selectedMapId, ticketIds: next });
+  };
+  const thread = useThreadShell(threadRef);
+  const { problem: taskUnavailable } = useNewThreadTaskAvailability(threadRef);
+  const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const [isStartingTasks, setIsStartingTasks] = useState(false);
+  const startUnavailable = taskUnavailable ?? (thread === null ? "Open a thread first." : null);
+  // The thread's agent creates the tasks: it reads the map for each ticket's
+  // complexity tier and the model that tier runs on, which the client cannot.
+  const startTicketsAsTasks = async (tickets: ReadonlyArray<StarMapGraphNode>) => {
+    if (thread === null || selectedMap === null || tickets.length === 0 || isStartingTasks) return;
+    setIsStartingTasks(true);
+    try {
+      const result = await startTurn({
+        environmentId: thread.environmentId,
+        input: {
+          threadId: thread.id,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: buildStartTicketsAsTasksPrompt(selectedMap, tickets),
+            attachments: [],
+          },
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          dispatchMode: "queue",
+        },
+      });
+      if (result._tag === "Success") {
+        setChecked({ mapId: null, ticketIds: EMPTY_TICKET_IDS });
+        toastManager.add({
+          type: "success",
+          title: `Sent ${tickets.length} ${tickets.length === 1 ? "ticket" : "tickets"} to this thread`,
+          description: "Its agent starts one task per ticket and picks each model by complexity.",
+        });
+      } else if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: "Could not start the tickets",
+          description: error instanceof Error ? error.message : "The message was not sent.",
+        });
+      }
+    } finally {
+      setIsStartingTasks(false);
+    }
+  };
 
   // List focus is a transient canvas highlight; selection is the persistent
   // one. Focus wins while it lasts so keyboard traversal glides the camera.
@@ -597,7 +682,46 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         selectedTicketId={state.selectedTicket}
         onSelectTicket={(ticketId) => dispatch({ type: "selectTicket", ticketId })}
         onFocusTicket={setFocusedTicketId}
+        checkedTicketIds={checkedTicketIds}
+        onToggleChecked={toggleChecked}
       />
+    );
+    const startActions = (
+      <div className="flex shrink-0 items-center gap-1">
+        {(
+          [
+            {
+              label: `Start ${checkedTickets.length} selected`,
+              tickets: checkedTickets,
+              hint: "Start the selected tickets as tasks in parallel",
+            },
+            {
+              label: `Start all ready (${readyTickets.length})`,
+              tickets: readyTickets,
+              hint: "Start every ready ticket as a task in parallel",
+            },
+          ] as const
+        ).map((action) => (
+          <Tooltip key={action.hint}>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="micro"
+                  variant="ghost-muted"
+                  disabled={
+                    startUnavailable !== null || action.tickets.length === 0 || isStartingTasks
+                  }
+                  onClick={() => void startTicketsAsTasks(action.tickets)}
+                >
+                  <ListTodo aria-hidden />
+                  {action.label}
+                </Button>
+              }
+            />
+            <TooltipPopup side="bottom">{startUnavailable ?? action.hint}</TooltipPopup>
+          </Tooltip>
+        ))}
+      </div>
     );
     body = (
       <div data-star-map-container="" className="flex min-h-0 flex-1 flex-col">
@@ -613,12 +737,17 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                     this view, so the list sits out of the way until asked for.
                     It stays in the DOM either way — it is the keyboard and
                     screen-reader path to the same tickets, not a fallback. */}
-                <details className="shrink-0 border-b border-border/60">
-                  <summary className="cursor-pointer select-none px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">
-                    {graph.nodes.length} {graph.nodes.length === 1 ? "ticket" : "tickets"}
-                  </summary>
-                  <div className="max-h-64 overflow-y-auto">{ticketList}</div>
-                </details>
+                <div className="relative shrink-0 border-b border-border/60">
+                  <details>
+                    <summary className="cursor-pointer select-none px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">
+                      {graph.nodes.length} {graph.nodes.length === 1 ? "ticket" : "tickets"}
+                      {checkedTickets.length > 0 ? ` · ${checkedTickets.length} selected` : ""}
+                    </summary>
+                    <div className="max-h-64 overflow-y-auto">{ticketList}</div>
+                  </details>
+                  {/* Beside the summary, not inside it, so a click never toggles the list. */}
+                  <div className="absolute right-2 top-0.5">{startActions}</div>
+                </div>
                 <div className="relative min-h-0 flex-1">
                   <div
                     aria-hidden="true"
@@ -675,7 +804,12 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                 </div>
               </>
             ) : (
-              <div className="min-h-0 flex-1 overflow-y-auto">{ticketList}</div>
+              <>
+                <div className="flex shrink-0 justify-end border-b border-border/60 px-2 py-0.5">
+                  {startActions}
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto">{ticketList}</div>
+              </>
             )}
           </div>
           {detailNode !== null ? (

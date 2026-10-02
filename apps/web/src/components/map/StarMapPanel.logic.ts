@@ -1,4 +1,4 @@
-import type { WayfinderMapsSnapshot } from "@t3tools/contracts";
+import type { WayfinderMap, WayfinderMapsSnapshot, WayfinderNode } from "@t3tools/contracts";
 
 /**
  * Navigation state for the star map panel: a three-level push stack of
@@ -97,4 +97,26 @@ export function starMapPanelReducer(
     case "syncSnapshot":
       return reconcileWithSnapshot(state, action.snapshot);
   }
+}
+
+/**
+ * The message the map's "start as tasks" actions send to the panel's thread.
+ * The client does not pick models: the thread's agent reads the map, where a
+ * map that routes work by complexity says which model each tier runs on.
+ */
+export function buildStartTicketsAsTasksPrompt(
+  map: Pick<WayfinderMap, "title" | "mapRelativePath">,
+  tickets: ReadonlyArray<Pick<WayfinderNode, "ordinal" | "label" | "relativePath">>,
+): string {
+  const lines = [...tickets]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .map((ticket) => `- ${ticket.ordinal}. ${ticket.label} (\`${ticket.relativePath}\`)`);
+  const subject = tickets.length === 1 ? "this ticket" : `these ${tickets.length} tickets`;
+  return [
+    `Start ${subject} from the map "${map.title}" (\`${map.mapRelativePath}\`) as tasks, one task per ticket, all in parallel:`,
+    "",
+    ...lines,
+    "",
+    "Choose each task's model by the ticket's complexity: use the tier or model the ticket names, routed through the map's model rules. Where a ticket names neither, judge its complexity against those rules. Follow the map's notes on how tickets run, call task_models before creating the tasks, and reply with the model each ticket went to.",
+  ].join("\n");
 }
