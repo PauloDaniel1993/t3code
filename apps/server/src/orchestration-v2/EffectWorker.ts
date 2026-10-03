@@ -175,6 +175,18 @@ export const executorLayer: Layer.Layer<
                 providerTurnId: effect.request.providerTurnId,
               })
               .pipe(
+                // The provider has stopped what it still ran and reported it.
+                // Whatever the thread still shows on that provider thread is
+                // work no process will report on, so the Stop ends it too.
+                Effect.andThen(
+                  threads.dispatch({
+                    type: "thread.background-work.settle",
+                    commandId: CommandId.make(`${effect.commandId}:background-work-settled`),
+                    threadId: effect.threadId,
+                    providerThreadId: effect.request.providerThreadId,
+                    providerTurnId: effect.request.providerTurnId,
+                  }),
+                ),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -241,7 +253,12 @@ export const executorLayer: Layer.Layer<
                       text: message.text,
                       ...(message.context ? { context: message.context } : {}),
                       attachments: message.attachments,
-                      modelSelection: run.modelSelection,
+                      // A user's follow-up starts on the thread's saved selection,
+                      // which already holds the steer's choice. A delegated
+                      // completion stays pinned to the run it reports to.
+                      ...(message.delegatedCompletion === undefined
+                        ? {}
+                        : { modelSelection: run.modelSelection }),
                       dispatchMode: {
                         type:
                           message.delegatedCompletion === undefined

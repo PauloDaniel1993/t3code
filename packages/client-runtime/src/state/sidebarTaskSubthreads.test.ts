@@ -21,6 +21,7 @@ import {
   sidebarTaskWasReturned,
   sidebarTaskCountLabel,
   sidebarHasUnreadTaskResults,
+  sidebarRowKeyForThread,
 } from "./sidebarTaskSubthreads.ts";
 
 const at = (time: string) => DateTime.makeUnsafe(time);
@@ -250,6 +251,24 @@ describe("sidebar delegated task grouping", () => {
     expect(grouped.tasksByParent.size).toBe(0);
     expect(grouped.topLevel).toEqual([]);
     expect(grouped.nativeParentKeys.has("local:parent")).toBe(true);
+  });
+});
+
+describe("sidebarRowKeyForThread", () => {
+  it("maps a grouped task, including a flattened nested one, to its parent's row", () => {
+    const parent = thread("parent");
+    const first = child("first");
+    const nested = child("nested", { lineage: { ...first.lineage, parentThreadId: first.id } });
+    const { tasksByParent, nativeThreadsByParent } = createSidebarTaskGrouper()({
+      threads: [nested, first, parent, thread("other")],
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+    });
+    const groups = [tasksByParent, nativeThreadsByParent];
+    expect(sidebarRowKeyForThread("local:first", groups)).toBe("local:parent");
+    expect(sidebarRowKeyForThread("local:nested", groups)).toBe("local:parent");
+    expect(sidebarRowKeyForThread("local:other", groups)).toBe("local:other");
+    expect(sidebarRowKeyForThread("remote:first", groups)).toBe("remote:first");
   });
 });
 

@@ -2,16 +2,10 @@ import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Result from "effect/Result";
-import {
-  SourceControlProviderError,
-  type ChangeRequest,
-  type ChangeRequestState,
-} from "@t3tools/contracts";
+import { SourceControlProviderError, type ChangeRequest } from "@t3tools/contracts";
 
 import * as GitHubCli from "./GitHubCli.ts";
 import { findAuthenticatedGitHubAccount, parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
-import { decodeGitHubPullRequestListJson } from "./gitHubPullRequests.ts";
 import * as SourceControlProvider from "./SourceControlProvider.ts";
 import {
   combinedAuthOutput,
@@ -151,67 +145,40 @@ export const make = Effect.gen(function* () {
           );
       }
 
-      const stateArg: ChangeRequestState | "all" = input.state;
+      const rateLimitHost =
+        input.context === undefined ? undefined : new URL(input.context.provider.baseUrl).host;
+      const limit = input.limit ?? 20;
+      // fork(pr-repository-scope): a fork's own pull requests live on `origin`, which gh's
+      // default resolution skips, so each repository set is asked and the answers merged.
+      // Both go through the batched head lookup; `--repo owner/name` names the repository.
+      const listForRepository = (repositoryArgs: ReadonlyArray<string>) => {
+        const repoFlag = repositoryArgs.indexOf("--repo");
+        const repository = repoFlag === -1 ? undefined : repositoryArgs[repoFlag + 1];
+        return github.listPullRequestsByHead({
+          cwd: input.cwd,
+          headSelector: input.headSelector,
+          state: input.state,
+          limit,
+          ...(rateLimitHost === undefined ? {} : { rateLimitHost }),
+          ...(repository === undefined ? {} : { repository }),
+        });
+      };
       return github.pullRequestQueryRepositoryArgs({ cwd: input.cwd }).pipe(
+        // Concurrent, so both repositories' lookups land in the same batching window.
         Effect.flatMap((repositoryArgSets) =>
-          Effect.forEach(repositoryArgSets, (repositoryArgs) =>
-            github.execute({
-              cwd: input.cwd,
-              ...(input.context === undefined
-                ? {}
-                : { rateLimitHost: new URL(input.context.provider.baseUrl).host }),
-              args: [
-                "pr",
-                "list",
-                ...repositoryArgs,
-                "--head",
-                input.headSelector,
-                "--state",
-                stateArg,
-                "--limit",
-                String(input.limit ?? 20),
-                "--json",
-                "number,title,url,baseRefName,headRefName,state,isDraft,mergedAt,closedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
-              ],
-            }),
-          ),
+          Effect.forEach(repositoryArgSets, listForRepository, { concurrency: "unbounded" }),
         ),
-        Effect.flatMap((results) => {
-          const raws = results
-            .map((result) => result.stdout.trim())
-            .filter((raw) => raw.length > 0);
-          if (raws.length === 0) {
-            return Effect.succeed([]);
-          }
-          return Effect.forEach(raws, (raw) =>
-            Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
-              Effect.flatMap((decoded) =>
-                Result.isSuccess(decoded)
-                  ? Effect.succeed(
-                      decoded.success.map((item) => {
-                        const { updatedAt, ...summary } = item;
-                        return {
-                          ...toChangeRequest({
-                            ...summary,
-                            ...(Option.isSome(updatedAt)
-                              ? { updatedAt: DateTime.formatIso(updatedAt.value) }
-                              : {}),
-                          }),
-                          updatedAt,
-                        };
-                      }),
-                    )
-                  : Effect.fail(
-                      new GitHubCli.GitHubChangeRequestListDecodeError({
-                        command: "gh",
-                        cwd: input.cwd,
-                        cause: decoded.failure,
-                      }),
-                    ),
-              ),
-            ),
-          ).pipe(Effect.map(GitHubCli.mergePullRequestsByUrl));
-        }),
+        Effect.map((lists) =>
+          GitHubCli.mergePullRequestsByUrl(lists).map(({ updatedAt, ...summary }) => ({
+            ...toChangeRequest({
+              ...summary,
+              ...(Option.isSome(updatedAt)
+                ? { updatedAt: DateTime.formatIso(updatedAt.value) }
+                : {}),
+            }),
+            updatedAt,
+          })),
+        ),
         Effect.mapError(
           (error) =>
             new SourceControlProviderError({

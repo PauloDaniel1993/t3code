@@ -142,6 +142,29 @@ export function createSidebarTaskGrouper() {
   };
 }
 
+/**
+ * The key of the top-level row that shows `threadKey`: the group's parent for a grouped task or
+ * agent, else the thread itself. Collapsed shelves keep the open thread's row visible by this key.
+ */
+export function sidebarRowKeyForThread(
+  threadKey: string,
+  groups: ReadonlyArray<ReadonlyMap<string, ReadonlyArray<Thread>>>,
+): string {
+  for (const group of groups) {
+    for (const [parentKey, children] of group) {
+      if (
+        children.some(
+          (thread) =>
+            scopedThreadKey({ environmentId: thread.environmentId, threadId: thread.id }) ===
+            threadKey,
+        )
+      )
+        return parentKey;
+    }
+  }
+  return threadKey;
+}
+
 /** Retain shells while everything the compact row draws is unchanged. Peek reads the live shell. */
 function sidebarTaskDisplayEqual(left: Thread, right: Thread) {
   return (

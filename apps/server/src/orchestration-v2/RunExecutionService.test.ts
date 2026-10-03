@@ -168,6 +168,67 @@ it.effect("routes shared-runtime events only to their owning root run", () =>
   }),
 );
 
+it("leaves a child thread created after the root turn ended to the run that is live then", () => {
+  const threadId = ThreadId.make("thread:late-child");
+  const rootProviderTurnId = ProviderTurnId.make("provider-turn:late-child");
+  const identity: RunExecutionService.ProviderEventRouteIdentity = {
+    threadId,
+    runId: RunId.make("run:late-child"),
+    attemptId: RunAttemptId.make("attempt:late-child"),
+    providerThreadId: ProviderThreadId.make("provider-thread:late-child"),
+  };
+  const childCreated = (childThreadId: ThreadId): ProviderAdapterV2Event =>
+    ({
+      type: "app_thread.created",
+      driver,
+      appThread: {
+        id: childThreadId,
+        lineage: {
+          parentThreadId: threadId,
+          relationshipToParent: "subagent",
+          rootThreadId: threadId,
+        },
+      },
+    }) as ProviderAdapterV2Event;
+  const earlyChild = ThreadId.make("thread:late-child:early");
+  const lateChild = ThreadId.make("thread:late-child:late");
+
+  const initial = RunExecutionService.makeProviderEventRoutingState({
+    identity,
+    providerTurnId: rootProviderTurnId,
+  });
+  const [earlyAccepted, live] = RunExecutionService.routeProviderEvent(
+    childCreated(earlyChild),
+    identity,
+    initial,
+  );
+  assert.isTrue(earlyAccepted);
+  const [terminalAccepted, ended] = RunExecutionService.routeProviderEvent(
+    {
+      type: "turn.terminal",
+      driver,
+      providerThreadId: identity.providerThreadId,
+      providerTurnId: rootProviderTurnId,
+      runOrdinal: 1,
+      status: "completed",
+      failure: null,
+      threadDisposition: "reusable",
+    },
+    identity,
+    live,
+  );
+  assert.isTrue(terminalAccepted);
+  // A child the root launched before it ended stays with this run.
+  assert.isTrue(ended.ownedThreadIds.has(earlyChild));
+  const [lateAccepted, afterLate] = RunExecutionService.routeProviderEvent(
+    childCreated(lateChild),
+    identity,
+    ended,
+  );
+  assert.isFalse(lateAccepted);
+  assert.isFalse(afterLate.ownedThreadIds.has(lateChild));
+});
+
 it("does not route a superseded attempt through a reused provider thread", () => {
   const threadId = ThreadId.make("thread:shared-runtime:restart");
   const providerThreadId = ProviderThreadId.make("provider-thread:shared-runtime:restart");
@@ -406,12 +467,13 @@ it("selects only live background items from non-completed settled prior runs", (
   ]);
 });
 
-it("does not carry interrupted child ownership into later attempts", () => {
+it("does not carry interrupted or still-running child ownership into later attempts", () => {
   assert.isFalse(RunExecutionService.canRouteRelatedSubagent("interrupted"));
   assert.isFalse(RunExecutionService.canRouteRelatedSubagent("failed"));
   assert.isFalse(RunExecutionService.canRouteRelatedSubagent("cancelled"));
   assert.isTrue(RunExecutionService.canRouteRelatedSubagent("completed"));
-  assert.isTrue(RunExecutionService.canRouteRelatedSubagent("running"));
+  // The launching run still ingests a running subagent's child thread.
+  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("running"));
 
   const threadId = ThreadId.make("thread:related-child:next-attempt");
   const childThreadId = ThreadId.make("thread:related-child:interrupted");
@@ -800,8 +862,9 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
   }),
 );
 
-for (const scenario of ["failure", "interruption", "stale-attempt", "start-guard"] as const) {
-  it.effect(`handles ${scenario} before the provider turn starts`, () =>
+it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as const)(
+  "handles %s before the provider turn starts",
+  (scenario) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:run-execution-settings-failure");
       const runId = RunId.make("run:run-execution-settings-failure");
@@ -968,8 +1031,7 @@ for (const scenario of ["failure", "interruption", "stale-attempt", "start-guard
         assert.equal(errorItem.payload.failure.message, "Run preparation failed.");
       }
     }),
-  );
-}
+);
 
 it.effect("keeps ingesting owned child events after the root turn terminalizes", () =>
   Effect.gen(function* () {
@@ -3087,8 +3149,9 @@ it.effect("emits run_interrupt_result when hard-stop finalizes the active attemp
   }),
 );
 
-for (const status of ["completed", "interrupted", "cancelled", "failed"] as const) {
-  it.effect(`refreshes pull requests after the current root run ${status}`, () =>
+it.effect.each(["completed", "interrupted", "cancelled", "failed"] as const)(
+  "refreshes pull requests after the current root run %s",
+  (status) =>
     Effect.gen(function* () {
       const { observed } = yield* captureRootRunTermination({
         key: `pull-request-refresh:${status}`,
@@ -3100,8 +3163,7 @@ for (const status of ["completed", "interrupted", "cancelled", "failed"] as cons
         "pull-requests-refreshed",
       ]);
     }),
-  );
-}
+);
 
 it.effect("does not refresh pull requests for auxiliary or stale provider terminals", () =>
   Effect.gen(function* () {

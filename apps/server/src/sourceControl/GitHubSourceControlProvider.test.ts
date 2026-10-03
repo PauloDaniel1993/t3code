@@ -7,6 +7,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubCli from "./GitHubCli.ts";
+import * as GitHubGraphQlBudget from "./githubGraphQlBudget.ts";
 import { parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
 import * as GitHubSourceControlProvider from "./GitHubSourceControlProvider.ts";
 
@@ -40,19 +41,13 @@ function makeProvider(github: Partial<GitHubCli.GitHubCli["Service"]>) {
 
 it.effect("uses the enterprise quota for a current-repository default branch read", () =>
   Effect.gen(function* () {
-    const provider = yield* GitHubSourceControlProvider.make.pipe(
-      Effect.provide(GitHubCli.layer),
-      Effect.provideService(VcsProcess.VcsProcess, {
-        run: (input) =>
-          Effect.sync(() => {
-            if (input.args[1] !== "rate_limit") return processResult("main");
-            assert.strictEqual(input.args[3], "enterprise.test");
-            return processResult(
-              '{"data":{"rateLimit":{"cost":1,"limit":5000,"remaining":5000,"resetAt":"2099-01-01T00:00:00Z"}}}',
-            );
-          }),
-      }),
+    // github.com is out of quota; the enterprise read must not be priced against it.
+    const budget = yield* GitHubGraphQlBudget.GitHubGraphQlBudget;
+    yield* budget.observe(
+      "github.com",
+      '{"data":{"rateLimit":{"cost":1,"limit":5000,"remaining":0,"resetAt":"2099-01-01T00:00:00Z"}}}',
     );
+    const provider = yield* GitHubSourceControlProvider.make;
     const branch = yield* provider.getDefaultBranch({
       cwd: "/enterprise-repo",
       context: {
@@ -62,7 +57,12 @@ it.effect("uses the enterprise quota for a current-repository default branch rea
       },
     });
     assert.strictEqual(branch, "main");
-  }),
+  }).pipe(
+    Effect.provide(GitHubCli.layer),
+    Effect.provideService(VcsProcess.VcsProcess, {
+      run: () => Effect.succeed(processResult("main")),
+    }),
+  ),
 );
 
 it.effect("maps GitHub PR summaries into provider-neutral change requests", () =>
@@ -146,50 +146,47 @@ it.effect("adds safe request context while retaining GitHub CLI causes", () =>
   }),
 );
 
-it.effect("uses gh json listing for non-open change request state queries", () =>
+it.effect("lists change request history through the batched head lookup", () =>
   Effect.gen(function* () {
-    let executeArgs: ReadonlyArray<string> = [];
+    let lookup: Parameters<GitHubCli.GitHubCli["Service"]["listPullRequestsByHead"]>[0] | null =
+      null;
     const provider = yield* makeProvider({
-      execute: (input) => {
-        executeArgs = input.args;
-        return Effect.succeed(
-          processResult(
-            JSON.stringify([
-              {
-                number: 7,
-                title: "Merged work",
-                url: "https://github.com/pingdotgg/t3code/pull/7",
-                baseRefName: "main",
-                headRefName: "feature/merged",
-                state: "merged",
-                mergedAt: "2026-01-01T00:00:00Z",
-                updatedAt: "2026-01-02T00:00:00.000Z",
-              },
-            ]),
-          ),
-        );
+      listPullRequestsByHead: (input) => {
+        lookup = input;
+        return Effect.succeed([
+          {
+            number: 7,
+            title: "Merged work",
+            url: "https://enterprise.test/acme/web/pull/7",
+            baseRefName: "main",
+            headRefName: "feature/merged",
+            state: "merged",
+            mergedAt: "2026-01-01T00:00:00Z",
+            updatedAt: Option.some(DateTime.makeUnsafe("2026-01-02T00:00:00.000Z")),
+          },
+        ]);
       },
     });
 
     const changeRequests = yield* provider.listChangeRequests({
       cwd: "/repo",
+      context: {
+        provider: { kind: "github", name: "GitHub Enterprise", baseUrl: "https://enterprise.test" },
+        remoteName: "origin",
+        remoteUrl: "https://enterprise.test/acme/web.git",
+      },
       headSelector: "feature/merged",
       state: "all",
       limit: 10,
     });
 
-    assert.deepStrictEqual(executeArgs, [
-      "pr",
-      "list",
-      "--head",
-      "feature/merged",
-      "--state",
-      "all",
-      "--limit",
-      "10",
-      "--json",
-      "number,title,url,baseRefName,headRefName,state,isDraft,mergedAt,closedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
-    ]);
+    assert.deepStrictEqual(lookup, {
+      cwd: "/repo",
+      headSelector: "feature/merged",
+      state: "all",
+      limit: 10,
+      rateLimitHost: "enterprise.test",
+    });
     assert.strictEqual(changeRequests[0]?.provider, "github");
     assert.strictEqual(changeRequests[0]?.state, "merged");
     assert.strictEqual(changeRequests[0]?.mergedAt, "2026-01-01T00:00:00Z");
@@ -200,18 +197,20 @@ it.effect("uses gh json listing for non-open change request state queries", () =
   }),
 );
 
-it.effect("merges fork and default non-open listings through the scoped host", () =>
+it.effect("merges a fork's origin lookup with the default lookup, both batched", () =>
   Effect.gen(function* () {
-    const executeInputs: Array<Parameters<GitHubCli.GitHubCli["Service"]["execute"]>[0]> = [];
+    const lookups: Array<Parameters<GitHubCli.GitHubCli["Service"]["listPullRequestsByHead"]>[0]> =
+      [];
+    const updatedAt = Option.some(DateTime.makeUnsafe("2026-01-02T00:00:00.000Z"));
     const forkPullRequest = {
       number: 7,
       title: "Fork work",
       url: "https://github.com/fork/t3code/pull/7",
       baseRefName: "main",
       headRefName: "feature/merged",
-      state: "merged",
+      state: "merged" as const,
       mergedAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-02T00:00:00.000Z",
+      updatedAt,
     };
     const parentPullRequest = {
       ...forkPullRequest,
@@ -220,16 +219,10 @@ it.effect("merges fork and default non-open listings through the scoped host", (
     };
     const provider = yield* makeProvider({
       pullRequestQueryRepositoryArgs: () => Effect.succeed([["--repo", "fork/t3code"], []]),
-      execute: (input) => {
-        executeInputs.push(input);
+      listPullRequestsByHead: (input) => {
+        lookups.push(input);
         return Effect.succeed(
-          processResult(
-            JSON.stringify(
-              input.args.includes("--repo")
-                ? [forkPullRequest]
-                : [forkPullRequest, parentPullRequest],
-            ),
-          ),
+          input.repository === undefined ? [forkPullRequest, parentPullRequest] : [forkPullRequest],
         );
       },
     });
@@ -246,18 +239,14 @@ it.effect("merges fork and default non-open listings through the scoped host", (
       },
     });
 
-    assert.deepStrictEqual(
-      executeInputs.map((input) => ({
-        repository: input.args.includes("--repo")
-          ? input.args[input.args.indexOf("--repo") + 1]
-          : null,
-        rateLimitHost: input.rateLimitHost,
-      })),
-      [
-        { repository: "fork/t3code", rateLimitHost: "enterprise.test" },
-        { repository: null, rateLimitHost: "enterprise.test" },
-      ],
-    );
+    const shared = {
+      cwd: "/repo",
+      headSelector: "feature/merged",
+      state: "all" as const,
+      limit: 10,
+      rateLimitHost: "enterprise.test",
+    };
+    assert.deepStrictEqual(lookups, [{ ...shared, repository: "fork/t3code" }, shared]);
     assert.deepStrictEqual(
       changeRequests.map(({ title, url }) => ({ title, url })),
       [
@@ -268,20 +257,39 @@ it.effect("merges fork and default non-open listings through the scoped host", (
   }),
 );
 
-it.effect("treats empty non-open change request listing output as no results", () =>
+it.effect("keeps the default lookup's results when the fork's origin has none", () =>
   Effect.gen(function* () {
     const provider = yield* makeProvider({
-      execute: () => Effect.succeed(processResult("")),
+      pullRequestQueryRepositoryArgs: () => Effect.succeed([["--repo", "fork/t3code"], []]),
+      listPullRequestsByHead: (input) =>
+        Effect.succeed(
+          input.repository === undefined
+            ? [
+                {
+                  number: 3,
+                  title: "Parent work",
+                  url: "https://github.com/upstream/t3code/pull/3",
+                  baseRefName: "main",
+                  headRefName: "feature/x",
+                  state: "open" as const,
+                  updatedAt: Option.none(),
+                },
+              ]
+            : [],
+        ),
     });
 
     const changeRequests = yield* provider.listChangeRequests({
       cwd: "/repo",
-      headSelector: "feature/empty",
+      headSelector: "feature/x",
       state: "all",
       limit: 10,
     });
 
-    assert.deepStrictEqual(changeRequests, []);
+    assert.deepStrictEqual(
+      changeRequests.map(({ url }) => url),
+      ["https://github.com/upstream/t3code/pull/3"],
+    );
   }),
 );
 
@@ -504,8 +512,9 @@ it("reports an update hint instead of unauthenticated when gh predates --json", 
   );
 });
 
-for (const kind of ["pull", "issues"]) {
-  it.effect(`resolves ${kind} subjects on the linked host without using the checkout`, () =>
+it.effect.each(["pull", "issues"])(
+  "resolves %s subjects on the linked host without using the checkout",
+  (kind) =>
     Effect.gen(function* () {
       const provider = yield* makeProvider({
         execute: (input) => {
@@ -545,11 +554,11 @@ for (const kind of ["pull", "issues"]) {
         undefined,
       );
     }),
-  );
-}
+);
 
-for (const stage of ["read", "decode"] as const) {
-  it.effect(`retains the ${stage} failure without exposing its raw contents`, () =>
+it.effect.each(["read", "decode"] as const)(
+  "retains the %s failure without exposing its raw contents",
+  (stage) =>
     Effect.gen(function* () {
       const cause = new GitHubCli.GitHubCliCommandError({
         command: "gh",
@@ -580,5 +589,4 @@ for (const stage of ["read", "decode"] as const) {
       if (stage === "read") assert.strictEqual(error.cause, cause);
       else assert.propertyVal(error.cause, "_tag", "SchemaError");
     }),
-  );
-}
+);
