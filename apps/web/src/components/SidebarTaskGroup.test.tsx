@@ -531,3 +531,73 @@ it("collapsed native counts include new child shells absent from the remembered 
   act(() => renderer!.update(view([known, task("new-native")])));
   expect(renderer!.root.findByType("button").props["aria-label"]).toBe("Show 2 agents");
 });
+
+describe("open task row", () => {
+  const nested = {
+    ...task("nested"),
+    lineage: {
+      rootThreadId: parent.id,
+      parentThreadId: ThreadId.make("one"),
+      relationshipToParent: "subagent" as const,
+    },
+  };
+  const current = () =>
+    renderer!.root
+      .findAllByType("button")
+      .filter((button) => button.props["aria-current"] === "page")
+      .map((button) => button.findAllByType("span").map((span) => span.children.join("")));
+
+  it("marks only the task matching the open thread, including a flattened nested task", () => {
+    const view = (openThreadKey: string | null) => (
+      <SidebarTaskGroup
+        parent={parent}
+        tasks={[task("one"), task("two"), nested]}
+        openThreadKey={openThreadKey}
+        {...callbacks}
+        renamingThreadKey={null}
+        renamingTitle=""
+      />
+    );
+    act(() => {
+      renderer = create(view("local:two"));
+    });
+    expect(current()).toHaveLength(1);
+    expect(current()[0]).toContain("two");
+    act(() => renderer!.update(view("local:nested")));
+    expect(current()).toHaveLength(1);
+    expect(current()[0]).toContain("nested");
+    act(() => renderer!.update(view("local:parent")));
+    expect(current()).toHaveLength(0);
+  });
+
+  it("expands a settled group for the open task but keeps an explicit collapse", () => {
+    const settled = [
+      { ...task("one"), latestRun: null },
+      { ...task("two"), latestRun: null },
+    ];
+    const view = (openThreadKey: string | null) => (
+      <>
+        <SidebarTaskDisclosure parent={parent} tasks={settled} openThreadKey={openThreadKey} />
+        <SidebarTaskGroup
+          parent={parent}
+          tasks={settled}
+          openThreadKey={openThreadKey}
+          {...callbacks}
+          renamingThreadKey={null}
+          renamingTitle=""
+        />
+      </>
+    );
+    act(() => {
+      renderer = create(view(null));
+    });
+    expect(current()).toHaveLength(0);
+    expect(renderer!.root.findAllByType("button")).toHaveLength(1);
+    act(() => renderer!.update(view("local:two")));
+    expect(current()).toHaveLength(1);
+    const disclosure = renderer!.root.findAllByType("button")[0]!;
+    act(() => disclosure.props.onClick({ stopPropagation() {}, preventDefault() {} }));
+    expect(current()).toHaveLength(0);
+    expect(renderer!.root.findAllByType("button")[0]!.props.className).toContain("text-foreground");
+  });
+});

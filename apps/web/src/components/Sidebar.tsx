@@ -1099,6 +1099,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   hasTaskGroup: boolean;
   nativeThreads: ReadonlyArray<EnvironmentThreadShell>;
   taskRenamingThreadKey: string | null;
+  /** The open thread's key when it is one of this row's tasks, else null. */
+  taskOpenThreadKey: string | null;
   taskRenamingTitle: string;
   onNewTask: (ref: ScopedThreadRef) => void;
   variant: "card" | "slim";
@@ -1207,6 +1209,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       onCancelRename={props.onCancelRename}
       onRenameTitleChange={props.onRenameTitleChange}
       renamingThreadKey={props.taskRenamingThreadKey}
+      openThreadKey={props.taskOpenThreadKey}
       renamingTitle={props.taskRenamingTitle}
       onNewTask={props.onNewTask}
     />
@@ -1676,6 +1679,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       parent={thread}
       tasks={props.taskThreads}
       nativeThreads={props.nativeThreads}
+      openThreadKey={props.taskOpenThreadKey}
     />
   ) : null;
 
@@ -5112,6 +5116,19 @@ export default function Sidebar() {
                                     ) === renamingThreadKey,
                                 )
                                 ? renamingThreadKey
+                                : null
+                            }
+                            taskOpenThreadKey={
+                              routeThreadKey !== null &&
+                              tasksByParent
+                                .get(threadKey)
+                                ?.some(
+                                  (child) =>
+                                    scopedThreadKey(
+                                      scopeThreadRef(child.environmentId, child.id),
+                                    ) === routeThreadKey,
+                                )
+                                ? routeThreadKey
                                 : null
                             }
                             taskRenamingTitle={
