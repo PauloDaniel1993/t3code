@@ -437,6 +437,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   };
   const [ticketListOpen, setTicketListOpen] = useState(false);
   const ticketListId = useId();
+  const startReasonId = useId();
 
   // List focus is a transient canvas highlight; selection is the persistent
   // one. Focus wins while it lasts so keyboard traversal glides the camera.
@@ -723,15 +724,30 @@ export default function StarMapPanel(props: StarMapPanelProps) {
               hint: "Start every ready ticket as a task in parallel",
             },
           ] as const
-        ).map((action) => {
+        ).map((action, index) => {
           const disabled =
             startUnavailable !== null || action.tickets.length === 0 || isStartingTasks;
+          const reason =
+            startUnavailable ??
+            (action.tickets.length === 0
+              ? "No ready tickets to start."
+              : isStartingTasks
+                ? "Sending the tickets…"
+                : action.hint);
+          const reasonId = `${startReasonId}-${index}`;
           return (
             <Tooltip key={action.hint}>
               {/* A disabled button takes no pointer or focus, so the focusable
-                  wrapper carries the tooltip that explains why. */}
+                  wrapper carries the tooltip and, for screen readers, the
+                  description that explains why. */}
               <TooltipTrigger
-                render={<span className="inline-flex" tabIndex={disabled ? 0 : undefined} />}
+                render={
+                  <span
+                    className="inline-flex"
+                    tabIndex={disabled ? 0 : undefined}
+                    aria-describedby={disabled ? reasonId : undefined}
+                  />
+                }
               >
                 <Button
                   size="micro"
@@ -742,8 +758,11 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                   <ListTodo aria-hidden />
                   {action.label}
                 </Button>
+                <span id={reasonId} className="sr-only">
+                  {reason}
+                </span>
               </TooltipTrigger>
-              <TooltipPopup side="bottom">{startUnavailable ?? action.hint}</TooltipPopup>
+              <TooltipPopup side="bottom">{reason}</TooltipPopup>
             </Tooltip>
           );
         })}
