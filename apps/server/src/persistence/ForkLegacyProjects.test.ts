@@ -11,8 +11,9 @@ import { ProjectStoreV2, layer as projectLayer } from "../orchestration-v2/Proje
 // The production order in Layers/Sqlite.ts: the fork's preparation, then upstream's migrations.
 const migrate = reconcileBaseMigrationLedger().pipe(Effect.andThen(runMigrations()));
 
-for (const value of ['{"not":"an-array"}', "{broken", '[{"wrong":"script"}]']) {
-  it.effect(`imports invalid project JSON ${value} with defaults and retained evidence`, () =>
+it.effect.each(['{"not":"an-array"}', "{broken", '[{"wrong":"script"}]'])(
+  "imports invalid project JSON %s with defaults and retained evidence",
+  (value) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 54 });
@@ -41,8 +42,7 @@ for (const value of ['{"not":"an-array"}', "{broken", '[{"wrong":"script"}]']) {
         projectLayer.pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" }))),
       ),
     ),
-  );
-}
+);
 
 // The verification's stable baseline is a V1 history at migration 35.
 it.effect("repairs a malformed project in a V1 history at migration 35", () =>

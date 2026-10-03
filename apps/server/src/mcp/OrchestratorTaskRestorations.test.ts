@@ -281,48 +281,49 @@ function listFixture(
 }
 
 describe("task restorations on orchestration v2", () => {
-  for (const status of ["completed", "cancelled", "failed"] as const) {
-    for (const result of [null, "Imported task result."]) {
-      it.effect(
-        `reads imported ${status} tasks ${result === null ? "without" : "with"} results as settled`,
-        () => {
-          const imported = task(`imported-${status}-${result === null ? "empty" : "result"}`, {
-            runId: null,
-            status,
-            result,
-            completionDelivery: { state: "disposed", observedByRunId: null },
-          });
-          const records = recordsFor([imported]);
-          const childId = imported.childThreadId!;
-          const child = records.get(childId)!;
-          records.set(childId, {
-            ...child,
-            thread: { ...child.thread, historyOrigin: "v1_import" },
-            runs: [],
-          });
-          return Effect.gen(function* () {
-            const service = yield* OrchestratorMcpService;
-            const expected = status === "completed" ? "finished" : status;
-            const listed = yield* service.listTasks(scope, {});
-            expect(listed.tasks).toMatchObject([{ taskId: imported.id, status: expected }]);
-            expect((yield* service.listTasks(scope, { status: expected })).tasks).toHaveLength(1);
-            expect((yield* service.listTasks(scope, { status: "running" })).tasks).toEqual([]);
-            expect(yield* service.taskStatus(scope, imported.id)).toMatchObject({
-              status,
-              workState: "result_available",
-              summary: result,
-              childRunId: null,
-            });
-            expect(yield* service.cancelTask(scope, { taskId: imported.id })).toEqual({
-              taskId: imported.id,
-              status,
-            });
-            expect(records.get(parentId)!.subagents).toEqual([imported]);
-          }).pipe(Effect.provide(makeLayer(records)));
-        },
-      );
-    }
-  }
+  it.effect.each(
+    (["completed", "cancelled", "failed"] as const).flatMap((status) =>
+      [null, "Imported task result."].map((result) => ({
+        status,
+        result,
+        label: result === null ? "without" : "with",
+      })),
+    ),
+  )("reads imported $status tasks $label results as settled", ({ status, result }) => {
+    const imported = task(`imported-${status}-${result === null ? "empty" : "result"}`, {
+      runId: null,
+      status,
+      result,
+      completionDelivery: { state: "disposed", observedByRunId: null },
+    });
+    const records = recordsFor([imported]);
+    const childId = imported.childThreadId!;
+    const child = records.get(childId)!;
+    records.set(childId, {
+      ...child,
+      thread: { ...child.thread, historyOrigin: "v1_import" },
+      runs: [],
+    });
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService;
+      const expected = status === "completed" ? "finished" : status;
+      const listed = yield* service.listTasks(scope, {});
+      expect(listed.tasks).toMatchObject([{ taskId: imported.id, status: expected }]);
+      expect((yield* service.listTasks(scope, { status: expected })).tasks).toHaveLength(1);
+      expect((yield* service.listTasks(scope, { status: "running" })).tasks).toEqual([]);
+      expect(yield* service.taskStatus(scope, imported.id)).toMatchObject({
+        status,
+        workState: "result_available",
+        summary: result,
+        childRunId: null,
+      });
+      expect(yield* service.cancelTask(scope, { taskId: imported.id })).toEqual({
+        taskId: imported.id,
+        status,
+      });
+      expect(records.get(parentId)!.subagents).toEqual([imported]);
+    }).pipe(Effect.provide(makeLayer(records)));
+  });
 
   it.effect("cancels a finished task's pending hand-back without interrupting a follow-up", () => {
     const finished = task("finished-pending", { result: null });
@@ -1037,213 +1038,211 @@ it.effect(
   },
 );
 
-for (const driver of ["codex", "claudeCode"] as const) {
-  it.effect(
-    `preserves ${driver} parent options for reasoning changes and uses another model's defaults`,
-    () => {
-      const reasoningId = driver === "codex" ? "reasoningEffort" : "effort";
-      const extraId = driver === "codex" ? "serviceTier" : "contextWindow";
-      const extraDefault = driver === "codex" ? "standard" : "200k";
-      const extraParent = driver === "codex" ? "fast" : "1m";
-      const descriptors = [
-        {
-          id: reasoningId,
-          label: "Reasoning",
-          type: "select" as const,
-          options: [
-            { id: "low", label: "Low", isDefault: true },
-            { id: "high", label: "High" },
-            { id: "xhigh", label: "Extra high" },
-          ],
-        },
-        {
-          id: extraId,
-          label: extraId,
-          type: "select" as const,
-          options: [
-            { id: extraDefault, label: extraDefault, isDefault: true },
-            { id: extraParent, label: extraParent },
-          ],
-        },
-        { id: "thinking", label: "Thinking", type: "boolean" as const, currentValue: false },
-      ];
-      const activeProvider: ServerProvider = {
-        ...provider,
-        driver: ProviderDriverKind.make(driver),
-        models: [
-          {
-            slug: "custom-model",
-            name: "Current",
-            isCustom: false,
-            isDefault: true,
-            capabilities: { optionDescriptors: descriptors },
-          },
-          {
-            slug: "other-model",
-            name: "Other",
-            isCustom: false,
-            capabilities: { optionDescriptors: descriptors },
-          },
-          {
-            slug: "no-reasoning",
-            name: "No reasoning",
-            isCustom: false,
-            capabilities: { optionDescriptors: [] },
-          },
+it.effect.each(["codex", "claudeCode"] as const)(
+  "preserves %s parent options for reasoning changes and uses another model's defaults",
+  (driver) => {
+    const reasoningId = driver === "codex" ? "reasoningEffort" : "effort";
+    const extraId = driver === "codex" ? "serviceTier" : "contextWindow";
+    const extraDefault = driver === "codex" ? "standard" : "200k";
+    const extraParent = driver === "codex" ? "fast" : "1m";
+    const descriptors = [
+      {
+        id: reasoningId,
+        label: "Reasoning",
+        type: "select" as const,
+        options: [
+          { id: "low", label: "Low", isDefault: true },
+          { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra high" },
         ],
-      };
-      const disabled = {
-        ...activeProvider,
-        instanceId: ProviderInstanceId.make(`${driver}-disabled`),
-        enabled: false,
-        status: "disabled" as const,
-      };
-      const child = task("created", { status: "running", result: null });
-      const remote: ServerProvider = {
-        ...activeProvider,
-        instanceId: ProviderInstanceId.make(`${driver}-remote`),
-        driver: ProviderDriverKind.make("acpRegistry"),
-        models: [
-          {
-            slug: "remote-model",
-            name: "Remote",
-            isCustom: true,
-            capabilities: {
-              optionDescriptors: [{ ...descriptors[0]!, id: "session/reasoning_effort" }],
+      },
+      {
+        id: extraId,
+        label: extraId,
+        type: "select" as const,
+        options: [
+          { id: extraDefault, label: extraDefault, isDefault: true },
+          { id: extraParent, label: extraParent },
+        ],
+      },
+      { id: "thinking", label: "Thinking", type: "boolean" as const, currentValue: false },
+    ];
+    const activeProvider: ServerProvider = {
+      ...provider,
+      driver: ProviderDriverKind.make(driver),
+      models: [
+        {
+          slug: "custom-model",
+          name: "Current",
+          isCustom: false,
+          isDefault: true,
+          capabilities: { optionDescriptors: descriptors },
+        },
+        {
+          slug: "other-model",
+          name: "Other",
+          isCustom: false,
+          capabilities: { optionDescriptors: descriptors },
+        },
+        {
+          slug: "no-reasoning",
+          name: "No reasoning",
+          isCustom: false,
+          capabilities: { optionDescriptors: [] },
+        },
+      ],
+    };
+    const disabled = {
+      ...activeProvider,
+      instanceId: ProviderInstanceId.make(`${driver}-disabled`),
+      enabled: false,
+      status: "disabled" as const,
+    };
+    const child = task("created", { status: "running", result: null });
+    const remote: ServerProvider = {
+      ...activeProvider,
+      instanceId: ProviderInstanceId.make(`${driver}-remote`),
+      driver: ProviderDriverKind.make("acpRegistry"),
+      models: [
+        {
+          slug: "remote-model",
+          name: "Remote",
+          isCustom: true,
+          capabilities: {
+            optionDescriptors: [{ ...descriptors[0]!, id: "session/reasoning_effort" }],
+          },
+        },
+      ],
+    };
+    const records = recordsFor([child]);
+    records.set(parentId, {
+      ...records.get(parentId)!,
+      thread: {
+        ...records.get(parentId)!.thread,
+        modelSelection: {
+          instanceId,
+          model: "custom-model",
+          options: [
+            { id: reasoningId, value: "high" },
+            { id: extraId, value: extraParent },
+            { id: "thinking", value: true },
+          ],
+        },
+      },
+      runs: [run(parentId, "running")],
+    });
+    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
+    const layer = makeMcpLayer(records, {
+      providers: [activeProvider, disabled, remote],
+      dispatch: (command) => {
+        commands.push(command);
+        return Effect.succeed({
+          sequence: 1,
+          storedEvents: [
+            {
+              sequence: 1,
+              commandId: command.commandId,
+              event: {
+                id: EventId.make("event:options"),
+                threadId: parentId,
+                type: "subagent.updated",
+                occurredAt: now,
+                payload: child,
+              },
             },
-          },
+          ],
+        });
+      },
+    });
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const call = (name: string, args: Record<string, unknown>) =>
+        server
+          .callTool({ name, arguments: args })
+          .pipe(
+            Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+      const catalog = yield* decodeModels((yield* call("task_models", {})).structuredContent);
+      expect(catalog.current).toEqual({ instanceId, model: "custom-model", reasoning: "high" });
+      expect(catalog.instances.map((instance) => instance.ready)).toEqual([true, false, true]);
+      expect(catalog.instances[0]?.models[0]).toMatchObject({
+        isDefault: true,
+        reasoningLevels: [
+          { id: "low", isDefault: true },
+          { id: "high", isDefault: false },
+          { id: "xhigh", isDefault: false },
         ],
+      });
+      expect(
+        (yield* decodeModels(
+          (yield* call("task_models", { instanceId: disabled.instanceId })).structuredContent,
+        )).instances.map((instance) => instance.instanceId),
+      ).toEqual([disabled.instanceId]);
+      const input = {
+        title: "Review",
+        prompt: "Review the module.",
+        context: "none",
+        reasoning: "xhigh",
       };
-      const records = recordsFor([child]);
-      records.set(parentId, {
-        ...records.get(parentId)!,
-        thread: {
-          ...records.get(parentId)!.thread,
+      yield* call("task_create", input);
+      yield* call("task_create", { ...input, model: { instanceId, model: "custom-model" } });
+      yield* call("task_create", {
+        ...input,
+        model: { instanceId, model: "other-model" },
+        reasoning: "Extra High",
+      });
+      for (const command of commands.slice(0, 2))
+        expect(command).toMatchObject({
           modelSelection: {
             instanceId,
             model: "custom-model",
             options: [
-              { id: reasoningId, value: "high" },
               { id: extraId, value: extraParent },
               { id: "thinking", value: true },
-            ],
-          },
-        },
-        runs: [run(parentId, "running")],
-      });
-      const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
-      const layer = makeMcpLayer(records, {
-        providers: [activeProvider, disabled, remote],
-        dispatch: (command) => {
-          commands.push(command);
-          return Effect.succeed({
-            sequence: 1,
-            storedEvents: [
-              {
-                sequence: 1,
-                commandId: command.commandId,
-                event: {
-                  id: EventId.make("event:options"),
-                  threadId: parentId,
-                  type: "subagent.updated",
-                  occurredAt: now,
-                  payload: child,
-                },
-              },
-            ],
-          });
-        },
-      });
-      return Effect.gen(function* () {
-        const server = yield* McpServer.McpServer;
-        const call = (name: string, args: Record<string, unknown>) =>
-          server
-            .callTool({ name, arguments: args })
-            .pipe(
-              Effect.provideService(McpInvocationContext, scope),
-              Effect.provideService(McpSchema.McpServerClient, client),
-            );
-        const catalog = yield* decodeModels((yield* call("task_models", {})).structuredContent);
-        expect(catalog.current).toEqual({ instanceId, model: "custom-model", reasoning: "high" });
-        expect(catalog.instances.map((instance) => instance.ready)).toEqual([true, false, true]);
-        expect(catalog.instances[0]?.models[0]).toMatchObject({
-          isDefault: true,
-          reasoningLevels: [
-            { id: "low", isDefault: true },
-            { id: "high", isDefault: false },
-            { id: "xhigh", isDefault: false },
-          ],
-        });
-        expect(
-          (yield* decodeModels(
-            (yield* call("task_models", { instanceId: disabled.instanceId })).structuredContent,
-          )).instances.map((instance) => instance.instanceId),
-        ).toEqual([disabled.instanceId]);
-        const input = {
-          title: "Review",
-          prompt: "Review the module.",
-          context: "none",
-          reasoning: "xhigh",
-        };
-        yield* call("task_create", input);
-        yield* call("task_create", { ...input, model: { instanceId, model: "custom-model" } });
-        yield* call("task_create", {
-          ...input,
-          model: { instanceId, model: "other-model" },
-          reasoning: "Extra High",
-        });
-        for (const command of commands.slice(0, 2))
-          expect(command).toMatchObject({
-            modelSelection: {
-              instanceId,
-              model: "custom-model",
-              options: [
-                { id: extraId, value: extraParent },
-                { id: "thinking", value: true },
-                { id: reasoningId, value: "xhigh" },
-              ],
-            },
-          });
-        expect(commands[2]).toMatchObject({
-          modelSelection: {
-            instanceId,
-            model: "other-model",
-            options: [
-              { id: extraId, value: extraDefault },
-              { id: "thinking", value: false },
               { id: reasoningId, value: "xhigh" },
             ],
           },
         });
-        expect(
-          (yield* call("task_create", { ...input, model: { instanceId, model: "no-reasoning" } }))
-            .structuredContent,
-        ).toMatchObject({
-          code: "invalid_request",
-          message: expect.stringContaining("has no reasoning levels"),
-        });
-        expect(
-          (yield* call("task_create", {
-            ...input,
-            model: { instanceId: disabled.instanceId, model: "custom-model" },
-          })).structuredContent,
-        ).toMatchObject({ code: "provider_unavailable" });
-        yield* call("task_create", {
+      expect(commands[2]).toMatchObject({
+        modelSelection: {
+          instanceId,
+          model: "other-model",
+          options: [
+            { id: extraId, value: extraDefault },
+            { id: "thinking", value: false },
+            { id: reasoningId, value: "xhigh" },
+          ],
+        },
+      });
+      expect(
+        (yield* call("task_create", { ...input, model: { instanceId, model: "no-reasoning" } }))
+          .structuredContent,
+      ).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("has no reasoning levels"),
+      });
+      expect(
+        (yield* call("task_create", {
           ...input,
-          model: { instanceId: remote.instanceId, model: "remote-model" },
-        });
-        expect(commands[3]).toMatchObject({
-          modelSelection: {
-            instanceId: remote.instanceId,
-            model: "remote-model",
-            options: [{ id: "session/reasoning_effort", value: "xhigh" }],
-          },
-        });
-        expect(commands).toHaveLength(4);
-      }).pipe(Effect.provide(layer));
-    },
-  );
-}
+          model: { instanceId: disabled.instanceId, model: "custom-model" },
+        })).structuredContent,
+      ).toMatchObject({ code: "provider_unavailable" });
+      yield* call("task_create", {
+        ...input,
+        model: { instanceId: remote.instanceId, model: "remote-model" },
+      });
+      expect(commands[3]).toMatchObject({
+        modelSelection: {
+          instanceId: remote.instanceId,
+          model: "remote-model",
+          options: [{ id: "session/reasoning_effort", value: "xhigh" }],
+        },
+      });
+      expect(commands).toHaveLength(4);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 it.effect(
   "accepts exact fork calls through MCP while retaining native delegation and cancellation",

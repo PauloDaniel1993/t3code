@@ -101,7 +101,7 @@ const startupLayer = (
     ),
   );
 
-for (const failure of [
+it.effect.each([
   "none",
   "orphan",
   "cycle",
@@ -109,90 +109,88 @@ for (const failure of [
   "shell-unpatched",
   "partial-unpatched",
   "complete-unpatched",
-] as const) {
-  it.effect(`real startup ${failure}: repair precedes recovery and command admission`, () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const projections = yield* ProjectionStoreV2;
-      const hydration = yield* Deferred.make<void>();
-      let recovered = false;
-      if (failure === "shell-unpatched") yield* seedUnpatchedImport("shell");
-      else if (failure === "partial-unpatched") yield* seedUnpatchedImport("partial");
-      else if (failure === "complete-unpatched") yield* seedUnpatchedImport("complete");
-      else {
-        yield* seedThreads([
-          ["root", null],
-          ["valid", "root"],
-          ...(failure === "orphan"
-            ? [["broken", "missing"] as const]
-            : failure === "cycle"
-              ? [["broken", "other"] as const, ["other", "broken"] as const]
-              : []),
-        ]);
-        yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, source, is_streaming, created_at, updated_at)
+] as const)("real startup %s: repair precedes recovery and command admission", (failure) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const projections = yield* ProjectionStoreV2;
+    const hydration = yield* Deferred.make<void>();
+    let recovered = false;
+    if (failure === "shell-unpatched") yield* seedUnpatchedImport("shell");
+    else if (failure === "partial-unpatched") yield* seedUnpatchedImport("partial");
+    else if (failure === "complete-unpatched") yield* seedUnpatchedImport("complete");
+    else {
+      yield* seedThreads([
+        ["root", null],
+        ["valid", "root"],
+        ...(failure === "orphan"
+          ? [["broken", "missing"] as const]
+          : failure === "cycle"
+            ? [["broken", "other"] as const, ["other", "broken"] as const]
+            : []),
+      ]);
+      yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, source, is_streaming, created_at, updated_at)
         VALUES ('reasoning', 'valid', 'reasoning', 'thinking', 'provider', 0, ${stamp}, ${stamp})`;
-        if (failure === "bad-message")
-          yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, source, attachments_json, is_streaming, created_at, updated_at)
+      if (failure === "bad-message")
+        yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, source, attachments_json, is_streaming, created_at, updated_at)
           VALUES ('bad-message', 'valid', 'user', 'still readable', 'future-source', '{broken', 0, ${stamp}, ${stamp})`;
+    }
+    const recover = Effect.gen(function* () {
+      assert.equal(
+        (yield* projections.getThread(ThreadId.make("valid"))).lineage.parentThreadId,
+        "root",
+      );
+      const parent = yield* projections.getThreadProjection(ThreadId.make("root"));
+      assert.equal(parent.subagents[0]?.childThreadId, "valid");
+      recovered = true;
+      return summary;
+    }).pipe(Effect.orDie);
+    const config = yield* ServerConfig;
+    yield* Effect.gen(function* () {
+      const startup = yield* ServerRuntimeStartup;
+      yield* startup.markHttpListening;
+      if (failure.endsWith("unpatched")) {
+        const failed = yield* Effect.flip(startup.awaitCommandReady);
+        assert.include(String(failed.cause), "statev2.sqlite");
+        assert.isFalse(recovered);
+        return;
       }
-      const recover = Effect.gen(function* () {
-        assert.equal(
-          (yield* projections.getThread(ThreadId.make("valid"))).lineage.parentThreadId,
-          "root",
-        );
-        const parent = yield* projections.getThreadProjection(ThreadId.make("root"));
-        assert.equal(parent.subagents[0]?.childThreadId, "valid");
-        recovered = true;
-        return summary;
-      }).pipe(Effect.orDie);
-      const config = yield* ServerConfig;
-      yield* Effect.gen(function* () {
-        const startup = yield* ServerRuntimeStartup;
-        yield* startup.markHttpListening;
-        if (failure.endsWith("unpatched")) {
-          const failed = yield* Effect.flip(startup.awaitCommandReady);
-          assert.include(String(failed.cause), "statev2.sqlite");
-          assert.isFalse(recovered);
-          return;
-        }
-        yield* startup.awaitCommandReady;
-        yield* Deferred.await(hydration);
-        assert.isTrue(recovered);
-        const projection = yield* projections.getThreadProjection(ThreadId.make("valid"));
-        assert.equal(
-          projection.turnItems.find((item) => item.type === "reasoning")?.legacyMessageSource,
-          "provider",
-        );
+      yield* startup.awaitCommandReady;
+      yield* Deferred.await(hydration);
+      assert.isTrue(recovered);
+      const projection = yield* projections.getThreadProjection(ThreadId.make("valid"));
+      assert.equal(
+        projection.turnItems.find((item) => item.type === "reasoning")?.legacyMessageSource,
+        "provider",
+      );
+      assert.deepEqual(
+        yield* sql`SELECT thread_id FROM orchestration_v2_legacy_imports WHERE transcript_imported_at IS NULL`,
+        [],
+      );
+      if (failure === "bad-message") {
+        assert.equal(projection.messages[0]?.text, "still readable");
+        assert.equal(projection.messages[0]?.createdBy, "user");
+        assert.deepEqual(projection.messages[0]?.attachments, []);
         assert.deepEqual(
-          yield* sql`SELECT thread_id FROM orchestration_v2_legacy_imports WHERE transcript_imported_at IS NULL`,
-          [],
+          yield* sql`SELECT field, original_value FROM fork_v1_import_warnings WHERE entity_id = 'bad-message' ORDER BY field`,
+          [
+            { field: "attachments_json", original_value: "{broken" },
+            { field: "source", original_value: "future-source" },
+          ],
         );
-        if (failure === "bad-message") {
-          assert.equal(projection.messages[0]?.text, "still readable");
-          assert.equal(projection.messages[0]?.createdBy, "user");
-          assert.deepEqual(projection.messages[0]?.attachments, []);
-          assert.deepEqual(
-            yield* sql`SELECT field, original_value FROM fork_v1_import_warnings WHERE entity_id = 'bad-message' ORDER BY field`,
-            [
-              { field: "attachments_json", original_value: "{broken" },
-              { field: "source", original_value: "future-source" },
-            ],
-          );
-        }
-        if (failure === "orphan" || failure === "cycle") {
-          assert.equal(
-            (yield* projections.getThread(ThreadId.make("broken"))).lineage.parentThreadId,
-            null,
-          );
-          assert.lengthOf(
-            yield* sql`SELECT * FROM fork_v1_import_warnings WHERE entity_id = 'broken' AND field = 'parent_thread_id'`,
-            1,
-          );
-        }
-      }).pipe(Effect.provide(startupLayer(config, recover, hydration)));
-    }).pipe(Effect.provide(databaseLayer), Effect.scoped),
-  );
-}
+      }
+      if (failure === "orphan" || failure === "cycle") {
+        assert.equal(
+          (yield* projections.getThread(ThreadId.make("broken"))).lineage.parentThreadId,
+          null,
+        );
+        assert.lengthOf(
+          yield* sql`SELECT * FROM fork_v1_import_warnings WHERE entity_id = 'broken' AND field = 'parent_thread_id'`,
+          1,
+        );
+      }
+    }).pipe(Effect.provide(startupLayer(config, recover, hydration)));
+  }).pipe(Effect.provide(databaseLayer), Effect.scoped),
+);
 
 it.effect("a background import records the pass, so the second start skips the check", () =>
   Effect.gen(function* () {
@@ -313,8 +311,9 @@ const startWithDamagedPreview = (damage: "malformed" | "write" | null) =>
     };
   }).pipe(Effect.provide(databaseLayer), Effect.scoped);
 
-for (const damage of ["malformed", "write"] as const) {
-  it.effect(`real startup isolates a ${damage} preview repair to its own thread`, () =>
+it.effect.each(["malformed", "write"] as const)(
+  "real startup isolates a %s preview repair to its own thread",
+  (damage) =>
     Effect.gen(function* () {
       const expected = yield* startWithDamagedPreview(null);
       const actual = yield* startWithDamagedPreview(damage);
@@ -329,5 +328,4 @@ for (const damage of ["malformed", "write"] as const) {
         damage === "malformed" ? "item b3-a is not valid JSON" : "EventSinkWriteError",
       );
     }),
-  );
-}
+);

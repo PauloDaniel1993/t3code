@@ -175,7 +175,7 @@ it.effect(
     }).pipe(Effect.provide(TestLayer)),
 );
 
-for (const [name, parents] of [
+it.effect.each([
   ["missing parent", [["child", "missing"]]],
   [
     "cycle",
@@ -184,36 +184,34 @@ for (const [name, parents] of [
       ["other", "child"],
     ],
   ],
-] as const) {
-  it.effect(`quarantines ${name} while importing unrelated history`, () =>
-    Effect.gen(function* () {
-      yield* seedThreads([...parents, ["root", null], ["valid", "root"]]);
-      const importer = yield* LegacyV1ThreadImporter;
-      yield* importer.reconcileShells;
-      yield* repairForkTaskLinks();
-      yield* importer.importPendingTranscripts;
-      assert.equal(yield* importer.pendingThreadCount, 0);
-      const projections = yield* ProjectionStoreV2;
-      assert.equal(
-        (yield* projections.getThread(ThreadId.make("valid"))).lineage.parentThreadId,
-        "root",
-      );
-      assert.equal(
-        (yield* projections.getThread(ThreadId.make("child"))).lineage.parentThreadId,
-        null,
-      );
-      const sql = yield* SqlClient.SqlClient;
-      const warnings = yield* sql<{
-        entity_id: string;
-        reason: string;
-      }>`SELECT entity_id, reason FROM fork_v1_import_warnings WHERE field = 'parent_thread_id'`;
-      assert.equal(warnings[0]?.entity_id, "child");
-      assert.include(warnings[0]?.reason ?? "", name);
-      yield* repairForkTaskLinks();
-      yield* (yield* ProjectionMaintenanceV2).compactEventStore;
-    }).pipe(Effect.provide(TestLayer)),
-  );
-}
+] as const)("quarantines %s while importing unrelated history", ([name, parents]) =>
+  Effect.gen(function* () {
+    yield* seedThreads([...parents, ["root", null], ["valid", "root"]]);
+    const importer = yield* LegacyV1ThreadImporter;
+    yield* importer.reconcileShells;
+    yield* repairForkTaskLinks();
+    yield* importer.importPendingTranscripts;
+    assert.equal(yield* importer.pendingThreadCount, 0);
+    const projections = yield* ProjectionStoreV2;
+    assert.equal(
+      (yield* projections.getThread(ThreadId.make("valid"))).lineage.parentThreadId,
+      "root",
+    );
+    assert.equal(
+      (yield* projections.getThread(ThreadId.make("child"))).lineage.parentThreadId,
+      null,
+    );
+    const sql = yield* SqlClient.SqlClient;
+    const warnings = yield* sql<{
+      entity_id: string;
+      reason: string;
+    }>`SELECT entity_id, reason FROM fork_v1_import_warnings WHERE field = 'parent_thread_id'`;
+    assert.equal(warnings[0]?.entity_id, "child");
+    assert.include(warnings[0]?.reason ?? "", name);
+    yield* repairForkTaskLinks();
+    yield* (yield* ProjectionMaintenanceV2).compactEventStore;
+  }).pipe(Effect.provide(TestLayer)),
+);
 
 it.effect("keeps valid attachments beside a malformed entry and maps document PDFs to files", () =>
   Effect.gen(function* () {

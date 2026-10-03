@@ -26,61 +26,59 @@ const decodeSeedReport = Schema.decodeUnknownEffect(
 );
 
 describe("V2 attachment isolation", () => {
-  for (const count of [10, 1000]) {
-    it.effect(
-      `checkpoints ${count} seeded files in batches and writes a complete final report`,
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const stateDir = yield* fs.makeTempDirectoryScoped();
-          const source = path.join(stateDir, "attachments");
-          const attachmentsDir = path.join(stateDir, "attachments-v2");
-          yield* fs.makeDirectory(source);
-          yield* Effect.forEach(
-            Array.from({ length: count }, (_, i) => i),
-            (i) => fs.writeFileString(path.join(source, `${i}.png`), "bytes"),
-            { concurrency: 16, discard: true },
-          );
-          const reportPath = path.join(stateDir, ".attachments-v2-seed-report.json");
-          const writes: Array<number> = [];
-          let copies = 0;
-          const timer = vi.spyOn(performance, "now").mockReturnValue(0);
-          try {
-            yield* initializeIsolatedAttachments({ stateDir, attachmentsDir }).pipe(
-              Effect.provideService(FileSystem.FileSystem, {
-                ...fs,
-                copyFile: (from, to) =>
-                  fs.copyFile(from, to).pipe(
-                    Effect.tap(() =>
-                      Effect.sync(() => {
-                        copies++;
-                      }),
-                    ),
+  it.effect.each([10, 1000])(
+    "checkpoints %s seeded files in batches and writes a complete final report",
+    (count) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* fs.makeTempDirectoryScoped();
+        const source = path.join(stateDir, "attachments");
+        const attachmentsDir = path.join(stateDir, "attachments-v2");
+        yield* fs.makeDirectory(source);
+        yield* Effect.forEach(
+          Array.from({ length: count }, (_, i) => i),
+          (i) => fs.writeFileString(path.join(source, `${i}.png`), "bytes"),
+          { concurrency: 16, discard: true },
+        );
+        const reportPath = path.join(stateDir, ".attachments-v2-seed-report.json");
+        const writes: Array<number> = [];
+        let copies = 0;
+        const timer = vi.spyOn(performance, "now").mockReturnValue(0);
+        try {
+          yield* initializeIsolatedAttachments({ stateDir, attachmentsDir }).pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              copyFile: (from, to) =>
+                fs.copyFile(from, to).pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      copies++;
+                    }),
                   ),
-                writeFileString: (file, data, options) => {
-                  if (file === reportPath) writes.push(copies);
-                  return fs.writeFileString(file, data, options);
-                },
-              }),
-            );
-          } finally {
-            timer.mockRestore();
-          }
-          expect(copies).toBe(count);
-          expect(writes).toEqual([
-            ...Array.from(
-              { length: Math.floor(count / ATTACHMENT_SEED_REPORT_BATCH_SIZE) },
-              (_, i) => (i + 1) * ATTACHMENT_SEED_REPORT_BATCH_SIZE,
-            ),
-            count,
-          ]);
-          const report = yield* decodeSeedReport(yield* fs.readFileString(reportPath));
-          expect(report.completed).toHaveLength(count);
-          expect(yield* fs.exists(path.join(stateDir, ".attachments-v2-seeded"))).toBe(true);
-        }).pipe(Effect.provide(NodeServices.layer)),
-    );
-  }
+                ),
+              writeFileString: (file, data, options) => {
+                if (file === reportPath) writes.push(copies);
+                return fs.writeFileString(file, data, options);
+              },
+            }),
+          );
+        } finally {
+          timer.mockRestore();
+        }
+        expect(copies).toBe(count);
+        expect(writes).toEqual([
+          ...Array.from(
+            { length: Math.floor(count / ATTACHMENT_SEED_REPORT_BATCH_SIZE) },
+            (_, i) => (i + 1) * ATTACHMENT_SEED_REPORT_BATCH_SIZE,
+          ),
+          count,
+        ]);
+        const report = yield* decodeSeedReport(yield* fs.readFileString(reportPath));
+        expect(report.completed).toHaveLength(count);
+        expect(yield* fs.exists(path.join(stateDir, ".attachments-v2-seeded"))).toBe(true);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
   it.effect("checkpoints by elapsed time during a long seed before the batch limit", () =>
     Effect.gen(function* () {
@@ -214,8 +212,9 @@ describe("V2 attachment isolation", () => {
         expect(yield* fs.exists(path.join(attachmentsDir, "healthy.png"))).toBe(false);
       }).pipe(Effect.provide(NodeServices.layer)),
   );
-  for (const failure of ["PermissionDenied", "NotFound"] as const) {
-    it.effect(`starts with a ${failure} source file and records its reason`, () =>
+  it.effect.each(["PermissionDenied", "NotFound"] as const)(
+    "starts with a %s source file and records its reason",
+    (failure) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -261,8 +260,7 @@ describe("V2 attachment isolation", () => {
           ),
         ),
       ),
-    );
-  }
+  );
   it.effect(
     "copies on a volume that refuses hard links and starts without copying when space is insufficient",
     () =>

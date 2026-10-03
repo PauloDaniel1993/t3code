@@ -145,8 +145,9 @@ const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
 });
 
 it.layer(testLayer, { excludeTestServices: true })("Kimi V2 adapter", (it) => {
-  for (const mode of ["full-access", "auto-accept-edits", "auto", "approval-required"] as const) {
-    it.effect(`keeps native approvals supervised under ${mode}`, () =>
+  it.effect.each(["full-access", "auto-accept-edits", "auto", "approval-required"] as const)(
+    "keeps native approvals supervised under %s",
+    (mode) =>
       Effect.gen(function* () {
         const h = yield* makeSession({}, mode);
         yield* h.session.startTurn(h.turn(h.providerThread, yield* DateTime.now));
@@ -164,8 +165,7 @@ it.layer(testLayer, { excludeTestServices: true })("Kimi V2 adapter", (it) => {
         expect(prompt?.params.modeAtPrompt).toBe("default");
         expect(prompt?.params.modelAtPrompt).toBe("kimi-saved");
       }).pipe(Effect.scoped),
-    );
-  }
+  );
 
   it.effect("leaves plan mode on the next implement turn", () =>
     Effect.gen(function* () {
@@ -189,104 +189,100 @@ it.layer(testLayer, { excludeTestServices: true })("Kimi V2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  for (const resumed of [false, true]) {
-    it.effect(
-      `fails a plan turn before prompting when native plan mode is unavailable (${resumed ? "resume" : "new"})`,
-      () =>
-        Effect.gen(function* () {
-          const h = yield* makeSession(
-            {
-              ...(resumed ? { T3_KIMI_RESUME_NO_CONFIG: "1" } : { T3_KIMI_NO_PLAN: "1" }),
-              T3_KIMI_WRITE_FILE: "1",
-            },
-            "full-access",
-            resumed ? "mock-kimi-session" : undefined,
-          );
-          const policy = ProviderAdapterV2RuntimePolicy.make({
-            ...h.policy,
-            interactionMode: "plan",
-          });
-          yield* h.session.startTurn(h.turn(h.providerThread, yield* DateTime.now, policy));
-          const events = yield* h.session.events.pipe(
-            Stream.takeUntil((event) => event.type === "turn.terminal"),
-            Stream.runCollect,
-          );
-          expect(events.at(-1)).toMatchObject({
-            type: "turn.terminal",
-            status: "failed",
-            failure: {
-              message: expect.stringContaining("cannot run a plan turn"),
-              code: "plan_mode_unavailable",
-            },
-          });
-          const requests = yield* h.requests;
-          expect(requests.some((request) => request.method === "session/prompt")).toBe(false);
-          expect(
-            yield* (yield* FileSystem.FileSystem).exists(
-              (yield* Path.Path).join(h.root, "unexpected.txt"),
-            ),
-          ).toBe(false);
-          if (resumed)
-            expect(requests.some((request) => request.method === "session/resume")).toBe(true);
-        }).pipe(Effect.scoped),
-    );
-  }
+  it.effect.each([
+    { resumed: false, label: "new" },
+    { resumed: true, label: "resume" },
+  ])(
+    "fails a plan turn before prompting when native plan mode is unavailable ($label)",
+    ({ resumed }) =>
+      Effect.gen(function* () {
+        const h = yield* makeSession(
+          {
+            ...(resumed ? { T3_KIMI_RESUME_NO_CONFIG: "1" } : { T3_KIMI_NO_PLAN: "1" }),
+            T3_KIMI_WRITE_FILE: "1",
+          },
+          "full-access",
+          resumed ? "mock-kimi-session" : undefined,
+        );
+        const policy = ProviderAdapterV2RuntimePolicy.make({
+          ...h.policy,
+          interactionMode: "plan",
+        });
+        yield* h.session.startTurn(h.turn(h.providerThread, yield* DateTime.now, policy));
+        const events = yield* h.session.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        expect(events.at(-1)).toMatchObject({
+          type: "turn.terminal",
+          status: "failed",
+          failure: {
+            message: expect.stringContaining("cannot run a plan turn"),
+            code: "plan_mode_unavailable",
+          },
+        });
+        const requests = yield* h.requests;
+        expect(requests.some((request) => request.method === "session/prompt")).toBe(false);
+        expect(
+          yield* (yield* FileSystem.FileSystem).exists(
+            (yield* Path.Path).join(h.root, "unexpected.txt"),
+          ),
+        ).toBe(false);
+        if (resumed)
+          expect(requests.some((request) => request.method === "session/resume")).toBe(true);
+      }).pipe(Effect.scoped),
+  );
 
-  for (const question of [false, true]) {
-    it.effect(
-      question
-        ? "routes AskUserQuestion through user input under full access"
-        : "allows denying a Bash permission with a missing native kind",
-      () =>
-        Effect.gen(function* () {
-          const h = yield* makeSession(
-            question ? { T3_KIMI_QUESTION: "1" } : { T3_KIMI_PERMISSION: "1" },
-            question ? "full-access" : "approval-required",
-          );
-          yield* h.session.startTurn(h.turn(h.providerThread, yield* DateTime.now));
-          let pending = 0;
-          const events = yield* h.session.events.pipe(
-            Stream.tap((event) =>
-              Effect.gen(function* () {
-                if (
-                  event.type !== "runtime_request.updated" ||
-                  event.runtimeRequest.status !== "pending"
-                )
-                  return;
-                pending += 1;
-                yield* h.session
-                  .respondToRuntimeRequest(
-                    question
-                      ? { requestId: event.runtimeRequest.id, answers: { "kimi-tool": "Safe" } }
-                      : { requestId: event.runtimeRequest.id, decision: "decline" },
-                  )
-                  .pipe(Effect.forkScoped);
-              }),
-            ),
-            Stream.takeUntil((event) => event.type === "turn.terminal"),
-            Stream.runCollect,
-          );
-          expect(pending).toBe(1);
-          expect(events.at(-1)).toMatchObject({ type: "turn.terminal", status: "completed" });
-          const response = (yield* h.requests).find(
-            (request) => request.method === "client-response",
-          );
-          expect(response?.params.result).toEqual({
-            outcome: { outcome: "selected", optionId: question ? "safe" : "deny" },
-          });
-          if (!question)
-            expect(
-              events.some(
-                (event) =>
-                  event.type === "turn_item.updated" &&
-                  event.turnItem.type === "approval_request" &&
-                  event.turnItem.requestKind === "command" &&
-                  event.turnItem.prompt === "git status",
-              ),
-            ).toBe(true);
-        }).pipe(Effect.scoped),
-    );
-  }
+  it.effect.each([
+    ["allows denying a Bash permission with a missing native kind", false],
+    ["routes AskUserQuestion through user input under full access", true],
+  ] as const)("%s", ([, question]) =>
+    Effect.gen(function* () {
+      const h = yield* makeSession(
+        question ? { T3_KIMI_QUESTION: "1" } : { T3_KIMI_PERMISSION: "1" },
+        question ? "full-access" : "approval-required",
+      );
+      yield* h.session.startTurn(h.turn(h.providerThread, yield* DateTime.now));
+      let pending = 0;
+      const events = yield* h.session.events.pipe(
+        Stream.tap((event) =>
+          Effect.gen(function* () {
+            if (
+              event.type !== "runtime_request.updated" ||
+              event.runtimeRequest.status !== "pending"
+            )
+              return;
+            pending += 1;
+            yield* h.session
+              .respondToRuntimeRequest(
+                question
+                  ? { requestId: event.runtimeRequest.id, answers: { "kimi-tool": "Safe" } }
+                  : { requestId: event.runtimeRequest.id, decision: "decline" },
+              )
+              .pipe(Effect.forkScoped);
+          }),
+        ),
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      );
+      expect(pending).toBe(1);
+      expect(events.at(-1)).toMatchObject({ type: "turn.terminal", status: "completed" });
+      const response = (yield* h.requests).find((request) => request.method === "client-response");
+      expect(response?.params.result).toEqual({
+        outcome: { outcome: "selected", optionId: question ? "safe" : "deny" },
+      });
+      if (!question)
+        expect(
+          events.some(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "approval_request" &&
+              event.turnItem.requestKind === "command" &&
+              event.turnItem.prompt === "git status",
+          ),
+        ).toBe(true);
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("uses T3's auto-approval while keeping native permission callbacks", () =>
     Effect.gen(function* () {
@@ -356,51 +352,49 @@ it.layer(testLayer, { excludeTestServices: true })("Kimi V2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  for (const negotiated of [false, true]) {
-    it.effect(`respects negotiated image support (${negotiated})`, () =>
-      Effect.gen(function* () {
-        const h = yield* makeSession({ T3_KIMI_IMAGE: negotiated ? "1" : "0" });
-        const turn = h.turn(h.providerThread, yield* DateTime.now);
-        const id = createAttachmentId(turn.threadId, ".png");
-        if (id === null) return yield* Effect.die("Expected a valid attachment ID.");
-        const attachment = {
-          type: "image" as const,
-          id,
-          name: "pixel.png",
-          mimeType: "image/png",
-          sizeBytes: 4,
-        };
-        const imageTurn = { ...turn, message: { ...turn.message, attachments: [attachment] } };
-        const filePath = resolveAttachmentPath({
-          attachmentsDir: (yield* ServerConfig).attachmentsDir,
-          attachment,
+  it.effect.each([false, true])("respects negotiated image support (%s)", (negotiated) =>
+    Effect.gen(function* () {
+      const h = yield* makeSession({ T3_KIMI_IMAGE: negotiated ? "1" : "0" });
+      const turn = h.turn(h.providerThread, yield* DateTime.now);
+      const id = createAttachmentId(turn.threadId, ".png");
+      if (id === null) return yield* Effect.die("Expected a valid attachment ID.");
+      const attachment = {
+        type: "image" as const,
+        id,
+        name: "pixel.png",
+        mimeType: "image/png",
+        sizeBytes: 4,
+      };
+      const imageTurn = { ...turn, message: { ...turn.message, attachments: [attachment] } };
+      const filePath = resolveAttachmentPath({
+        attachmentsDir: (yield* ServerConfig).attachmentsDir,
+        attachment,
+      });
+      if (filePath === null) return yield* Effect.die("Expected a valid attachment path.");
+      if (!negotiated) {
+        const error = yield* h.session.startTurn(imageTurn).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          cause: { detail: "ACP driver did not negotiate image prompt support" },
         });
-        if (filePath === null) return yield* Effect.die("Expected a valid attachment path.");
-        if (!negotiated) {
-          const error = yield* h.session.startTurn(imageTurn).pipe(Effect.flip);
-          expect(error).toMatchObject({
-            cause: { detail: "ACP driver did not negotiate image prompt support" },
-          });
-          expect((yield* h.requests).some((request) => request.method === "session/prompt")).toBe(
-            false,
-          );
-          return;
-        }
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.makeDirectory((yield* Path.Path).dirname(filePath), { recursive: true });
-        yield* fs.writeFile(filePath, new Uint8Array([137, 80, 78, 71]));
-        yield* Effect.addFinalizer(() => fs.remove(filePath).pipe(Effect.orDie));
-        yield* h.session.startTurn(imageTurn);
-        yield* h.session.events.pipe(
-          Stream.takeUntil((event) => event.type === "turn.terminal"),
-          Stream.runDrain,
+        expect((yield* h.requests).some((request) => request.method === "session/prompt")).toBe(
+          false,
         );
-        expect(
-          (yield* h.requests).find((request) => request.method === "session/prompt")?.params.prompt,
-        ).toEqual(
-          expect.arrayContaining([{ type: "image", data: "iVBORw==", mimeType: "image/png" }]),
-        );
-      }).pipe(Effect.scoped),
-    );
-  }
+        return;
+      }
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory((yield* Path.Path).dirname(filePath), { recursive: true });
+      yield* fs.writeFile(filePath, new Uint8Array([137, 80, 78, 71]));
+      yield* Effect.addFinalizer(() => fs.remove(filePath).pipe(Effect.orDie));
+      yield* h.session.startTurn(imageTurn);
+      yield* h.session.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runDrain,
+      );
+      expect(
+        (yield* h.requests).find((request) => request.method === "session/prompt")?.params.prompt,
+      ).toEqual(
+        expect.arrayContaining([{ type: "image", data: "iVBORw==", mimeType: "image/png" }]),
+      );
+    }).pipe(Effect.scoped),
+  );
 });

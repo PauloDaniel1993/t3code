@@ -169,37 +169,35 @@ const fresh = (fixture: Fixture) =>
     return yield* snapshot;
   }).pipe(Effect.provide(TestLayer));
 
-for (const [name, fixture] of [
+it.effect.each([
   ["previews without sources over reasoning", verificationCase],
   ["a reasoning preview the earlier import left out", reasoningPreviewCase],
-] as const) {
-  it.effect(`hydrates an unpatched shell-only import like a fresh one: ${name}`, () =>
-    Effect.gen(function* () {
-      const expected = yield* fresh(fixture);
-      const actual = yield* Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* seed(fixture, true);
-        // First start, stopped before hydration; a restart then writes nothing twice.
-        yield* start(false);
-        const afterFirst = yield* eventCount;
-        yield* start(false);
-        assert.equal(yield* eventCount, afterFirst);
-        yield* start(true);
-        const hydrated = yield* snapshot;
-        const afterHydration = yield* eventCount;
-        yield* start(true);
-        assert.equal(yield* eventCount, afterHydration);
-        assert.deepStrictEqual(yield* snapshot, hydrated);
-        const unconfirmed = yield* sql`SELECT 1 FROM fork_v1_import_warnings
+] as const)("hydrates an unpatched shell-only import like a fresh one: %s", ([, fixture]) =>
+  Effect.gen(function* () {
+    const expected = yield* fresh(fixture);
+    const actual = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed(fixture, true);
+      // First start, stopped before hydration; a restart then writes nothing twice.
+      yield* start(false);
+      const afterFirst = yield* eventCount;
+      yield* start(false);
+      assert.equal(yield* eventCount, afterFirst);
+      yield* start(true);
+      const hydrated = yield* snapshot;
+      const afterHydration = yield* eventCount;
+      yield* start(true);
+      assert.equal(yield* eventCount, afterHydration);
+      assert.deepStrictEqual(yield* snapshot, hydrated);
+      const unconfirmed = yield* sql`SELECT 1 FROM fork_v1_import_warnings
           WHERE field IN ('import_compatibility', 'shell_preview_repair_failed')`;
-        const passes = yield* sql`SELECT 1 FROM fork_v1_import_state`;
-        return { hydrated, unconfirmed, passes };
-      }).pipe(Effect.provide(TestLayer));
-      assert.deepStrictEqual(actual.hydrated.unfinished, []);
-      assert.deepStrictEqual(actual.hydrated, expected);
-      // Nothing unconfirmed: no compatibility warning, and the pass is recorded.
-      assert.lengthOf(actual.unconfirmed, 0);
-      assert.lengthOf(actual.passes, 1);
-    }),
-  );
-}
+      const passes = yield* sql`SELECT 1 FROM fork_v1_import_state`;
+      return { hydrated, unconfirmed, passes };
+    }).pipe(Effect.provide(TestLayer));
+    assert.deepStrictEqual(actual.hydrated.unfinished, []);
+    assert.deepStrictEqual(actual.hydrated, expected);
+    // Nothing unconfirmed: no compatibility warning, and the pass is recorded.
+    assert.lengthOf(actual.unconfirmed, 0);
+    assert.lengthOf(actual.passes, 1);
+  }),
+);

@@ -153,7 +153,7 @@ it.effect("records no pass when this start could not confirm the evidence", () =
   }).pipe(Effect.provide(TestLayer)),
 );
 
-for (const [change, seed, mutate] of [
+it.effect.each([
   [
     "upstream renames its import ids",
     seedHealthy,
@@ -210,21 +210,19 @@ for (const [change, seed, mutate] of [
       SET payload_json = json_set(payload_json, '$.ordinal', 999)
       WHERE event_id = ${`${FORK_IMPORT_TURN_ITEM_PREFIX}3-a`}`,
   ],
-] as const) {
-  it.effect(`starts and records a warning when ${change}`, () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* seed;
-      yield* importEverything;
-      yield* mutate(sql);
-      assert.equal((yield* inspectForkImport())._tag, "unknown");
-      yield* (yield* LegacyV1ThreadImporter).reconcileShells;
-      assert.lengthOf(yield* warnings, 1);
-      // Unconfirmed evidence is never recorded as a pass.
-      assert.lengthOf(yield* sql`SELECT 1 FROM fork_v1_import_state`, 0);
-    }).pipe(Effect.provide(TestLayer)),
-  );
-}
+] as const)("starts and records a warning when %s", ([, seed, mutate]) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* importEverything;
+    yield* mutate(sql);
+    assert.equal((yield* inspectForkImport())._tag, "unknown");
+    yield* (yield* LegacyV1ThreadImporter).reconcileShells;
+    assert.lengthOf(yield* warnings, 1);
+    // Unconfirmed evidence is never recorded as a pass.
+    assert.lengthOf(yield* sql`SELECT 1 FROM fork_v1_import_state`, 0);
+  }).pipe(Effect.provide(TestLayer)),
+);
 
 it.effect("refuses a thread whose reasoning and sources an importer omitted", () =>
   Effect.gen(function* () {
@@ -239,16 +237,16 @@ it.effect("refuses a thread whose reasoning and sources an importer omitted", ()
   }).pipe(Effect.provide(TestLayer)),
 );
 
-for (const stage of ["shell", "partial", "complete"] as const) {
-  it.effect(`refuses an unpatched import stopped at the ${stage} stage`, () =>
+it.effect.each(["shell", "partial", "complete"] as const)(
+  "refuses an unpatched import stopped at the %s stage",
+  (stage) =>
     Effect.gen(function* () {
       yield* seedUnpatchedImport(stage);
       assert.equal((yield* inspectForkImport())._tag, "unpatched");
       const refused = yield* Effect.flip((yield* LegacyV1ThreadImporter).reconcileShells);
       assert.include(String(refused.cause), "Incompatible V1 import in statev2.sqlite");
     }).pipe(Effect.provide(TestLayer)),
-  );
-}
+);
 
 it.effect("never refuses a thread without reasoning, source tags or task links", () =>
   Effect.gen(function* () {

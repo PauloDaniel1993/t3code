@@ -11,54 +11,53 @@ import { buildKimiModels } from "../KimiModels.ts";
 import { extractKimiPermissionQuestion } from "./KimiProtocol.ts";
 
 it.layer(NodeServices.layer, { excludeTestServices: true })("Kimi ACP runtime", (it) => {
-  for (const version of [1, 2, 3]) {
-    it.effect(`negotiates ACP ${version} through the real transport`, () =>
-      Effect.gen(function* () {
-        const h = yield* makeKimiTestHarness({ T3_KIMI_PROTOCOL_VERSION: String(version) });
-        const runtime = yield* h.makeRuntime({
-          cwd: h.root,
-          clientInfo: { name: "kimi-test", version: "0.0.0" },
-        });
-        if (version <= 2) {
-          expect((yield* runtime.start()).initializeResult.protocolVersion).toBe(version);
-        } else {
-          expect((yield* runtime.start().pipe(Effect.flip)).message).toContain("protocol 1 or 2");
-          expect((yield* h.requests).map((request) => request.method)).toEqual(["initialize"]);
-        }
-      }).pipe(Effect.scoped),
-    );
-  }
-  for (const loadOnly of [false, true]) {
-    it.effect(`restores a native session with ${loadOnly ? "load" : "resume"}`, () =>
-      Effect.gen(function* () {
-        const h = yield* makeKimiTestHarness(loadOnly ? { T3_KIMI_LOAD_ONLY: "1" } : {});
-        const runtime = yield* h.makeRuntime({
-          cwd: h.root,
-          resumeSessionId: "saved-session",
-          clientInfo: { name: "kimi-test", version: "0.0.0" },
-        });
-        const started = yield* runtime.start();
-        expect(started.sessionId).toBe("saved-session");
-        const requests = yield* h.requests;
-        expect(requests.map((request) => request.method)).toEqual([
-          "initialize",
-          "authenticate",
-          loadOnly ? "session/load" : "session/resume",
-        ]);
-        expect(requests[1]?.params).toEqual({ methodId: "login" });
-        expect(requests[0]?.params.environment).toEqual({
-          KIMI_CODE_HOME: h.home,
-          KIMI_CODE_NO_AUTO_UPDATE: "1",
-        });
-        // The shared V2 adapter uses loadSession to activate an open thread.
-        yield* runtime.loadSession("another-saved-session");
-        expect((yield* h.requests).at(-1)).toMatchObject({
-          method: loadOnly ? "session/load" : "session/resume",
-          params: { sessionId: "another-saved-session" },
-        });
-      }).pipe(Effect.scoped),
-    );
-  }
+  it.effect.each([1, 2, 3])("negotiates ACP %s through the real transport", (version) =>
+    Effect.gen(function* () {
+      const h = yield* makeKimiTestHarness({ T3_KIMI_PROTOCOL_VERSION: String(version) });
+      const runtime = yield* h.makeRuntime({
+        cwd: h.root,
+        clientInfo: { name: "kimi-test", version: "0.0.0" },
+      });
+      if (version <= 2) {
+        expect((yield* runtime.start()).initializeResult.protocolVersion).toBe(version);
+      } else {
+        expect((yield* runtime.start().pipe(Effect.flip)).message).toContain("protocol 1 or 2");
+        expect((yield* h.requests).map((request) => request.method)).toEqual(["initialize"]);
+      }
+    }).pipe(Effect.scoped),
+  );
+  it.effect.each([
+    { loadOnly: false, label: "resume" },
+    { loadOnly: true, label: "load" },
+  ])("restores a native session with $label", ({ loadOnly }) =>
+    Effect.gen(function* () {
+      const h = yield* makeKimiTestHarness(loadOnly ? { T3_KIMI_LOAD_ONLY: "1" } : {});
+      const runtime = yield* h.makeRuntime({
+        cwd: h.root,
+        resumeSessionId: "saved-session",
+        clientInfo: { name: "kimi-test", version: "0.0.0" },
+      });
+      const started = yield* runtime.start();
+      expect(started.sessionId).toBe("saved-session");
+      const requests = yield* h.requests;
+      expect(requests.map((request) => request.method)).toEqual([
+        "initialize",
+        "authenticate",
+        loadOnly ? "session/load" : "session/resume",
+      ]);
+      expect(requests[1]?.params).toEqual({ methodId: "login" });
+      expect(requests[0]?.params.environment).toEqual({
+        KIMI_CODE_HOME: h.home,
+        KIMI_CODE_NO_AUTO_UPDATE: "1",
+      });
+      // The shared V2 adapter uses loadSession to activate an open thread.
+      yield* runtime.loadSession("another-saved-session");
+      expect((yield* h.requests).at(-1)).toMatchObject({
+        method: loadOnly ? "session/load" : "session/resume",
+        params: { sessionId: "another-saved-session" },
+      });
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("keeps autonomous modes out of saved options and respects the default alias", () =>
     Effect.gen(function* () {

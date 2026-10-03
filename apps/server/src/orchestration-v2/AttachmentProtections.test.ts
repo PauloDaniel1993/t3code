@@ -211,42 +211,40 @@ const signedClaim = Effect.fnUntraced(function* (claims: object, secretOverride?
 });
 
 describe("pending draft verification", () => {
-  for (const extension of ["png", "pdf"]) {
-    it.effect(
-      `verifies a persisted pending ${extension} after a draft reload without consulting projections`,
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const config = yield* ServerConfig;
-          const id = `pending-00000000-0000-4000-8000-000000000002${extension === "pdf" ? "-pdf" : ""}`;
-          const file = path.join(config.attachmentsDir, `${id}.${extension}`);
-          yield* fs.writeFile(file, new Uint8Array([1, 2, 3]));
-          const draft = yield* decodeDraft(
-            encodeJson({ attachments: [{ uploadedAttachmentId: id }] }),
-          );
-          const sql = yield* SqlClient.SqlClient;
-          yield* sql`DROP TABLE fork_v2_attachment_references`;
-          const minted = yield* issueAssetUrl({
-            resource: {
-              _tag: "attachment",
-              attachmentId: draft.attachments[0]!.uploadedAttachmentId,
-            },
-          });
-          expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toMatchObject({
-            kind: "file",
-            path: file,
-          });
-          yield* fs.remove(file);
-          expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toBeNull();
-          expect(
-            (yield* issueAssetUrl({ resource: { _tag: "attachment", attachmentId: id } }).pipe(
-              Effect.flip,
-            ))._tag,
-          ).toBe("AssetAttachmentNotFoundError");
-        }).pipe(Effect.provide(testLayer)),
-    );
-  }
+  it.effect.each(["png", "pdf"])(
+    "verifies a persisted pending %s after a draft reload without consulting projections",
+    (extension) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig;
+        const id = `pending-00000000-0000-4000-8000-000000000002${extension === "pdf" ? "-pdf" : ""}`;
+        const file = path.join(config.attachmentsDir, `${id}.${extension}`);
+        yield* fs.writeFile(file, new Uint8Array([1, 2, 3]));
+        const draft = yield* decodeDraft(
+          encodeJson({ attachments: [{ uploadedAttachmentId: id }] }),
+        );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE fork_v2_attachment_references`;
+        const minted = yield* issueAssetUrl({
+          resource: {
+            _tag: "attachment",
+            attachmentId: draft.attachments[0]!.uploadedAttachmentId,
+          },
+        });
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toMatchObject({
+          kind: "file",
+          path: file,
+        });
+        yield* fs.remove(file);
+        expect(yield* resolveAsset(tokenOf(minted.relativeUrl), "attachment")).toBeNull();
+        expect(
+          (yield* issueAssetUrl({ resource: { _tag: "attachment", attachmentId: id } }).pipe(
+            Effect.flip,
+          ))._tag,
+        ).toBe("AssetAttachmentNotFoundError");
+      }).pipe(Effect.provide(testLayer)),
+  );
   it.effect(
     "refuses pending claims for a different file, owner, identity, signature or expiry",
     () =>
@@ -313,12 +311,9 @@ describe("pending draft verification", () => {
   );
 });
 
-for (const bad of [
-  "\\\\server\\share\\file",
-  `${attachment.id}:stream`,
-  attachment.id.toUpperCase(),
-]) {
-  it.effect(`refuses unsafe ID and signed path ${bad}`, () =>
+it.effect.each(["\\\\server\\share\\file", `${attachment.id}:stream`, attachment.id.toUpperCase()])(
+  "refuses unsafe ID and signed path %s",
+  (bad) =>
     Effect.gen(function* () {
       yield* seedAttachment();
       expect(
@@ -357,8 +352,7 @@ for (const bad of [
         yield* resolveAsset(yield* signedClaim({ ...claims, relativePath: bad }), "attachment"),
       ).toBeNull();
     }).pipe(Effect.provide(testLayer)),
-  );
-}
+);
 
 describe("signed attachment ownership", () => {
   it.effect.skipIf(!symlinksSupported)(
@@ -507,120 +501,116 @@ describe("signed attachment ownership", () => {
 });
 
 describe("attachment pruning through the effect outbox", () => {
-  for (const incomplete of [false, true]) {
-    it.effect(
-      `refuses cross-file tokens and unowned thread hints identically (incomplete=${incomplete})`,
-      () =>
-        Effect.gen(function* () {
-          const { file } = yield* seedAttachment();
-          const other = yield* createThread(ThreadId.make("thread-other"));
-          const foreign = {
-            ...attachment,
-            id: ChatAttachmentId.make("thread-other-00000000-0000-4000-8000-000000000002"),
-          };
-          yield* (yield* EventSinkV2).write({
-            events: [yield* messageEvent("foreign:reference", [foreign], other.id)],
-          });
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const config = yield* ServerConfig;
-          yield* fs.writeFile(
-            path.join(config.attachmentsDir, `${foreign.id}.png`),
-            new Uint8Array([4, 5, 6]),
-          );
-          const sql = yield* SqlClient.SqlClient;
-          if (incomplete) {
-            yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
-            yield* initializeAttachmentReferenceIndex();
-          }
-          const own = tokenOf((yield* issue()).relativeUrl);
-          expect(yield* resolveAsset(own, "image.png")).toMatchObject({ path: file });
-          const claims = decodeTestClaims(
-            Buffer.from(own.split(".")[0]!, "base64url").toString("utf8"),
-          );
-          // Even valid signatures cannot pair a foreign ID with this token's owner/path.
-          for (const changed of [
-            { attachmentId: foreign.id },
-            { attachmentId: foreign.id, threadId: other.id },
-            { threadId: other.id },
-          ])
-            expect(
-              yield* resolveAsset(yield* signedClaim({ ...claims, ...changed }), "image.png"),
-            ).toBeNull();
-          const missing = "thread-other-00000000-0000-4000-8000-000000000003";
-          const absent = yield* issueAssetUrl({
-            resource: { _tag: "attachment", attachmentId: missing },
-          }).pipe(Effect.flip);
-          const malformed = yield* issueAssetUrl({
-            resource: { _tag: "attachment", attachmentId: "unparseable" },
-          }).pipe(Effect.flip);
-          expect(absent._tag).toBe("AssetAttachmentNotFoundError");
-          expect(malformed._tag).toBe(absent._tag);
-          expect(malformed.message).toBe(absent.message);
+  it.effect.each([false, true])(
+    "refuses cross-file tokens and unowned thread hints identically (incomplete=%s)",
+    (incomplete) =>
+      Effect.gen(function* () {
+        const { file } = yield* seedAttachment();
+        const other = yield* createThread(ThreadId.make("thread-other"));
+        const foreign = {
+          ...attachment,
+          id: ChatAttachmentId.make("thread-other-00000000-0000-4000-8000-000000000002"),
+        };
+        yield* (yield* EventSinkV2).write({
+          events: [yield* messageEvent("foreign:reference", [foreign], other.id)],
+        });
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig;
+        yield* fs.writeFile(
+          path.join(config.attachmentsDir, `${foreign.id}.png`),
+          new Uint8Array([4, 5, 6]),
+        );
+        const sql = yield* SqlClient.SqlClient;
+        if (incomplete) {
+          yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+          yield* initializeAttachmentReferenceIndex();
+        }
+        const own = tokenOf((yield* issue()).relativeUrl);
+        expect(yield* resolveAsset(own, "image.png")).toMatchObject({ path: file });
+        const claims = decodeTestClaims(
+          Buffer.from(own.split(".")[0]!, "base64url").toString("utf8"),
+        );
+        // Even valid signatures cannot pair a foreign ID with this token's owner/path.
+        for (const changed of [
+          { attachmentId: foreign.id },
+          { attachmentId: foreign.id, threadId: other.id },
+          { threadId: other.id },
+        ])
           expect(
-            yield* resolveAsset(
-              yield* signedClaim({ ...claims, attachmentId: missing }),
-              "image.png",
-            ),
+            yield* resolveAsset(yield* signedClaim({ ...claims, ...changed }), "image.png"),
           ).toBeNull();
-        }).pipe(Effect.provide(testLayer)),
-    );
-  }
+        const missing = "thread-other-00000000-0000-4000-8000-000000000003";
+        const absent = yield* issueAssetUrl({
+          resource: { _tag: "attachment", attachmentId: missing },
+        }).pipe(Effect.flip);
+        const malformed = yield* issueAssetUrl({
+          resource: { _tag: "attachment", attachmentId: "unparseable" },
+        }).pipe(Effect.flip);
+        expect(absent._tag).toBe("AssetAttachmentNotFoundError");
+        expect(malformed._tag).toBe(absent._tag);
+        expect(malformed.message).toBe(absent.message);
+        expect(
+          yield* resolveAsset(
+            yield* signedClaim({ ...claims, attachmentId: missing }),
+            "image.png",
+          ),
+        ).toBeNull();
+      }).pipe(Effect.provide(testLayer)),
+  );
 
-  for (const incomplete of [false, true]) {
-    it.effect(
-      `refuses a token whose ID only aliases stored filename casing (incomplete=${incomplete})`,
-      () =>
-        Effect.gen(function* () {
-          const { file } = yield* seedAttachment();
-          const other = yield* createThread(ThreadId.make("case-read-owner"));
-          const upper = { ...attachment, id: ChatAttachmentId.make(attachment.id.toUpperCase()) };
-          yield* (yield* EventSinkV2).write({
-            events: [yield* messageEvent("upper:read-reference", [upper], other.id)],
-          });
-          const sql = yield* SqlClient.SqlClient;
-          if (incomplete) {
-            yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
-            yield* initializeAttachmentReferenceIndex();
-          }
-          const lowerToken = tokenOf((yield* issue()).relativeUrl);
-          const upperResource = { _tag: "attachment", attachmentId: upper.id } as const;
-          const refusal = yield* issueAssetUrl({ resource: upperResource }).pipe(Effect.flip);
-          expect(refusal._tag).toBe("AssetAttachmentNotFoundError");
-          expect(
-            yield* resolveAsset(
-              yield* signedClaim({
-                attachmentId: upper.id,
-                threadId: other.id,
-                relativePath: `${upper.id}.png`,
-              }),
-              "image.png",
-            ),
-          ).toBeNull();
-          expect(yield* resolveAsset(lowerToken, "image.png")).toMatchObject({ path: file });
-          // Reverse the stored casing: the old lower-ID token must now refuse.
-          const config = yield* ServerConfig;
-          const path = yield* Path.Path;
-          const upperFile = path.join(config.attachmentsDir, `${upper.id}.png`);
-          yield* (yield* FileSystem.FileSystem).rename(file, upperFile);
-          expect(yield* resolveAsset(lowerToken, "image.png")).toBeNull();
-          expect((yield* issue().pipe(Effect.flip))._tag).toBe(refusal._tag);
-          if (incomplete) {
-            // The upper descriptor lives in a different thread than its ID names.
-            expect((yield* issueAssetUrl({ resource: upperResource }).pipe(Effect.flip))._tag).toBe(
-              refusal._tag,
-            );
-            yield* rebuildAttachmentReferenceIndex();
-          }
-          expect(
-            yield* resolveAsset(
-              tokenOf((yield* issueAssetUrl({ resource: upperResource })).relativeUrl),
-              "image.png",
-            ),
-          ).toMatchObject({ path: upperFile });
-        }).pipe(Effect.provide(testLayer)),
-    );
-  }
+  it.effect.each([false, true])(
+    "refuses a token whose ID only aliases stored filename casing (incomplete=%s)",
+    (incomplete) =>
+      Effect.gen(function* () {
+        const { file } = yield* seedAttachment();
+        const other = yield* createThread(ThreadId.make("case-read-owner"));
+        const upper = { ...attachment, id: ChatAttachmentId.make(attachment.id.toUpperCase()) };
+        yield* (yield* EventSinkV2).write({
+          events: [yield* messageEvent("upper:read-reference", [upper], other.id)],
+        });
+        const sql = yield* SqlClient.SqlClient;
+        if (incomplete) {
+          yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+          yield* initializeAttachmentReferenceIndex();
+        }
+        const lowerToken = tokenOf((yield* issue()).relativeUrl);
+        const upperResource = { _tag: "attachment", attachmentId: upper.id } as const;
+        const refusal = yield* issueAssetUrl({ resource: upperResource }).pipe(Effect.flip);
+        expect(refusal._tag).toBe("AssetAttachmentNotFoundError");
+        expect(
+          yield* resolveAsset(
+            yield* signedClaim({
+              attachmentId: upper.id,
+              threadId: other.id,
+              relativePath: `${upper.id}.png`,
+            }),
+            "image.png",
+          ),
+        ).toBeNull();
+        expect(yield* resolveAsset(lowerToken, "image.png")).toMatchObject({ path: file });
+        // Reverse the stored casing: the old lower-ID token must now refuse.
+        const config = yield* ServerConfig;
+        const path = yield* Path.Path;
+        const upperFile = path.join(config.attachmentsDir, `${upper.id}.png`);
+        yield* (yield* FileSystem.FileSystem).rename(file, upperFile);
+        expect(yield* resolveAsset(lowerToken, "image.png")).toBeNull();
+        expect((yield* issue().pipe(Effect.flip))._tag).toBe(refusal._tag);
+        if (incomplete) {
+          // The upper descriptor lives in a different thread than its ID names.
+          expect((yield* issueAssetUrl({ resource: upperResource }).pipe(Effect.flip))._tag).toBe(
+            refusal._tag,
+          );
+          yield* rebuildAttachmentReferenceIndex();
+        }
+        expect(
+          yield* resolveAsset(
+            tokenOf((yield* issueAssetUrl({ resource: upperResource })).relativeUrl),
+            "image.png",
+          ),
+        ).toMatchObject({ path: upperFile });
+      }).pipe(Effect.provide(testLayer)),
+  );
   it.effect(
     "reads only the bound file and owner throughout a rebuild, then prunes missed rows",
     () =>
@@ -712,8 +702,9 @@ describe("attachment pruning through the effect outbox", () => {
       }).pipe(Effect.provide(testLayer)),
   );
 
-  for (const completion of ["startup signal", "before parking"] as const) {
-    it.effect(`keeps cleanup pending without spending attempts and resumes on ${completion}`, () =>
+  it.effect.each(["startup signal", "before parking"] as const)(
+    "keeps cleanup pending without spending attempts and resumes on %s",
+    (completion) =>
       Effect.gen(function* () {
         const { file } = yield* seedAttachment();
         const sql = yield* SqlClient.SqlClient;
@@ -766,8 +757,7 @@ describe("attachment pruning through the effect outbox", () => {
           yield* sql`SELECT status, attempt_count FROM orchestration_v2_effect_outbox WHERE effect_type = 'attachment.cleanup'`,
         ).toEqual([{ status: "succeeded", attempt_count: 1 }]);
       }).pipe(Effect.provide(testLayer)),
-    );
-  }
+  );
 
   it.effect("retains an imported V2 document descriptor independently of later type mapping", () =>
     Effect.gen(function* () {

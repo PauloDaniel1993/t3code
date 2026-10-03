@@ -309,8 +309,9 @@ describe("attachment reference index", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  for (const source of ["message", "item", "legacy"] as const) {
-    it.effect(`reads an unindexed ${source} attachment from live source metadata only`, () =>
+  it.effect.each(["message", "item", "legacy"] as const)(
+    "reads an unindexed %s attachment from live source metadata only",
+    (source) =>
       Effect.gen(function* () {
         yield* smallFixture;
         const sql = yield* SqlClient.SqlClient;
@@ -344,8 +345,7 @@ describe("attachment reference index", () => {
           expect(yield* findReadableAttachment(id(5))).toBeNull();
         }
       }).pipe(Effect.provide(testLayer)),
-    );
-  }
+  );
 
   it.effect("ignores unrelated objects sharing the fork attachment prefix", () =>
     Effect.gen(function* () {
@@ -448,7 +448,7 @@ describe("attachment reference index", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  for (const [damage, statement] of [
+  it.effect.each([
     ["missing trigger", "DROP TRIGGER fork_v2_attachment_message_insert"],
     [
       "changed trigger",
@@ -459,29 +459,27 @@ describe("attachment reference index", () => {
     ["changed table", "ALTER TABLE fork_v2_attachment_references ADD COLUMN unexpected TEXT"],
     ["old version", "UPDATE fork_v2_attachment_reference_state SET version = 1"],
     ["missing version marker", "DELETE FROM fork_v2_attachment_reference_state"],
-  ]) {
-    it.effect(`repairs a ${damage} on initialization before trusting any reference`, () =>
-      Effect.gen(function* () {
-        yield* smallFixture;
-        const sql = yield* SqlClient.SqlClient;
-        // Separate DDL statements: the driver's unsafe API executes one at a time.
-        if (damage === "changed trigger") {
-          yield* sql`DROP TRIGGER fork_v2_attachment_message_insert`;
-          yield* sql`CREATE TRIGGER fork_v2_attachment_message_insert AFTER INSERT ON orchestration_v2_projection_messages BEGIN SELECT 1; END`;
-        } else yield* sql.unsafe(statement!);
-        yield* requireCompleteAttachmentReferenceIndex().pipe(Effect.flip);
-        expect(yield* initializeAttachmentReferenceIndex()).toBe(false);
-        expect(yield* sql`SELECT * FROM fork_v2_attachment_references`).toEqual([]);
-        yield* requireCompleteAttachmentReferenceIndex().pipe(Effect.flip);
-        yield* attachmentReferenceMigration;
-        yield* rebuildAttachmentReferenceIndex();
-        yield* requireCompleteAttachmentReferenceIndex();
-        expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
-        yield* sql`DELETE FROM orchestration_v2_projection_messages WHERE message_id = 'message-005'`;
-        expect(yield* findReadableAttachment(id(5))).toBeNull();
-      }).pipe(Effect.provide(testLayer)),
-    );
-  }
+  ])("repairs a %s on initialization before trusting any reference", ([damage, statement]) =>
+    Effect.gen(function* () {
+      yield* smallFixture;
+      const sql = yield* SqlClient.SqlClient;
+      // Separate DDL statements: the driver's unsafe API executes one at a time.
+      if (damage === "changed trigger") {
+        yield* sql`DROP TRIGGER fork_v2_attachment_message_insert`;
+        yield* sql`CREATE TRIGGER fork_v2_attachment_message_insert AFTER INSERT ON orchestration_v2_projection_messages BEGIN SELECT 1; END`;
+      } else yield* sql.unsafe(statement!);
+      yield* requireCompleteAttachmentReferenceIndex().pipe(Effect.flip);
+      expect(yield* initializeAttachmentReferenceIndex()).toBe(false);
+      expect(yield* sql`SELECT * FROM fork_v2_attachment_references`).toEqual([]);
+      yield* requireCompleteAttachmentReferenceIndex().pipe(Effect.flip);
+      yield* attachmentReferenceMigration;
+      yield* rebuildAttachmentReferenceIndex();
+      yield* requireCompleteAttachmentReferenceIndex();
+      expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
+      yield* sql`DELETE FROM orchestration_v2_projection_messages WHERE message_id = 'message-005'`;
+      expect(yield* findReadableAttachment(id(5))).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
 
   it.effect("repairs triggers lost to an upstream create-copy-drop-rename table migration", () =>
     Effect.gen(function* () {

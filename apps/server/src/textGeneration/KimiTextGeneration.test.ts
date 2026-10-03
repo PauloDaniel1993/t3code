@@ -102,33 +102,37 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("Kimi auxiliary gene
     }).pipe(Effect.scoped),
   );
 
-  for (const environment of [
-    { T3_KIMI_PERMISSION: "1" },
-    { T3_KIMI_QUESTION: "1" },
-    { T3_KIMI_NO_MODE: "1" },
-    { T3_KIMI_OUTPUT: "not JSON" },
-    { T3_KIMI_OUTPUT: "" },
-    { T3_KIMI_OUTPUT_SIZE: "128001" },
-    { T3_KIMI_WRITE_FILE: "1" },
-    { T3_KIMI_TOOL_UPDATE: "1" },
-  ]) {
-    it.effect(
-      `rejects unsupported helper behavior ${Object.keys(environment).join(",")}:${Object.values(environment).join(",")}`,
-      () =>
-        Effect.gen(function* () {
-          const h = yield* makeHelper(environment);
-          const error = yield* h.textGeneration
-            .generateThreadTitle({ ...h.common, message: "Fix Kimi" })
-            .pipe(Effect.flip);
-          expect(error._tag).toBe("TextGenerationError");
-          if (environment.T3_KIMI_OUTPUT_SIZE) expect(error.detail).toContain("output limit");
-          if (environment.T3_KIMI_WRITE_FILE) expect(error.detail).toContain("wrote files");
-          if (environment.T3_KIMI_TOOL_UPDATE) expect(error.detail).toContain("tool work");
-          if (environment.T3_KIMI_NO_MODE)
-            expect((yield* h.requests).some((request) => request.method === "session/prompt")).toBe(
-              false,
-            );
-        }).pipe(Effect.scoped),
-    );
-  }
+  it.effect.each(
+    [
+      { T3_KIMI_PERMISSION: "1" },
+      { T3_KIMI_QUESTION: "1" },
+      { T3_KIMI_NO_MODE: "1" },
+      { T3_KIMI_OUTPUT: "not JSON" },
+      { T3_KIMI_OUTPUT: "" },
+      { T3_KIMI_OUTPUT_SIZE: "128001" },
+      { T3_KIMI_WRITE_FILE: "1" },
+      { T3_KIMI_TOOL_UPDATE: "1" },
+    ].map(
+      (environment) =>
+        [
+          `rejects unsupported helper behavior ${Object.keys(environment).join(",")}:${Object.values(environment).join(",")}`,
+          environment,
+        ] as const,
+    ),
+  )("%s", ([, environment]) =>
+    Effect.gen(function* () {
+      const h = yield* makeHelper(environment);
+      const error = yield* h.textGeneration
+        .generateThreadTitle({ ...h.common, message: "Fix Kimi" })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("TextGenerationError");
+      if (environment.T3_KIMI_OUTPUT_SIZE) expect(error.detail).toContain("output limit");
+      if (environment.T3_KIMI_WRITE_FILE) expect(error.detail).toContain("wrote files");
+      if (environment.T3_KIMI_TOOL_UPDATE) expect(error.detail).toContain("tool work");
+      if (environment.T3_KIMI_NO_MODE)
+        expect((yield* h.requests).some((request) => request.method === "session/prompt")).toBe(
+          false,
+        );
+    }).pipe(Effect.scoped),
+  );
 });

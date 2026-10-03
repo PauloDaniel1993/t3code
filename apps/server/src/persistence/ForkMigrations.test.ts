@@ -27,35 +27,34 @@ it.effect("keeps upstream and fork histories separate on fresh startup and resta
   }).pipe(Effect.provide(Database)),
 );
 
-for (const laterMigration of [false, true]) {
-  it.effect(
-    `repairs old base-ledger collisions${laterMigration ? " below a later migration" : " at the tip"}`,
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* runMigrations({ toMigrationInclusive: 32 });
-        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name)
+it.effect.each([
+  { laterMigration: false, label: "at the tip" },
+  { laterMigration: true, label: "below a later migration" },
+])("repairs old base-ledger collisions $label", ({ laterMigration }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 32 });
+    yield* sql`INSERT INTO effect_sql_migrations (migration_id, name)
         VALUES (33, 'ProjectionThreadSessionRecovery'), (34, 'DatabaseCompactionJournal')`;
-        if (laterMigration) {
-          // Simulate a history where 35 ran despite the old fork occupying 33/34.
-          yield* runMigrations({ toMigrationInclusive: 35 });
-        }
-        yield* migrate;
-        const columns = yield* sql<{ name: string }>`PRAGMA table_info(projection_threads)`;
-        for (const name of ["settled_at", "settled_override", "snoozed_at", "snoozed_until"]) {
-          assert.isTrue(columns.some((column) => column.name === name));
-        }
-        assert.deepEqual(
-          yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id IN (33, 34) ORDER BY migration_id`,
-          [
-            { migration_id: 33, name: "ProjectionThreadsSettled" },
-            { migration_id: 34, name: "ProjectionThreadsSnoozed" },
-          ],
-        );
-        yield* migrate;
-      }).pipe(Effect.provide(Database)),
-  );
-}
+    if (laterMigration) {
+      // Simulate a history where 35 ran despite the old fork occupying 33/34.
+      yield* runMigrations({ toMigrationInclusive: 35 });
+    }
+    yield* migrate;
+    const columns = yield* sql<{ name: string }>`PRAGMA table_info(projection_threads)`;
+    for (const name of ["settled_at", "settled_override", "snoozed_at", "snoozed_until"]) {
+      assert.isTrue(columns.some((column) => column.name === name));
+    }
+    assert.deepEqual(
+      yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id IN (33, 34) ORDER BY migration_id`,
+      [
+        { migration_id: 33, name: "ProjectionThreadsSettled" },
+        { migration_id: 34, name: "ProjectionThreadsSnoozed" },
+      ],
+    );
+    yield* migrate;
+  }).pipe(Effect.provide(Database)),
+);
 
 it.effect("refuses ledger holes rather than silently skipping a fork migration", () =>
   Effect.gen(function* () {
@@ -86,25 +85,23 @@ it.effect(
     }).pipe(Effect.provide(Database)),
 );
 
-for (const previewId of [53, 54]) {
-  it.effect(
-    `keeps the upstream preview-${previewId} ledger reconciliation before fork migrations`,
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* runMigrations({ toMigrationInclusive: 55 });
-        yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= ${previewId} AND migration_id < 55`;
-        yield* sql`UPDATE effect_sql_migrations SET migration_id = ${previewId} WHERE migration_id = 55`;
-        yield* migrate;
-        assert.deepEqual(
-          yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 53 ORDER BY migration_id`,
-          [
-            { migration_id: 53, name: "PullRequestFilesViewed" },
-            { migration_id: 54, name: "ProjectionThreadsAutoSettleDisabledAt" },
-            { migration_id: 55, name: "OrchestrationV2" },
-            { migration_id: 56, name: "RemoveRedundantProjectionIndexes" },
-          ],
-        );
-      }).pipe(Effect.provide(Database)),
-  );
-}
+it.effect.each([53, 54])(
+  "keeps the upstream preview-%s ledger reconciliation before fork migrations",
+  (previewId) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 55 });
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= ${previewId} AND migration_id < 55`;
+      yield* sql`UPDATE effect_sql_migrations SET migration_id = ${previewId} WHERE migration_id = 55`;
+      yield* migrate;
+      assert.deepEqual(
+        yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 53 ORDER BY migration_id`,
+        [
+          { migration_id: 53, name: "PullRequestFilesViewed" },
+          { migration_id: 54, name: "ProjectionThreadsAutoSettleDisabledAt" },
+          { migration_id: 55, name: "OrchestrationV2" },
+          { migration_id: 56, name: "RemoveRedundantProjectionIndexes" },
+        ],
+      );
+    }).pipe(Effect.provide(Database)),
+);

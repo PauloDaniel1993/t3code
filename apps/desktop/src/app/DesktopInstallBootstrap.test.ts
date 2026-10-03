@@ -126,27 +126,23 @@ describe("installed local identity", () => {
     assert.equal(env.T3CODE_HOME, localMetadata.t3Home);
   });
 
-  for (const t3Home of [
+  it.each([
     "relative",
     "C:\\Users\\alice\\.t3",
     "C:\\Users\\alice\\.t3.local\\userdata",
     "C:\\Users\\alice",
-  ]) {
-    it(`rejects a home that cannot be isolated: ${t3Home}`, () => {
-      const env: NodeJS.ProcessEnv = {};
-      assert.throws(() =>
-        applyInstalledDesktopBootstrap({
-          ...defaults,
-          env,
-          readFileString: (path) =>
-            path.endsWith("package.json")
-              ? read(path)
-              : JSON.stringify({ ...localMetadata, t3Home }),
-        }),
-      );
-      assert.deepEqual(env, {});
-    });
-  }
+  ])("rejects a home that cannot be isolated: %s", (t3Home) => {
+    const env: NodeJS.ProcessEnv = {};
+    assert.throws(() =>
+      applyInstalledDesktopBootstrap({
+        ...defaults,
+        env,
+        readFileString: (path) =>
+          path.endsWith("package.json") ? read(path) : JSON.stringify({ ...localMetadata, t3Home }),
+      }),
+    );
+    assert.deepEqual(env, {});
+  });
 
   it("rejects malformed or alpha.local metadata without falling back to an official profile", () => {
     for (const raw of [

@@ -122,24 +122,22 @@ it.effect("decision spans are roots even when the timer was forked inside a requ
   }).pipe(Effect.provide(telemetry.layer), Effect.withTracer(telemetry.tracer));
 });
 
-for (const { overrides, decision } of [
+it.effect.each([
   { overrides: { busyCount: 1 }, decision: "skip_active_turn" },
   { overrides: { idleGeneration: 2 }, decision: "skip_stale_generation" },
-]) {
-  it.effect(`explains ${decision}`, () => {
-    const telemetry = captureTelemetry();
-    return Effect.gen(function* () {
-      const entry = candidate(overrides);
-      const sessions = yield* Ref.make(new Map([[key, entry]]));
-      yield* makeTracer(sessions).begin(key, input, entry);
-      assert.deepEqual(
-        telemetry.logs.map((log) => log.message[0]),
-        ["provider.session.release.candidate", "provider.session.release.decision"],
-      );
-      assert.equal(telemetry.logs[1]?.annotations.decision, decision);
-    }).pipe(Effect.provide(telemetry.layer), Effect.withTracer(telemetry.tracer));
-  });
-}
+])("explains $decision", ({ overrides, decision }) => {
+  const telemetry = captureTelemetry();
+  return Effect.gen(function* () {
+    const entry = candidate(overrides);
+    const sessions = yield* Ref.make(new Map([[key, entry]]));
+    yield* makeTracer(sessions).begin(key, input, entry);
+    assert.deepEqual(
+      telemetry.logs.map((log) => log.message[0]),
+      ["provider.session.release.candidate", "provider.session.release.decision"],
+    );
+    assert.equal(telemetry.logs[1]?.annotations.decision, decision);
+  }).pipe(Effect.provide(telemetry.layer), Effect.withTracer(telemetry.tracer));
+});
 
 it.effect("ends each background-work decision span before the timer waits again", () => {
   const telemetry = captureTelemetry();

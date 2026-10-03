@@ -666,74 +666,76 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
-  for (const operation of ["generateBranchName", "generateThreadTitle"] as const) {
-    for (const failure of ["unresolved", "missing", "unreadable", "non-file"] as const) {
-      it.effect(`rejects ${failure} images before Codex ${operation}`, () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const { attachmentsDir } = yield* ServerConfig.ServerConfig;
-          const validId = `${operation}-${failure}-valid`;
-          const invalidId =
-            failure === "unresolved" ? "../outside" : `${operation}-${failure}-invalid`;
-          const invalidPath = path.join(attachmentsDir, `${invalidId}.png`);
-          yield* fs.makeDirectory(attachmentsDir, { recursive: true });
-          yield* fs.writeFileString(path.join(attachmentsDir, `${validId}.png`), "image");
-          if (failure === "non-file") yield* fs.makeDirectory(invalidPath);
-          if (failure === "unreadable") yield* fs.writeFileString(invalidPath, "image");
-          const cause = PlatformError.systemError({
-            _tag: "PermissionDenied",
-            module: "FileSystem",
-            method: "access",
-            pathOrDescriptor: invalidPath,
-          });
-          const spawn = vi.fn(() => Effect.die("Codex must not run with an invalid image"));
-          const textGeneration = yield* makeCodexTextGeneration(decodeCodexSettings({})).pipe(
-            Effect.provide(Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({ spawn })),
-            Effect.provideService(FileSystem.FileSystem, {
-              ...fs,
-              access: (filePath, options) =>
-                failure === "unreadable" && filePath === invalidPath
-                  ? Effect.fail(cause)
-                  : fs.access(filePath, options),
-            }),
-          );
-          const input = {
-            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
-            cwd: process.cwd(),
-            message: "Describe these screenshots.",
-            attachments: [validId, invalidId].map((id) => ({
-              type: "image" as const,
-              id,
-              name: `${id === validId ? "valid" : "invalid"}.png`,
-              mimeType: "image/png",
-              sizeBytes: 5,
-            })),
-          };
-          const result = yield* (
-            operation === "generateBranchName"
-              ? textGeneration.generateBranchName(input).pipe(Effect.asVoid)
-              : textGeneration.generateThreadTitle(input).pipe(Effect.asVoid)
-          ).pipe(Effect.result);
-          expect(Result.isFailure(result)).toBe(true);
-          if (Result.isFailure(result)) {
-            expect(result.failure).toBeInstanceOf(TextGenerationError);
-            expect(result.failure.operation).toBe(operation);
-            expect(result.failure.detail).toContain("Image attachment 'invalid.png'");
-            expect(result.failure.detail).toContain(
-              failure === "unresolved"
-                ? "could not be resolved"
-                : failure === "non-file"
-                  ? "is not a file"
-                  : "could not be read",
-            );
-            if (failure === "unreadable") expect(result.failure.cause).toBe(cause);
-          }
-          expect(spawn).not.toHaveBeenCalled();
+  it.effect.each(
+    (["generateBranchName", "generateThreadTitle"] as const).flatMap((operation) =>
+      (["unresolved", "missing", "unreadable", "non-file"] as const).map((failure) => ({
+        operation,
+        failure,
+      })),
+    ),
+  )("rejects $failure images before Codex $operation", ({ operation, failure }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const validId = `${operation}-${failure}-valid`;
+      const invalidId = failure === "unresolved" ? "../outside" : `${operation}-${failure}-invalid`;
+      const invalidPath = path.join(attachmentsDir, `${invalidId}.png`);
+      yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+      yield* fs.writeFileString(path.join(attachmentsDir, `${validId}.png`), "image");
+      if (failure === "non-file") yield* fs.makeDirectory(invalidPath);
+      if (failure === "unreadable") yield* fs.writeFileString(invalidPath, "image");
+      const cause = PlatformError.systemError({
+        _tag: "PermissionDenied",
+        module: "FileSystem",
+        method: "access",
+        pathOrDescriptor: invalidPath,
+      });
+      const spawn = vi.fn(() => Effect.die("Codex must not run with an invalid image"));
+      const textGeneration = yield* makeCodexTextGeneration(decodeCodexSettings({})).pipe(
+        Effect.provide(Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({ spawn })),
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          access: (filePath, options) =>
+            failure === "unreadable" && filePath === invalidPath
+              ? Effect.fail(cause)
+              : fs.access(filePath, options),
         }),
       );
-    }
-  }
+      const input = {
+        modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        cwd: process.cwd(),
+        message: "Describe these screenshots.",
+        attachments: [validId, invalidId].map((id) => ({
+          type: "image" as const,
+          id,
+          name: `${id === validId ? "valid" : "invalid"}.png`,
+          mimeType: "image/png",
+          sizeBytes: 5,
+        })),
+      };
+      const result = yield* (
+        operation === "generateBranchName"
+          ? textGeneration.generateBranchName(input).pipe(Effect.asVoid)
+          : textGeneration.generateThreadTitle(input).pipe(Effect.asVoid)
+      ).pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toBeInstanceOf(TextGenerationError);
+        expect(result.failure.operation).toBe(operation);
+        expect(result.failure.detail).toContain("Image attachment 'invalid.png'");
+        expect(result.failure.detail).toContain(
+          failure === "unresolved"
+            ? "could not be resolved"
+            : failure === "non-file"
+              ? "is not a file"
+              : "could not be read",
+        );
+        if (failure === "unreadable") expect(result.failure.cause).toBe(cause);
+      }
+      expect(spawn).not.toHaveBeenCalled();
+    }),
+  );
 
   it.effect(
     "fails with typed TextGenerationError when codex returns wrong branch payload shape",

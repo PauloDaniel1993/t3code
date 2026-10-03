@@ -382,7 +382,7 @@ describe("ThreadTitleRegenerationService", () => {
     }),
   );
 
-  for (const [reason, failure] of [
+  it.effect.each([
     ["model defect", Effect.die(new Error("model unavailable"))],
     [
       "unreadable Codex image",
@@ -393,39 +393,37 @@ describe("ThreadTitleRegenerationService", () => {
         }),
       ),
     ],
-  ] as const) {
-    it.effect(`clears the marker and keeps the title after ${reason}`, () =>
-      Effect.gen(function* () {
-        const harness = makeHarness({
-          generateTitle: () => failure,
+  ] as const)("clears the marker and keeps the title after %s", ([, failure]) =>
+    Effect.gen(function* () {
+      const harness = makeHarness({
+        generateTitle: () => failure,
+      });
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+        const threadId = yield* createThread({
+          command: "command:title:failure:create",
+          thread: "thread:title:failure",
         });
-        yield* Effect.gen(function* () {
-          const threads = yield* ThreadManagement.ThreadManagementService;
-          const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
-          const threadId = yield* createThread({
-            command: "command:title:failure:create",
-            thread: "thread:title:failure",
-          });
-          yield* dispatchUserMessage({
-            command: "command:title:failure:message",
-            threadId,
-            text: "Some conversation",
-          });
-          const requestId = yield* armRegeneration({
-            command: "command:title:failure:1",
-            threadId,
-          });
+        yield* dispatchUserMessage({
+          command: "command:title:failure:message",
+          threadId,
+          text: "Some conversation",
+        });
+        const requestId = yield* armRegeneration({
+          command: "command:title:failure:1",
+          threadId,
+        });
 
-          yield* titleRegeneration.execute({ threadId, requestId, kind: { type: "regenerate" } });
+        yield* titleRegeneration.execute({ threadId, requestId, kind: { type: "regenerate" } });
 
-          assert.equal(harness.generateThreadTitle.mock.calls.length, 1);
-          const projection = yield* threads.getThreadProjection(threadId);
-          assert.equal(projection.thread.title, "Seed title");
-          assert.isNotOk(projection.thread.titleRegeneration);
-        }).pipe(Effect.provide(harness.layer));
-      }),
-    );
-  }
+        assert.equal(harness.generateThreadTitle.mock.calls.length, 1);
+        const projection = yield* threads.getThreadProjection(threadId);
+        assert.equal(projection.thread.title, "Seed title");
+        assert.isNotOk(projection.thread.titleRegeneration);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
 
   it.effect("completes without generating when the initial message is unavailable", () =>
     Effect.gen(function* () {
