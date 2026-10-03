@@ -12,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ChevronLeft,
+  ChevronRight,
   CircleCheck,
   Focus,
   ListTodo,
@@ -23,6 +24,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useReducer,
@@ -78,9 +80,13 @@ import {
 import { layoutStarMap } from "./starMapLayout";
 import { StarMapRenderer, detectPrefersReducedMotion } from "./starMapRenderer";
 import {
+  EMPTY_STAR_MAP_TICKET_SELECTION,
   buildStartTicketsAsTasksPrompt,
   initialStarMapPanelState,
+  reconcileTicketSelection,
+  removeSubmittedTickets,
   starMapPanelReducer,
+  toggleTicketSelection,
 } from "./StarMapPanel.logic";
 
 export interface StarMapPanelProps {
@@ -92,8 +98,6 @@ export interface StarMapPanelProps {
    */
   readonly cwd: string;
 }
-
-const EMPTY_TICKET_IDS: ReadonlySet<string> = new Set();
 
 function ticketStatusText(node: WayfinderNode): string {
   const status = (() => {
@@ -354,31 +358,38 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       ? (graph.nodeById.get(state.selectedTicket) ?? null)
       : null;
 
-  // Picked tickets belong to the map they were picked on, so switching maps
-  // starts empty. A ticket that stopped being ready after it was picked drops
-  // out of the count instead of being sent.
-  const [checked, setChecked] = useState<{
-    readonly mapId: string | null;
-    readonly ticketIds: ReadonlySet<string>;
-  }>(() => ({ mapId: null, ticketIds: new Set() }));
-  const checkedTicketIds =
-    checked.mapId === state.selectedMapId ? checked.ticketIds : EMPTY_TICKET_IDS;
   const readyTickets = useMemo(() => graph?.nodes.filter((node) => node.isFrontier) ?? [], [graph]);
-  const checkedTickets = readyTickets.filter((node) => checkedTicketIds.has(node.id));
-  const toggleChecked = (ticketId: string) => {
-    const next = new Set(checkedTicketIds);
-    if (!next.delete(ticketId)) next.add(ticketId);
-    setChecked({ mapId: state.selectedMapId, ticketIds: next });
-  };
+  const readyTicketIds = useMemo(
+    () => new Set(readyTickets.map((node) => node.id)),
+    [readyTickets],
+  );
+  // Picked tickets belong to the open map and stay ready-only. Reconciling
+  // while rendering (React's adjust-state-on-change pattern) stores the pruned
+  // selection, so a map switch or a lost frontier status forgets the pick.
+  const [storedSelection, setSelection] = useState(EMPTY_STAR_MAP_TICKET_SELECTION);
+  const selection = reconcileTicketSelection(storedSelection, state.selectedMapId, readyTicketIds);
+  if (selection !== storedSelection) setSelection(selection);
+  const checkedTickets = readyTickets.filter((node) => selection.ticketIds.has(node.id));
+  const toggleChecked = (ticketId: string) =>
+    setSelection((current) =>
+      toggleTicketSelection(
+        reconcileTicketSelection(current, state.selectedMapId, readyTicketIds),
+        ticketId,
+      ),
+    );
   const thread = useThreadShell(threadRef);
   const { problem: taskUnavailable } = useNewThreadTaskAvailability(threadRef);
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const [isStartingTasks, setIsStartingTasks] = useState(false);
+  const startInFlightRef = useRef(false);
   const startUnavailable = taskUnavailable ?? (thread === null ? "Open a thread first." : null);
   // The thread's agent creates the tasks: it reads the map for each ticket's
   // complexity tier and the model that tier runs on, which the client cannot.
   const startTicketsAsTasks = async (tickets: ReadonlyArray<StarMapGraphNode>) => {
-    if (thread === null || selectedMap === null || tickets.length === 0 || isStartingTasks) return;
+    if (thread === null || selectedMap === null || tickets.length === 0) return;
+    if (startInFlightRef.current) return;
+    startInFlightRef.current = true;
+    const submittedMapId = selectedMap.id;
     setIsStartingTasks(true);
     try {
       const result = await startTurn({
@@ -397,7 +408,15 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         },
       });
       if (result._tag === "Success") {
-        setChecked({ mapId: null, ticketIds: EMPTY_TICKET_IDS });
+        // Only this batch leaves the selection; picks made while it was in
+        // flight, on this map or another, stay.
+        setSelection((current) =>
+          removeSubmittedTickets(
+            current,
+            submittedMapId,
+            tickets.map((ticket) => ticket.id),
+          ),
+        );
         toastManager.add({
           type: "success",
           title: `Sent ${tickets.length} ${tickets.length === 1 ? "ticket" : "tickets"} to this thread`,
@@ -412,9 +431,12 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         });
       }
     } finally {
+      startInFlightRef.current = false;
       setIsStartingTasks(false);
     }
   };
+  const [ticketListOpen, setTicketListOpen] = useState(false);
+  const ticketListId = useId();
 
   // List focus is a transient canvas highlight; selection is the persistent
   // one. Focus wins while it lasts so keyboard traversal glides the camera.
@@ -682,12 +704,12 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         selectedTicketId={state.selectedTicket}
         onSelectTicket={(ticketId) => dispatch({ type: "selectTicket", ticketId })}
         onFocusTicket={setFocusedTicketId}
-        checkedTicketIds={checkedTicketIds}
+        checkedTicketIds={selection.ticketIds}
         onToggleChecked={toggleChecked}
       />
     );
     const startActions = (
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex flex-wrap items-center justify-end gap-1">
         {(
           [
             {
@@ -701,26 +723,30 @@ export default function StarMapPanel(props: StarMapPanelProps) {
               hint: "Start every ready ticket as a task in parallel",
             },
           ] as const
-        ).map((action) => (
-          <Tooltip key={action.hint}>
-            <TooltipTrigger
-              render={
+        ).map((action) => {
+          const disabled =
+            startUnavailable !== null || action.tickets.length === 0 || isStartingTasks;
+          return (
+            <Tooltip key={action.hint}>
+              {/* A disabled button takes no pointer or focus, so the focusable
+                  wrapper carries the tooltip that explains why. */}
+              <TooltipTrigger
+                render={<span className="inline-flex" tabIndex={disabled ? 0 : undefined} />}
+              >
                 <Button
                   size="micro"
                   variant="ghost-muted"
-                  disabled={
-                    startUnavailable !== null || action.tickets.length === 0 || isStartingTasks
-                  }
+                  disabled={disabled}
                   onClick={() => void startTicketsAsTasks(action.tickets)}
                 >
                   <ListTodo aria-hidden />
                   {action.label}
                 </Button>
-              }
-            />
-            <TooltipPopup side="bottom">{startUnavailable ?? action.hint}</TooltipPopup>
-          </Tooltip>
-        ))}
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">{startUnavailable ?? action.hint}</TooltipPopup>
+            </Tooltip>
+          );
+        })}
       </div>
     );
     body = (
@@ -737,16 +763,35 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                     this view, so the list sits out of the way until asked for.
                     It stays in the DOM either way — it is the keyboard and
                     screen-reader path to the same tickets, not a fallback. */}
-                <div className="relative shrink-0 border-b border-border/60">
-                  <details>
-                    <summary className="cursor-pointer select-none px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">
-                      {graph.nodes.length} {graph.nodes.length === 1 ? "ticket" : "tickets"}
-                      {checkedTickets.length > 0 ? ` · ${checkedTickets.length} selected` : ""}
-                    </summary>
-                    <div className="max-h-64 overflow-y-auto">{ticketList}</div>
-                  </details>
-                  {/* Beside the summary, not inside it, so a click never toggles the list. */}
-                  <div className="absolute right-2 top-0.5">{startActions}</div>
+                <div className="shrink-0 border-b border-border/60">
+                  {/* The toggle and the start actions share a row that wraps
+                      in a narrow panel instead of overlapping. */}
+                  <div className="flex flex-wrap items-center gap-x-2 pr-2">
+                    <button
+                      type="button"
+                      aria-expanded={ticketListOpen}
+                      aria-controls={ticketListId}
+                      onClick={() => setTicketListOpen((open) => !open)}
+                      className="flex min-w-32 flex-1 items-center gap-1 px-3 py-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      <ChevronRight
+                        className={cn("size-3 shrink-0", ticketListOpen && "rotate-90")}
+                        aria-hidden
+                      />
+                      <span className="truncate">
+                        {graph.nodes.length} {graph.nodes.length === 1 ? "ticket" : "tickets"}
+                        {checkedTickets.length > 0 ? ` · ${checkedTickets.length} selected` : ""}
+                      </span>
+                    </button>
+                    {startActions}
+                  </div>
+                  <div
+                    id={ticketListId}
+                    hidden={!ticketListOpen}
+                    className="max-h-64 overflow-y-auto"
+                  >
+                    {ticketList}
+                  </div>
                 </div>
                 <div className="relative min-h-0 flex-1">
                   <div
@@ -805,7 +850,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
               </>
             ) : (
               <>
-                <div className="flex shrink-0 justify-end border-b border-border/60 px-2 py-0.5">
+                <div className="flex shrink-0 flex-wrap justify-end border-b border-border/60 px-2 py-0.5">
                   {startActions}
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto">{ticketList}</div>

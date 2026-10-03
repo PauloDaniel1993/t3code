@@ -2,8 +2,12 @@ import type { WayfinderMap, WayfinderMapsSnapshot, WayfinderNode } from "@t3tool
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  EMPTY_STAR_MAP_TICKET_SELECTION,
   buildStartTicketsAsTasksPrompt,
   initialStarMapPanelState,
+  reconcileTicketSelection,
+  removeSubmittedTickets,
+  toggleTicketSelection,
   starMapPanelReducer,
   type StarMapPanelState,
 } from "./StarMapPanel.logic";
@@ -223,5 +227,50 @@ describe("buildStartTicketsAsTasksPrompt", () => {
       { ordinal: 1, label: "Only", relativePath: "a.md" },
     ]);
     expect(prompt).toContain("Start this ticket from the map");
+  });
+});
+
+describe("ticket selection", () => {
+  const ready = (...ids: ReadonlyArray<string>) => new Set(ids);
+
+  it("forgets map A's picks after switching to B and back", () => {
+    let selection = reconcileTicketSelection(EMPTY_STAR_MAP_TICKET_SELECTION, "a", ready("01"));
+    selection = toggleTicketSelection(selection, "01");
+    selection = reconcileTicketSelection(selection, "b", ready("02"));
+    selection = reconcileTicketSelection(selection, "a", ready("01"));
+    expect([...selection.ticketIds]).toEqual([]);
+  });
+
+  it("does not bring back a pick once its ticket stopped being ready", () => {
+    let selection = toggleTicketSelection(
+      reconcileTicketSelection(EMPTY_STAR_MAP_TICKET_SELECTION, "a", ready("01", "02")),
+      "01",
+    );
+    selection = reconcileTicketSelection(selection, "a", ready("02"));
+    selection = reconcileTicketSelection(selection, "a", ready("01", "02"));
+    expect([...selection.ticketIds]).toEqual([]);
+  });
+
+  it("returns the same selection when nothing changed", () => {
+    const selection = toggleTicketSelection(
+      reconcileTicketSelection(EMPTY_STAR_MAP_TICKET_SELECTION, "a", ready("01")),
+      "01",
+    );
+    expect(reconcileTicketSelection(selection, "a", ready("01", "02"))).toBe(selection);
+  });
+
+  it("removes only the sent batch, keeping picks made while it was in flight", () => {
+    let selection = reconcileTicketSelection(
+      EMPTY_STAR_MAP_TICKET_SELECTION,
+      "a",
+      ready("01", "02"),
+    );
+    selection = toggleTicketSelection(toggleTicketSelection(selection, "01"), "02");
+    expect([...removeSubmittedTickets(selection, "a", ["01"]).ticketIds]).toEqual(["02"]);
+    const onOtherMap = toggleTicketSelection(
+      reconcileTicketSelection(selection, "b", ready("05")),
+      "05",
+    );
+    expect(removeSubmittedTickets(onOtherMap, "a", ["01", "02"])).toBe(onOtherMap);
   });
 });
