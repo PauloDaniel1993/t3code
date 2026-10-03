@@ -33,6 +33,8 @@ type GroupProps = {
   parent: EnvironmentThreadShell;
   tasks: ReadonlyArray<EnvironmentThreadShell>;
   nativeThreads?: ReadonlyArray<EnvironmentThreadShell>;
+  /** Scoped key of the open thread; marks the matching task row as current. */
+  openThreadKey?: string | null;
 };
 
 function taskTimestamp(value: string | null | undefined): number {
@@ -40,7 +42,16 @@ function taskTimestamp(value: string | null | undefined): number {
   return Number.isFinite(timestamp) ? timestamp : -Infinity;
 }
 
-function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: GroupProps) {
+function taskThreadKey(thread: EnvironmentThreadShell): string {
+  return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+}
+
+function useTaskGroup({
+  parent,
+  tasks,
+  nativeThreads = EMPTY_SIDEBAR_TASKS,
+  openThreadKey = null,
+}: GroupProps) {
   const parentRef = useMemo(
     () => scopeThreadRef(parent.environmentId, parent.id),
     [parent.environmentId, parent.id],
@@ -75,8 +86,11 @@ function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: Gr
     ),
   );
   const unread = Number.isFinite(delivered) && delivered > seen;
+  const hasOpenTask =
+    openThreadKey !== null && tasks.some((t) => taskThreadKey(t) === openThreadKey);
   const defaultOpen =
     unread ||
+    hasOpenTask ||
     tasks.some((thread) => {
       const state = resolveSidebarTaskState(thread);
       return state === "queued" || state === "running";
@@ -113,6 +127,7 @@ function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: Gr
     rollup,
     agentCount,
     unread,
+    hasOpenTask,
     expanded: override ?? defaultOpen,
     setExpanded,
   };
@@ -120,14 +135,14 @@ function useTaskGroup({ parent, tasks, nativeThreads = EMPTY_SIDEBAR_TASKS }: Gr
 
 export const SidebarTaskDisclosure = memo(
   function SidebarTaskDisclosure(props: GroupProps) {
-    const { agentCount, expanded, key, setExpanded, unread } = useTaskGroup(props);
+    const { agentCount, expanded, hasOpenTask, key, setExpanded, unread } = useTaskGroup(props);
     const label = sidebarTaskCountLabel(props.tasks.length, agentCount);
     if (label === "") return null;
     return (
       <button
         type="button"
         aria-expanded={expanded}
-        aria-label={`${expanded ? "Hide" : "Show"} ${label}${unread ? ", New task results" : ""}`}
+        aria-label={`${expanded ? "Hide" : "Show"} ${label}${unread ? ", New task results" : ""}${!expanded && hasOpenTask ? ", contains the open task" : ""}`}
         onClick={(event) => {
           event.stopPropagation();
           event.preventDefault();
@@ -135,7 +150,11 @@ export const SidebarTaskDisclosure = memo(
           if (expanded) closeSidebarTaskPeek();
         }}
         onDoubleClick={(event) => event.stopPropagation()}
-        className="relative z-20 inline-flex shrink-0 items-center gap-1 rounded-sm text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        className={cn(
+          "relative z-20 inline-flex shrink-0 items-center gap-1 rounded-sm text-xs outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+          // A collapsed group still points at the open task it hides.
+          !expanded && hasOpenTask ? "text-foreground" : "text-muted-foreground",
+        )}
       >
         <ChevronDownIcon aria-hidden className={cn("size-3", !expanded && "-rotate-90")} />
         {label}
@@ -152,7 +171,8 @@ export const SidebarTaskDisclosure = memo(
   (before, after) =>
     before.parent === after.parent &&
     before.tasks === after.tasks &&
-    before.nativeThreads === after.nativeThreads,
+    before.nativeThreads === after.nativeThreads &&
+    before.openThreadKey === after.openThreadKey,
 );
 
 export type TaskGroupProps = GroupProps & {
@@ -218,13 +238,14 @@ export const SidebarTaskGroup = memo(
           className="max-h-48 overflow-y-auto overscroll-contain py-1"
         >
           {props.tasks.map((thread) => {
-            const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+            const key = taskThreadKey(thread);
             return (
               <SidebarTaskRow
                 key={key}
                 thread={thread}
                 task={tasksByThreadId.get(thread.id)}
                 animate={visible}
+                isActive={props.openThreadKey === key}
                 elapsed={formatSidebarTaskElapsed(thread, tasksByThreadId.get(thread.id), now)}
                 onOpenThread={props.onOpenThread}
                 onContextMenu={props.onContextMenu}
@@ -340,6 +361,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
   task: OrchestrationV2Subagent | undefined;
   elapsed: string;
   animate: boolean;
+  isActive: boolean;
   onOpenThread: TaskGroupProps["onOpenThread"];
   onContextMenu: TaskGroupProps["onContextMenu"];
   onCommitRename: TaskGroupProps["onCommitRename"];
@@ -393,6 +415,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
     <li className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]">
       <button
         type="button"
+        aria-current={props.isActive ? "page" : undefined}
         onClick={() => {
           closeSidebarTaskPeek();
           props.onOpenThread(ref);
@@ -409,7 +432,12 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
         onPointerLeave={leaveSidebarTaskPeek}
         onFocus={(event) => openSidebarTaskPeek({ anchor: event.currentTarget, thread, task })}
         onBlur={leaveSidebarTaskPeek}
-        className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none hover:bg-sidebar-row-hover focus-visible:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring"
+        className={cn(
+          "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          props.isActive
+            ? "bg-sidebar-row-active text-sidebar-foreground"
+            : "hover:bg-sidebar-row-hover focus-visible:bg-sidebar-row-hover",
+        )}
       >
         <SidebarTaskMark state={resolveSidebarTaskState(thread, task)} animate={props.animate} />
         <span className="min-w-0 flex-1 truncate">{thread.title}</span>
