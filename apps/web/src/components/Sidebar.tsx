@@ -1566,7 +1566,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // content; surface is reserved for interaction (hover, multi-select, route).
   const rowSurfaceClassName = cn(
     "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-    variantAction === "unsettle" && "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
+    // The blanket dimming would also dim the disclosure hint for a hidden open task.
+    variantAction === "unsettle" &&
+      props.taskOpenThreadKey === null &&
+      "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
     props.isActive
       ? "bg-sidebar-row-active text-sidebar-foreground"
       : isSelected
@@ -5119,15 +5122,9 @@ export default function Sidebar() {
                                 : null
                             }
                             taskOpenThreadKey={
+                              routeRowKey === threadKey &&
                               routeThreadKey !== null &&
-                              tasksByParent
-                                .get(threadKey)
-                                ?.some(
-                                  (child) =>
-                                    scopedThreadKey(
-                                      scopeThreadRef(child.environmentId, child.id),
-                                    ) === routeThreadKey,
-                                )
+                              routeThreadKey !== threadKey
                                 ? routeThreadKey
                                 : null
                             }

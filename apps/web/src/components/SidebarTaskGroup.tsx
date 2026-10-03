@@ -142,7 +142,7 @@ export const SidebarTaskDisclosure = memo(
       <button
         type="button"
         aria-expanded={expanded}
-        aria-label={`${expanded ? "Hide" : "Show"} ${label}${unread ? ", New task results" : ""}`}
+        aria-label={`${expanded ? "Hide" : "Show"} ${label}${unread ? ", New task results" : ""}${!expanded && hasOpenTask ? ", contains the open task" : ""}`}
         onClick={(event) => {
           event.stopPropagation();
           event.preventDefault();

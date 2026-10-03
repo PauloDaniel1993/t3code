@@ -598,6 +598,34 @@ describe("open task row", () => {
     const disclosure = renderer!.root.findAllByType("button")[0]!;
     act(() => disclosure.props.onClick({ stopPropagation() {}, preventDefault() {} }));
     expect(current()).toHaveLength(0);
-    expect(renderer!.root.findAllByType("button")[0]!.props.className).toContain("text-foreground");
+    const hint = () => {
+      const props = renderer!.root.findAllByType("button")[0]!.props;
+      return { classes: (props.className as string).split(/\s+/), label: props["aria-label"] };
+    };
+    expect(hint().classes).toContain("text-foreground");
+    expect(hint().classes).not.toContain("text-muted-foreground");
+    expect(hint().label).toBe("Show 2 tasks, contains the open task");
+    act(() => renderer!.update(view("local:elsewhere")));
+    expect(hint().classes).not.toContain("text-foreground");
+    expect(hint().classes).toContain("text-muted-foreground");
+    expect(hint().label).toBe("Show 2 tasks");
+  });
+
+  it("does not treat an open provider-native agent thread as a hidden open task", () => {
+    const native = { ...task("native"), latestRun: null };
+    useUiStateStore.setState({ sidebarTaskGroupsExpandedById: { "local:parent": false } });
+    act(() => {
+      renderer = create(
+        <SidebarTaskDisclosure
+          parent={parent}
+          tasks={[]}
+          nativeThreads={[native]}
+          openThreadKey="local:native"
+        />,
+      );
+    });
+    const props = renderer!.root.findByType("button").props;
+    expect(props["aria-label"]).toBe("Show 1 agent");
+    expect((props.className as string).split(/\s+/)).not.toContain("text-foreground");
   });
 });
