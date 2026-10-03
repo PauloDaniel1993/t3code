@@ -5124,7 +5124,7 @@ export default function Sidebar() {
                             taskOpenThreadKey={
                               routeRowKey === threadKey &&
                               routeThreadKey !== null &&
-                              routeThreadKey !== threadKey
+                              taskThreadByKey.has(routeThreadKey)
                                 ? routeThreadKey
                                 : null
                             }
