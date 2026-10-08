@@ -120,8 +120,9 @@ const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
 /**
- * A linked project's first folder is its primary folder, at `workspaceRoot`.
- * A plain project stores no folders.
+ * A linked project's first folder is its primary folder, at `workspaceRoot`,
+ * and each folder has exactly one of a path or a URI. A plain project stores
+ * no folders.
  */
 function workspaceLinkViolation(project: {
   readonly workspaceRoot: string;
@@ -133,6 +134,11 @@ function workspaceLinkViolation(project: {
   }
   if (project.folders?.[0]?.path !== project.workspaceRoot) {
     return "A linked project's first workspace folder must be its workspace root.";
+  }
+  if (
+    project.folders.some((folder) => (folder.path === undefined) === (folder.uri === undefined))
+  ) {
+    return "Each workspace folder needs exactly one of a path or a URI.";
   }
   return undefined;
 }

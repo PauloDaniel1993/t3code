@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   type ModelSelection,
   type ProjectScript,
+  type WorkspaceFolderEntry,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Result from "effect/Result";
@@ -250,7 +251,10 @@ describe("planProjectCommand", () => {
       { uri: "vscode-remote://ssh-remote+devbox/srv/api", name: "api" },
     ];
     const workspaceFile = "/work/app.code-workspace";
-    const create = (fields: { workspaceFile?: string; folders?: typeof folders }) =>
+    const create = (fields: {
+      workspaceFile?: string;
+      folders?: ReadonlyArray<WorkspaceFolderEntry>;
+    }) =>
       plan({
         type: "project.create",
         commandId: CommandId.make("cmd-create-linked"),
@@ -267,6 +271,8 @@ describe("planProjectCommand", () => {
       { workspaceFile },
       { workspaceFile, folders: [] },
       { workspaceFile, folders: folders.toReversed() },
+      { workspaceFile, folders: [...folders, { name: "nameless" }] },
+      { workspaceFile, folders: [...folders, { path: "/work/both", uri: "file:///x", name: "x" }] },
       { folders },
     ]) {
       assert.equal(failureOf(create(fields))._tag, "ProjectCommandInvariantError");

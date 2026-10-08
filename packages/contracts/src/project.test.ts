@@ -1,6 +1,7 @@
 import { assert, it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -296,6 +297,12 @@ const encodeShell = Schema.encodeSync(OrchestrationProjectShell);
 const decodeProjectCreated = Schema.decodeUnknownSync(ApplicationProjectCreatedPayload);
 const decodeProjectMetaUpdated = Schema.decodeUnknownSync(ApplicationProjectMetaUpdatedPayload);
 const encodeProjectMetaUpdated = Schema.encodeSync(ApplicationProjectMetaUpdatedPayload);
+// The shell as clients knew it before workspace files.
+const decodeShellWithoutWorkspaceFiles = Schema.decodeUnknownSync(
+  OrchestrationProjectShell.mapFields(
+    Struct.omit(["workspaceFile", "folders", "workspaceFileStatus"]),
+  ),
+);
 
 describe("workspace-file projects", () => {
   const plainShell = {
@@ -325,38 +332,56 @@ describe("workspace-file projects", () => {
     expect(Object.hasOwn(created, "folders")).toBe(false);
   });
 
-  it("round-trips a linked project's folders and file status", () => {
-    const linked = decodeShell({
-      ...plainShell,
-      workspaceFile: "/work/app.code-workspace",
-      folders: [
-        {
-          path: "/work/app",
-          name: "app",
-          label: "app",
-          availability: "available",
-          vcs: { checkoutRoot: "/work/app" },
-        },
-        {
-          uri: "vscode-remote://ssh-remote+devbox/srv/api",
-          name: "api",
-          label: "api",
-          availability: "unavailable",
-          unavailableReason: "remote",
-          remoteDescription: "SSH: devbox",
-        },
-        { path: "/work/notes", name: "notes", label: "notes", vcs: null },
-      ],
-      workspaceFileStatus: {
-        state: "invalid",
-        diagnostics: [
-          { code: "malformed-jsonc", message: "Expected a comma.", line: 3, column: 5 },
-        ],
-        liveDetection: true,
+  const linkedShell = {
+    ...plainShell,
+    workspaceFile: "/work/app.code-workspace",
+    folders: [
+      {
+        path: "/work/app",
+        name: "app",
+        label: "app",
+        availability: "available",
+        vcs: { checkoutRoot: "/work/app" },
       },
+      {
+        uri: "vscode-remote://wsl+Ubuntu/srv/api",
+        name: "api",
+        label: "api",
+        availability: "unavailable",
+        unavailableReason: "wsl",
+      },
+    ],
+    workspaceFileStatus: {
+      state: "invalid",
+      diagnostics: [
+        { code: "too-many-folders", message: "Too many folders." },
+        { code: "malformed-jsonc", message: "Expected a comma.", line: 3, column: 5 },
+      ],
+      liveDetection: true,
+    },
+  };
+
+  it("keeps decoding a shell when a newer server adds reasons, codes or states", () => {
+    const shell = decodeShell(linkedShell);
+    expect(decodeShell(encodeShell(shell))).toEqual(shell);
+    expect(shell.folders?.map((folder) => folder.label)).toEqual(["app", "api"]);
+    expect(shell.folders?.[1]?.availability).toBe("unavailable");
+    expect(shell.folders?.[1]?.unavailableReason).toBeUndefined();
+    expect(shell.workspaceFileStatus?.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "malformed-jsonc",
+    ]);
+    const unknownState = decodeShell({
+      ...linkedShell,
+      workspaceFileStatus: { ...linkedShell.workspaceFileStatus, state: "stale" },
     });
-    expect(decodeShell(encodeShell(linked))).toEqual(linked);
-    expect(linked.folders?.[1]?.unavailableReason).toBe("remote");
+    expect(unknownState.workspaceFileStatus).toBeUndefined();
+    expect(unknownState.folders).toHaveLength(2);
+  });
+
+  it("lets clients from before workspace files decode a linked project", () => {
+    const shell = decodeShellWithoutWorkspaceFiles(linkedShell);
+    expect(shell.workspaceRoot).toBe("/work/app");
+    expect(Object.hasOwn(shell, "folders")).toBe(false);
   });
 
   it("keeps an unlink's nulls distinct from unchanged fields", () => {

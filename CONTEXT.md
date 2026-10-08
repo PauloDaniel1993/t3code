@@ -31,7 +31,7 @@ A VS Code `.code-workspace` file naming a set of folders. A multi-root project s
 _Avoid_: workspace (unqualified), VS Code project
 
 **Multi-root project**:
-A project imported from a workspace file, covering every folder the file names.
+A project linked to a workspace file, covering every folder the file names.
 _Avoid_: workspace project, project group
 
 **Workspace folder**:

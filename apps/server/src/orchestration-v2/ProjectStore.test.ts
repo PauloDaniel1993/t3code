@@ -133,6 +133,12 @@ it.layer(
         "C:\\work\\app.code-workspace",
       );
 
+      // A metadata-only update leaves the link alone.
+      yield* commit(metaUpdated(projectId, "project-linked:renamed", { title: "Renamed" }));
+      const renamed = Option.getOrThrow(yield* projects.get(projectId));
+      assert.equal(renamed.workspaceFile, "C:\\work\\app.code-workspace");
+      assert.deepEqual(renamed.folders, folders);
+
       const last = yield* commit(
         metaUpdated(projectId, "project-linked:unlinked", { workspaceFile: null, folders: null }),
       );
