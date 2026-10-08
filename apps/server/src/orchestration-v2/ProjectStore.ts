@@ -7,7 +7,9 @@ import {
   ProjectId,
   ProjectScript,
   ThreadEnvMode,
+  WorkspaceFolderEntry,
 } from "@t3tools/contracts";
+import { allocateFolderLabels } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -33,6 +35,10 @@ export const ProjectRow = Schema.Struct({
   projectId: ProjectId,
   title: Schema.String,
   workspaceRoot: Schema.String,
+  /** The linked workspace file; null for a plain project. */
+  workspaceFile: Schema.NullOr(Schema.String),
+  /** The linked file's folders as last read; null for a plain project. */
+  folders: Schema.NullOr(Schema.Array(WorkspaceFolderEntry)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   defaultThreadEnvMode: Schema.NullOr(ThreadEnvMode),
   autoPull: Schema.Boolean,
@@ -47,11 +53,23 @@ export type ProjectRow = typeof ProjectRow.Type;
 
 const ProjectDbRow = Schema.Struct({
   ...ProjectRow.fields,
+  folders: Schema.NullOr(Schema.fromJsonString(Schema.Array(WorkspaceFolderEntry))),
   defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
   autoPull: Schema.BooleanFromBit,
   projectIcon: Schema.NullOr(Schema.fromJsonString(ProjectIconOverride)),
   scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
 });
+
+/**
+ * A linked project's workspace file and labelled folders, without probed
+ * facts. Plain projects carry neither on the wire.
+ */
+export function workspaceFileFields(
+  row: ProjectRow,
+): Pick<OrchestrationProjectShell, "workspaceFile" | "folders"> {
+  if (row.workspaceFile === null) return {};
+  return { workspaceFile: row.workspaceFile, folders: allocateFolderLabels(row.folders ?? []) };
+}
 
 /** Shell fields without workspace-derived enrichment such as repository identity. */
 function toShell(row: ProjectRow): OrchestrationProjectShell {
@@ -59,6 +77,7 @@ function toShell(row: ProjectRow): OrchestrationProjectShell {
     id: row.projectId,
     title: row.title,
     workspaceRoot: row.workspaceRoot,
+    ...workspaceFileFields(row),
     repositoryIdentity: null,
     defaultModelSelection: row.defaultModelSelection,
     defaultThreadEnvMode: row.defaultThreadEnvMode,
@@ -117,6 +136,8 @@ export const make = Effect.gen(function* () {
         project_id AS "projectId",
         title,
         workspace_root AS "workspaceRoot",
+        workspace_file AS "workspaceFile",
+        workspace_folders_json AS "folders",
         default_model_selection_json AS "defaultModelSelection",
         default_thread_env_mode AS "defaultThreadEnvMode",
         auto_pull AS "autoPull",
@@ -147,6 +168,8 @@ export const make = Effect.gen(function* () {
             project_id,
             title,
             workspace_root,
+            workspace_file,
+            workspace_folders_json,
             default_model_selection_json,
             default_thread_env_mode,
             auto_pull,
@@ -161,6 +184,8 @@ export const make = Effect.gen(function* () {
             ${encoded.projectId},
             ${encoded.title},
             ${encoded.workspaceRoot},
+            ${encoded.workspaceFile},
+            ${encoded.folders},
             ${encoded.defaultModelSelection},
             ${encoded.defaultThreadEnvMode},
             ${encoded.autoPull},
@@ -175,6 +200,8 @@ export const make = Effect.gen(function* () {
           DO UPDATE SET
             title = excluded.title,
             workspace_root = excluded.workspace_root,
+            workspace_file = excluded.workspace_file,
+            workspace_folders_json = excluded.workspace_folders_json,
             default_model_selection_json = excluded.default_model_selection_json,
             default_thread_env_mode = excluded.default_thread_env_mode,
             auto_pull = excluded.auto_pull,
@@ -221,6 +248,8 @@ export const make = Effect.gen(function* () {
           projectId: payload.projectId,
           title: payload.title,
           workspaceRoot: payload.workspaceRoot,
+          workspaceFile: payload.workspaceFile ?? null,
+          folders: payload.folders ?? null,
           defaultModelSelection: payload.defaultModelSelection,
           defaultThreadEnvMode: payload.defaultThreadEnvMode ?? null,
           autoPull: false,
@@ -247,6 +276,8 @@ export const make = Effect.gen(function* () {
         ...row,
         ...(payload.title === undefined ? {} : { title: payload.title }),
         ...(payload.workspaceRoot === undefined ? {} : { workspaceRoot: payload.workspaceRoot }),
+        ...(payload.workspaceFile === undefined ? {} : { workspaceFile: payload.workspaceFile }),
+        ...(payload.folders === undefined ? {} : { folders: payload.folders }),
         ...(payload.defaultModelSelection === undefined
           ? {}
           : { defaultModelSelection: payload.defaultModelSelection }),

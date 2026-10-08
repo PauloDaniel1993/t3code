@@ -194,6 +194,8 @@ function makeHarness(options: HarnessOptions = {}) {
               projectId,
               title: project.title,
               workspaceRoot: project.workspaceRoot,
+              workspaceFile: null,
+              folders: null,
               defaultModelSelection: project.defaultModelSelection,
               defaultThreadEnvMode: null,
               autoPull: false,

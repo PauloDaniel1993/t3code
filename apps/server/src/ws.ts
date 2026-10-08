@@ -1674,6 +1674,7 @@ const makeWsRpcLayer = (
               onSome: (root) => ({ scratchWorkspaceRoot: root }),
             }),
             newProjectsRoot: managedFolders.namedProjectsRoot,
+            ...(config.workspaceFileProjects ? { workspaceFileProjects: true } : {}),
           };
         });
 

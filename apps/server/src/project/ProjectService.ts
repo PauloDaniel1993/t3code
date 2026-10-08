@@ -165,6 +165,7 @@ export const make = Effect.gen(function* () {
     id: row.projectId,
     title: row.title,
     workspaceRoot: row.workspaceRoot,
+    ...ProjectStore.workspaceFileFields(row),
     repositoryIdentity: enrichment?.repositoryIdentity ?? null,
     faviconPath: row.faviconPath ?? enrichment?.faviconPath ?? null,
     defaultModelSelection: row.defaultModelSelection,

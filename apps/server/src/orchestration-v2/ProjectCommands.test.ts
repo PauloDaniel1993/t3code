@@ -24,6 +24,8 @@ const row = (overrides: Partial<ProjectRow> = {}): ProjectRow => ({
   projectId,
   title: "Scripts",
   workspaceRoot: "/tmp/scripts",
+  workspaceFile: null,
+  folders: null,
   defaultModelSelection: null,
   defaultThreadEnvMode: null,
   autoPull: false,
@@ -240,6 +242,85 @@ describe("planProjectCommand", () => {
         );
       }
     }
+  });
+
+  it("creates a linked project only with its primary folder at the workspace root", () => {
+    const folders = [
+      { path: "/work/app", name: "app" },
+      { uri: "vscode-remote://ssh-remote+devbox/srv/api", name: "api" },
+    ];
+    const workspaceFile = "/work/app.code-workspace";
+    const create = (fields: { workspaceFile?: string; folders?: typeof folders }) =>
+      plan({
+        type: "project.create",
+        commandId: CommandId.make("cmd-create-linked"),
+        projectId,
+        title: "Linked",
+        workspaceRoot: "/work/app",
+        ...fields,
+      });
+    assert.deepInclude(payloadOf(create({ workspaceFile, folders })), { workspaceFile, folders });
+    const plain = payloadOf(create({}));
+    assert.isFalse("workspaceFile" in plain);
+    assert.isFalse("folders" in plain);
+    for (const fields of [
+      { workspaceFile },
+      { workspaceFile, folders: [] },
+      { workspaceFile, folders: folders.toReversed() },
+      { folders },
+    ]) {
+      assert.equal(failureOf(create(fields))._tag, "ProjectCommandInvariantError");
+    }
+  });
+
+  it("links, refreshes and unlinks with the primary folder kept at the workspace root", () => {
+    const workspaceFile = "/work/app.code-workspace";
+    const linked = row({
+      workspaceRoot: "/work/app",
+      workspaceFile,
+      folders: [
+        { path: "/work/app", name: "app" },
+        { path: "/work/api", name: "api" },
+      ],
+    });
+    const updateLinked = (
+      fields: Omit<
+        Extract<ProjectCommand, { type: "project.meta.update" }>,
+        "type" | "commandId" | "projectId"
+      >,
+    ) =>
+      plan(
+        {
+          type: "project.meta.update",
+          commandId: CommandId.make("cmd-update-linked"),
+          projectId,
+          ...fields,
+        },
+        { project: linked },
+      );
+
+    const link = { workspaceFile, folders: [{ path: "/tmp/scripts", name: "scripts" }] };
+    assert.deepInclude(payloadOf(update(link)), link);
+    const refresh = { workspaceRoot: "/work/api", folders: [{ path: "/work/api", name: "api" }] };
+    assert.deepInclude(payloadOf(updateLinked(refresh)), refresh);
+    assert.deepInclude(payloadOf(updateLinked({ workspaceFile: null, folders: null })), {
+      workspaceFile: null,
+      folders: null,
+    });
+    assert.isFalse("folders" in payloadOf(updateLinked({ title: "Renamed" })));
+
+    for (const fields of [
+      { workspaceRoot: "/work/api" },
+      { folders: [{ path: "/work/api", name: "api" }] },
+      { workspaceFile: null },
+      { folders: null },
+    ]) {
+      assert.equal(failureOf(updateLinked(fields))._tag, "ProjectCommandInvariantError");
+    }
+    assert.equal(
+      failureOf(update({ workspaceFile, folders: [{ path: "/work/app", name: "app" }] }))._tag,
+      "ProjectCommandInvariantError",
+    );
   });
 
   it("deletes with a single project.deleted event", () => {

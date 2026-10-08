@@ -33,6 +33,7 @@ import ForkMigration0008 from "./ForkMigrations/008_BackfillProjectionThreadNati
 import ForkMigration0009 from "./ForkMigrations/009_ForkImportDiagnostics.ts";
 import ForkMigration0010 from "./ForkMigrations/010_AttachmentReferenceIndex.ts";
 import ForkMigration0011 from "./ForkMigrations/011_TaskDeliveryIndex.ts";
+import ForkMigration0012 from "./ForkMigrations/012_ProjectionProjectsWorkspaceFile.ts";
 
 export const FORK_MIGRATIONS_TABLE = "fork_sql_migrations";
 
@@ -48,6 +49,7 @@ export const forkMigrationEntries = [
   [9, "ForkImportDiagnostics", ForkMigration0009],
   [10, "AttachmentReferenceIndex", ForkMigration0010],
   [11, "TaskDeliveryIndex", ForkMigration0011],
+  [12, "ProjectionProjectsWorkspaceFile", ForkMigration0012],
 ] as const;
 
 export const makeForkMigrationLoader = (throughId?: number) =>
