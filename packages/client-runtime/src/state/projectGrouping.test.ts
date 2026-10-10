@@ -407,6 +407,22 @@ describe("workspace-file project grouping", () => {
     ]);
   });
 
+  it.each(["repository", "repository_path"] as const)(
+    "preserves backslashes in POSIX workspace-file names in %s mode",
+    (mode) => {
+      const linked = makeProject("linked", "/work/t3code", {
+        workspaceFile: "/work/alpha\\t3.code-workspace",
+      });
+      const remote = makeProject("remote", "/remote/t3code", {
+        environmentId: remoteEnvironmentId,
+        workspaceFile: "/remote/t3.code-workspace",
+      });
+      expect(
+        buildProjectGroups({ projects: [linked, remote], settings: settings(mode) }),
+      ).toHaveLength(2);
+    },
+  );
+
   it("honors separate mode for matching linked projects across environments", () => {
     const linked = makeProject("linked", "/work/t3code", {
       workspaceFile: "/work/t3.code-workspace",

@@ -7,7 +7,7 @@ import type {
 import type { ClientSettings } from "@t3tools/contracts/settings";
 
 import type { EnvironmentProject } from "./models.ts";
-import { normalizeProjectPathForComparison } from "./projects.ts";
+import { getBrowseLeafPathSegment, normalizeProjectPathForComparison } from "./projects.ts";
 
 export interface ProjectGroupingSettings {
   readonly sidebarProjectGroupingMode: SidebarProjectGroupingMode;
@@ -143,7 +143,7 @@ export function deriveLogicalProjectKey(
     }
     // Match the file name across server path styles; only the primary repository
     // identity participates, even when plain projects group by repository path.
-    const workspaceFileName = project.workspaceFile.split(/[\\/]/).at(-1);
+    const workspaceFileName = getBrowseLeafPathSegment(project.workspaceFile);
     return `workspace-file:${JSON.stringify([canonicalKey, workspaceFileName])}`;
   }
 
