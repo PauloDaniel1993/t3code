@@ -15,6 +15,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -325,7 +326,62 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFolderFiles", (it) 
             files.readFile({ scope: { projectId, folderPath: `${api}-old` }, path: "api/main.ts" }),
           ),
         ).toMatchObject({ failure: "folder-not-found" });
+        // The pinned folder was renamed, so its old label names no folder now.
+        expect(
+          yield* Effect.flip(
+            files.readFile({ scope: { projectId, folderPath: api }, path: "old-api/main.ts" }),
+          ),
+        ).toMatchObject({ failure: "folder-changed", folder: api });
       }),
+    );
+
+    it.effect("report a remote folder as unavailable without reaching for it", () =>
+      Effect.gen(function* () {
+        const files = yield* WorkspaceFolderFiles.WorkspaceFolderFiles;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const app = path.join(yield* makeTempDir, "app");
+        yield* fileSystem.makeDirectory(app);
+        const remote = "vscode-remote://ssh-remote+devbox/srv/api";
+        projectRows.set(
+          projectId,
+          projectRow({
+            workspaceRoot: app,
+            folders: [
+              { path: app, name: "app" },
+              { uri: remote, name: "api" },
+            ],
+          }),
+        );
+
+        const listed = yield* files.listEntries({ scope: { projectId }, directoryPath: "" });
+        expect(listed.folders).toEqual([
+          { folderPath: app, label: "app", status: "ok" },
+          { folderPath: remote, label: "api", status: "unavailable" },
+        ]);
+        expect(
+          yield* Effect.flip(files.readFile({ scope: { projectId }, path: "api/main.ts" })),
+        ).toMatchObject({ failure: "folder-unavailable", folder: remote });
+      }),
+    );
+
+    it.effect.skipIf(HostProcessPlatform.defaultValue() === "win32")(
+      "keep a backslash in a POSIX file name instead of reading it as a separator",
+      () =>
+        Effect.gen(function* () {
+          const files = yield* WorkspaceFolderFiles.WorkspaceFolderFiles;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = path.join(yield* makeTempDir, "app");
+          yield* writeFiles(root, { "a\\b.txt": "backslash", "a/b.txt": "nested" });
+          projectRows.set(projectId, projectRow({ workspaceRoot: root }));
+
+          expect(
+            yield* files.writeFile({ scope: { projectId }, path: "a\\b.txt", contents: "new" }),
+          ).toEqual({ relativePath: "a\\b.txt" });
+          expect(yield* fileSystem.readFileString(path.join(root, "a\\b.txt"))).toBe("new");
+          expect(yield* fileSystem.readFileString(path.join(root, "a", "b.txt"))).toBe("nested");
+        }),
     );
 
     it.effect("fail a thread of another project as not found", () =>
@@ -407,6 +463,17 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFolderFiles", (it) 
           kind: "file",
         });
         expect(narrowed.entries).toEqual([{ path: "api/handler.ts", kind: "file" }]);
+        // A result opens with the pin of the folder its label names.
+        expect(
+          yield* files.readFile({
+            scope: { projectId, folderPath: nested },
+            path: "api/handler.ts",
+          }),
+        ).toMatchObject({ relativePath: "api/handler.ts" });
+        // Reached through the outer folder, the file keeps its one canonical name.
+        expect(
+          yield* files.readFile({ scope, path: "repo/packages/api/handler.ts" }),
+        ).toMatchObject({ relativePath: "api/handler.ts" });
 
         expect(yield* files.listEntries({ scope, directoryPath: "" })).toEqual({
           entries: [],
@@ -422,6 +489,41 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFolderFiles", (it) 
             directoryPath: "",
           })).entries,
         ).toEqual([{ path: "api/handler.ts", kind: "file" }]);
+      }),
+    );
+
+    it.effect("let a query start with a folder label to search that folder", () =>
+      Effect.gen(function* () {
+        const files = yield* WorkspaceFolderFiles.WorkspaceFolderFiles;
+        const path = yield* Path.Path;
+        const root = yield* makeTempDir;
+        const app = path.join(root, "app");
+        const server = path.join(root, "p2");
+        yield* writeFiles(app, { "web/main.ts": "" });
+        yield* writeFiles(server, { "src/main.ts": "", "src/other.ts": "" });
+        projectRows.set(
+          projectId,
+          projectRow({
+            workspaceRoot: app,
+            folders: [
+              { path: app, name: "app" },
+              { path: server, name: "backend" },
+            ],
+          }),
+        );
+        const search = (query: string) =>
+          files
+            .searchEntries({ scope: { projectId }, query, limit: 20, kind: "file" })
+            .pipe(Effect.map((result) => result.entries.map((entry) => entry.path)));
+
+        expect(yield* search("backend/src/main")).toEqual(["backend/src/main.ts"]);
+        expect(yield* search("main")).toEqual(
+          expect.arrayContaining(["app/web/main.ts", "backend/src/main.ts"]),
+        );
+        expect((yield* search("@backend/")).toSorted()).toEqual([
+          "backend/src/main.ts",
+          "backend/src/other.ts",
+        ]);
       }),
     );
   });

@@ -403,7 +403,10 @@ export const WorkspaceScope = Schema.Struct({
   /**
    * One folder's identity: its original path, or its kept URI. A search
    * narrows to it, and a canonical path must resolve to it, so a rename
-   * between search and open can't open another folder.
+   * between search and open can't open another folder. To open a result,
+   * pin the folder-table row whose label starts the result's path: a nested
+   * folder's files carry that folder's label, even in a search narrowed to
+   * its parent.
    */
   folderPath: Schema.optional(TrimmedNonEmptyString),
 });

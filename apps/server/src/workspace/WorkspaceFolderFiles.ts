@@ -81,9 +81,10 @@ export class WorkspaceFolderFiles extends Context.Service<
       scope: WorkspaceScope,
     ) => Effect.Effect<ResolvedWorkspaceScope, WorkspaceScopeError>;
     /**
-     * Resolve a canonical path to one available folder. With a `folderPath`
-     * in the scope, the path's label must still name that folder. The path
-     * stays inside the folder lexically.
+     * Resolve a canonical path to one available folder, checking only that
+     * folder's availability. With a `folderPath` in the scope, the path's
+     * label must still name that folder. The path stays inside the folder
+     * lexically, and `canonicalPath` names the folder that owns the file.
      */
     readonly resolvePath: (
       scope: WorkspaceScope,
@@ -194,6 +195,23 @@ function mergeRanked<Item>(input: {
   return { items, truncated: false };
 }
 
+/**
+ * The folder an entry query names by its label, and the rest of the query to
+ * search it for. Only a scope with several folders has labels in its paths.
+ */
+function labelledQuery(
+  folders: ReadonlyArray<ResolvedWorkspaceFolder>,
+  query: string,
+): { readonly folder: ResolvedWorkspaceFolder; readonly rest: string } | undefined {
+  if (folders.length <= 1) return undefined;
+  const trimmed = query.replace(/^[@./]+/, "");
+  const separator = trimmed.indexOf("/");
+  if (separator === -1) return undefined;
+  const label = trimmed.slice(0, separator).toLowerCase();
+  const folder = folders.find((candidate) => candidate.label.toLowerCase() === label);
+  return folder === undefined ? undefined : { folder, rest: trimmed.slice(separator + 1) };
+}
+
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
 
 const make = Effect.gen(function* () {
@@ -211,43 +229,61 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
-  const resolveScope: WorkspaceFolderFiles["Service"]["resolveScope"] = Effect.fn(
-    "WorkspaceFolderFiles.resolveScope",
-  )(function* (scope) {
+  // Only separators the host uses become `/`; a POSIX file name may hold `\`.
+  const toPosixPath = (relativePath: string) => relativePath.split(path.sep).join("/");
+
+  /** The scope's folders, each where it lives for this scope, before availability is checked. */
+  const loadFolders = Effect.fn("WorkspaceFolderFiles.loadFolders")(function* (
+    scope: WorkspaceScope,
+  ) {
     const project = yield* projects
       .get(scope.projectId)
       .pipe(Effect.mapError((cause) => scopeError(scope, "read-failed", { cause })));
     if (Option.isNone(project)) return yield* scopeError(scope, "project-not-found");
-
-    let folders: ReadonlyArray<ResolvedWorkspaceFolder>;
     if (scope.threadId === undefined) {
-      folders = projectFolders(project.value).map((folder, index) => ({
+      return projectFolders(project.value).map((folder, index): ResolvedWorkspaceFolder => ({
         folder,
         label: folder.label,
         effectivePath: folder.path ?? null,
         isPrimary: index === 0,
         checkoutRoot: undefined,
       }));
-    } else {
-      const thread = yield* projections
-        .getThread(scope.threadId)
-        .pipe(
-          Effect.mapError((cause) =>
-            cause._tag === "ProjectionStoreThreadNotFoundError"
-              ? scopeError(scope, "thread-not-found")
-              : scopeError(scope, "read-failed", { cause }),
-          ),
-        );
-      if (thread.projectId !== scope.projectId || thread.deletedAt !== null) {
-        return yield* scopeError(scope, "thread-not-found");
-      }
-      folders = resolveThreadWorkspace({ thread, project: project.value }).folders;
     }
+    const thread = yield* projections
+      .getThread(scope.threadId)
+      .pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "ProjectionStoreThreadNotFoundError"
+            ? scopeError(scope, "thread-not-found")
+            : scopeError(scope, "read-failed", { cause }),
+        ),
+      );
+    if (thread.projectId !== scope.projectId || thread.deletedAt !== null) {
+      return yield* scopeError(scope, "thread-not-found");
+    }
+    return resolveThreadWorkspace({ thread, project: project.value }).folders;
+  });
 
+  const narrow = (
+    scope: WorkspaceScope,
+    folders: ReadonlyArray<ResolvedWorkspaceFolder>,
+  ): Effect.Effect<ResolvedWorkspaceScope, WorkspaceScopeError> => {
+    const folderPath = scope.folderPath;
+    if (folderPath === undefined) return Effect.succeed({ folders, selected: folders });
+    const selected = folders.filter((folder) => isFolder(folder, folderPath));
+    return selected.length === 0
+      ? Effect.fail(scopeError(scope, "folder-not-found", { folder: folderPath }))
+      : Effect.succeed({ folders, selected });
+  };
+
+  const resolveScope: WorkspaceFolderFiles["Service"]["resolveScope"] = Effect.fn(
+    "WorkspaceFolderFiles.resolveScope",
+  )(function* (scope) {
+    const loaded = yield* loadFolders(scope);
     // File requests aren't tied to a run, so availability is checked now: a
     // folder is available while its effective path is a directory.
-    folders = yield* Effect.forEach(
-      folders,
+    const folders = yield* Effect.forEach(
+      loaded,
       (folder) =>
         folder.effectivePath === null
           ? Effect.succeed(folder)
@@ -256,17 +292,11 @@ const make = Effect.gen(function* () {
             ),
       { concurrency: FOLDER_CONCURRENCY },
     );
-    const folderPath = scope.folderPath;
-    if (folderPath === undefined) return { folders, selected: folders };
-    const selected = folders.filter((folder) => isFolder(folder, folderPath));
-    if (selected.length === 0) {
-      return yield* scopeError(scope, "folder-not-found", { folder: folderPath });
-    }
-    return { folders, selected };
+    return yield* narrow(scope, folders);
   });
 
   /**
-   * The available folder a canonical path names, checked against the scope's
+   * The folder a canonical path names, checked against the scope's
    * `folderPath`. Null for the root of a scope with several folders and no
    * `folderPath`, which is the folder table itself.
    */
@@ -282,13 +312,13 @@ const make = Effect.gen(function* () {
       target = { folder: pinned, relativePath: "" };
     } else {
       const parsed = parseCanonicalPath(canonicalPath, resolved.folders);
+      if (pinned !== undefined && parsed?.folder !== pinned) {
+        return yield* scopeError(scope, "folder-changed", { folder: folderIdentity(pinned) });
+      }
       if (parsed === null) {
         return yield* scopeError(scope, "folder-not-found", {
           folder: canonicalPath.split("/", 1)[0],
         });
-      }
-      if (pinned !== undefined && parsed.folder !== pinned) {
-        return yield* scopeError(scope, "folder-changed", { folder: folderIdentity(pinned) });
       }
       target = parsed;
     }
@@ -323,8 +353,11 @@ const make = Effect.gen(function* () {
         if (owner === undefined || owner.folder === folder) {
           return toCanonicalPath(folder, relativePath, count);
         }
-        const ownedPath = path.relative(owner.path, absolutePath).replaceAll("\\", "/");
-        return toCanonicalPath(owner.folder, ownedPath, count);
+        return toCanonicalPath(
+          owner.folder,
+          toPosixPath(path.relative(owner.path, absolutePath)),
+          count,
+        );
       };
     };
 
@@ -334,7 +367,7 @@ const make = Effect.gen(function* () {
    */
   const fanOut = <A, E>(
     resolved: ResolvedWorkspaceScope,
-    search: (cwd: string) => Effect.Effect<A, E>,
+    search: (folder: ResolvedWorkspaceFolder, cwd: string) => Effect.Effect<A, E>,
   ) =>
     Effect.gen(function* () {
       const toCanonical = canonicalizer(resolved);
@@ -342,10 +375,10 @@ const make = Effect.gen(function* () {
         resolved.selected,
         (folder) => {
           const cwd = folder.effectivePath;
-          if (cwd === null) return Effect.succeed(undefined);
-          return search(cwd).pipe(
+          if (cwd === null) return Effect.succeed(null);
+          return search(folder, cwd).pipe(
             Effect.tapError((cause) =>
-              Effect.logWarning("Workspace folder search failed", { folder: cwd, cause }),
+              Effect.logDebug("Workspace folder search failed", { folder: cwd, cause }),
             ),
             Effect.result,
             Effect.map((result) => ({ folder, result, toCanonical: toCanonical(folder, cwd) })),
@@ -355,13 +388,14 @@ const make = Effect.gen(function* () {
       );
       const failed = new Set<ResolvedWorkspaceFolder>();
       const results: Array<{
+        readonly folder: ResolvedWorkspaceFolder;
         readonly value: A;
         readonly toCanonical: (relativePath: string) => string;
       }> = [];
       for (const outcome of outcomes) {
-        if (outcome === undefined) continue;
+        if (outcome === null) continue;
         if (Result.isFailure(outcome.result)) failed.add(outcome.folder);
-        else results.push({ value: outcome.result.success, toCanonical: outcome.toCanonical });
+        else results.push({ ...outcome, value: outcome.result.success });
       }
       return { results, folders: folderTable(resolved.folders, failed) };
     });
@@ -371,13 +405,25 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const { scope, ...query } = input;
     const resolved = yield* resolveScope(scope);
-    const { results, folders } = yield* fanOut(resolved, (cwd) =>
-      workspaceEntries.search({ cwd, ...query }),
+    // Labels take part in filtering: `api/src/main` searches folder `api` for
+    // `src/main`, and every other folder for the whole query.
+    const labelled = labelledQuery(resolved.folders, query.query);
+    const { results, folders } = yield* fanOut(resolved, (folder, cwd) =>
+      workspaceEntries.search({
+        cwd,
+        ...query,
+        query: folder === labelled?.folder ? labelled.rest : query.query,
+      }),
     );
     const merged = mergeRanked<ProjectEntry>({
-      lists: results.map(({ value, toCanonical }) =>
-        value.entries.map((entry) => ({ ...entry, path: toCanonical(entry.path) })),
-      ),
+      lists: results
+        .toSorted(
+          (left, right) =>
+            Number(right.folder === labelled?.folder) - Number(left.folder === labelled?.folder),
+        )
+        .map(({ value, toCanonical }) =>
+          value.entries.map((entry) => ({ ...entry, path: toCanonical(entry.path) })),
+        ),
       key: (entry) => entry.path,
       bytes: (entry) => byteLength(entry.path),
       limit: input.limit,
@@ -395,7 +441,7 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const { scope, ...query } = input;
     const resolved = yield* resolveScope(scope);
-    const { results, folders } = yield* fanOut(resolved, (cwd) =>
+    const { results, folders } = yield* fanOut(resolved, (_folder, cwd) =>
       workspaceEntries.searchContents({ cwd, ...query }),
     );
     const merged = mergeRanked<ProjectContentMatch>({
@@ -440,18 +486,25 @@ const make = Effect.gen(function* () {
   const resolvePath: WorkspaceFolderFiles["Service"]["resolvePath"] = Effect.fn(
     "WorkspaceFolderFiles.resolvePath",
   )(function* (scope, canonicalPath) {
-    const resolved = yield* resolveScope(scope);
+    // One file touches one folder, so only that folder's availability is checked.
+    const resolved = yield* narrow(scope, yield* loadFolders(scope));
     const target = yield* locate(scope, resolved, canonicalPath);
     if (target === null) return yield* scopeError(scope, "folder-not-found");
+    if (!(yield* isDirectory(target.cwd))) {
+      return yield* scopeError(scope, "folder-unavailable", {
+        folder: folderIdentity(target.folder),
+      });
+    }
     const inside = yield* workspacePaths.resolveRelativePathWithinRoot({
       workspaceRoot: target.cwd,
       relativePath: target.relativePath,
     });
+    const relativePath = toPosixPath(path.relative(target.cwd, inside.absolutePath));
     return {
       cwd: target.cwd,
-      relativePath: inside.relativePath,
+      relativePath,
       folder: target.folder,
-      canonicalPath: toCanonicalPath(target.folder, inside.relativePath, resolved.folders.length),
+      canonicalPath: canonicalizer(resolved)(target.folder, target.cwd)(relativePath),
     };
   });
 

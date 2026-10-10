@@ -124,7 +124,7 @@ export function createProjectEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) =>
           JSON.stringify(
             "scope" in input
-              ? [environmentId, input.scope, input.path]
+              ? [environmentId, input.scope.projectId, input.scope.threadId ?? null, input.path]
               : [environmentId, input.cwd, input.relativePath],
           ),
       },

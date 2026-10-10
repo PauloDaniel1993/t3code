@@ -3065,7 +3065,7 @@ const makeWsRpcLayer = (
                       ? cause
                       : new ProjectReadFileError({
                           cwd: cause.workspaceRoot,
-                          relativePath: input.path,
+                          relativePath: cause.relativePath,
                           ...projectFileFailureContext(cause),
                           cause,
                         }),
@@ -3093,7 +3093,7 @@ const makeWsRpcLayer = (
                       ? cause
                       : new ProjectWriteFileError({
                           cwd: cause.workspaceRoot,
-                          relativePath: input.path,
+                          relativePath: cause.relativePath,
                           ...projectFileFailureContext(cause),
                           cause,
                         }),
