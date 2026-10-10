@@ -77,7 +77,6 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenProjectSettings,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.title;
-  const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadRef = useMemo(
     () => scopeThreadRef(activeThreadEnvironmentId, activeThreadId),
     [activeThreadEnvironmentId, activeThreadId],
@@ -136,7 +135,7 @@ export const ChatHeader = memo(function ChatHeader({
   );
   const { openMenu, closeMenu } = useThreadActionMenu({
     threadRef: isServerThread ? activeThreadRef : null,
-    projectCwd: activeProjectCwd,
+    project: activeProject,
     onStartRename: startRename,
   });
   const titleButtonRef = useRef<HTMLButtonElement | null>(null);

@@ -95,6 +95,9 @@ export interface EnvironmentThreadShell {
   readonly interactionMode: OrchestrationV2ThreadShell["interactionMode"];
   readonly branch: string | null;
   readonly worktreePath: string | null;
+  /** Size of the folder snapshot; only threads of linked projects have one. */
+  readonly workspaceFolderCount?: number;
+  readonly worktrees?: OrchestrationV2ThreadShell["worktrees"];
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
   readonly forkedFrom: OrchestrationV2ThreadShell["forkedFrom"];
   readonly activeProviderThreadId: OrchestrationV2ThreadShell["activeProviderThreadId"];
@@ -227,6 +230,10 @@ export function presentThreadShell(
     interactionMode: thread.interactionMode,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    ...(thread.workspaceFolderCount === undefined
+      ? {}
+      : { workspaceFolderCount: thread.workspaceFolderCount }),
+    ...(thread.worktrees === undefined ? {} : { worktrees: thread.worktrees }),
     pullRequests: threadPullRequestsOf(thread),
     linkedPullRequest: thread.linkedPullRequest ?? null,
     branchPullRequest: thread.branchPullRequest ?? null,

@@ -307,6 +307,39 @@ const restartCancelledWorkSurvivesStaleRunUpdate = Effect.gen(function* () {
   assert.deepEqual(updated?.restartCancelledBackgroundWork, work);
 });
 
+// Scope preparation records the unreachable folders, then a snapshot taken before it lands.
+const unavailableFoldersSurviveStaleRunUpdate = Effect.gen(function* () {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const threadId = yield* addRolledBackRecoveryCandidate("unavailable-folders-stale-update");
+  const run = (yield* store.getThreadProjection(threadId)).runs[0]!;
+  const now = yield* DateTime.now;
+  yield* store.apply({
+    id: EventId.make("event:unavailable-folders-stale-update:recorded"),
+    type: "run.updated",
+    threadId,
+    runId: run.id,
+    providerInstanceId,
+    occurredAt: now,
+    payload: { ...run, unavailableFolderPaths: ["/srv/notes"] },
+  });
+  yield* store.apply({
+    id: EventId.make("event:unavailable-folders-stale-update:completed"),
+    type: "run.updated",
+    threadId,
+    runId: run.id,
+    providerInstanceId,
+    occurredAt: now,
+    payload: { ...run, status: "completed", completedAt: now },
+  });
+  const updated = (yield* store.getThreadProjection(threadId)).runs[0];
+  assert.equal(updated?.status, "completed");
+  assert.deepEqual(updated?.unavailableFolderPaths, ["/srv/notes"]);
+});
+
+it.effect("memory projection keeps a run's unavailable folders through a stale run.updated", () =>
+  unavailableFoldersSurviveStaleRunUpdate.pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+
 it.effect("memory projection keeps restart-cancelled work through a stale run.updated", () =>
   restartCancelledWorkSurvivesStaleRunUpdate.pipe(Effect.provide(ProjectionStore.layerMemory)),
 );
@@ -333,6 +366,10 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
   it.effect(
     "keeps restart-cancelled work through a stale run.updated",
     () => restartCancelledWorkSurvivesStaleRunUpdate,
+  );
+  it.effect(
+    "keeps a run's unavailable folders through a stale run.updated",
+    () => unavailableFoldersSurviveStaleRunUpdate,
   );
   it.effect("records restart-cancelled work without regressing a run that completed since", () =>
     Effect.gen(function* () {

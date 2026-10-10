@@ -61,6 +61,7 @@ import {
 } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { OrchestrationProjectShell } from "./orchestrationProject.ts";
+import { WorkspaceFolderEntry } from "./project.ts";
 import {
   TurnTokenUsage,
   ToolActivitySurface,
@@ -355,6 +356,32 @@ export const OrchestrationV2LimitRecoveryUpdate = Schema.Struct({
 );
 export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitRecoveryUpdate.Type;
 
+/**
+ * One folder of a thread's folder snapshot: a linked project's folder as it was
+ * when the thread was bound, with the label it had then.
+ */
+export const OrchestrationV2ThreadWorkspaceFolder = Schema.Struct({
+  ...WorkspaceFolderEntry.fields,
+  label: TrimmedNonEmptyString,
+  /**
+   * Realpath of the folder's `git rev-parse --show-toplevel` at binding. Null
+   * when the folder is not in git; absent when it was unavailable at binding.
+   */
+  checkoutRoot: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+});
+export type OrchestrationV2ThreadWorkspaceFolder = typeof OrchestrationV2ThreadWorkspaceFolder.Type;
+
+/** One member of a thread's worktree set: a git checkout and its worktree. */
+export const OrchestrationV2ThreadWorktree = Schema.Struct({
+  /** The source checkout's realpath, and the git cwd that recreates or removes the worktree. */
+  repositoryRoot: TrimmedNonEmptyString,
+  /** This member's worktree root. */
+  path: TrimmedNonEmptyString,
+  /** The branch this member is expected on. Drift is measured against it. */
+  branch: TrimmedNonEmptyString,
+});
+export type OrchestrationV2ThreadWorktree = typeof OrchestrationV2ThreadWorktree.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -366,6 +393,13 @@ export const OrchestrationV2AppThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /**
+   * Folder snapshot of a linked project's thread, primary first. Written once,
+   * at binding, and never changed. Plain-project threads omit it.
+   */
+  workspaceFolders: Schema.optional(Schema.Array(OrchestrationV2ThreadWorkspaceFolder)),
+  /** Worktree set, primary member first. `branch` and `worktreePath` stay the primary's. */
+  worktrees: Schema.optional(Schema.Array(OrchestrationV2ThreadWorktree)),
   /** Pull request the user linked to this thread (#8160); optional so
       pre-linking servers still decode. */
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
@@ -547,6 +581,11 @@ export const OrchestrationV2Run = Schema.Struct({
     }),
   ),
   delegatedCompletion: Schema.optional(OrchestrationV2DelegatedCompletionCohort),
+  /**
+   * Snapshot folders found unavailable when this run's scope was prepared, so
+   * every step of the run sees one folder set. Multi-folder snapshots only.
+   */
+  unavailableFolderPaths: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 
@@ -1684,6 +1723,9 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** Size of the thread's folder snapshot. The folder list stays on the thread detail. */
+  workspaceFolderCount: Schema.optional(PositiveInt),
+  worktrees: Schema.optional(Schema.Array(OrchestrationV2ThreadWorktree)),
   /** Pull request the user linked to this thread (#8160). */
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
@@ -2435,6 +2477,8 @@ export const OrchestrationV2Command = Schema.Union([
     interactionMode: ProviderInteractionMode,
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+    workspaceFolders: Schema.optional(Schema.Array(OrchestrationV2ThreadWorkspaceFolder)),
+    worktrees: Schema.optional(Schema.Array(OrchestrationV2ThreadWorktree)),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({
@@ -2559,6 +2603,14 @@ export const OrchestrationV2Command = Schema.Union([
     regenerateTitle: Schema.optional(Schema.Boolean),
     branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+    /** Binds the folder snapshot. Only the first write sets it; later ones must match. */
+    workspaceFolders: Schema.optional(Schema.Array(OrchestrationV2ThreadWorkspaceFolder)),
+    /**
+     * Replaces (array) or clears (null) the worktree set. When absent, a new
+     * `worktreePath` clears the set and a new `branch` becomes the primary
+     * member's branch.
+     */
+    worktrees: Schema.optional(Schema.NullOr(Schema.Array(OrchestrationV2ThreadWorktree))),
     expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     /** Reject unless no message or run has landed on this thread. */
     expectedEmpty: Schema.optional(Schema.Boolean),

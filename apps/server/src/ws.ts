@@ -98,6 +98,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import {
   HttpRouter,
   HttpServerRequest,
@@ -3187,7 +3188,7 @@ const makeWsRpcLayer = (
               }
               return yield* issueAssetUrl({
                 resource: input.resource,
-                workspaceRoot: thread.thread.worktreePath ?? project.value.workspaceRoot,
+                workspaceRoot: threadPrimaryPath(thread.thread, project.value),
               });
             }),
             { "rpc.aggregate": "workspace" },

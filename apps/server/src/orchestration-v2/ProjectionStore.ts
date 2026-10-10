@@ -577,6 +577,9 @@ function preserveRunRecordedFields(
     current.restartCancelledBackgroundWork !== undefined
       ? { restartCancelledBackgroundWork: current.restartCancelledBackgroundWork }
       : {}),
+    ...(next.unavailableFolderPaths === undefined && current.unavailableFolderPaths !== undefined
+      ? { unavailableFolderPaths: current.unavailableFolderPaths }
+      : {}),
   };
 }
 
@@ -1350,6 +1353,7 @@ export function threadShellFromProjection(
     interactionMode: projection.thread.interactionMode,
     branch: projection.thread.branch,
     worktreePath: projection.thread.worktreePath,
+    ...shellWorkspaceFields(projection.thread),
     pullRequests: threadPullRequestsOf(projection.thread),
     ...(projection.thread.linkedPullRequest === undefined
       ? {}
@@ -1566,6 +1570,19 @@ function visibleItemCountForShell(input: {
   );
 }
 
+// The shell carries the snapshot's size, not its folders, so sidebar
+// snapshots don't grow with workspace files. Plain-project threads omit both.
+function shellWorkspaceFields(
+  thread: OrchestrationV2ThreadProjection["thread"],
+): Pick<OrchestrationV2ThreadShell, "workspaceFolderCount" | "worktrees"> {
+  return {
+    ...(thread.workspaceFolders === undefined || thread.workspaceFolders.length === 0
+      ? {}
+      : { workspaceFolderCount: thread.workspaceFolders.length }),
+    ...(thread.worktrees === undefined ? {} : { worktrees: thread.worktrees }),
+  };
+}
+
 function shellFromState(input: {
   readonly state: ShellThreadState;
   readonly visibleItemCount: number;
@@ -1584,6 +1601,7 @@ function shellFromState(input: {
     interactionMode: input.state.thread.interactionMode,
     branch: input.state.thread.branch,
     worktreePath: input.state.thread.worktreePath,
+    ...shellWorkspaceFields(input.state.thread),
     pullRequests: threadPullRequestsOf(input.state.thread),
     ...(input.state.thread.linkedPullRequest === undefined
       ? {}
@@ -1778,8 +1796,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 requested_at = excluded.requested_at,
                 completed_at = excluded.completed_at,
                 payload_json = ${keepRecordedRunField(
-                  keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
-                  "$.restartCancelledBackgroundWork",
+                  keepRecordedRunField(
+                    keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
+                    "$.restartCancelledBackgroundWork",
+                  ),
+                  "$.unavailableFolderPaths",
                 )}
             `;
             break;

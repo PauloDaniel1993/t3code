@@ -43,6 +43,10 @@ function makeSourceThread(): OrchestrationV2AppThread {
     interactionMode: "plan",
     branch: "feature/source",
     worktreePath: "/tmp/source-worktree",
+    workspaceFolders: [{ path: "/repo", name: "repo", label: "repo", checkoutRoot: "/repo" }],
+    worktrees: [
+      { repositoryRoot: "/repo", path: "/tmp/source-worktree", branch: "feature/source" },
+    ],
     activeProviderThreadId: ProviderThreadId.make("provider-thread:fork-snoozed-source"),
     lineage: {
       parentThreadId: null,
@@ -154,6 +158,8 @@ it.effect("keeps a fork awake when its source thread is snoozed", () =>
     assert.equal(result.targetThread.interactionMode, sourceThread.interactionMode);
     assert.equal(result.targetThread.branch, sourceThread.branch);
     assert.equal(result.targetThread.worktreePath, sourceThread.worktreePath);
+    assert.deepEqual(result.targetThread.workspaceFolders, sourceThread.workspaceFolders);
+    assert.deepEqual(result.targetThread.worktrees, sourceThread.worktrees);
     assert.isNull(result.targetThread.activeProviderThreadId);
     assert.deepEqual(result.targetThread.lineage, {
       parentThreadId: sourceThreadId,

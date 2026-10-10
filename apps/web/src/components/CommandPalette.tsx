@@ -1,6 +1,7 @@
 "use client";
 
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import { useNewThreadTaskAvailability } from "../hooks/useNewThreadTaskAvailability";
 import { openNewThreadTaskDialog } from "../newThreadTaskBus";
@@ -2019,7 +2020,7 @@ function OpenCommandPaletteDialog(props: {
           environmentId,
           input: {
             instanceId: thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
-            cwd: thread.worktreePath ?? project.workspaceRoot,
+            cwd: threadPrimaryPath(thread, project),
             fresh: true,
           },
         });

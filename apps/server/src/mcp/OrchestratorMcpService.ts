@@ -1641,6 +1641,13 @@ const make = Effect.gen(function* () {
                   interactionMode,
                   branch: parent.thread.branch,
                   worktreePath: parent.thread.worktreePath,
+                  // New threads share the parent's whole binding.
+                  ...(parent.thread.workspaceFolders === undefined
+                    ? {}
+                    : { workspaceFolders: parent.thread.workspaceFolders }),
+                  ...(parent.thread.worktrees === undefined
+                    ? {}
+                    : { worktrees: parent.thread.worktrees }),
                 })
                 .pipe(
                   Effect.mapError((error) =>

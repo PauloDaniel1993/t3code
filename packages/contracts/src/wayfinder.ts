@@ -4,7 +4,7 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
  * Identifies which workspace root to read maps from. Callers pass the same
- * `thread.worktreePath ?? project.workspaceRoot` they use for VCS status, so a
+ * thread primary path (`threadPrimaryPath`) they use for VCS status, so a
  * worktree thread resolves its map and its ticket links against one root.
  */
 export const WayfinderMapsInput = Schema.Struct({

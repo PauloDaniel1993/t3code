@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import {
@@ -103,8 +104,9 @@ export const layerFromProjectStore: Layer.Layer<
           instance === undefined
             ? undefined
             : (yield* instance.snapshot.getSnapshot).supportedRuntimeModes;
+        // The project is read only when the thread itself names no folder.
         const cwd =
-          input.thread.worktreePath ??
+          threadPrimaryPath(input.thread, null) ??
           (yield* projects.get(input.thread.projectId).pipe(
             Effect.mapError(
               (cause) =>
@@ -124,7 +126,7 @@ export const layerFromProjectStore: Layer.Layer<
                       cause: "Project not found.",
                     }),
                   ),
-                onSome: (project) => Effect.succeed(project.workspaceRoot),
+                onSome: (project) => Effect.succeed(threadPrimaryPath(input.thread, project)),
               }),
             ),
           ));

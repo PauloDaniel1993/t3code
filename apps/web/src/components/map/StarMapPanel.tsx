@@ -92,9 +92,8 @@ import {
 export interface StarMapPanelProps {
   readonly environmentId: EnvironmentId;
   /**
-   * Root the server reads `.plan` from. Callers pass
-   * `thread.worktreePath ?? project.workspaceRoot`, the same root ticket
-   * relative paths resolve against.
+   * Root the server reads `.plan` from. Callers pass the thread's
+   * `threadPrimaryPath`, the same root ticket relative paths resolve against.
    */
   readonly cwd: string;
 }

@@ -1,4 +1,5 @@
 import type { OrchestrationV2AppThread, OrchestrationV2CheckpointScope } from "@t3tools/contracts";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -62,7 +63,7 @@ export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpoi
             // A thread without a worktree works in its project's checkout.
             const project = yield* projects.get(otherThread.projectId, { includeDeleted: true });
             if (Option.isNone(project)) return false;
-            paths.push(project.value.workspaceRoot);
+            paths.push(threadPrimaryPath(otherThread, project.value));
           }
           for (const candidate of paths) {
             if (checkedPaths.has(candidate)) continue;

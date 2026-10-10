@@ -1,4 +1,5 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 
 interface TerminalLocationLike {
   readonly cwd: string;
@@ -74,8 +75,10 @@ export function resolveTerminalOpenLocation(input: {
     cwd:
       input.terminalLocation?.cwd ??
       input.activeSessionLocation?.cwd ??
-      preferredThreadWorktreePath ??
-      input.workspaceRoot,
+      threadPrimaryPath(
+        { worktreePath: preferredThreadWorktreePath },
+        { workspaceRoot: input.workspaceRoot },
+      ),
     worktreePath:
       input.terminalLocation?.worktreePath ??
       input.activeSessionLocation?.worktreePath ??

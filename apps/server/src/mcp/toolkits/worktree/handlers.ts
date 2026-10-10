@@ -1,4 +1,5 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import * as Option from "effect/Option";
 import * as GitWorkflow from "../../../git/GitWorkflowService.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -28,7 +29,7 @@ const handlers = {
         });
       const git = yield* GitWorkflow.GitWorkflowService;
       return yield* git
-        .listRefs({ ...input, cwd: caller.worktreePath ?? project.value.workspaceRoot })
+        .listRefs({ ...input, cwd: threadPrimaryPath(caller, project.value) })
         .pipe(Effect.mapError(unavailable));
     }),
   t3_worktree_handoff: (input) =>

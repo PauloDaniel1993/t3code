@@ -4,6 +4,7 @@ import type {
   ServerProvider,
   ProviderDriverKind,
 } from "@t3tools/contracts";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import { fileBasename } from "@t3tools/client-runtime/markdown-links";
 import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
 import { getTriggerDisplayModelName } from "./providerIconUtils";
@@ -47,8 +48,8 @@ export function SubagentTooltipContent(props: {
     : model
       ? formatModelSlugName(model)
       : "Not reported";
-  const currentWorkspace = props.parentThread?.worktreePath ?? props.parentProject?.workspaceRoot;
-  const childWorkspace = props.childThread?.worktreePath ?? props.childProject?.workspaceRoot;
+  const currentWorkspace = threadPrimaryPath(props.parentThread, props.parentProject);
+  const childWorkspace = threadPrimaryPath(props.childThread, props.childProject);
   const metadata = [
     ...(props.parentThread &&
     props.childProject &&

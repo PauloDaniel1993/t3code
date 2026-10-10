@@ -77,6 +77,10 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
 
 const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
+const parentWorkspaceFolders = (cwd: string) => [
+  { path: cwd, name: "workspace", label: "workspace", checkoutRoot: cwd },
+];
+const parentWorktrees = (cwd: string) => [{ repositoryRoot: cwd, path: cwd, branch: "main" }];
 const projectId = ProjectId.make("project:mcp-orchestrator");
 const codexInstanceId = ProviderInstanceId.make("codex");
 const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
@@ -650,6 +654,8 @@ describe("orchestrator MCP toolkit", () => {
               interactionMode: "default",
               branch: null,
               worktreePath: cwd,
+              workspaceFolders: parentWorkspaceFolders(cwd),
+              worktrees: parentWorktrees(cwd),
             });
             yield* orchestrator.dispatch({
               type: "message.dispatch",
@@ -1881,6 +1887,9 @@ describe("orchestrator MCP toolkit", () => {
             });
             expect(emptyProjection.thread.forkedFrom).toBeNull();
             expect(emptyProjection.runs).toEqual([]);
+            // New threads keep the parent's folder snapshot and worktree set.
+            expect(emptyProjection.thread.workspaceFolders).toEqual(parentWorkspaceFolders(cwd));
+            expect(emptyProjection.thread.worktrees).toEqual(parentWorktrees(cwd));
 
             const defaultRenameCall = yield* invoke("t3_thread_update", {
               action: "rename",
