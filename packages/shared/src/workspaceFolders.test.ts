@@ -260,7 +260,12 @@ describe("owningFolder", () => {
     const inner = { path: "/repo/packages/api", id: "inner" };
     const twin = { path: "/repo/packages/api", id: "twin" };
     const remote = { id: "remote" };
-    const folders = [outer, remote, twin, inner];
+    const folders: ReadonlyArray<{ readonly path?: string; readonly id: string }> = [
+      outer,
+      remote,
+      twin,
+      inner,
+    ];
     expect(owningFolder("/repo/packages/api/src/main.ts", folders)?.id).toBe("twin");
     expect(owningFolder("/repo/packages/web/main.ts", folders)?.id).toBe("outer");
     expect(owningFolder("/elsewhere/main.ts", folders)).toBeUndefined();
