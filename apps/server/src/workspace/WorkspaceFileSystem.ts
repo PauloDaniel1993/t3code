@@ -13,9 +13,9 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 
 import type {
-  ProjectReadFileInput,
+  ProjectReadFileCwdInput,
   ProjectReadFileResult,
-  ProjectWriteFileInput,
+  ProjectWriteFileCwdInput,
   ProjectWriteFileResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -112,7 +112,7 @@ export class WorkspaceFileSystem extends Context.Service<
      * absolute path.
      */
     readonly readFile: (
-      input: ProjectReadFileInput,
+      input: ProjectReadFileCwdInput,
     ) => Effect.Effect<
       ProjectReadFileResult,
       WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
@@ -124,7 +124,7 @@ export class WorkspaceFileSystem extends Context.Service<
      * workspace root.
      */
     readonly writeFile: (
-      input: ProjectWriteFileInput,
+      input: ProjectWriteFileCwdInput,
     ) => Effect.Effect<
       ProjectWriteFileResult,
       WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
@@ -145,7 +145,7 @@ export const make = Effect.gen(function* () {
    * report an agent wrote to a temp directory; it gets no root check.
    */
   const resolveReadTarget = Effect.fn("WorkspaceFileSystem.resolveReadTarget")(function* (
-    input: ProjectReadFileInput,
+    input: ProjectReadFileCwdInput,
   ) {
     const requestedPath = input.relativePath.trim();
     if (path.isAbsolute(requestedPath)) {

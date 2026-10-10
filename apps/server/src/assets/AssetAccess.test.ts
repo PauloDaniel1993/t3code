@@ -2,7 +2,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeFSP from "node:fs/promises";
-import { AssetAccessError, AssetPreviewTypeValidationError, ThreadId } from "@t3tools/contracts";
+import {
+  AssetAccessError,
+  AssetPreviewTypeValidationError,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -544,6 +549,38 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "../secret.txt")).toBeNull();
       expect(yield* resolveAsset(token, ".env")).toBeNull();
       expect(yield* resolveAsset(`${token}tampered`, "report.html")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("serves a canonical-path file from the folder it resolved to", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-asset-scope-" });
+      const api = path.join(root, "api");
+      yield* fileSystem.makeDirectory(api);
+      yield* fileSystem.writeFileString(path.join(root, "report.html"), "<p>primary</p>");
+      yield* fileSystem.writeFileString(path.join(api, "report.html"), "<p>api</p>");
+      const resource = {
+        _tag: "workspace-scope-file" as const,
+        scope: { projectId: ProjectId.make("project-1"), folderPath: api },
+        path: "api/report.html",
+      };
+
+      const result = yield* issueAssetUrl({
+        resource,
+        workspaceRoot: api,
+        relativePath: "report.html",
+      });
+      const token = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length).split("/")[0]!;
+      expect(yield* resolveAsset(token, "report.html")).toEqual({
+        kind: "file",
+        path: yield* fileSystem.realPath(path.join(api, "report.html")),
+      });
+
+      // The canonical path alone names no file: its folder must resolve first.
+      const error = yield* issueAssetUrl({ resource, workspaceRoot: api }).pipe(Effect.flip);
+      expect(error._tag).toBe("AssetWorkspaceContextNotFoundError");
     }).pipe(Effect.provide(testLayer)),
   );
 

@@ -10,6 +10,7 @@ import {
   NonNegativeInt,
   PositiveInt,
   ProjectId,
+  ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
@@ -391,15 +392,100 @@ export class WorkspaceFileProjectsDisabledError extends Schema.TaggedError<Works
 export const ProjectEntryKind = Schema.Literals(["file", "directory"]);
 export type ProjectEntryKind = typeof ProjectEntryKind.Type;
 
-export const ProjectSearchEntriesInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+/**
+ * Which folders a scoped file request addresses. With a thread, its frozen
+ * folder snapshot, mapped into its worktrees; otherwise the project's current
+ * folders.
+ */
+export const WorkspaceScope = Schema.Struct({
+  projectId: ProjectId,
+  threadId: Schema.optional(ThreadId),
+  /**
+   * One folder's identity: its original path, or its kept URI. A search
+   * narrows to it, and a canonical path must resolve to it, so a rename
+   * between search and open can't open another folder.
+   */
+  folderPath: Schema.optional(TrimmedNonEmptyString),
+});
+export type WorkspaceScope = typeof WorkspaceScope.Type;
+
+/**
+ * One folder of a scoped response, in workspace order, primary first. The
+ * response's paths start with `label/`, unless the scope has one folder.
+ */
+export const WorkspaceScopeFolder = Schema.Struct({
+  folderPath: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  /** "index-error": searching this folder failed, which is not "no matches". */
+  status: Schema.Literals(["ok", "unavailable", "index-error"]),
+});
+export type WorkspaceScopeFolder = typeof WorkspaceScopeFolder.Type;
+
+/** A scoped request names a folder the scope doesn't have, or one it can't reach. */
+export class WorkspaceScopeError extends Schema.TaggedError<WorkspaceScopeError>()(
+  "WorkspaceScopeError",
+  {
+    failure: Schema.Literals([
+      "project-not-found",
+      "thread-not-found",
+      "folder-not-found",
+      // The path's label now names a different folder than `folderPath`.
+      "folder-changed",
+      "folder-unavailable",
+      "read-failed",
+    ]),
+    projectId: ProjectId,
+    threadId: Schema.optional(ThreadId),
+    /** The folder concerned: its identity, or the label a path started with. */
+    folder: Schema.optional(Schema.String),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    const folder = this.folder === undefined ? "" : ` '${this.folder}'`;
+    switch (this.failure) {
+      case "project-not-found":
+        return `Project ${this.projectId} was not found.`;
+      case "thread-not-found":
+        return `Thread ${this.threadId} was not found in project ${this.projectId}.`;
+      case "folder-not-found":
+        return `Workspace folder${folder} is not part of this workspace.`;
+      case "folder-changed":
+        return `Workspace folder${folder} changed. Search again.`;
+      case "folder-unavailable":
+        return `Workspace folder${folder} is unavailable.`;
+      case "read-failed":
+        return "Failed to read the workspace folders.";
+    }
+  }
+}
+
+const ProjectSearchEntriesFields = {
   // An empty query is a bounded browse: the index returns frecency-ordered
   // entries, which the file picker uses for its initial results.
   query: TrimmedString.check(Schema.isMaxLength(256)),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_ENTRIES_MAX_LIMIT)),
   kind: Schema.optional(ProjectEntryKind),
   imageOnly: Schema.optional(Schema.Boolean),
+};
+
+export const ProjectSearchEntriesCwdInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  ...ProjectSearchEntriesFields,
 });
+export type ProjectSearchEntriesCwdInput = typeof ProjectSearchEntriesCwdInput.Type;
+
+/** Searches every available folder of the scope; `limit` caps the merged total. */
+export const ProjectSearchEntriesScopedInput = Schema.Struct({
+  scope: WorkspaceScope,
+  ...ProjectSearchEntriesFields,
+});
+export type ProjectSearchEntriesScopedInput = typeof ProjectSearchEntriesScopedInput.Type;
+
+export const ProjectSearchEntriesInput = Schema.Union([
+  ProjectSearchEntriesCwdInput,
+  ProjectSearchEntriesScopedInput,
+]);
 export type ProjectSearchEntriesInput = typeof ProjectSearchEntriesInput.Type;
 
 export const ProjectEntry = Schema.Struct({
@@ -409,14 +495,19 @@ export const ProjectEntry = Schema.Struct({
 });
 export type ProjectEntry = typeof ProjectEntry.Type;
 
+/** A scoped result's paths are canonical, and it carries the scope's folder table. */
+const ScopedResultFields = {
+  folders: Schema.optional(Schema.Array(WorkspaceScopeFolder)),
+};
+
 export const ProjectSearchEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
+  ...ScopedResultFields,
 });
 export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 
-export const ProjectSearchContentsInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+const ProjectSearchContentsFields = {
   // Whitespace is significant in content queries (" foo", regex trailing
   // spaces), so the query is deliberately not trimmed on the wire.
   query: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
@@ -424,7 +515,25 @@ export const ProjectSearchContentsInput = Schema.Struct({
   caseSensitive: Schema.Boolean,
   wholeWord: Schema.Boolean,
   useRegex: Schema.Boolean,
+};
+
+export const ProjectSearchContentsCwdInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  ...ProjectSearchContentsFields,
 });
+export type ProjectSearchContentsCwdInput = typeof ProjectSearchContentsCwdInput.Type;
+
+/** Searches every available folder of the scope; `limit` and a byte cap bound the merged total. */
+export const ProjectSearchContentsScopedInput = Schema.Struct({
+  scope: WorkspaceScope,
+  ...ProjectSearchContentsFields,
+});
+export type ProjectSearchContentsScopedInput = typeof ProjectSearchContentsScopedInput.Type;
+
+export const ProjectSearchContentsInput = Schema.Union([
+  ProjectSearchContentsCwdInput,
+  ProjectSearchContentsScopedInput,
+]);
 export type ProjectSearchContentsInput = typeof ProjectSearchContentsInput.Type;
 
 export const ProjectContentMatchRange = Schema.Struct({
@@ -445,20 +554,39 @@ export const ProjectSearchContentsResult = Schema.Struct({
   matches: Schema.Array(ProjectContentMatch),
   truncated: Schema.Boolean,
   regexFallbackError: Schema.optional(Schema.String),
+  ...ScopedResultFields,
 });
 export type ProjectSearchContentsResult = typeof ProjectSearchContentsResult.Type;
 
-export const ProjectListEntriesInput = Schema.Struct({
+export const ProjectListEntriesCwdInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   // Present for immediate filesystem children, including ignored entries; empty means root.
   // Omitted preserves the indexed recursive listing used by older clients.
   directoryPath: Schema.optional(TrimmedString),
 });
+export type ProjectListEntriesCwdInput = typeof ProjectListEntriesCwdInput.Type;
+
+/**
+ * The immediate children of a canonical directory path. In a scope with
+ * several folders, the root (`""`) lists only the folder table, unless the
+ * scope's `folderPath` names the folder to list.
+ */
+export const ProjectListEntriesScopedInput = Schema.Struct({
+  scope: WorkspaceScope,
+  directoryPath: TrimmedString,
+});
+export type ProjectListEntriesScopedInput = typeof ProjectListEntriesScopedInput.Type;
+
+export const ProjectListEntriesInput = Schema.Union([
+  ProjectListEntriesCwdInput,
+  ProjectListEntriesScopedInput,
+]);
 export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
 
 export const ProjectListEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
+  ...ScopedResultFields,
 });
 export type ProjectListEntriesResult = typeof ProjectListEntriesResult.Type;
 
@@ -573,15 +701,29 @@ export class ProjectListEntriesError extends Schema.TaggedError<ProjectListEntri
   }
 }
 
-export const ProjectReadFileInput = Schema.Struct({
+export const ProjectReadFileCwdInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   // Workspace-relative, or an absolute host path for a file outside the
   // workspace. Only workspace-relative paths can be written back.
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_READ_FILE_PATH_MAX_LENGTH)),
 });
+export type ProjectReadFileCwdInput = typeof ProjectReadFileCwdInput.Type;
+
+/** A file by canonical path. Absolute host paths stay on the `cwd` form. */
+export const ProjectReadFileScopedInput = Schema.Struct({
+  scope: WorkspaceScope,
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_READ_FILE_PATH_MAX_LENGTH)),
+});
+export type ProjectReadFileScopedInput = typeof ProjectReadFileScopedInput.Type;
+
+export const ProjectReadFileInput = Schema.Union([
+  ProjectReadFileCwdInput,
+  ProjectReadFileScopedInput,
+]);
 export type ProjectReadFileInput = typeof ProjectReadFileInput.Type;
 
 export const ProjectReadFileResult = Schema.Struct({
+  /** For a scoped read, the canonical path. */
   relativePath: TrimmedNonEmptyString,
   contents: Schema.String,
   byteLength: NonNegativeInt,
@@ -646,14 +788,29 @@ export class ProjectReadFileError extends Schema.TaggedError<ProjectReadFileErro
   }
 }
 
-export const ProjectWriteFileInput = Schema.Struct({
+export const ProjectWriteFileCwdInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
   contents: Schema.String,
 });
+export type ProjectWriteFileCwdInput = typeof ProjectWriteFileCwdInput.Type;
+
+/** Writes a file by canonical path, inside its folder. */
+export const ProjectWriteFileScopedInput = Schema.Struct({
+  scope: WorkspaceScope,
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  contents: Schema.String,
+});
+export type ProjectWriteFileScopedInput = typeof ProjectWriteFileScopedInput.Type;
+
+export const ProjectWriteFileInput = Schema.Union([
+  ProjectWriteFileCwdInput,
+  ProjectWriteFileScopedInput,
+]);
 export type ProjectWriteFileInput = typeof ProjectWriteFileInput.Type;
 
 export const ProjectWriteFileResult = Schema.Struct({
+  /** For a scoped write, the canonical path. */
   relativePath: TrimmedNonEmptyString,
 });
 export type ProjectWriteFileResult = typeof ProjectWriteFileResult.Type;

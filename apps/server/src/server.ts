@@ -93,6 +93,7 @@ import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolve
 import * as WorkspaceFolderResolver from "./project/WorkspaceFolderResolver.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import * as WorkspaceFolderFiles from "./workspace/WorkspaceFolderFiles.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as WayfinderMaps from "./wayfinder/WayfinderMaps.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -531,6 +532,7 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   ProviderUsageLimitsIngestionLive,
   ProviderInstallationRefreshLive,
   ReplayMarkers.layer,
+  WorkspaceFolderFiles.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
 ).pipe(
   // Core Services
   Layer.provideMerge(OrchestrationApplicationLayerLive),

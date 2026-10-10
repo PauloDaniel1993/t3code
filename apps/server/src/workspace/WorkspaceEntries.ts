@@ -12,11 +12,11 @@ import type {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
   ProjectEntry,
-  ProjectListEntriesInput,
+  ProjectListEntriesCwdInput,
   ProjectListEntriesResult,
-  ProjectSearchContentsInput,
+  ProjectSearchContentsCwdInput,
   ProjectSearchContentsResult,
-  ProjectSearchEntriesInput,
+  ProjectSearchEntriesCwdInput,
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -94,13 +94,13 @@ export class WorkspaceEntries extends Context.Service<
       input: FilesystemBrowseInput,
     ) => Effect.Effect<FilesystemBrowseResult, WorkspaceEntriesBrowseError>;
     readonly list: (
-      input: ProjectListEntriesInput,
+      input: ProjectListEntriesCwdInput,
     ) => Effect.Effect<ProjectListEntriesResult, WorkspaceEntriesError>;
     readonly search: (
-      input: ProjectSearchEntriesInput,
+      input: ProjectSearchEntriesCwdInput,
     ) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceEntriesError>;
     readonly searchContents: (
-      input: ProjectSearchContentsInput,
+      input: ProjectSearchContentsCwdInput,
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceEntriesError>;
     readonly refresh: (cwd: string) => Effect.Effect<void>;
   }

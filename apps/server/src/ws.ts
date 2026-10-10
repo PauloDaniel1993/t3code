@@ -70,6 +70,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProjectMutationError,
+  type WorkspaceScopeError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
   RelayClientInstallFailedError,
@@ -81,6 +82,7 @@ import {
   FilesystemBrowseError,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
+  AssetWorkspacePathValidationError,
   ChatAttachmentId,
   PersistChatAttachmentsError,
   RpcClientId,
@@ -187,6 +189,7 @@ import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/Atta
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import * as WorkspaceFolderFiles from "./workspace/WorkspaceFolderFiles.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import { makeWayfinderRpcHandlers } from "./wayfinder/WayfinderRpcHandlers.ts";
@@ -393,6 +396,12 @@ function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesEr
     default:
       return unexpectedCompatibilityError(error);
   }
+}
+
+/** The folder a scoped listing failed in; every entries failure names it. */
+function workspaceEntriesErrorCwd(error: WorkspaceEntries.WorkspaceEntriesError): string {
+  if ("workspaceRoot" in error) return error.workspaceRoot;
+  return "parentPath" in error ? (error.cwd ?? error.parentPath) : error.cwd;
 }
 
 function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntriesBrowseError): {
@@ -1188,6 +1197,7 @@ const makeWsRpcLayer = (
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+      const workspaceFolderFiles = yield* WorkspaceFolderFiles.WorkspaceFolderFiles;
       const wayfinder = yield* makeWayfinderRpcHandlers;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
@@ -2983,81 +2993,123 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectsSearchEntries]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsSearchEntries,
-            workspaceEntries.search(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectSearchEntriesError({
-                    cwd: input.cwd,
-                    queryLength: input.query.length,
-                    limit: input.limit,
-                    ...projectEntriesFailureContext(cause),
-                    cause,
-                  }),
-              ),
-            ),
+            "scope" in input
+              ? workspaceFolderFiles.searchEntries(input)
+              : workspaceEntries.search(input).pipe(
+                  Effect.mapError(
+                    (cause): ProjectSearchEntriesError | WorkspaceScopeError =>
+                      new ProjectSearchEntriesError({
+                        cwd: input.cwd,
+                        queryLength: input.query.length,
+                        limit: input.limit,
+                        ...projectEntriesFailureContext(cause),
+                        cause,
+                      }),
+                  ),
+                ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.projectsSearchContents]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsSearchContents,
-            workspaceEntries.searchContents(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectSearchContentsError({
-                    cwd: input.cwd,
-                    queryLength: input.query.length,
-                    limit: input.limit,
-                    ...projectEntriesFailureContext(cause),
-                    cause,
-                  }),
-              ),
-            ),
+            "scope" in input
+              ? workspaceFolderFiles.searchContents(input)
+              : workspaceEntries.searchContents(input).pipe(
+                  Effect.mapError(
+                    (cause): ProjectSearchContentsError | WorkspaceScopeError =>
+                      new ProjectSearchContentsError({
+                        cwd: input.cwd,
+                        queryLength: input.query.length,
+                        limit: input.limit,
+                        ...projectEntriesFailureContext(cause),
+                        cause,
+                      }),
+                  ),
+                ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.projectsListEntries]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsListEntries,
-            workspaceEntries.list(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectListEntriesError({
-                    ...input,
-                    ...projectEntriesFailureContext(cause),
-                    cause,
-                  }),
-              ),
-            ),
+            "scope" in input
+              ? workspaceFolderFiles.listEntries(input).pipe(
+                  Effect.mapError((cause) =>
+                    cause._tag === "WorkspaceScopeError"
+                      ? cause
+                      : new ProjectListEntriesError({
+                          cwd: workspaceEntriesErrorCwd(cause),
+                          ...projectEntriesFailureContext(cause),
+                          cause,
+                        }),
+                  ),
+                )
+              : workspaceEntries.list(input).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProjectListEntriesError({
+                        ...input,
+                        ...projectEntriesFailureContext(cause),
+                        cause,
+                      }),
+                  ),
+                ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.projectsReadFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsReadFile,
-            workspaceFileSystem.readFile(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectReadFileError({
-                    ...input,
-                    ...projectFileFailureContext(cause),
-                    cause,
-                  }),
-              ),
-            ),
+            "scope" in input
+              ? workspaceFolderFiles.readFile(input).pipe(
+                  Effect.mapError((cause) =>
+                    cause._tag === "WorkspaceScopeError"
+                      ? cause
+                      : new ProjectReadFileError({
+                          cwd: cause.workspaceRoot,
+                          relativePath: input.path,
+                          ...projectFileFailureContext(cause),
+                          cause,
+                        }),
+                  ),
+                )
+              : workspaceFileSystem.readFile(input).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProjectReadFileError({
+                        ...input,
+                        ...projectFileFailureContext(cause),
+                        cause,
+                      }),
+                  ),
+                ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.projectsWriteFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsWriteFile,
-            workspaceFileSystem.writeFile(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectWriteFileError({
-                    cwd: input.cwd,
-                    relativePath: input.relativePath,
-                    ...projectFileFailureContext(cause),
-                    cause,
-                  }),
-              ),
-            ),
+            "scope" in input
+              ? workspaceFolderFiles.writeFile(input).pipe(
+                  Effect.mapError((cause) =>
+                    cause._tag === "WorkspaceScopeError"
+                      ? cause
+                      : new ProjectWriteFileError({
+                          cwd: cause.workspaceRoot,
+                          relativePath: input.path,
+                          ...projectFileFailureContext(cause),
+                          cause,
+                        }),
+                  ),
+                )
+              : workspaceFileSystem.writeFile(input).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProjectWriteFileError({
+                        cwd: input.cwd,
+                        relativePath: input.relativePath,
+                        ...projectFileFailureContext(cause),
+                        cause,
+                      }),
+                  ),
+                ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.projectsMutate]: (mutation) =>
@@ -3144,6 +3196,23 @@ const makeWsRpcLayer = (
                 return yield* issueAssetUrl({
                   resource: input.resource,
                   workspaceRoot: input.resource.cwd,
+                });
+              }
+              if (input.resource._tag === "workspace-scope-file") {
+                const resource = input.resource;
+                const target = yield* workspaceFolderFiles
+                  .resolvePath(resource.scope, resource.path)
+                  .pipe(
+                    Effect.mapError((cause) =>
+                      cause._tag === "WorkspaceScopeError"
+                        ? cause
+                        : new AssetWorkspacePathValidationError({ resource, cause }),
+                    ),
+                  );
+                return yield* issueAssetUrl({
+                  resource,
+                  workspaceRoot: target.cwd,
+                  relativePath: target.relativePath,
                 });
               }
               if (input.resource._tag === "project-favicon") {

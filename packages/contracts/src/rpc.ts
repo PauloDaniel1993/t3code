@@ -215,6 +215,7 @@ import {
   ProjectWriteFileError,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
+  WorkspaceScopeError,
 } from "./project.ts";
 import {
   TerminalAttachInput,
@@ -1130,31 +1131,43 @@ const WsSourceControlPublishRepositoryRpc = Rpc.make(WS_METHODS.sourceControlPub
 const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
   payload: ProjectSearchEntriesInput,
   success: ProjectSearchEntriesResult,
-  error: Schema.Union([ProjectSearchEntriesError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    ProjectSearchEntriesError,
+    WorkspaceScopeError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 const WsProjectsSearchContentsRpc = Rpc.make(WS_METHODS.projectsSearchContents, {
   payload: ProjectSearchContentsInput,
   success: ProjectSearchContentsResult,
-  error: Schema.Union([ProjectSearchContentsError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    ProjectSearchContentsError,
+    WorkspaceScopeError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries, {
   payload: ProjectListEntriesInput,
   success: ProjectListEntriesResult,
-  error: Schema.Union([ProjectListEntriesError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    ProjectListEntriesError,
+    WorkspaceScopeError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 const WsProjectsReadFileRpc = Rpc.make(WS_METHODS.projectsReadFile, {
   payload: ProjectReadFileInput,
   success: ProjectReadFileResult,
-  error: Schema.Union([ProjectReadFileError, EnvironmentAuthorizationError]),
+  error: Schema.Union([ProjectReadFileError, WorkspaceScopeError, EnvironmentAuthorizationError]),
 });
 
 const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
-  error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
+  error: Schema.Union([ProjectWriteFileError, WorkspaceScopeError, EnvironmentAuthorizationError]),
 });
 
 const WsProjectsMutateRpc = Rpc.make(WS_METHODS.projectsMutate, {
@@ -1208,7 +1221,7 @@ const WsAgentSessionsImportRpc = Rpc.make(WS_METHODS.agentSessionsImport, {
 const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   payload: AssetCreateUrlInput,
   success: AssetCreateUrlResult,
-  error: Schema.Union([AssetAccessError, EnvironmentAuthorizationError]),
+  error: Schema.Union([AssetAccessError, WorkspaceScopeError, EnvironmentAuthorizationError]),
 });
 
 const WsAssetsPersistChatAttachmentsRpc = Rpc.make(WS_METHODS.assetsPersistChatAttachments, {

@@ -23,7 +23,11 @@ import {
   ProjectSearchContentsInput,
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
+  ProjectListEntriesInput,
+  ProjectReadFileInput,
   ProjectWriteFileError,
+  ProjectWriteFileInput,
+  WorkspaceScopeError,
 } from "./project.ts";
 
 const decodeProjectCreatePayload = Schema.decodeUnknownSync(ProjectCreatePayload);
@@ -31,6 +35,9 @@ const decodeProjectUpdatePayload = Schema.decodeUnknownSync(ProjectUpdatePayload
 const decodeProjectMutation = Schema.decodeUnknownSync(ProjectMutation);
 const decodeSearchEntriesInput = Schema.decodeUnknownSync(ProjectSearchEntriesInput);
 const decodeSearchContentsInput = Schema.decodeUnknownSync(ProjectSearchContentsInput);
+const decodeReadFileInput = Schema.decodeUnknownSync(ProjectReadFileInput);
+const decodeWriteFileInput = Schema.decodeUnknownSync(ProjectWriteFileInput);
+const decodeListEntriesInput = Schema.decodeUnknownSync(ProjectListEntriesInput);
 
 describe("project search inputs", () => {
   it("allows an empty entries query for bounded frecency browsing", () => {
@@ -53,6 +60,59 @@ describe("project search inputs", () => {
       useRegex: false,
     });
     expect(decoded.query).toBe(" foo ");
+  });
+});
+
+describe("scoped file inputs", () => {
+  const scope = { projectId: "project-1", threadId: "thread-1", folderPath: "/srv/api" };
+
+  it("keep decoding today's cwd form, and decode the scoped form by its scope", () => {
+    expect(decodeSearchEntriesInput({ cwd: "/workspace", query: "main", limit: 10 })).toEqual({
+      cwd: "/workspace",
+      query: "main",
+      limit: 10,
+    });
+    expect(decodeSearchEntriesInput({ scope, query: "main", limit: 10 })).toEqual({
+      scope,
+      query: "main",
+      limit: 10,
+    });
+    expect(
+      decodeSearchContentsInput({
+        scope: { projectId: "project-1" },
+        query: " foo ",
+        limit: 10,
+        caseSensitive: false,
+        wholeWord: false,
+        useRegex: false,
+      }),
+    ).toMatchObject({ scope: { projectId: "project-1" }, query: " foo " });
+  });
+
+  it("address files by canonical path in read, write and list", () => {
+    expect(decodeReadFileInput({ scope, path: "api/src/main.ts" })).toEqual({
+      scope,
+      path: "api/src/main.ts",
+    });
+    expect(decodeWriteFileInput({ scope, path: "api/a.ts", contents: "" })).toEqual({
+      scope,
+      path: "api/a.ts",
+      contents: "",
+    });
+    expect(decodeListEntriesInput({ scope, directoryPath: "" })).toEqual({
+      scope,
+      directoryPath: "",
+    });
+    expect(() => decodeReadFileInput({ scope: { threadId: "thread-1" }, path: "a" })).toThrow();
+  });
+
+  it("name the folder a scope error concerns", () => {
+    const error = new WorkspaceScopeError({
+      failure: "folder-unavailable",
+      projectId: ProjectId.make("project-1"),
+      folder: "/srv/api",
+    });
+    expect(error.message).toBe("Workspace folder '/srv/api' is unavailable.");
   });
 });
 
