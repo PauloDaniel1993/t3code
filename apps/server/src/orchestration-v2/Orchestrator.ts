@@ -105,7 +105,7 @@ import { makeProviderFailure } from "./ProviderFailure.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
-import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import { probeUnavailableFolderPaths, RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   makeSubagentChildThread,
   subagentResultForRun,
@@ -762,10 +762,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (others.length === 0) return {};
-    const unavailableFolderPaths = yield* Effect.filter(
-      others.flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
-      (path) => Effect.map(isDirectory(path), (available) => !available),
-      { concurrency: 4 },
+    const unavailableFolderPaths = yield* probeUnavailableFolderPaths(thread).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
     );
     return { unavailableFolderPaths } satisfies Pick<OrchestrationV2Run, "unavailableFolderPaths">;
   });
@@ -1455,7 +1453,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const checkpointScope =
         storedCheckpointScope ??
         (yield* runtimePolicy
-          .resolve({ thread: projection.thread, modelSelection: queuedRun.modelSelection })
+          .resolve({
+            thread: projection.thread,
+            modelSelection: queuedRun.modelSelection,
+            ...workspaceAdmission,
+          })
           .pipe(
             Effect.flatMap((resolvedRuntimePolicy) =>
               checkpointService.prepareRootRunScope({
@@ -2511,10 +2513,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   }),
               ),
             );
+            // A thread spanning workspace folders switches only to a
+            // provider that reaches them all, judged on the folders it can
+            // reach now. A one-folder thread can switch to any provider.
+            const thread = providerContext!.thread;
+            const targetScope =
+              (thread.workspaceFolders?.length ?? 0) < 2
+                ? undefined
+                : yield* probeUnavailableFolderPaths(thread).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.flatMap((unavailableFolderPaths) =>
+                      runtimePolicy.resolve({
+                        thread,
+                        modelSelection: command.modelSelection,
+                        unavailableFolderPaths,
+                      }),
+                    ),
+                    Effect.tap((scope) =>
+                      runtimePolicy.requireWorkspaceFolderAccess({
+                        threadId: command.threadId,
+                        providerInstanceId: command.modelSelection.instanceId,
+                        scope,
+                      }),
+                    ),
+                    mapDispatchError(command),
+                  );
             return yield* providerSwitchService
               .plan({
                 projection: providerContext!,
                 targetModelSelection: command.modelSelection,
+                ...(targetScope === undefined ? {} : { targetScope }),
               })
               .pipe(mapDispatchError(command));
           })
@@ -3968,7 +3996,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         };
       }
       const resolvedRuntimePolicy = yield* runtimePolicy
-        .resolve({ thread: input.projection.thread, modelSelection: input.modelSelection })
+        .resolve({
+          thread: input.projection.thread,
+          modelSelection: input.modelSelection,
+          unavailableFolderPaths: targetRun.unavailableFolderPaths,
+        })
         .pipe(
           Effect.mapError(
             (cause) =>
@@ -4658,32 +4690,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const checkpointScope =
           activeRun.status === "preparing"
             ? null
-            : yield* runtimePolicy.resolve({ thread: projection.thread, modelSelection }).pipe(
-                Effect.flatMap((resolvedRuntimePolicy) =>
-                  checkpointService.prepareRootRunScope({
-                    threadId: command.threadId,
-                    runId,
-                    rootNodeId,
-                    providerThreadId: queuedProviderThread.id,
-                    cwd:
-                      resolvedRuntimePolicy.cwd ??
-                      selectedProviderSession?.cwd ??
-                      projection.thread.worktreePath ??
-                      process.cwd(),
-                    thread: projection.thread,
-                    ...workspaceAdmission,
-                    createdAt: now,
-                  }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestratorDispatchError({
-                      commandId: command.commandId,
-                      commandType: command.type,
-                      cause,
+            : yield* runtimePolicy
+                .resolve({ thread: projection.thread, modelSelection, ...workspaceAdmission })
+                .pipe(
+                  Effect.flatMap((resolvedRuntimePolicy) =>
+                    checkpointService.prepareRootRunScope({
+                      threadId: command.threadId,
+                      runId,
+                      rootNodeId,
+                      providerThreadId: queuedProviderThread.id,
+                      cwd:
+                        resolvedRuntimePolicy.cwd ??
+                        selectedProviderSession?.cwd ??
+                        projection.thread.worktreePath ??
+                        process.cwd(),
+                      thread: projection.thread,
+                      ...workspaceAdmission,
+                      createdAt: now,
                     }),
-                ),
-              );
+                  ),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestratorDispatchError({
+                        commandId: command.commandId,
+                        commandType: command.type,
+                        cause,
+                      }),
+                  ),
+                );
         const run: OrchestrationV2Run = {
           id: runId,
           threadId: command.threadId,
@@ -5021,6 +5055,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 .resolve({
                   thread: projection.thread,
                   modelSelection,
+                  ...workspaceAdmission,
                 })
                 .pipe(
                   mapDispatchError(command),
@@ -7501,7 +7536,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         mapDispatchError(command),
       );
       const resolvedRuntimePolicy = yield* runtimePolicy
-        .resolve({ thread: projection.thread, modelSelection: state.run.modelSelection })
+        .resolve({
+          thread: projection.thread,
+          modelSelection: state.run.modelSelection,
+          ...workspaceAdmission,
+        })
         .pipe(mapDispatchError(command));
       const checkpointScope = yield* checkpointService
         .prepareRootRunScope({

@@ -65,6 +65,7 @@ const PI_PRESENTATION = {
   // turn runs, so clients can reserve the meter before the first settle.
   reportsContextWindow: true,
   requiresNewThreadForModelChange: false,
+  workspaceFolderAccess: "unverified",
 } as const;
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;

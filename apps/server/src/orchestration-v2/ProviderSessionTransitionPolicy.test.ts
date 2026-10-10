@@ -13,6 +13,7 @@ const base = {
   runtimeMode: "full-access" as const,
   interactionMode: "default" as const,
   workspace: "/repo",
+  additionalDirectories: [] as ReadonlyArray<string>,
   capabilities: CodexProviderCapabilitiesV2,
 };
 
@@ -94,6 +95,27 @@ it("restarts compatible instances for workspace or runtime changes", () => {
       target: { ...base, workspace: "/other", available: true },
     }),
     { type: "restart_and_resume" },
+  );
+});
+
+it("restarts when the session's workspace folders change, not only its cwd", () => {
+  const spanning = { ...base, additionalDirectories: ["/docs", "/lib"] };
+  for (const [current, target] of [
+    [base, spanning],
+    [spanning, base],
+    [spanning, { ...base, additionalDirectories: ["/lib", "/docs"] }],
+  ] as const) {
+    assert.deepEqual(
+      decideProviderSessionTransition({ current, target: { ...target, available: true } }),
+      { type: "restart_and_resume" },
+    );
+  }
+  assert.deepEqual(
+    decideProviderSessionTransition({
+      current: spanning,
+      target: { ...spanning, additionalDirectories: ["/docs", "/lib"], available: true },
+    }),
+    { type: "reuse" },
   );
 });
 

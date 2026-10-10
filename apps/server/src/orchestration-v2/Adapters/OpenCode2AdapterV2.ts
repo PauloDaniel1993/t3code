@@ -190,7 +190,8 @@ const OpenCode2ProviderCapabilities = {
     nativeRequestIds: "strong",
   },
   // OpenCode enforces each runtime mode through the session's permission rules.
-  runtimePolicy: { enforcement: "native" },
+  // OpenCode 2 has no way to hand a session more than one folder.
+  runtimePolicy: { enforcement: "native", workspaceFolderAccess: "unsupported" },
 } satisfies OrchestrationV2ProviderCapabilities;
 
 type EventOf<T extends OpenCodeEvent["type"]> = Extract<OpenCodeEvent, { readonly type: T }>;

@@ -1569,16 +1569,20 @@ export const layerWithOptions = (
           sessionOpen.withLock(
             input.providerSessionId,
             Effect.gen(function* () {
-              const cwd = input.runtimePolicy.cwd;
-              if (cwd !== null) {
-                const workspaceIsDirectory = yield* fileSystem.stat(cwd).pipe(
+              // The working directory and every additional directory must exist.
+              const workspaceDirectories = [
+                ...(input.runtimePolicy.cwd === null ? [] : [input.runtimePolicy.cwd]),
+                ...input.runtimePolicy.additionalDirectories,
+              ];
+              for (const directory of workspaceDirectories) {
+                const workspaceIsDirectory = yield* fileSystem.stat(directory).pipe(
                   Effect.map((stat) => stat.type === "Directory"),
                   Effect.catch((error) => Effect.succeed(error.reason._tag !== "NotFound")),
                 );
                 if (!workspaceIsDirectory) {
                   return yield* new ProviderWorkspaceMissingError({
                     threadId: input.threadId,
-                    cwd,
+                    cwd: directory,
                   });
                 }
               }

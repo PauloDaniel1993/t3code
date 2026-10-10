@@ -9,6 +9,7 @@ import {
   resolveDefaultableModelSelection,
   resolveNewTaskModelSelection,
   resolveSelectableModelSelection,
+  restrictModelOptionsToScope,
   type ModelOption,
 } from "./modelOptions";
 
@@ -280,6 +281,44 @@ describe("mobile model options", () => {
       expect(options[0]).toMatchObject({ selection, isUnavailable: true });
     },
   );
+
+  it("marks providers that can't reach every workspace folder unavailable, with the reason", () => {
+    const provider = (instanceId: string, workspaceFolderAccess?: string) => ({
+      instanceId,
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      auth: { status: "authenticated" },
+      ...(workspaceFolderAccess === undefined ? {} : { workspaceFolderAccess }),
+      models: [
+        { slug: `${instanceId}-model`, name: instanceId, isCustom: false, capabilities: null },
+      ],
+    });
+    const config = {
+      providers: [
+        provider("multi-root", "supported"),
+        provider("unverified", "unverified"),
+        provider("legacy"),
+      ],
+    } as unknown as ServerConfig;
+    const options = buildModelOptions(config, null);
+
+    const restricted = restrictModelOptionsToScope(options, {
+      additionalDirectories: ["/work/docs"],
+    });
+    expect(restricted.map((option) => [option.providerKey, option.isUnavailable === true])).toEqual(
+      [
+        ["multi-root", false],
+        ["unverified", true],
+        ["legacy", true],
+      ],
+    );
+    expect(restricted[1]?.unavailableReason).toBe(
+      "This provider cannot yet access every workspace folder; choose a supported provider.",
+    );
+    // A one-folder scope leaves every option as it was.
+    expect(restrictModelOptionsToScope(options, { additionalDirectories: [] })).toBe(options);
+  });
 
   it("rejects stored selections whose provider is not usable", () => {
     const config = {

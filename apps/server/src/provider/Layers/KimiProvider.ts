@@ -36,6 +36,7 @@ const KIMI_PRESENTATION = {
   // execution") through its `mode` config option, so the plan/implement toggle
   // maps onto a real capability.
   showInteractionModeToggle: true,
+  workspaceFolderAccess: "unverified",
 } as const;
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;

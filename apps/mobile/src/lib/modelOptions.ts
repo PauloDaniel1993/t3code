@@ -1,10 +1,16 @@
 import type { MenuAction } from "@react-native-menu/menu";
-import type {
-  ModelCapabilities,
-  ModelSelection,
-  RuntimeMode,
-  ServerConfig as T3ServerConfig,
+import {
+  type ModelCapabilities,
+  type ModelSelection,
+  PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+  type ProviderWorkspaceFolderAccess,
+  type RuntimeMode,
+  type ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
+import {
+  isProviderEligibleForScope,
+  type WorkspaceFolderScope,
+} from "@t3tools/client-runtime/workspace-folder-access";
 import {
   buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionDescriptors,
@@ -18,10 +24,13 @@ export type ModelOption = {
   readonly providerLabel: string;
   readonly providerDriver: string;
   readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
+  readonly workspaceFolderAccess?: ProviderWorkspaceFolderAccess;
   readonly providerIconUrl?: string | undefined;
   readonly isDefault: boolean;
   readonly isLegacy: boolean;
   readonly isUnavailable?: boolean;
+  /** Why an unavailable option can't be picked, when the row should say. */
+  readonly unavailableReason?: string;
   readonly capabilities: ModelCapabilities | null;
   readonly selection: ModelSelection;
 };
@@ -187,6 +196,9 @@ export function buildModelOptions(
         ...(provider.supportedRuntimeModes === undefined
           ? {}
           : { supportedRuntimeModes: provider.supportedRuntimeModes }),
+        ...(provider.workspaceFolderAccess === undefined
+          ? {}
+          : { workspaceFolderAccess: provider.workspaceFolderAccess }),
         ...(provider.iconUrl ? { providerIconUrl: provider.iconUrl } : {}),
         isDefault: model.isDefault === true,
         isLegacy: model.isLegacy === true,
@@ -238,6 +250,9 @@ export function buildModelOptions(
         providerKey: fallbackModelSelection.instanceId,
         providerLabel,
         providerDriver,
+        ...(provider?.workspaceFolderAccess === undefined
+          ? {}
+          : { workspaceFolderAccess: provider.workspaceFolderAccess }),
         isDefault: false,
         isLegacy: model?.isLegacy === true,
         ...(isModelSelectionUnavailable(config, fallbackModelSelection)
@@ -250,6 +265,26 @@ export function buildModelOptions(
   }
 
   return [...options.values()];
+}
+
+/**
+ * Mark the options whose provider can't reach every folder of a thread's
+ * scope as unavailable, with the reason. The server enforces the same rule.
+ */
+export function restrictModelOptionsToScope(
+  options: ReadonlyArray<ModelOption>,
+  scope: WorkspaceFolderScope,
+): ReadonlyArray<ModelOption> {
+  if (scope.additionalDirectories.length === 0) return options;
+  return options.map((option) =>
+    isProviderEligibleForScope(option, scope)
+      ? option
+      : {
+          ...option,
+          isUnavailable: true,
+          unavailableReason: PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+        },
+  );
 }
 
 export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyArray<ProviderGroup> {

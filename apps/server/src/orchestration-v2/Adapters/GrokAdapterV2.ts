@@ -105,6 +105,11 @@ export const GrokProviderCapabilitiesV2 = {
     ...AcpProviderCapabilitiesV2.checkpointing,
     providerCanReadConversationSnapshot: true,
   },
+  // Grok has no way to be given folders beyond its working directory.
+  runtimePolicy: {
+    ...AcpProviderCapabilitiesV2.runtimePolicy,
+    workspaceFolderAccess: "unsupported",
+  },
 } satisfies OrchestrationV2ProviderCapabilities;
 
 export interface GrokAdapterV2Options {

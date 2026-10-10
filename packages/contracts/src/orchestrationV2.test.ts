@@ -301,6 +301,24 @@ describe("orchestration V2 contracts", () => {
       runtimePolicy: { enforcement: "native" },
     });
     expect(explicit.runtimePolicy).toEqual({ enforcement: "native" });
+
+    // Absent folder access means unverified, and an access this build doesn't
+    // know reads as absent rather than failing the session.
+    expect(decoded.runtimePolicy).not.toHaveProperty("workspaceFolderAccess");
+    for (const workspaceFolderAccess of ["supported", "unsupported", "unverified"] as const) {
+      expect(
+        decodeOrchestrationV2ProviderCapabilities({
+          ...legacyCapabilities,
+          runtimePolicy: { enforcement: "native", workspaceFolderAccess },
+        }).runtimePolicy.workspaceFolderAccess,
+      ).toBe(workspaceFolderAccess);
+    }
+    expect(
+      decodeOrchestrationV2ProviderCapabilities({
+        ...legacyCapabilities,
+        runtimePolicy: { enforcement: "native", workspaceFolderAccess: "partial" },
+      }).runtimePolicy,
+    ).toEqual({ enforcement: "native" });
   });
 
   it("lets legacy snapshot decoders ignore enrichment metadata", () => {

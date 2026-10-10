@@ -15,18 +15,26 @@ import {
   ProjectId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
+  PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+  type ProviderWorkspaceFolderAccess,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
+import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as ProviderAuthService from "../provider/Services/ProviderAuthService.ts";
+import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
@@ -35,6 +43,39 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as WorktreeSet from "./WorktreeSetService.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
+
+/**
+ * The real runtime policy over a project at `/work/app`, on a provider
+ * instance whose snapshot reports `workspaceFolderAccess`.
+ */
+function runtimePolicyLayer(workspaceFolderAccess?: ProviderWorkspaceFolderAccess) {
+  return RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: () =>
+            Effect.succeed(
+              Option.some({ workspaceRoot: "/work/app", folders: null } as ProjectStore.ProjectRow),
+            ),
+        }),
+        Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+          getInstance: () =>
+            Effect.succeed({
+              snapshot: {
+                getSnapshot: Effect.succeed({
+                  ...(workspaceFolderAccess === undefined ? {} : { workspaceFolderAccess }),
+                } as ServerProvider),
+              },
+            } as ProviderInstance),
+          listInstances: Effect.succeed([]),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.never,
+        }),
+      ),
+    ),
+  );
+}
 
 it("does not commit running state when inherited background routing cannot be read", async () => {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
@@ -55,6 +96,8 @@ it("does not commit running state when inherited background routing cannot be re
     thread: {
       id: threadId,
       projectId: ProjectId.make("project_provider_turn_start_projection_failure"),
+      runtimeMode: "full-access",
+      interactionMode: "default",
       branch: "feature/restore",
       worktreePath: "/tmp/missing-provider-turn-start-worktree",
     },
@@ -65,6 +108,8 @@ it("does not commit running state when inherited background routing cannot be re
         rootNodeId,
         activeAttemptId: attemptId,
         providerThreadId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
         userMessageId: messageId,
         ordinal: 2,
       },
@@ -118,7 +163,7 @@ it("does not commit running state when inherited background routing cannot be re
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
+        runtimePolicyLayer(),
       ),
     ),
   );
@@ -155,6 +200,7 @@ function makeLocalCommandHarness(input: {
   readonly recreateFailure?: unknown;
   readonly workspaceFolders?: OrchestrationV2ThreadProjection["thread"]["workspaceFolders"];
   readonly unavailableFolderPaths?: ReadonlyArray<string>;
+  readonly workspaceFolderAccess?: ProviderWorkspaceFolderAccess;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -222,6 +268,9 @@ function makeLocalCommandHarness(input: {
   let projection: OrchestrationV2ThreadProjection = {
     thread: {
       id: threadId,
+      projectId: ProjectId.make("project-native-account-command"),
+      runtimeMode: "full-access",
+      interactionMode: "default",
       activeProviderThreadId: providerThreadId,
       branch: null,
       worktreePath: null,
@@ -490,9 +539,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
-          resolve: () => Effect.succeed({} as never),
-        }),
+        runtimePolicyLayer(input.workspaceFolderAccess),
       ),
     ),
   );
@@ -853,20 +900,20 @@ const workspaceFolders = [
   { path: "/work/lib", name: "lib", label: "lib", checkoutRoot: "/work/lib" },
 ];
 
-for (const unavailableFolderPaths of [undefined, ["/work/lib"]]) {
+for (const workspaceFolderAccess of ["unverified", "unsupported", undefined] as const) {
   effectIt.effect(
-    `fails a run that reaches another workspace folder before any provider (${unavailableFolderPaths?.length ?? 0} unavailable)`,
+    `fails a run spanning workspace folders before a provider whose access is ${workspaceFolderAccess ?? "unknown"}`,
     () =>
       Effect.gen(function* () {
-        // With the other folder gone, the nested one still counts.
         const harness = makeLocalCommandHarness({
           text: "Continue",
           workspaceFolders,
-          ...(unavailableFolderPaths === undefined ? {} : { unavailableFolderPaths }),
+          ...(workspaceFolderAccess === undefined ? {} : { workspaceFolderAccess }),
         });
 
         yield* harness.start;
 
+        // No provider saw it, so no resume fallback could drop the folders.
         expect(harness.open).not.toHaveBeenCalled();
         expect(harness.startRootRun).not.toHaveBeenCalled();
         expect(harness.projection().runs.at(-1)?.status).toBe("failed");
@@ -875,8 +922,7 @@ for (const unavailableFolderPaths of [undefined, ["/work/lib"]]) {
             type: "error",
             failure: {
               class: "validation_error",
-              message:
-                "This provider cannot yet access every workspace folder; choose a supported provider.",
+              message: PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
               retryable: false,
             },
           },
@@ -885,18 +931,47 @@ for (const unavailableFolderPaths of [undefined, ["/work/lib"]]) {
   );
 }
 
-effectIt.effect("starts a run whose other workspace folders are all unavailable", () =>
+effectIt.effect("opens a supported provider with the run's other folders", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "Continue",
       workspaceFolders,
-      unavailableFolderPaths: ["/work/app/docs", "/work/lib"],
+      workspaceFolderAccess: "supported",
       openFailure: "provider offline",
     });
 
     yield* harness.start;
 
-    // It reached the provider: only the folder access rule could have stopped it sooner.
-    expect(harness.open).toHaveBeenCalled();
+    // The nested folder is reachable through cwd, so only the other one is added.
+    expect(harness.open).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimePolicy: expect.objectContaining({
+          cwd: "/work/app",
+          additionalDirectories: ["/work/lib"],
+        }),
+      }),
+    );
   }),
+);
+
+effectIt.effect(
+  "starts a run on any provider when its other folders are unavailable or inside cwd",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        workspaceFolders,
+        unavailableFolderPaths: ["/work/lib"],
+        workspaceFolderAccess: "unverified",
+        openFailure: "provider offline",
+      });
+
+      yield* harness.start;
+
+      expect(harness.open).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimePolicy: expect.objectContaining({ additionalDirectories: [] }),
+        }),
+      );
+    }),
 );

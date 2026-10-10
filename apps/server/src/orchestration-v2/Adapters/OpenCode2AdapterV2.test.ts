@@ -201,6 +201,7 @@ const policy = (runtimeMode: "full-access" | "approval-required" = "full-access"
   runtimeMode,
   interactionMode: "default" as const,
   cwd: WORK,
+  additionalDirectories: [],
 });
 
 const providerThread = (now: DateTime.Utc): OrchestrationV2ProviderThread => ({

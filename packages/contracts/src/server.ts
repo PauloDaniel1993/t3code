@@ -9,6 +9,7 @@ import {
 import { ServerAuthDescriptor } from "./auth.ts";
 import {
   ForwardCompatibleArray,
+  ForwardCompatibleOptional,
   IsoDateTime,
   NonNegativeInt,
   PositiveInt,
@@ -24,7 +25,7 @@ import {
 } from "./keybindings.ts";
 import { EditorId, FileManagerRevealKind, RemoteOpenTarget } from "./editor.ts";
 import { ModelCapabilities } from "./model.ts";
-import { RuntimeMode } from "./providerPolicy.ts";
+import { ProviderWorkspaceFolderAccess, RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
 import { ServerSettings } from "./settings.ts";
@@ -229,6 +230,8 @@ export const ServerProvider = Schema.Struct({
   supportedRuntimeModes: Schema.optional(ForwardCompatibleArray(RuntimeMode)),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
   supportsConversationRollback: Schema.optional(Schema.Boolean),
+  // Whether this instance may run a multi-folder scope. Absent is "unverified".
+  workspaceFolderAccess: ForwardCompatibleOptional(ProviderWorkspaceFolderAccess),
   supportsTextGeneration: Schema.optional(Schema.Boolean),
   setup: Schema.optional(
     Schema.Struct({

@@ -325,6 +325,8 @@ export const CodexProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    // Unverified until a live test reads and edits a file in an extra folder.
+    workspaceFolderAccess: "unverified",
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

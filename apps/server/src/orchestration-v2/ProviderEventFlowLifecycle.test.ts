@@ -163,6 +163,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: process.cwd(),
+            additionalDirectories: [],
             approvalPolicy: "never",
           },
         });

@@ -21,9 +21,14 @@ import type {
 } from "@t3tools/contracts";
 import {
   MIN_SCHEDULED_TASK_INTERVAL_MS,
+  PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
   ProviderInstanceId,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
+import {
+  isProviderEligibleForScope,
+  workspaceFolderScope,
+} from "@t3tools/client-runtime/workspace-folder-access";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -535,6 +540,22 @@ function ScheduledTaskEditorDialog({
     () => getCustomModelOptionsByInstance(settings, providers, activeInstanceId, activeModel),
     [settings, providers, activeInstanceId, activeModel],
   );
+  // A run that launches a thread works in the project's folders, so it needs
+  // a provider that reaches them all.
+  const workspaceScope = useMemo(
+    () => workspaceFolderScope({ thread: null, project: draft.threadId ? null : selectedProject }),
+    [draft.threadId, selectedProject],
+  );
+  const getModelDisabledReason = useCallback(
+    (instanceId: ProviderInstanceId) =>
+      isProviderEligibleForScope(
+        providers.find((provider) => provider.instanceId === instanceId),
+        workspaceScope,
+      )
+        ? null
+        : PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+    [providers, workspaceScope],
+  );
 
   const reportFailure = (title: string, error: unknown) => {
     toastManager.add(
@@ -805,6 +826,7 @@ function ScheduledTaskEditorDialog({
                 modelOptionsByInstance={modelOptionsByInstance}
                 isComposerOwned={false}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                getModelDisabledReason={getModelDisabledReason}
                 onInstanceModelChange={(instanceId, model) =>
                   setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
                 }

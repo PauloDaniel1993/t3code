@@ -34,8 +34,8 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
@@ -48,6 +48,15 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),
+  /**
+   * The run's available workspace folders beyond `cwd`, where the thread works
+   * on them, in snapshot order. It replaces any earlier list. Empty for a
+   * one-folder scope.
+   */
+  additionalDirectories: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+    Schema.withConstructorDefault(Effect.succeed([])),
+  ),
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),

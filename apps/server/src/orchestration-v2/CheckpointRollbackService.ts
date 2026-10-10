@@ -26,7 +26,7 @@ import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import type { ProviderAdapterV2RollbackTarget } from "./ProviderAdapter.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
-import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import { probeUnavailableFolderPaths, RuntimePolicyV2 } from "./RuntimePolicy.ts";
 
 export const ROLLBACK_FAILED_MESSAGE =
   "The provider could not roll back this conversation. Try again; if it keeps failing, check the provider and server logs.";
@@ -185,9 +185,13 @@ export const layer: Layer.Layer<
       }
 
       const modelSelection = projection.thread.modelSelection;
+      // Outside a run, so the folders it can reach are probed now.
       const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
         thread: projection.thread,
         modelSelection,
+        unavailableFolderPaths: yield* probeUnavailableFolderPaths(projection.thread).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+        ),
       });
       const existingSession = projection.providerSessions.find(
         (candidate) => candidate.id === providerThread.providerSessionId,

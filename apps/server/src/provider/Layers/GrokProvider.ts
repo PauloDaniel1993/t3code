@@ -50,6 +50,7 @@ const GROK_PRESENTATION = {
   supportsConversationRollback: false,
   showInteractionModeToggle: false,
   supportedRuntimeModes: GROK_SUPPORTED_RUNTIME_MODES,
+  workspaceFolderAccess: "unsupported",
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],

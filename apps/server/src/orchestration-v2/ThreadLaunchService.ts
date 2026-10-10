@@ -30,7 +30,11 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { buildTemporaryWorktreeBranchName, isTemporaryWorktreeBranch } from "@t3tools/shared/git";
-import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
+import {
+  resolveThreadWorkspace,
+  threadPrimaryPath,
+  workspaceAdditionalDirectories,
+} from "@t3tools/shared/workspaceFolders";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -43,6 +47,7 @@ import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
 import { randomUuidV4 } from "./RandomUuid.ts";
+import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as WorktreeSet from "./WorktreeSetService.ts";
 
@@ -164,6 +169,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const worktreeSets = yield* WorktreeSet.WorktreeSetService;
+  const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
   const preparationScope = yield* Scope.make("sequential");
   const scheduledLaunches = yield* Ref.make<ReadonlySet<CommandId>>(new Set());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
@@ -717,6 +723,30 @@ const make = Effect.gen(function* () {
                   )(cause),
                 ),
               );
+        // A new thread spanning workspace folders starts only with a provider
+        // that reaches them all. The snapshot was just probed, so a folder it
+        // gave no checkout root is unavailable now.
+        if (workspaceFolders !== undefined) {
+          yield* runtimePolicy
+            .requireWorkspaceFolderAccess({
+              threadId: candidateThreadId,
+              providerInstanceId: input.modelSelection.instanceId,
+              scope: {
+                additionalDirectories: workspaceAdditionalDirectories(
+                  resolveThreadWorkspace({
+                    thread: { worktreePath: initialWorktreePath, workspaceFolders },
+                    project,
+                    unavailableFolderPaths: workspaceFolders.flatMap((folder) =>
+                      folder.path !== undefined && folder.checkoutRoot === undefined
+                        ? [folder.path]
+                        : [],
+                    ),
+                  }),
+                ),
+              },
+            })
+            .pipe(Effect.mapError(mapError(input, "validate-workspace", candidateThreadId)));
+        }
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({

@@ -28,6 +28,7 @@ import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
   showInteractionModeToggle: false,
+  workspaceFolderAccess: "unverified",
 } as const;
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
@@ -483,6 +484,7 @@ const OPENCODE_2_PRESENTATION = {
   ...OPENCODE_PRESENTATION,
   showInteractionModeToggle: true,
   supportedRuntimeModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
+  workspaceFolderAccess: "unsupported",
 } as const;
 
 function openCode2ModelCapabilities(model: OpenCode2Model): ModelCapabilities {

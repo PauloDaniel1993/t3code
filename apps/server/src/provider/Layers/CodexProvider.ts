@@ -68,6 +68,7 @@ const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
   reportsContextWindow: true,
+  workspaceFolderAccess: "unverified",
 } as const;
 
 export interface CodexAppServerProviderSnapshot {

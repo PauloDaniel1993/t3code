@@ -54,6 +54,7 @@ const runtimePolicy = {
   runtimeMode: "full-access",
   interactionMode: "default",
   cwd: process.cwd(),
+  additionalDirectories: [],
 } satisfies ProviderAdapterV2RuntimePolicy;
 
 const StoresLayer = Layer.merge(eventStoreLayer, projectionStoreLayer).pipe(
