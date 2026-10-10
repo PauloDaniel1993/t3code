@@ -409,6 +409,8 @@ const SharedApplicationDataPlaneTestLayer = Layer.mergeAll(
       invalidate: () => Effect.void,
       probeFolders: () => Effect.succeed([]),
       getAvailableFolders: (folders) => Effect.succeed(folders),
+      getWorkspaceFileStatus: () => Effect.succeed(undefined),
+      setWorkspaceFileStatus: () => Effect.void,
       subscribeChanges: Effect.never,
     }),
   ),

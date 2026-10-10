@@ -709,7 +709,8 @@ const make = Effect.gen(function* () {
                 Effect.mapError((cause) =>
                   mapError(
                     input,
-                    cause._tag === "WorkspacePrimaryFolderUnavailableError"
+                    cause._tag === "WorkspacePrimaryFolderUnavailableError" ||
+                      cause._tag === "WorkspaceFileUnavailableError"
                       ? "validate-workspace"
                       : "resolve-project",
                     candidateThreadId,

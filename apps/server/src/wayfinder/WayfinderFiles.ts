@@ -74,13 +74,15 @@ export const resolveRealRoot = (workspaceRoot: string) =>
 /**
  * Watches a directory and hands each changed name, relative to it, to `onChange`. Nothing
  * else runs per event (`FileSystem.watch` stats every renamed path and queues every event),
- * so the caller's filter is the whole cost of an unrelated change. The returned deferred
- * completes when the watch closes or fails; closing the scope stops the watch.
+ * so the caller's filter is the whole cost of an unrelated change. An event the platform
+ * reports without a name goes to `onUnnamed`, if given. The returned deferred completes
+ * when the watch closes or fails; closing the scope stops the watch.
  */
 export const watchDirectory = (
   directory: string,
   recursive: boolean,
   onChange: (event: "rename" | "change", name: string) => void,
+  onUnnamed?: () => void,
 ) =>
   Effect.acquireRelease(
     Effect.try({
@@ -88,6 +90,7 @@ export const watchDirectory = (
         const closed = Deferred.makeUnsafe<void>();
         const watcher = NodeFS.watch(directory, { recursive }, (event, name) => {
           if (name) onChange(event, name);
+          else onUnnamed?.();
         });
         const markClosed = () => Deferred.doneUnsafe(closed, Effect.void);
         watcher.on("error", markClosed);

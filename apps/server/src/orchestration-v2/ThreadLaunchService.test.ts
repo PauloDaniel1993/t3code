@@ -24,6 +24,7 @@ import {
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
+  WorkspaceFileUnavailableError,
   WorkspacePrimaryFolderUnavailableError,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -158,6 +159,8 @@ function makeHarness(options: HarnessOptions = {}) {
       importWorkspaceFile: () => Effect.die("unused"),
       linkWorkspaceFile: () => Effect.die("unused"),
       unlinkWorkspaceFile: () => Effect.die("unused"),
+      refreshWorkspaceFile: () => Effect.die("unused"),
+      watchWorkspaceFiles: Effect.die("unused"),
       snapshotWorkspaceFolders:
         options.snapshotWorkspaceFolders ?? (() => Effect.succeed(undefined)),
       delete: () => Effect.die("unused"),
@@ -1182,6 +1185,30 @@ it.effect("fails a launch, creating no thread, while the linked project's primar
       assert.equal(error.operation, "validate-workspace");
       assert.instanceOf(error.cause, WorkspacePrimaryFolderUnavailableError);
       assert.isNull(yield* threads.getThreadShell(ThreadId.make("thread:launch:no-primary")));
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("fails a launch, creating no thread, while the linked project's file is unusable", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness({
+      snapshotWorkspaceFolders: (id) =>
+        Effect.fail(
+          new WorkspaceFileUnavailableError({
+            projectId: id,
+            diagnostic: { code: "file-not-found", message: "Workspace file not found: /team" },
+          }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const error = yield* launches
+        .launch(launchInput({ command: "command:launch:no-file", thread: "thread:launch:no-file" }))
+        .pipe(Effect.flip);
+      assert.equal(error.operation, "validate-workspace");
+      assert.instanceOf(error.cause, WorkspaceFileUnavailableError);
+      assert.isNull(yield* threads.getThreadShell(ThreadId.make("thread:launch:no-file")));
     }).pipe(Effect.provide(harness.layer));
   }),
 );

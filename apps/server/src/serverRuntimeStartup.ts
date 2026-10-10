@@ -551,6 +551,16 @@ const make = (options?: StartupOptions) =>
           yield* autoPullProjects(projects, settings);
         }),
       );
+      // Linked projects follow their workspace files for the server's lifetime.
+      yield* forkParked(
+        runStartupPhase(
+          "projects.workspace-files",
+          ProjectService.ProjectService.pipe(
+            Effect.flatMap((projects) => projects.watchWorkspaceFiles),
+            Effect.ignoreCause({ log: true }),
+          ),
+        ),
+      );
 
       const importPendingTranscripts = legacyV1ThreadImporter.importPendingTranscripts.pipe(
         Effect.tap((summary) =>
