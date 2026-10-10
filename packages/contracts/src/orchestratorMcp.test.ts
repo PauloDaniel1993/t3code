@@ -5,6 +5,7 @@ import {
   OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpFailure,
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadListInput,
   OrchestratorMcpThreadReadInput,
@@ -20,8 +21,42 @@ const decodeThreadListInput = Schema.decodeUnknownSync(OrchestratorMcpThreadList
 const decodeThreadReadInput = Schema.decodeUnknownSync(OrchestratorMcpThreadReadInput);
 const decodeThreadSendInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSendInput);
 const decodeThreadWaitInput = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitInput);
+const decodeFailure = Schema.decodeUnknownSync(OrchestratorMcpFailure);
+const encodeFailure = Schema.encodeSync(OrchestratorMcpFailure);
 
 describe("orchestrator MCP contracts", () => {
+  it("preserves workspace diagnostics and conflict IDs while accepting older failures", () => {
+    const diagnostic = {
+      code: "conflict" as const,
+      message: "This workspace file is already linked.",
+      path: "C:\\team\\team.code-workspace",
+    };
+    const failure = decodeFailure({
+      _tag: "OrchestratorMcpFailure",
+      code: "invalid_request",
+      message: diagnostic.message,
+      diagnostic,
+      conflictingProjectId: "project:existing",
+    });
+    expect(encodeFailure(failure)).toMatchObject({
+      diagnostic,
+      conflictingProjectId: "project:existing",
+    });
+    expect(
+      decodeFailure({
+        _tag: "OrchestratorMcpFailure",
+        code: "invalid_request",
+        message: "Old failure",
+      }).diagnostic,
+    ).toBeUndefined();
+    expect(
+      decodeFailure({
+        ...encodeFailure(failure),
+        diagnostic: { ...diagnostic, code: "future-diagnostic" },
+      }).diagnostic,
+    ).toBeUndefined();
+  });
+
   it("decodes cross-provider delegated task requests and durable results", () => {
     const request = decodeDelegateTaskInput({
       task: "Inspect the workspace and report the result.",

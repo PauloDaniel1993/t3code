@@ -4,6 +4,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import {
   ContextTransferId,
+  ForwardCompatibleOptional,
   IsoDateTime,
   MessageId,
   NodeId,
@@ -36,6 +37,7 @@ import {
   ProviderOptionSelectionValue,
 } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { WorkspaceFileDiagnostic } from "./project.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
   description: "Complete task or message text for the target agent.",
@@ -588,5 +590,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "orchestration_error",
     ]),
     message: Schema.String,
+    diagnostic: ForwardCompatibleOptional(WorkspaceFileDiagnostic),
+    conflictingProjectId: Schema.optional(ProjectId),
   },
 ) {}
