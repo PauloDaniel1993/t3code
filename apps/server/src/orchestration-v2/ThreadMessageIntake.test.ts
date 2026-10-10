@@ -7,6 +7,8 @@ import {
   ChatAttachmentId,
   CommandId,
   EventId,
+  ProjectId,
+  ProviderInstanceId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -20,6 +22,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import {
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorDispatchError,
@@ -27,9 +30,23 @@ import {
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { dispatchCommand } from "./ThreadMessageIntake.ts";
 
+const linkedProjectId = ProjectId.make("project:linked");
+const linkedSnapshot = [
+  { path: "/work/app", name: "app", label: "app", checkoutRoot: "/work/app", checkoutPrefix: "" },
+  { path: "/work/docs", name: "docs", label: "docs", checkoutRoot: null },
+];
+
 const intakeTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-question-intake-",
-}).pipe(Layer.provideMerge(NodeServices.layer));
+}).pipe(
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(
+    Layer.mock(ProjectService.ProjectService)({
+      snapshotWorkspaceFolders: (projectId) =>
+        Effect.succeed(projectId === linkedProjectId ? linkedSnapshot : undefined),
+    }),
+  ),
+);
 
 const failingDispatch = (captured: OrchestrationV2ServerCommand[]) =>
   Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -762,5 +779,43 @@ it.effect("applies the image budget across all questions before dispatch", () =>
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure") expect(String(result.cause)).toContain("80 MiB");
     expect(captured).toEqual([]);
+  }).pipe(Effect.provide(intakeTestLayer)),
+);
+
+it.effect("binds a client's new thread of a linked project to the project's folders", () =>
+  Effect.gen(function* () {
+    const captured: OrchestrationV2ServerCommand[] = [];
+    const create = (projectId: ProjectId, commandId: string) =>
+      ({
+        type: "thread.create",
+        commandId: CommandId.make(commandId),
+        threadId: ThreadId.make(`thread:${commandId}`),
+        projectId,
+        title: "New thread",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      }) satisfies OrchestrationV2Command;
+    const recordingDispatch = Layer.mock(ThreadManagementService.ThreadManagementService)({
+      dispatch: (command) => {
+        captured.push(command);
+        return Effect.succeed({ sequence: 1, storedEvents: [] } as never);
+      },
+    });
+
+    yield* dispatchCommand(create(linkedProjectId, "linked")).pipe(
+      Effect.provide(recordingDispatch),
+    );
+    yield* dispatchCommand(create(ProjectId.make("project:plain"), "plain")).pipe(
+      Effect.provide(recordingDispatch),
+    );
+
+    expect(
+      captured.map((command) => "workspaceFolders" in command && command.workspaceFolders),
+    ).toEqual([linkedSnapshot, false]);
   }).pipe(Effect.provide(intakeTestLayer)),
 );

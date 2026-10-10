@@ -153,6 +153,8 @@ function makeLocalCommandHarness(input: {
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
   readonly recreateFailure?: unknown;
+  readonly workspaceFolders?: OrchestrationV2ThreadProjection["thread"]["workspaceFolders"];
+  readonly unavailableFolderPaths?: ReadonlyArray<string>;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -182,6 +184,9 @@ function makeLocalCommandHarness(input: {
     completedAt: null,
     checkpointId: null,
     contextHandoffId: null,
+    ...(input.unavailableFolderPaths === undefined
+      ? {}
+      : { unavailableFolderPaths: input.unavailableFolderPaths }),
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
@@ -220,6 +225,7 @@ function makeLocalCommandHarness(input: {
       activeProviderThreadId: providerThreadId,
       branch: null,
       worktreePath: null,
+      ...(input.workspaceFolders === undefined ? {} : { workspaceFolders: input.workspaceFolders }),
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
       ...(input.previousNativeSession
@@ -840,3 +846,50 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+const workspaceFolders = [
+  { path: "/work/app", name: "app", label: "app", checkoutRoot: "/work/app" },
+  { path: "/work/app/docs", name: "docs", label: "docs", checkoutRoot: "/work/app" },
+  { path: "/work/lib", name: "lib", label: "lib", checkoutRoot: "/work/lib" },
+];
+
+effectIt.effect(
+  "fails a run that reaches workspace folders beyond its cwd before any provider",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Continue", workspaceFolders });
+
+      yield* harness.start;
+
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          failure: {
+            class: "validation_error",
+            message:
+              "This provider cannot yet access every workspace folder; choose a supported provider.",
+            retryable: false,
+          },
+        },
+      ]);
+    }),
+);
+
+effectIt.effect("starts a run whose other folders are unavailable or inside its cwd", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      workspaceFolders,
+      unavailableFolderPaths: ["/work/lib"],
+      openFailure: "provider offline",
+    });
+
+    yield* harness.start;
+
+    // It reached the provider: only the folder access rule could have stopped it sooner.
+    expect(harness.open).toHaveBeenCalled();
+  }),
+);

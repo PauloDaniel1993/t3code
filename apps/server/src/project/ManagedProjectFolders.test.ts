@@ -23,6 +23,7 @@ import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import * as WorkspaceFolderResolver from "./WorkspaceFolderResolver.ts";
 import * as ManagedProjectFolders from "./ManagedProjectFolders.ts";
 
 // Real repository detection: the service only asks the Git workflow whether
@@ -48,6 +49,9 @@ const enrichmentLayer = ProjectEnrichmentService.layer.pipe(
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
         resolvePath: () => Effect.succeed(null),
+      }),
+      Layer.succeed(WorkspaceFolderResolver.WorkspaceFolderResolver, {
+        probe: (path) => Effect.succeed({ path, availability: "available", vcs: null }),
       }),
     ),
   ),

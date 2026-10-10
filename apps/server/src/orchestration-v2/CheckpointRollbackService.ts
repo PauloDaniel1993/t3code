@@ -15,7 +15,9 @@ import * as Schema from "effect/Schema";
 
 import {
   isCheckpointRestoreIsolated,
+  MULTI_FOLDER_RESTORE_MESSAGE,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
+  spansWorkspaceFolders,
 } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
@@ -38,6 +40,7 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
       "provider-turn-unavailable",
       "unexpected-failure",
       "shared-workspace",
+      "multi-folder-workspace",
     ]),
     threadId: ThreadId,
     providerThreadId: ProviderThreadId,
@@ -55,6 +58,8 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
         return `Provider turn for rollback target ${this.checkpointId} is unavailable on provider thread ${this.providerThreadId}.`;
       case "shared-workspace":
         return SHARED_WORKSPACE_RESTORE_MESSAGE;
+      case "multi-folder-workspace":
+        return MULTI_FOLDER_RESTORE_MESSAGE;
       case "unexpected-failure":
         return ROLLBACK_FAILED_MESSAGE;
     }
@@ -154,6 +159,14 @@ export const layer: Layer.Layer<
         });
       }
 
+      if (input.restoreFiles !== false && spansWorkspaceFolders(projection.thread)) {
+        return yield* new CheckpointRollbackExecutionError({
+          reason: "multi-folder-workspace",
+          threadId: input.threadId,
+          providerThreadId: input.providerThreadId,
+          checkpointId: input.checkpointId,
+        });
+      }
       if (
         input.restoreFiles !== false &&
         !(yield* isCheckpointRestoreIsolated(projection.thread, scope, {

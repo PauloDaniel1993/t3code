@@ -4,13 +4,18 @@ import {
   ProjectId,
   ProviderInstanceId,
   type RuntimeMode,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
+import {
+  additionalFolderPaths,
+  resolveThreadWorkspace,
+  threadPrimaryPath,
+} from "@t3tools/shared/workspaceFolders";
 
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import {
@@ -33,6 +38,41 @@ export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyR
   override get message(): string {
     return `Failed to resolve runtime policy for provider instance ${this.providerInstanceId} in project ${this.projectId}.`;
   }
+}
+
+/** The run reaches folders beyond its working directory, which its provider can't be given yet. */
+export class ProviderWorkspaceFolderAccessError extends Schema.TaggedError<ProviderWorkspaceFolderAccessError>()(
+  "ProviderWorkspaceFolderAccessError",
+  {
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+  },
+) {
+  override get message(): string {
+    return "This provider cannot yet access every workspace folder; choose a supported provider.";
+  }
+}
+
+/**
+ * Whether a run of this thread reaches folders beyond its working directory:
+ * available snapshot folders outside the primary. No provider is granted
+ * those yet, so such a run must not start.
+ */
+export function runNeedsAdditionalFolders(
+  thread: OrchestrationV2AppThread,
+  unavailableFolderPaths: ReadonlyArray<string> | undefined,
+): boolean {
+  const primaryPath = thread.workspaceFolders?.[0]?.path;
+  return (
+    primaryPath !== undefined &&
+    additionalFolderPaths(
+      resolveThreadWorkspace({
+        thread,
+        project: { workspaceRoot: primaryPath },
+        unavailableFolderPaths,
+      }),
+    ).length > 0
+  );
 }
 
 export const RuntimePolicyV2Error = Schema.Union([RuntimePolicyResolveError]);

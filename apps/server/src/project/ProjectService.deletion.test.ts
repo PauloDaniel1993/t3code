@@ -33,6 +33,8 @@ import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import * as WorkspaceFiles from "./WorkspaceFiles.ts";
+import * as WorkspaceFolderResolver from "./WorkspaceFolderResolver.ts";
 
 const eventPersistenceLayer = EventSink.layer.pipe(
   Layer.provideMerge(Layer.merge(EventStore.layer, ProjectionStore.layer)),
@@ -43,6 +45,7 @@ const servicesLayer = Layer.mergeAll(
   ProjectStore.layer,
   IdAllocator.layer,
   ThreadCommandExecutor.layer,
+  WorkspaceFiles.layer,
   Layer.succeed(WorkspacePaths.WorkspacePaths, {
     normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
     resolveRelativePathWithinRoot: ({ workspaceRoot, relativePath }) =>
@@ -52,12 +55,15 @@ const servicesLayer = Layer.mergeAll(
   Layer.provideMerge(
     ProjectEnrichmentService.layer.pipe(
       Layer.provide(
-        Layer.merge(
+        Layer.mergeAll(
           Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
             resolve: () => Effect.succeed(null),
           }),
           Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
             resolvePath: () => Effect.succeed(null),
+          }),
+          Layer.succeed(WorkspaceFolderResolver.WorkspaceFolderResolver, {
+            probe: (path) => Effect.succeed({ path, availability: "available", vcs: null }),
           }),
         ),
       ),

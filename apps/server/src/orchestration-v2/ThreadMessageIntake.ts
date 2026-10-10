@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 
 import * as AttachmentClaims from "./AttachmentClaims.ts";
@@ -53,6 +54,17 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   command: OrchestrationV2Command,
 ) {
   const threads = yield* ThreadManagement.ThreadManagementService;
+  if (command.type === "thread.create" && command.workspaceFolders === undefined) {
+    // A client's new thread of a linked project binds the project's folders
+    // now; the server probes them, so clients never send a snapshot. A
+    // missing project is the orchestrator's to reject.
+    const workspaceFolders = yield* (yield* ProjectService.ProjectService)
+      .snapshotWorkspaceFolders(command.projectId)
+      .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(undefined)));
+    return yield* threads.dispatch(
+      workspaceFolders === undefined ? command : { ...command, workspaceFolders },
+    );
+  }
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
     const incomingByQuestionId = command.attachmentsByQuestionId;

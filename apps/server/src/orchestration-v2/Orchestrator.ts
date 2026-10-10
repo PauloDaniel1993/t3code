@@ -46,6 +46,7 @@ import {
   RunId,
   ThreadLinkedPullRequest,
   ThreadId,
+  WorkspacePrimaryFolderUnavailableError,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
@@ -67,7 +68,9 @@ import * as Stream from "effect/Stream";
 import * as ProjectStore from "./ProjectStore.ts";
 import {
   isCheckpointRestoreIsolated,
+  MULTI_FOLDER_RESTORE_MESSAGE,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
+  spansWorkspaceFolders,
 } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { CommandPolicyV2, resolveMessageDispatchIntent } from "./CommandPolicy.ts";
@@ -732,6 +735,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
       ),
     );
+
+  /**
+   * Re-check, once as a run's scope is prepared, which of the thread's
+   * snapshot folders the run can reach; the run keeps that answer. A thread
+   * without a worktree can't run while its primary folder is gone. A worktree
+   * thread's primary lives in its worktree, which turn start recreates.
+   */
+  const admitRunWorkspace = Effect.fn("orchestrationV2.admitRunWorkspace")(function* (
+    thread: OrchestrationV2AppThread,
+  ) {
+    const isDirectory = (path: string) =>
+      fileSystem.stat(path).pipe(
+        Effect.map((info) => info.type === "Directory"),
+        Effect.orElseSucceed(() => false),
+      );
+    const [primary, ...others] = thread.workspaceFolders ?? [];
+    if (
+      primary?.path !== undefined &&
+      thread.worktreePath === null &&
+      !(yield* isDirectory(primary.path))
+    ) {
+      return yield* new WorkspacePrimaryFolderUnavailableError({
+        projectId: thread.projectId,
+        folderPath: primary.path,
+      });
+    }
+    if (others.length === 0) return {};
+    const unavailableFolderPaths = yield* Effect.filter(
+      others.flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
+      (path) => Effect.map(isDirectory(path), (available) => !available),
+      { concurrency: 4 },
+    );
+    return { unavailableFolderPaths } satisfies Pick<OrchestrationV2Run, "unavailableFolderPaths">;
+  });
 
   const enforceCommandPolicy =
     (command: OrchestrationV2Command) =>
@@ -1402,6 +1439,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               )
           : null;
       const activeHandoff = handoff ?? legacyImportRecoveryHandoff;
+      const workspaceAdmission =
+        storedCheckpointScope === undefined
+          ? yield* admitRunWorkspace(projection.thread).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorDispatchError({
+                    commandId,
+                    commandType: "message.dispatch",
+                    cause,
+                  }),
+              ),
+            )
+          : {};
       const checkpointScope =
         storedCheckpointScope ??
         (yield* runtimePolicy
@@ -1463,6 +1513,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
       const startingRun: OrchestrationV2Run = {
         ...queuedRun,
+        ...workspaceAdmission,
         status: "starting",
         queuePosition: null,
         startedAt: null,
@@ -4596,6 +4647,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         };
         const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
         const rootNodeId = idAllocator.derive.rootNode({ runId });
+        const workspaceAdmission =
+          activeRun.status === "preparing"
+            ? {}
+            : yield* admitRunWorkspace(projection.thread).pipe(mapDispatchError(command));
         const checkpointScope =
           activeRun.status === "preparing"
             ? null
@@ -4634,6 +4689,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: "queued",
+          ...workspaceAdmission,
           ...(projection.runs.some(
             (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
           )
@@ -4948,6 +5004,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               };
         const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
         const rootNodeId = idAllocator.derive.rootNode({ runId });
+        const workspaceAdmission =
+          dispatchMode.type === "defer_start"
+            ? {}
+            : yield* admitRunWorkspace(projection.thread).pipe(mapDispatchError(command));
         const checkpointScope =
           dispatchMode.type === "defer_start"
             ? null
@@ -4984,6 +5044,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: dispatchMode.type === "defer_start" ? "preparing" : "starting",
+          ...workspaceAdmission,
           queuePosition: null,
           requestedAt: now,
           startedAt: null,
@@ -5638,6 +5699,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
+      const workspaceAdmission = yield* admitRunWorkspace(projection.thread).pipe(
+        mapDispatchError(command),
+      );
       const checkpointScope = yield* checkpointService
         .prepareRootRunScope({
           threadId: command.threadId,
@@ -5672,6 +5736,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         rootNodeId,
         activeAttemptId: attemptId,
         status: "starting",
+        ...workspaceAdmission,
         queuePosition: null,
         requestedAt: now,
         startedAt: null,
@@ -7422,6 +7487,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       const now = yield* DateTime.now;
+      const workspaceAdmission = yield* admitRunWorkspace(projection.thread).pipe(
+        mapDispatchError(command),
+      );
       const resolvedRuntimePolicy = yield* runtimePolicy
         .resolve({ thread: projection.thread, modelSelection: state.run.modelSelection })
         .pipe(mapDispatchError(command));
@@ -7478,7 +7546,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         nodeId: state.rootNode.id,
         providerInstanceId: state.run.providerInstanceId,
         occurredAt: now,
-        payload: { ...state.run, status: "starting" },
+        payload: { ...state.run, ...workspaceAdmission, status: "starting" },
       });
       yield* Ref.update(effects, (existing) => [
         ...existing,
@@ -8171,6 +8239,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandId: command.commandId,
           commandType: command.type,
           cause: `Checkpoint ${command.checkpointId} belongs to scope ${targetScope.id}, not ${command.scopeId}.`,
+        });
+      }
+      if (command.restoreFiles !== false && spansWorkspaceFolders(projection.thread)) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: MULTI_FOLDER_RESTORE_MESSAGE,
         });
       }
       if (command.restoreFiles !== false) {

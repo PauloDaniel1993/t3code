@@ -91,13 +91,14 @@ export interface WorkspaceThread {
   readonly worktreePath: string | null;
   readonly workspaceFolders?: ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder> | undefined;
   readonly worktrees?: ReadonlyArray<OrchestrationV2ThreadWorktree> | undefined;
+  /** A shell's stand-in for the snapshot's primary folder. */
+  readonly workspacePrimaryPath?: string | undefined;
 }
 
 /**
  * Where a thread works: its primary folder, inside its worktree when it has
  * one. Without a folder snapshot this is `worktreePath ?? project.workspaceRoot`.
- * A shell carries no snapshot, so for a linked project's thread without a
- * worktree it gives the project's current primary folder, not the snapshot's.
+ * A shell has no snapshot, so it names its primary in `workspacePrimaryPath`.
  * Null only when neither the thread nor a project names a folder.
  */
 export function threadPrimaryPath(
@@ -113,7 +114,11 @@ export function threadPrimaryPath(
   project: WorkspaceProject | null | undefined,
 ): string | null {
   return (
-    thread?.worktreePath ?? thread?.workspaceFolders?.[0]?.path ?? project?.workspaceRoot ?? null
+    thread?.worktreePath ??
+    thread?.workspaceFolders?.[0]?.path ??
+    thread?.workspacePrimaryPath ??
+    project?.workspaceRoot ??
+    null
   );
 }
 
@@ -185,6 +190,21 @@ export function resolveThreadWorkspace(input: {
       checkoutRoot: folder.checkoutRoot,
     })),
   };
+}
+
+/**
+ * The folders a thread reaches beyond its working directory: the effective
+ * paths of its available non-primary folders that aren't inside the primary
+ * path, in snapshot order, each once. Empty for a one-folder workspace.
+ */
+export function additionalFolderPaths(workspace: ThreadWorkspace): ReadonlyArray<string> {
+  const paths: Array<string> = [];
+  for (const folder of workspace.folders) {
+    const path = folder.effectivePath;
+    if (folder.isPrimary || path === null || isPathWithin(workspace.primaryPath, path)) continue;
+    if (!paths.some((existing) => isSamePath(existing, path))) paths.push(path);
+  }
+  return paths;
 }
 
 /** Whether `path` is `root` or inside it. Windows paths compare case-insensitively. */

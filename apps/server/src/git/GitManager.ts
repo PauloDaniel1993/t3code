@@ -721,7 +721,7 @@ export const make = Effect.gen(function* () {
           Effect.map((thread) => thread?.projectId ?? null),
           Effect.orElseSucceed(() => null),
         )
-      : projects.findActiveByWorkspaceRoot(input.cwd).pipe(
+      : projects.findActiveByWorkspaceRoot(input.cwd, { includeLinked: true }).pipe(
           Effect.map((project) => Option.getOrNull(project)?.projectId ?? null),
           Effect.orElseSucceed(() => null),
         );

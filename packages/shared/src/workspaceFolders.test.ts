@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  additionalFolderPaths,
   allocateFolderLabels,
   isPathWithin,
   isSamePath,
@@ -120,6 +121,15 @@ describe("threadPrimaryPath", () => {
       ),
     ).toBe("/repo/web");
   });
+
+  it("reads a shell's snapshot primary, which has no folder list", () => {
+    expect(
+      threadPrimaryPath(
+        { worktreePath: null, workspacePrimaryPath: "/repo/web" },
+        { workspaceRoot: "/elsewhere" },
+      ),
+    ).toBe("/repo/web");
+  });
 });
 
 describe("resolveThreadWorkspace", () => {
@@ -199,6 +209,30 @@ describe("resolveThreadWorkspace", () => {
       "D:\\wt\\s\\Repo",
       "D:\\wt\\s\\Repo\\Docs",
     ]);
+  });
+});
+
+describe("additionalFolderPaths", () => {
+  it("lists available folders outside the primary, in order, once each", () => {
+    const workspace = resolveThreadWorkspace({
+      thread: {
+        worktreePath: null,
+        workspaceFolders: [
+          ...snapshotFolders,
+          { path: "/notes", name: "notes again", label: "notes-2", checkoutRoot: null },
+          { path: "/repo/web/docs", name: "docs", label: "docs", checkoutRoot: "/repo" },
+        ],
+      },
+      project,
+      unavailableFolderPaths: ["/repo/lib"],
+    });
+    expect(additionalFolderPaths(workspace)).toEqual(["/repo/lib/vendor", "/notes"]);
+  });
+
+  it("is empty for a one-folder workspace", () => {
+    expect(
+      additionalFolderPaths(resolveThreadWorkspace({ thread: { worktreePath: null }, project })),
+    ).toEqual([]);
   });
 });
 

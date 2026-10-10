@@ -1,9 +1,14 @@
 import { assert, it } from "@effect/vitest";
-import { ProjectId } from "@t3tools/contracts";
+import {
+  ProjectId,
+  WorkspaceFileProjectsDisabledError,
+  WorkspaceFileUnavailableError,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import {
   ProjectConflictError,
+  ProjectFileConflictError,
   ProjectNotEmptyError,
   ProjectNotFoundError,
   ProjectOperationError,
@@ -21,6 +26,16 @@ it.effect.each([
     workspaceRoot: "/workspace/project",
     conflictingProjectId: ProjectId.make("project:http-mutation-conflict"),
   }),
+  new ProjectFileConflictError({
+    projectId,
+    workspaceFile: "/workspace/team.code-workspace",
+    conflictingProjectId: ProjectId.make("project:http-mutation-conflict"),
+  }),
+  new WorkspaceFileUnavailableError({
+    projectId,
+    diagnostic: { code: "file-not-found", message: "Workspace file not found." },
+  }),
+  new WorkspaceFileProjectsDisabledError(),
 ])("maps expected project mutation failures to invalid requests", (cause) =>
   Effect.gen(function* () {
     const error = yield* failProjectMutation(cause).pipe(Effect.flip);

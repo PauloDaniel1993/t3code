@@ -103,9 +103,19 @@ export class ProjectStoreV2 extends Context.Service<
       readonly projectIds?: ReadonlyArray<ProjectId>;
       readonly includeDeleted?: boolean;
     }) => Effect.Effect<ReadonlyArray<ProjectRow>, ProjectStoreV2Error>;
-    /** Workspace roots match by exact string; callers normalize before asking. */
+    /**
+     * The active plain project at a workspace root: linked projects never own
+     * one. With `includeLinked`, a project linked to a workspace file whose
+     * primary folder is the root answers when no plain project does. Roots
+     * match by exact string; callers normalize before asking.
+     */
     readonly findActiveByWorkspaceRoot: (
       workspaceRoot: string,
+      options?: { readonly includeLinked?: boolean },
+    ) => Effect.Effect<Option.Option<ProjectRow>, ProjectStoreV2Error>;
+    /** The active project linked to a workspace file, matched like a root. */
+    readonly findActiveByWorkspaceFile: (
+      workspaceFile: string,
     ) => Effect.Effect<Option.Option<ProjectRow>, ProjectStoreV2Error>;
     /** An active project's shell without enrichment such as repository identity. */
     readonly getShell: (
@@ -128,6 +138,7 @@ export const make = Effect.gen(function* () {
       projectId: Schema.optional(ProjectId),
       projectIds: Schema.optional(Schema.Array(ProjectId)),
       workspaceRoot: Schema.optional(Schema.String),
+      workspaceFile: Schema.optional(Schema.String),
       includeDeleted: Schema.Boolean,
     }),
     Result: ProjectDbRow,
@@ -155,6 +166,9 @@ export const make = Effect.gen(function* () {
         ...(request.workspaceRoot === undefined
           ? []
           : [sql`workspace_root = ${request.workspaceRoot}`]),
+        ...(request.workspaceFile === undefined
+          ? []
+          : [sql`workspace_file = ${request.workspaceFile}`]),
       ])}
       ORDER BY created_at ASC, project_id ASC
     `,
@@ -234,10 +248,24 @@ export const make = Effect.gen(function* () {
 
   const findActiveByWorkspaceRoot: ProjectStoreV2["Service"]["findActiveByWorkspaceRoot"] = (
     workspaceRoot,
+    options,
   ) =>
     selectRows({ workspaceRoot, includeDeleted: false }).pipe(
-      Effect.map((rows) => Option.fromUndefinedOr(rows[0])),
+      Effect.map((rows) =>
+        Option.fromUndefinedOr(
+          rows.find((row) => row.workspaceFile === null) ??
+            (options?.includeLinked === true ? rows[0] : undefined),
+        ),
+      ),
       mapError("findActiveByWorkspaceRoot"),
+    );
+
+  const findActiveByWorkspaceFile: ProjectStoreV2["Service"]["findActiveByWorkspaceFile"] = (
+    workspaceFile,
+  ) =>
+    selectRows({ workspaceFile, includeDeleted: false }).pipe(
+      Effect.map((rows) => Option.fromUndefinedOr(rows[0])),
+      mapError("findActiveByWorkspaceFile"),
     );
 
   const apply: ProjectStoreV2["Service"]["apply"] = Effect.fn("ProjectStoreV2.apply")(
@@ -298,6 +326,7 @@ export const make = Effect.gen(function* () {
     get,
     list,
     findActiveByWorkspaceRoot,
+    findActiveByWorkspaceFile,
     getShell: (projectId) => get(projectId).pipe(Effect.map(Option.map(toShell))),
     listShells: (options) =>
       list(options?.projectIds === undefined ? undefined : { projectIds: options.projectIds }).pipe(

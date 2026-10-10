@@ -91,10 +91,23 @@ export class ProjectWorkspaceConflictError extends Schema.TaggedError<ProjectWor
   }
 }
 
+export class ProjectWorkspaceFileConflictError extends Schema.TaggedError<ProjectWorkspaceFileConflictError>()(
+  "ProjectWorkspaceFileConflictError",
+  {
+    workspaceFile: Schema.String,
+    conflictingProjectId: ProjectId,
+  },
+) {
+  override get message(): string {
+    return `Active project '${this.conflictingProjectId}' is already linked to workspace file '${this.workspaceFile}'.`;
+  }
+}
+
 export const ProjectCommandRejection = Schema.Union([
   ProjectCommandInvariantError,
   ProjectCommandMissingProjectError,
   ProjectWorkspaceConflictError,
+  ProjectWorkspaceFileConflictError,
 ]);
 export type ProjectCommandRejection = typeof ProjectCommandRejection.Type;
 
@@ -112,8 +125,63 @@ export const decodeProjectCommandRejection = Schema.decodeUnknownOption(
 export interface ProjectCommandState {
   /** The target project's row, including a soft-deleted one; only create sees deleted rows as taken. */
   readonly project: ProjectRow | undefined;
-  /** The active project that holds the command's requested workspace root, if any. */
+  /** The active plain project that holds the root the command claims, if any. */
   readonly workspaceOwner: ProjectRow | undefined;
+  /** The active project linked to the workspace file the command claims, if any. */
+  readonly workspaceFileOwner: ProjectRow | undefined;
+}
+
+/**
+ * The identities a command takes or gives up. A plain project owns its root,
+ * and a linked project its workspace file, so linking gives up the root and
+ * unlinking claims it back.
+ */
+export interface ProjectCommandIdentities {
+  /** The root the command newly holds as a plain project. */
+  readonly claimedRoot?: string;
+  /** The workspace file the command newly links. */
+  readonly claimedFile?: string;
+  /** Every root it claims or releases, sorted. Their locks are taken before the files'. */
+  readonly roots: ReadonlyArray<string>;
+  /** Every workspace file it claims or releases, sorted. */
+  readonly files: ReadonlyArray<string>;
+}
+
+const sortedUnique = (values: ReadonlyArray<string | undefined>) =>
+  Array.from(new Set(values.filter((value) => value !== undefined))).toSorted();
+
+/** Decide which identities a command claims and locks, against its project's current row. */
+export function projectCommandIdentities(
+  command: ProjectCommand,
+  project: ProjectRow | undefined,
+): ProjectCommandIdentities {
+  if (command.type === "project.create") {
+    return command.workspaceFile === undefined
+      ? { claimedRoot: command.workspaceRoot, roots: [command.workspaceRoot], files: [] }
+      : { claimedFile: command.workspaceFile, roots: [], files: [command.workspaceFile] };
+  }
+  if (command.type === "project.delete" || project === undefined || project.deletedAt !== null) {
+    return { roots: [], files: [] };
+  }
+  const previousFile = project.workspaceFile;
+  const nextFile = command.workspaceFile === undefined ? previousFile : command.workspaceFile;
+  if (nextFile === null) {
+    const claimedRoot =
+      command.workspaceRoot !== undefined || previousFile !== null
+        ? (command.workspaceRoot ?? project.workspaceRoot)
+        : undefined;
+    return {
+      ...(claimedRoot === undefined ? {} : { claimedRoot }),
+      roots: sortedUnique([claimedRoot]),
+      files: sortedUnique([previousFile ?? undefined]),
+    };
+  }
+  if (nextFile === previousFile) return { roots: [], files: [] };
+  return {
+    claimedFile: nextFile,
+    roots: previousFile === null ? [project.workspaceRoot] : [],
+    files: sortedUnique([nextFile, previousFile ?? undefined]),
+  };
 }
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -171,6 +239,25 @@ export function planProjectCommand(input: {
           workspaceRoot,
           conflictingProjectId: state.workspaceOwner.projectId,
         });
+  const requireWorkspaceFileAvailable = (workspaceFile: string) =>
+    state.workspaceFileOwner === undefined ||
+    state.workspaceFileOwner.projectId === command.projectId
+      ? undefined
+      : new ProjectWorkspaceFileConflictError({
+          workspaceFile,
+          conflictingProjectId: state.workspaceFileOwner.projectId,
+        });
+  const requireIdentitiesAvailable = () => {
+    const identities = projectCommandIdentities(command, state.project);
+    return (
+      (identities.claimedRoot === undefined
+        ? undefined
+        : requireWorkspaceAvailable(identities.claimedRoot)) ??
+      (identities.claimedFile === undefined
+        ? undefined
+        : requireWorkspaceFileAvailable(identities.claimedFile))
+    );
+  };
   const occurredAt = DateTime.formatIso(input.now);
   const base = {
     eventId: input.eventId,
@@ -196,7 +283,7 @@ export function planProjectCommand(input: {
         folders: command.folders ?? null,
       });
       if (linkViolation !== undefined) return invariant(linkViolation);
-      const conflict = requireWorkspaceAvailable(command.workspaceRoot);
+      const conflict = requireIdentitiesAvailable();
       if (conflict !== undefined) return Result.fail(conflict);
       return Result.succeed({
         ...base,
@@ -254,10 +341,8 @@ export function planProjectCommand(input: {
         });
         if (linkViolation !== undefined) return invariant(linkViolation);
       }
-      if (command.workspaceRoot !== undefined) {
-        const conflict = requireWorkspaceAvailable(command.workspaceRoot);
-        if (conflict !== undefined) return Result.fail(conflict);
-      }
+      const conflict = requireIdentitiesAvailable();
+      if (conflict !== undefined) return Result.fail(conflict);
       return Result.succeed({
         ...base,
         type: "project.meta-updated",

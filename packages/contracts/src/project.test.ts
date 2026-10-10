@@ -18,6 +18,7 @@ import {
   ProjectCreatePayload,
   ProjectUpdatePayload,
   ProjectMutation,
+  ProjectMutationError,
   ProjectSearchContentsError,
   ProjectSearchContentsInput,
   ProjectSearchEntriesError,
@@ -408,5 +409,57 @@ describe("workspace-file projects", () => {
         updatedAt: "2026-01-01T00:00:00.000Z",
       }),
     ).toThrow();
+  });
+
+  it("decodes an import, and keeps an unlink's null apart from an unchanged link", () => {
+    expect(
+      decodeProjectMutation({
+        type: "project.import-workspace-file",
+        commandId: "command",
+        projectId: "project",
+        workspaceFilePath: "  /work/team.code-workspace ",
+      }),
+    ).toEqual({
+      type: "project.import-workspace-file",
+      commandId: "command",
+      projectId: "project",
+      workspaceFilePath: "/work/team.code-workspace",
+    });
+    expect(() =>
+      decodeProjectMutation({
+        type: "project.import-workspace-file",
+        commandId: "command",
+        projectId: "project",
+        workspaceFilePath: " ",
+      }),
+    ).toThrow();
+    expect(decodeProjectUpdatePayload({ workspaceFilePath: null })).toHaveProperty(
+      "workspaceFilePath",
+      null,
+    );
+    expect(
+      Object.hasOwn(decodeProjectUpdatePayload({ title: "Renamed" }), "workspaceFilePath"),
+    ).toBe(false);
+  });
+
+  it("carries a refused import's diagnostic, dropping codes this build doesn't know", () => {
+    const decodeError = Schema.decodeUnknownSync(ProjectMutationError);
+    const error = decodeError({
+      _tag: "ProjectMutationError",
+      commandId: "command",
+      message: "Workspace file not found.",
+      diagnostic: { code: "file-not-found", message: "Workspace file not found." },
+      conflictingProjectId: "project:other",
+    });
+    expect(error.diagnostic?.code).toBe("file-not-found");
+    expect(error.conflictingProjectId).toBe("project:other");
+    const newer = decodeError({
+      _tag: "ProjectMutationError",
+      commandId: "command",
+      message: "Something new.",
+      diagnostic: { code: "too-many-folders", message: "Something new." },
+    });
+    expect(newer.diagnostic).toBeUndefined();
+    expect(newer.message).toBe("Something new.");
   });
 });

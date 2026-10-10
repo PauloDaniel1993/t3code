@@ -26,8 +26,13 @@ const project = {
 it.effect("preserves every project mutation field", () =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<unknown>>([]);
-    const projects: Pick<ProjectService["Service"], "create" | "delete" | "update"> = {
+    const projects: Pick<
+      ProjectService["Service"],
+      "create" | "delete" | "importWorkspaceFile" | "update"
+    > = {
       create: (input) =>
+        Ref.update(calls, (entries) => [...entries, input]).pipe(Effect.as(project)),
+      importWorkspaceFile: (input) =>
         Ref.update(calls, (entries) => [...entries, input]).pipe(Effect.as(project)),
       update: (input) =>
         Ref.update(calls, (entries) => [...entries, input]).pipe(Effect.as(project)),
@@ -59,6 +64,20 @@ it.effect("preserves every project mutation field", () =>
       scripts: [],
     });
     yield* projectMutationOperation(projects, {
+      type: "project.import-workspace-file",
+      commandId: CommandId.make("command:import"),
+      projectId,
+      workspaceFilePath: "/work/team.code-workspace",
+      title: "Team",
+    });
+    // Null unlinks, so it must reach the service rather than read as absent.
+    yield* projectMutationOperation(projects, {
+      type: "project.update",
+      commandId: CommandId.make("command:unlink"),
+      projectId,
+      workspaceFilePath: null,
+    });
+    yield* projectMutationOperation(projects, {
       type: "project.delete",
       commandId: CommandId.make("command:delete"),
       projectId,
@@ -87,6 +106,13 @@ it.effect("preserves every project mutation field", () =>
         defaultThreadEnvMode: null,
         scripts: [],
       },
+      {
+        commandId: "command:import",
+        projectId,
+        workspaceFilePath: "/work/team.code-workspace",
+        title: "Team",
+      },
+      { commandId: "command:unlink", projectId, workspaceFilePath: null },
       { commandId: "command:delete", projectId, force: true },
     ]);
   }),

@@ -14,15 +14,14 @@ import {
 } from "../auth/http.ts";
 import * as ServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as ProjectService from "./ProjectService.ts";
-import { projectMutationOperation } from "./ProjectMutation.ts";
+import { expectedProjectMutationFailure, projectMutationOperation } from "./ProjectMutation.ts";
 
 export const failProjectMutation = Effect.fn("environment.projects.failMutation")(function* (
   cause: ProjectService.ProjectServiceError | ServerRuntimeStartup.ServerRuntimeStartupError,
 ) {
   if (
-    cause._tag === "ProjectNotFoundError" ||
-    cause._tag === "ProjectConflictError" ||
-    cause._tag === "ProjectNotEmptyError"
+    cause._tag !== "ServerRuntimeStartupError" &&
+    expectedProjectMutationFailure(cause) !== undefined
   ) {
     return yield* failEnvironmentInvalidRequest("invalid_command");
   }

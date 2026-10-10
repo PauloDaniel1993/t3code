@@ -368,6 +368,13 @@ export const OrchestrationV2ThreadWorkspaceFolder = Schema.Struct({
    * when the folder is not in git; absent when it was unavailable at binding.
    */
   checkoutRoot: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  /**
+   * Where the folder sits below `checkoutRoot`, as `git rev-parse --show-prefix`
+   * prints it: `/`-separated with no trailing slash, empty at the checkout root.
+   * Set with `checkoutRoot`, so a worktree set maps a folder in the same path
+   * space as its realpath members, even through a symlink.
+   */
+  checkoutPrefix: Schema.optional(Schema.String),
 });
 export type OrchestrationV2ThreadWorkspaceFolder = typeof OrchestrationV2ThreadWorkspaceFolder.Type;
 
@@ -1725,6 +1732,11 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   /** Size of the thread's folder snapshot. The folder list stays on the thread detail. */
   workspaceFolderCount: Schema.optional(PositiveInt),
+  /**
+   * The snapshot's primary folder, for a thread bound without a worktree. Its
+   * project's primary can move later, so a shell can't derive this.
+   */
+  workspacePrimaryPath: Schema.optional(TrimmedNonEmptyString),
   worktrees: Schema.optional(Schema.Array(OrchestrationV2ThreadWorktree)),
   /** Pull request the user linked to this thread (#8160). */
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),

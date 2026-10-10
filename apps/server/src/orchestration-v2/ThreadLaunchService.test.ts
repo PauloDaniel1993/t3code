@@ -24,6 +24,7 @@ import {
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
+  WorkspacePrimaryFolderUnavailableError,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -106,6 +107,8 @@ interface HarnessOptions {
   readonly generateBranchName?: TextGeneration.TextGeneration["Service"]["generateBranchName"];
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
+  /** Links the project to a workspace file, whose new threads bind this snapshot. */
+  readonly snapshotWorkspaceFolders?: ProjectService.ProjectService["Service"]["snapshotWorkspaceFolders"];
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -152,11 +155,20 @@ function makeHarness(options: HarnessOptions = {}) {
       create: () => Effect.die("unused"),
       bootstrap: () => Effect.die("unused"),
       update: () => Effect.die("unused"),
+      importWorkspaceFile: () => Effect.die("unused"),
+      linkWorkspaceFile: () => Effect.die("unused"),
+      unlinkWorkspaceFile: () => Effect.die("unused"),
+      snapshotWorkspaceFolders:
+        options.snapshotWorkspaceFolders ?? (() => Effect.succeed(undefined)),
       delete: () => Effect.die("unused"),
       getById: (id) =>
         Effect.succeed(
           id === projectId
-            ? Option.some(project)
+            ? Option.some(
+                options.snapshotWorkspaceFolders === undefined
+                  ? project
+                  : { ...project, workspaceFile: "/repo/team.code-workspace" },
+              )
             : id === otherProjectId
               ? Option.some(otherProject)
               : Option.none(),
@@ -1096,6 +1108,80 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
       });
       assert.lengthOf(claimed, 1);
       assert.isNull(other.projection.thread.worktreePath);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+const linkedSnapshot = [
+  { path: "/repo", name: "repo", label: "repo", checkoutRoot: "/repo", checkoutPrefix: "" },
+  { path: "/docs", name: "docs", label: "docs", checkoutRoot: null },
+];
+
+it.effect("binds a new thread of a linked project to its folders when it is created", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness({
+      snapshotWorkspaceFolders: () => Effect.succeed(linkedSnapshot),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const launched = yield* launches.launch(
+        launchInput({ command: "command:launch:linked", thread: "thread:launch:linked" }),
+      );
+      assert.deepEqual(launched.projection.thread.workspaceFolders, linkedSnapshot);
+      assert.isNull(launched.projection.thread.worktreePath);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect.each([
+  { type: "worktree" as const, baseRef: "main" },
+  { type: "existing_worktree" as const, worktreePath: "/repo-worktrees/feature" },
+])("refuses a $type launch for a linked project until worktree sets land", (workspace) =>
+  Effect.gen(function* () {
+    const harness = makeHarness({
+      snapshotWorkspaceFolders: () => Effect.succeed(linkedSnapshot),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const error = yield* launches
+        .launch(
+          launchInput({
+            command: `command:launch:linked-${workspace.type}`,
+            thread: `thread:launch:linked-${workspace.type}`,
+            workspace,
+          }),
+        )
+        .pipe(Effect.flip);
+      assert.equal(error.operation, "validate-workspace");
+      assert.match(String(error.cause), /aren't supported yet/);
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+      assert.isNull(
+        yield* threads.getThreadShell(ThreadId.make(`thread:launch:linked-${workspace.type}`)),
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("fails a launch, creating no thread, while the linked project's primary is gone", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness({
+      snapshotWorkspaceFolders: (id) =>
+        Effect.fail(
+          new WorkspacePrimaryFolderUnavailableError({ projectId: id, folderPath: "/repo" }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const error = yield* launches
+        .launch(
+          launchInput({ command: "command:launch:no-primary", thread: "thread:launch:no-primary" }),
+        )
+        .pipe(Effect.flip);
+      assert.equal(error.operation, "validate-workspace");
+      assert.instanceOf(error.cause, WorkspacePrimaryFolderUnavailableError);
+      assert.isNull(yield* threads.getThreadShell(ThreadId.make("thread:launch:no-primary")));
     }).pipe(Effect.provide(harness.layer));
   }),
 );
