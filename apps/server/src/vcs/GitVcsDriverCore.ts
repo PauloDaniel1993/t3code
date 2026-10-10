@@ -3086,7 +3086,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
     const checkoutWorkers = (yield* readConfigValue(input.cwd, "checkout.workers")) ?? "0";
-    yield* executeGit(
+    const addWorktree = executeGit(
       "GitVcsDriver.createWorktree",
       input.cwd,
       ["-c", `checkout.workers=${checkoutWorkers}`, ...args],
@@ -3108,10 +3108,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           : {}),
       },
     );
-
-    if (progress?.onWorktreeClaimed) {
-      yield* progress.onWorktreeClaimed(worktreePath);
-    }
+    const onWorktreeClaimed = progress?.onWorktreeClaimed;
+    // A caller tracking the claim gets it even when interrupted mid-checkout:
+    // killing `git worktree add` would leave a registered worktree it never
+    // heard about. The interrupt lands right after, during the submodule step.
+    yield* onWorktreeClaimed
+      ? Effect.uninterruptible(
+          addWorktree.pipe(Effect.andThen(() => onWorktreeClaimed(worktreePath))),
+        )
+      : addWorktree;
 
     // `git worktree add` leaves submodules empty, so a repo that keeps agent
     // skills, tooling or source in one gets a worktree that is quietly missing

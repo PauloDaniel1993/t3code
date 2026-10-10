@@ -1420,6 +1420,94 @@ it.effect("removes a claimed worktree and its branch when creation fails before 
   }),
 );
 
+it.effect("removes a created worktree when the thread can't be bound to it", () =>
+  Effect.gen(function* () {
+    const claimed = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      createWorktree: (input) =>
+        Deferred.succeed(claimed, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.as({
+            worktree: { path: "/repo-worktrees/unbound", refName: input.newRefName },
+          } as never),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:launch:bind-failure",
+          thread: "thread:launch:bind-failure",
+          message: "Build the feature",
+          workspace: { type: "worktree", baseRef: "main", branch: "unbound" },
+        }),
+      );
+      yield* Deferred.await(claimed);
+      yield* threads.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("command:delete:bind-failure"),
+        threadId: launched.threadId,
+      });
+      yield* Deferred.succeed(release, undefined);
+      yield* waitUntil(() => Effect.sync(() => harness.deleteLocalBranch.mock.calls.length === 1));
+      assert.deepEqual(harness.removeWorktree.mock.calls[0]?.[0], {
+        cwd: project.workspaceRoot,
+        path: "/repo-worktrees/unbound",
+        force: true,
+      });
+      assert.equal(harness.deleteLocalBranch.mock.calls[0]?.[0]?.refName, "unbound");
+      assert.equal(harness.runSetup.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect.each(["finished", "pending"] as const)(
+  "a cancel after a %s branch rename removes the branch the worktree ends up on",
+  (rename) =>
+    Effect.gen(function* () {
+      const setupEntered = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        runSetup: () =>
+          Deferred.succeed(setupEntered, undefined).pipe(Effect.andThen(Effect.never)),
+        ...(rename === "pending" ? { generateBranchName: () => Effect.never } : {}),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const launched = yield* launches.launch(
+          launchInput({
+            command: `command:launch:rename-${rename}`,
+            thread: `thread:launch:rename-${rename}`,
+            message: "Build the feature",
+            workspace: { type: "worktree", baseRef: "main" },
+          }),
+        );
+        yield* Deferred.await(setupEntered);
+        if (rename === "finished") {
+          yield* waitUntil(() =>
+            threads
+              .getThreadProjection(launched.threadId)
+              .pipe(Effect.map((projection) => projection.thread.branch === "generated-branch")),
+          );
+        }
+        assert.isTrue(yield* tracker.cancel(launched.threadId));
+        const deleted = harness.deleteLocalBranch.mock.calls[0]?.[0]?.refName ?? "";
+        if (rename === "finished") {
+          assert.equal(deleted, "generated-branch");
+        } else {
+          assert.match(deleted, /^t3code\/[0-9a-f]{8}$/u);
+        }
+        // The interrupted rename never binds the thread again.
+        const { thread } = yield* threads.getThreadProjection(launched.threadId);
+        assert.isNull(thread.worktreePath);
+        assert.isNull(thread.branch);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
 it.effect("replays a server-allocated launch", () =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();

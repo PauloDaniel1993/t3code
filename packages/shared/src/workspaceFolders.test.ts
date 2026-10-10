@@ -7,6 +7,7 @@ import {
   orphanedThreadWorktreePaths,
   projectFolders,
   resolveThreadWorkspace,
+  threadUsingWorktrees,
   threadPrimaryPath,
   worktreeSetPath,
 } from "./workspaceFolders.ts";
@@ -281,6 +282,13 @@ describe("orphanedThreadWorktreePaths", () => {
         "a",
       ),
     ).toEqual([]);
+  });
+
+  it("names the other thread that blocks removal", () => {
+    const threads = [thread("a", "/worktrees/s/web", set), thread("b", "/worktrees/s/api")];
+    expect(threadUsingWorktrees(threads, "a", ["/worktrees/s"])?.id).toBe("b");
+    expect(threadUsingWorktrees(threads, "b", ["/worktrees/s/api"])?.id).toBe("a");
+    expect(threadUsingWorktrees(threads, "a", ["/worktrees/other"])).toBeUndefined();
   });
 
   it("ignores threads in other worktrees and in the source checkout", () => {

@@ -6,7 +6,8 @@ import {
   VcsThreadWorktreesError,
   type WorktreeSetupStageStatus,
 } from "@t3tools/contracts";
-import { isPathWithin, threadWorktreePaths } from "@t3tools/shared/workspaceFolders";
+import { isWindowsAbsolutePath } from "@t3tools/shared/path";
+import { isPathWithin, threadUsingWorktrees } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -58,13 +59,14 @@ export class WorktreeSetService extends Context.Service<
   WorktreeSetService,
   {
     /**
-     * Creates a new branch and its worktree from `baseRef` in `repositoryRoot`.
-     * On failure or interrupt, removes whatever it claimed and deletes the
-     * branches it created, so callers get a complete set or nothing.
+     * Creates a new branch and its worktree from `baseRef`, in the checkout
+     * containing `cwd`. On failure or interrupt, removes whatever it claimed
+     * and deletes the branches it created, so callers get a complete set or
+     * nothing.
      */
     readonly create: (
       input: {
-        readonly repositoryRoot: string;
+        readonly cwd: string;
         readonly baseRef: string;
         readonly branch: string;
         readonly startFromOrigin: boolean;
@@ -85,8 +87,8 @@ export class WorktreeSetService extends Context.Service<
     ) => Effect.Effect<void, WorktreeRecreateError>;
     /**
      * Removes every worktree of a thread, deepest first, and returns what it
-     * removed. Removes none while another thread still works inside one. The
-     * thread may already be deleted.
+     * removed. Removes none while another thread, archived ones included, or a
+     * project still works inside one. The thread may already be deleted.
      */
     readonly remove: (input: {
       readonly threadId: ThreadId;
@@ -95,7 +97,9 @@ export class WorktreeSetService extends Context.Service<
   }
 >()("t3/orchestration-v2/WorktreeSetService") {}
 
-const depth = (path: string) => path.split(/[\\/]+/u).filter(Boolean).length;
+// A backslash separates segments only in Windows paths.
+const depth = (path: string) =>
+  path.split(isWindowsAbsolutePath(path) ? /[\\/]+/u : /\/+/u).filter(Boolean).length;
 const parentsFirst = <Member extends WorktreeLocation>(members: ReadonlyArray<Member>) =>
   members.toSorted((left, right) => depth(left.path) - depth(right.path));
 const deepestFirst = <Member extends WorktreeLocation>(members: ReadonlyArray<Member>) =>
@@ -135,22 +139,22 @@ const make = Effect.gen(function* () {
         // remote branch fall back to the local base branch.
         const startFromOrigin =
           input.startFromOrigin &&
-          (yield* git.remoteExists({ cwd: input.repositoryRoot, remoteName: "origin" }));
+          (yield* git.remoteExists({ cwd: input.cwd, remoteName: "origin" }));
         yield* progress.stage("fetch", startFromOrigin ? "running" : "skipped");
         if (startFromOrigin) {
           yield* git.fetchRemote({
-            cwd: input.repositoryRoot,
+            cwd: input.cwd,
             remoteName: "origin",
             refName: input.baseRef,
           });
           const remoteBaseExists = yield* git.remoteBranchExists({
-            cwd: input.repositoryRoot,
+            cwd: input.cwd,
             refName: input.baseRef,
             remoteName: "origin",
           });
           if (remoteBaseExists) {
             startRef = (yield* git.resolveRemoteTrackingCommit({
-              cwd: input.repositoryRoot,
+              cwd: input.cwd,
               refName: input.baseRef,
               fallbackRemoteName: "origin",
             })).commitSha;
@@ -160,7 +164,7 @@ const make = Effect.gen(function* () {
         yield* progress.stage("checkout", "running");
         const created = yield* git.createWorktree(
           {
-            cwd: input.repositoryRoot,
+            cwd: input.cwd,
             refName: startRef,
             newRefName: input.branch,
             baseRefName: input.baseRef,
@@ -172,7 +176,7 @@ const make = Effect.gen(function* () {
               onWorktreeClaimed: (path) =>
                 Effect.sync(() => {
                   claimed.push({
-                    repositoryRoot: input.repositoryRoot,
+                    repositoryRoot: input.cwd,
                     path,
                     branch: input.branch,
                   });
@@ -185,7 +189,7 @@ const make = Effect.gen(function* () {
         return {
           members: [
             {
-              repositoryRoot: input.repositoryRoot,
+              repositoryRoot: input.cwd,
               path: created.worktree.path,
               branch: created.worktree.refName,
             },
@@ -195,7 +199,11 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const discard: WorktreeSetService["Service"]["discard"] = (set) => discardMembers(set.members);
+  const discard: WorktreeSetService["Service"]["discard"] = Effect.fn("WorktreeSetService.discard")(
+    function* (set) {
+      yield* discardMembers(set.members);
+    },
+  );
 
   const recreateMissing: WorktreeSetService["Service"]["recreateMissing"] = Effect.fn(
     "WorktreeSetService.recreateMissing",
@@ -205,25 +213,13 @@ const make = Effect.gen(function* () {
         Effect.map((exists) => !exists),
         Effect.orElseSucceed(() => false),
       );
-    let members = thread.worktrees ?? [];
-    if (thread.worktrees === undefined) {
-      const { worktreePath, branch } = thread;
-      if (worktreePath === null || branch === null || !(yield* missing(worktreePath))) return;
-      const project = yield* projects.getById(thread.projectId).pipe(
-        Effect.map(Option.getOrUndefined),
-        Effect.orElseSucceed(() => undefined),
-      );
-      if (project === undefined) return;
-      members = [{ repositoryRoot: project.workspaceRoot, path: worktreePath, branch }];
-    }
-    for (const member of parentsFirst(members)) {
-      if (!(yield* missing(member.path))) continue;
-      yield* Effect.logWarning("recreating missing worktree", {
+    const recreate = (member: OrchestrationV2ThreadWorktree) =>
+      Effect.logWarning("recreating missing worktree", {
         threadId: thread.id,
         worktreePath: member.path,
         branch: member.branch,
-      });
-      yield* git.pruneWorktrees({ cwd: member.repositoryRoot }).pipe(
+      }).pipe(
+        Effect.andThen(git.pruneWorktrees({ cwd: member.repositoryRoot })),
         Effect.andThen(
           git.createWorktree({
             cwd: member.repositoryRoot,
@@ -235,6 +231,21 @@ const make = Effect.gen(function* () {
           (cause) => new WorktreeRecreateError({ threadId: thread.id, path: member.path, cause }),
         ),
       );
+    if (thread.worktrees === undefined) {
+      // A plain thread's worktree comes from its project's checkout. The
+      // project is read only once the worktree is known to be gone.
+      const { worktreePath, branch } = thread;
+      if (worktreePath === null || branch === null || !(yield* missing(worktreePath))) return;
+      const project = yield* projects.getById(thread.projectId).pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (project === undefined) return;
+      yield* recreate({ repositoryRoot: project.workspaceRoot, path: worktreePath, branch });
+      return;
+    }
+    for (const member of parentsFirst(thread.worktrees)) {
+      if (yield* missing(member.path)) yield* recreate(member);
     }
   });
 
@@ -257,21 +268,31 @@ const make = Effect.gen(function* () {
       }
       if (members.length === 0) return [];
 
-      const readShells = (location: "active" | "archive") =>
-        projections
-          .getShellSnapshot({ location })
-          .pipe(Effect.mapError((cause) => failure("Could not read the other threads.", cause)));
-      const others = [
-        ...(yield* readShells("active")).threads,
-        ...(yield* readShells("archive")).threads,
-      ].filter((other) => other.id !== thread.id);
-      for (const member of members) {
-        const user = others.find((other) =>
-          threadWorktreePaths(other).some((path) => isPathWithin(member.path, path)),
+      const paths = members.map((member) => member.path);
+      // Without a location, the snapshot holds active and archived threads.
+      const shells = yield* projections
+        .getShellSnapshot()
+        .pipe(Effect.mapError((cause) => failure("Could not read the other threads.", cause)));
+      const user = threadUsingWorktrees(
+        [...shells.threads, ...shells.archivedThreads],
+        thread.id,
+        paths,
+      );
+      if (user !== undefined) {
+        return yield* failure(`"${user.title}" still works in this thread's worktrees.`);
+      }
+      // A worktree added as a project of its own has threads working in it
+      // that record no worktree.
+      const projectShells = yield* projects
+        .listShells()
+        .pipe(Effect.mapError((cause) => failure("Could not read the projects.", cause)));
+      const projectInside = projectShells.find((project) =>
+        paths.some((path) => isPathWithin(path, project.workspaceRoot)),
+      );
+      if (projectInside !== undefined) {
+        return yield* failure(
+          `The project "${projectInside.title}" lives in this thread's worktrees.`,
         );
-        if (user !== undefined) {
-          return yield* failure(`The worktree at ${member.path} is still used by "${user.title}".`);
-        }
       }
 
       const ordered = deepestFirst(members);

@@ -207,22 +207,31 @@ function useThreadActionExecutor(
 }
 
 /**
- * The worktrees to offer removing with a thread: those no other thread uses,
- * when the server removes whole sets and automatic cleanup won't.
+ * The worktrees to offer removing with a thread, and the checkout they came
+ * from: those no loaded thread uses, when the server removes whole sets and
+ * automatic cleanup won't. The server still refuses while an archived thread
+ * uses one.
  */
-function removableThreadWorktrees(thread: EnvironmentThreadShell): ReadonlyArray<string> {
+function removableThreadWorktrees(thread: EnvironmentThreadShell): {
+  readonly paths: ReadonlyArray<string>;
+  readonly projectRoot: string | null;
+} {
+  const none = { paths: [], projectRoot: null };
   const config = appAtomRegistry.get(environmentServerConfigsAtom).get(thread.environmentId);
-  if (config?.environment.capabilities.threadWorktreeRemoval !== true) return [];
-  if (resolveWorktreeCleanup(config.settings, thread.projectId).worktreeOnDelete) return [];
+  if (config?.environment.capabilities.threadWorktreeRemoval !== true) return none;
+  if (resolveWorktreeCleanup(config.settings, thread.projectId).worktreeOnDelete) return none;
   const project = appAtomRegistry.get(
     environmentProjects.projectAtom(scopeProjectRef(thread.environmentId, thread.projectId)),
   );
   // A Scratch thread's folder is not a git worktree.
-  if (project === null || isScratchProject(project, config.scratchWorkspaceRoot)) return [];
+  if (project === null || isScratchProject(project, config.scratchWorkspaceRoot)) return none;
   const others = appAtomRegistry
     .get(environmentThreadShells.threadShellsAtom)
     .filter((shell) => shell.environmentId === thread.environmentId && shell.id !== thread.id);
-  return orphanedThreadWorktreePaths([thread, ...others], thread.id);
+  return {
+    paths: orphanedThreadWorktreePaths([thread, ...others], thread.id),
+    projectRoot: project.workspaceRoot,
+  };
 }
 
 const worktreeName = (path: string) =>
@@ -234,9 +243,12 @@ function useConfirmDeleteThread(
   const removeThreadWorktrees = useAtomCommand(vcsEnvironment.removeThreadWorktrees, {
     reportFailure: false,
   });
+  const refreshVcsStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
+    reportFailure: false,
+  });
   return useCallback(
     (thread: EnvironmentThreadShell) => {
-      const worktreePaths = removableThreadWorktrees(thread);
+      const { paths: worktreePaths, projectRoot } = removableThreadWorktrees(thread);
       const count = worktreePaths.length;
       const deleteThread = async (removeWorktrees: boolean) => {
         if (!(await executeAction("delete", thread)) || !removeWorktrees) return;
@@ -252,6 +264,15 @@ function useConfirmDeleteThread(
               ? error.message
               : "The thread was deleted, but its worktrees were kept.",
           );
+          return;
+        }
+        // Refreshing the checkout also drops its cached branch list, which
+        // still shows the removed worktrees.
+        if (projectRoot !== null) {
+          await refreshVcsStatus({
+            environmentId: thread.environmentId,
+            input: { cwd: projectRoot },
+          });
         }
       };
       // Asked only once the delete is confirmed; keeping them still deletes the thread.
@@ -261,7 +282,7 @@ function useConfirmDeleteThread(
           return;
         }
         const title = count === 1 ? "Remove its worktree too?" : `Remove ${count} worktrees too?`;
-        const message = `Only this thread uses ${worktreePaths.map(worktreeName).join(", ")}.`;
+        const message = `Deletes ${worktreePaths.map(worktreeName).join(", ")} and any uncommitted changes there. Branches are kept.`;
         if (process.env.EXPO_OS === "ios") {
           Alert.alert(title, message, [
             { text: "Keep", style: "cancel", onPress: () => void deleteThread(false) },
@@ -300,7 +321,7 @@ function useConfirmDeleteThread(
         onConfirm: confirmWorktreeRemoval,
       });
     },
-    [executeAction, removeThreadWorktrees],
+    [executeAction, refreshVcsStatus, removeThreadWorktrees],
   );
 }
 

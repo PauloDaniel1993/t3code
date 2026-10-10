@@ -23,6 +23,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -223,6 +224,7 @@ const make = Effect.gen(function* () {
     let createdSet: WorktreeSet.WorktreeSet | null = null;
     let bindStarted = false;
     let bound = false;
+    let renameFiber: Fiber.Fiber<unknown> | null = null;
     let setupTerminalId: string | null = null;
     if (tracked) {
       yield* setupTracker.begin({
@@ -303,7 +305,7 @@ const make = Effect.gen(function* () {
           restore(
             worktreeSets.create(
               {
-                repositoryRoot: project.workspaceRoot,
+                cwd: project.workspaceRoot,
                 baseRef: strategy.baseRef,
                 branch: branch!,
                 startFromOrigin: strategy.startFromOrigin === true,
@@ -351,13 +353,24 @@ const make = Effect.gen(function* () {
       ) {
         const oldBranch = branch;
         const worktreeCwd = worktreePath;
-        yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
+        renameFiber = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
           Effect.flatMap(({ branch: newBranch, exactName }) =>
             git.renameBranch({
               cwd: worktreeCwd,
               oldBranch,
               newBranch,
               ...(exactName ? { exactName: true } : {}),
+            }),
+          ),
+          // A cancel rolls the set back under the name its branch has now.
+          Effect.tap((renamed) =>
+            Effect.sync(() => {
+              if (createdSet === null) return;
+              createdSet = {
+                members: createdSet.members.map((member, index) =>
+                  index === 0 ? { ...member, branch: renamed.branch } : member,
+                ),
+              };
             }),
           ),
           Effect.flatMap((renamed) =>
@@ -487,13 +500,18 @@ const make = Effect.gen(function* () {
           // A bound one only on cancel: a setup failure leaves the thread bound
           // so the user can retry.
           if (createdSet === null || (bound && !cancelled)) return;
+          // Settle the background rename first: the set is then deleted under
+          // its final branch name, and the rename can't bind the thread again.
+          if (renameFiber !== null) yield* Fiber.interrupt(renameFiber);
           if (setupTerminalId)
             yield* terminals
               .close({ threadId, terminalId: setupTerminalId, deleteHistory: true })
               .pipe(Effect.ignore);
-          yield* worktreeSets.discard(createdSet);
-          if (bindStarted)
-            yield* threads
+          // An interrupted bind may have committed. Never remove a set the
+          // thread could still point at: unbind first, and keep the set if
+          // that fails.
+          if (bound || (bindStarted && cancelled)) {
+            const unbound = yield* threads
               .dispatch({
                 type: "thread.metadata.update",
                 commandId: CommandId.make(`${input.commandId}:cancel-workspace`),
@@ -501,7 +519,18 @@ const make = Effect.gen(function* () {
                 worktreePath: null,
                 branch: null,
               })
-              .pipe(Effect.ignore);
+              .pipe(
+                Effect.as(true),
+                Effect.catchCause(() => Effect.succeed(false)),
+              );
+            if (!unbound) {
+              return yield* Effect.logWarning(
+                "Kept a cancelled launch's worktree the thread may still be bound to",
+                { commandId: input.commandId, threadId },
+              );
+            }
+          }
+          yield* worktreeSets.discard(createdSet);
         }),
       ),
     );

@@ -81,6 +81,7 @@ const withCoordinator = <A, E, R>(
     readonly thread?: ThreadRecord & { readonly deletedAt?: string };
     readonly activeThreads?: ReadonlyArray<ThreadRecord>;
     readonly archivedThreads?: ReadonlyArray<ThreadRecord>;
+    readonly projects?: ReadonlyArray<{ readonly title: string; readonly workspaceRoot: string }>;
     readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
   } = {},
 ) =>
@@ -112,15 +113,16 @@ const withCoordinator = <A, E, R>(
                     ? Option.none()
                     : Option.some({ id: projectId, workspaceRoot: input.projectRoot } as never),
                 ),
+              listShells: () => Effect.succeed((input.projects ?? []) as never),
             }),
+            // Shaped like the store: archived threads come in `archivedThreads`.
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThread: () => Effect.succeed({ projectId, ...input.thread } as never),
               getShellSnapshot: (options) =>
                 Effect.succeed({
-                  threads:
-                    options?.location === "archive"
-                      ? (input.archivedThreads ?? [])
-                      : (input.activeThreads ?? []),
+                  threads: options?.location === "archive" ? [] : (input.activeThreads ?? []),
+                  archivedThreads:
+                    options?.location === "active" ? [] : (input.archivedThreads ?? []),
                 } as never),
             }),
           ),
@@ -148,7 +150,7 @@ it.effect("creates a one-member set exactly where a lone worktree lives", () =>
       Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
         worktreeSets.create(
           {
-            repositoryRoot: repo.root,
+            cwd: repo.root,
             baseRef: repo.branch,
             branch: "feature/one",
             startFromOrigin: true,
@@ -183,7 +185,7 @@ it.effect("keeps a subfolder project's worktree at the worktree root", () =>
       Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
         worktreeSets.create(
           {
-            repositoryRoot: projectRoot,
+            cwd: projectRoot,
             baseRef: repo.branch,
             branch: "sub",
             startFromOrigin: false,
@@ -212,7 +214,7 @@ it.effect("removes a claimed worktree and deletes its branch when creation then 
       Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
         worktreeSets.create(
           {
-            repositoryRoot: repo.root,
+            cwd: repo.root,
             baseRef: repo.branch,
             branch: "doomed",
             startFromOrigin: false,
@@ -264,7 +266,7 @@ it.effect("removes a claimed worktree and deletes its branch when creation is in
         const fiber = yield* worktreeSets
           .create(
             {
-              repositoryRoot: repo.root,
+              cwd: repo.root,
               baseRef: repo.branch,
               branch: "cancelled",
               startFromOrigin: false,
@@ -288,6 +290,42 @@ it.effect("removes a claimed worktree and deletes its branch when creation is in
         },
       },
     );
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("removes a worktree whose checkout was interrupted before it was claimed", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const repo = yield* makeRepo("app", ["a.txt", "b.txt", "c.txt"]);
+    const checkingOut = yield* Deferred.make<void>();
+
+    yield* withCoordinator(
+      Effect.gen(function* () {
+        const worktreeSets = yield* WorktreeSet.WorktreeSetService;
+        const fiber = yield* worktreeSets
+          .create(
+            {
+              cwd: repo.root,
+              baseRef: repo.branch,
+              branch: "mid-checkout",
+              startFromOrigin: false,
+            },
+            {
+              stage: () => Effect.void,
+              // Fires from git's progress output, while `git worktree add` runs.
+              checkoutPercent: () => Deferred.succeed(checkingOut, undefined).pipe(Effect.asVoid),
+            },
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(checkingOut);
+        yield* Fiber.interrupt(fiber);
+      }),
+    );
+
+    assert.isFalse(yield* fileSystem.exists(path.join(config.worktreesDir, "app", "mid-checkout")));
+    assert.isFalse(yield* branchExists(repo.root, "mid-checkout"));
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
@@ -454,6 +492,34 @@ it.effect("removes no member while another thread still works inside one", () =>
     assert.equal(error._tag, "VcsThreadWorktreesError");
     assert.include(error.message, '"Other"');
     assert.isTrue(yield* fileSystem.exists(parentMember.path));
+    assert.isTrue(yield* fileSystem.exists(childMember.path));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("removes nothing while a project lives in one of its worktrees", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const { parentMember, childMember } = yield* makeNestedSet;
+
+    const error = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+        worktreeSets.remove({ threadId, force: true }),
+      ).pipe(Effect.flip),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          branch: parentMember.branch,
+          worktreePath: parentMember.path,
+          worktrees: [parentMember, childMember],
+        },
+        // Its threads run in place, so they record no worktree.
+        projects: [{ title: "Child checkout", workspaceRoot: childMember.path }],
+      },
+    );
+
+    assert.equal(error._tag, "VcsThreadWorktreesError");
+    assert.include(error.message, '"Child checkout"');
     assert.isTrue(yield* fileSystem.exists(childMember.path));
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
