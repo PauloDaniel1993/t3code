@@ -154,6 +154,19 @@ export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundErro
   }
 }
 
+export class ProjectIdentifierAmbiguousError extends Schema.TaggedError<ProjectIdentifierAmbiguousError>()(
+  "ProjectIdentifierAmbiguousError",
+  {
+    identifier: Schema.String,
+    directoryProjectId: ProjectId,
+    fileProjectId: ProjectId,
+  },
+) {
+  override get message(): string {
+    return `Both a folder project and a linked project use '${this.identifier}', and its path is unavailable. Use a project id.`;
+  }
+}
+
 export class ProjectAlreadyExistsError extends Schema.TaggedError<ProjectAlreadyExistsError>()(
   "ProjectAlreadyExistsError",
   {
@@ -175,6 +188,7 @@ export const ProjectCommandError = Schema.Union([
   ProjectTitleEmptyError,
   ProjectIdentifierEmptyError,
   ProjectNotFoundError,
+  ProjectIdentifierAmbiguousError,
   ProjectAlreadyExistsError,
 ]);
 export type ProjectCommandError = typeof ProjectCommandError.Type;
@@ -317,17 +331,28 @@ const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (
     normalizeProjectPathForComparison(projectPath.path);
   // File mode can recover a stored plain directory after it disappears, but a
   // directory identifier never selects a linked project's file identity.
-  const exactWorkspaceMatch =
-    (projectPath.kind === "workspace-file"
+  const fileMatch =
+    projectPath.kind === "workspace-file"
       ? activeProjects.find(
           (project) => project.workspaceFile != null && matchesPath(project.workspaceFile),
         )
-      : undefined) ??
-    activeProjects.find(
-      (project) => project.workspaceFile == null && matchesPath(project.workspaceRoot),
-    );
+      : undefined;
+  const directoryMatch = activeProjects.find(
+    (project) => project.workspaceFile == null && matchesPath(project.workspaceRoot),
+  );
+  if (fileMatch && directoryMatch) {
+    const fs = yield* FileSystem.FileSystem;
+    const stat = yield* Effect.result(fs.stat(projectPath.path));
+    if (stat._tag === "Failure" || stat.success.type !== "File") {
+      return yield* new ProjectIdentifierAmbiguousError({
+        identifier: trimmedIdentifier,
+        directoryProjectId: directoryMatch.id,
+        fileProjectId: fileMatch.id,
+      });
+    }
+  }
 
-  const resolved = exactWorkspaceMatch;
+  const resolved = fileMatch ?? directoryMatch;
   if (!resolved) {
     return yield* new ProjectNotFoundError({
       operation: "resolveProjectTarget",

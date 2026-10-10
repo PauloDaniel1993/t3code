@@ -58,6 +58,7 @@ import { projectHttpApiLayer } from "../project/http.ts";
 import { persistServerRuntimeState } from "../serverRuntimeState.ts";
 import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
 import {
+  ProjectIdentifierAmbiguousError,
   ProjectLiveServerDeclaredResponseError,
   ProjectLiveServerRequestError,
   projectCommandErrorFromLiveServerRequest,
@@ -272,6 +273,20 @@ it.effect("directory mutations preserve a linked project with the same stored fi
       renamed.find((project) => project.workspaceFile == null)?.title,
       "Plain directory",
     );
+    yield* fs.rename(filePath, `${filePath}-removed`);
+    const ambiguous = yield* runCli([
+      "project",
+      "remove",
+      filePath,
+      "--force",
+      "--base-dir",
+      baseDir,
+    ]).pipe(Effect.flip);
+    assert.instanceOf(ambiguous, ProjectIdentifierAmbiguousError);
+    assert.equal(ambiguous.fileProjectId, linked.id);
+    assert.equal((yield* readProjects(baseDir)).projects.length, 2);
+    assert.deepEqual(yield* readNativeThreadState(baseDir, threadId), threadBefore);
+    yield* fs.rename(`${filePath}-removed`, filePath);
     yield* runCli(["project", "remove", filePath, "--force", "--base-dir", baseDir]);
     assert.deepEqual((yield* readProjects(baseDir)).projects, [linked]);
     assert.deepEqual(yield* readNativeThreadState(baseDir, threadId), threadBefore);
