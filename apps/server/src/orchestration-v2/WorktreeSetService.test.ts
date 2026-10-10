@@ -419,6 +419,44 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
+it.effect(
+  "recreates a snapshot thread's worktree from its own primary folder, not its project",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const repo = yield* makeRepo("app");
+      const worktreePath = path.join(
+        yield* fileSystem.makeTempDirectoryScoped({ prefix: "wts-" }),
+        "w",
+      );
+      yield* driver.createWorktree({
+        cwd: repo.root,
+        refName: repo.branch,
+        newRefName: "frozen",
+        path: worktreePath,
+      });
+      yield* fileSystem.remove(worktreePath, { recursive: true });
+
+      yield* withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+          worktreeSets.recreateMissing({
+            id: threadId,
+            projectId,
+            branch: "frozen",
+            worktreePath,
+            workspaceFolders: [{ path: repo.root, name: "app", label: "app", checkoutRoot: null }],
+          }),
+        ),
+        // A relink may have moved the project's primary elsewhere.
+        { projectRoot: "/not/a/repository" },
+      );
+
+      assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "frozen");
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
 it.effect("removes a deleted plain thread's worktree from its project and keeps the branch", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
