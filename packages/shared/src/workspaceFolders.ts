@@ -222,7 +222,7 @@ export function worktreeSetPath(
 }
 
 /** The worktrees a thread owns: each member of its set, or the one it is bound to. */
-export function threadWorktreePaths(
+function threadWorktreePaths(
   thread: Pick<WorkspaceThread, "worktreePath" | "worktrees">,
 ): ReadonlyArray<string> {
   return (
