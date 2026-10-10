@@ -62,7 +62,7 @@ export class ProviderWorkspaceFolderAccessError extends Schema.TaggedError<Provi
  * folders are all unavailable, or all inside cwd, has none, so any provider
  * runs it.
  */
-export function providerMayRunScope(
+function providerMayRunScope(
   scope: Pick<ProviderAdapterV2RuntimePolicyType, "additionalDirectories">,
   access: ProviderWorkspaceFolderAccess | undefined,
 ): boolean {

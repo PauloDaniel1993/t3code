@@ -89,7 +89,7 @@ import {
   isModelSelectionUnavailable,
   restrictModelOptionsToScope,
 } from "../../lib/modelOptions";
-import { useThreadProjection } from "../../state/use-thread-detail";
+import { useAppThread } from "../../state/use-thread-detail";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
@@ -653,17 +653,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     : currentModelSelection.instanceId;
   // A thread spanning workspace folders runs only on a provider that reaches
   // them all; its snapshot is on the thread detail.
-  const threadDetail = useThreadProjection({
+  const appThread = useAppThread({
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
   });
   const workspaceScope = useMemo(
-    () =>
-      workspaceFolderScope({
-        thread: threadDetail?.projection.thread ?? props.selectedThread,
-        project,
-      }),
-    [threadDetail?.projection.thread, props.selectedThread, project],
+    () => workspaceFolderScope({ thread: appThread ?? props.selectedThread, project }),
+    [appThread, props.selectedThread, project],
   );
   const modelOptions = useMemo(
     () =>

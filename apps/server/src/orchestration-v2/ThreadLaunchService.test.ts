@@ -1254,8 +1254,9 @@ it.effect("fails a scheduled dispatch into a linked project on an unverified pro
       creationSource: "web",
     });
     const result = yield* tasks.runNow({ id: task.id });
-    // The run fails before any thread exists, and the schedule stays.
+    // The run fails before any thread exists, with the reason alone, and the schedule stays.
     assert.equal(result.task.lastRunStatus, "failed");
+    assert.equal(result.task.lastRunError, PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE);
     assert.isTrue((yield* tasks.list()).tasks.some((entry) => entry.id === task.id));
     assert.lengthOf(yield* threads.listProjectThreads({ projectId, includeSubagents: false }), 0);
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, scheduledTasks)));

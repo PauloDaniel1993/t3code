@@ -5386,18 +5386,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const existingProviderSession = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
-      const resolvedRuntimePolicy = yield* runtimePolicy
-        .resolve({ thread: projection.thread, modelSelection })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause,
-              }),
-          ),
-        );
 
       const capabilities = yield* adapter.getCapabilities().pipe(
         Effect.mapError(
@@ -5745,6 +5733,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const workspaceAdmission = yield* admitRunWorkspace(projection.thread).pipe(
         mapDispatchError(command),
       );
+      const resolvedRuntimePolicy = yield* runtimePolicy
+        .resolve({ thread: projection.thread, modelSelection, ...workspaceAdmission })
+        .pipe(mapDispatchError(command));
       const checkpointScope = yield* checkpointService
         .prepareRootRunScope({
           threadId: command.threadId,
