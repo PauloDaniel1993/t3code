@@ -28,6 +28,7 @@ import {
   probeKimiAcpAuthentication,
   type KimiAcpProbeResult,
 } from "../acp/KimiAcpSupport.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 
 const KIMI_PRESENTATION = {
   displayName: "Kimi",
@@ -36,7 +37,7 @@ const KIMI_PRESENTATION = {
   // execution") through its `mode` config option, so the plan/implement toggle
   // maps onto a real capability.
   showInteractionModeToggle: true,
-  workspaceFolderAccess: "unverified",
+  workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.kimi,
 } as const;
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;

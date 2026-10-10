@@ -44,13 +44,14 @@ import {
 } from "../acp/GrokAcpSupport.ts";
 import { sessionModelStateFromInitialize } from "../acp/AcpRuntimeModel.ts";
 import { discoverGrokSkills } from "../Drivers/GrokSkills.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 
 const GROK_PRESENTATION = {
   displayName: "Grok",
   supportsConversationRollback: false,
   showInteractionModeToggle: false,
   supportedRuntimeModes: GROK_SUPPORTED_RUNTIME_MODES,
-  workspaceFolderAccess: "unsupported",
+  workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.grok,
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],

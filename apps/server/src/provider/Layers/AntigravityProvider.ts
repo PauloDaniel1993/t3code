@@ -29,6 +29,7 @@ import {
   isCommandMissingCause,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 
 const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const MAX_WORKSPACE_SNAPSHOTS = 32;
@@ -139,7 +140,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       presentation: {
         displayName: "Antigravity",
         showInteractionModeToggle: false,
-        workspaceFolderAccess: "unverified",
+        workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.antigravity,
       },
       enabled: settings.enabled,
       checkedAt,

@@ -72,6 +72,7 @@ import {
   type AcpAdapterV2Flavor,
   type AcpAdapterV2RuntimeInput,
 } from "./AcpAdapterV2.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 export const GROK_PROVIDER = ProviderDriverKind.make("grok");
 const GROK_DRIVER_KIND = GROK_PROVIDER;
@@ -105,10 +106,9 @@ export const GrokProviderCapabilitiesV2 = {
     ...AcpProviderCapabilitiesV2.checkpointing,
     providerCanReadConversationSnapshot: true,
   },
-  // Grok has no way to be given folders beyond its working directory.
   runtimePolicy: {
     ...AcpProviderCapabilitiesV2.runtimePolicy,
-    workspaceFolderAccess: "unsupported",
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.grok,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

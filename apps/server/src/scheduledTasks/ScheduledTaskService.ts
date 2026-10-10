@@ -130,11 +130,12 @@ function errorMessage(error: unknown): string {
  * What a failed run records. A workspace the run can't start in is the user's
  * to fix, so it records that reason alone, as launches over the transport do.
  */
+const isThreadLaunchError = Schema.is(ThreadLaunchService.ThreadLaunchError);
+
 function runErrorMessage(cause: Cause.Cause<unknown>): string {
   const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
   return (
-    (failure instanceof ThreadLaunchService.ThreadLaunchError &&
-    failure.operation === "validate-workspace"
+    (isThreadLaunchError(failure) && failure.operation === "validate-workspace"
       ? userFacingDispatchErrorMessage(failure.cause)
       : undefined) ?? errorMessage(cause)
   );

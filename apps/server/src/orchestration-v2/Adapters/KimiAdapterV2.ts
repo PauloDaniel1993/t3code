@@ -11,6 +11,7 @@ import {
   makeAcpAdapterV2,
   type AcpAdapterV2Flavor,
 } from "./AcpAdapterV2.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 const KIMI = ProviderDriverKind.make("kimi");
 const loggedFailure = Schema.Struct({
@@ -44,7 +45,13 @@ export function makeKimiAcpAdapterFlavor(options: KimiAdapterV2Options): AcpAdap
   return {
     driver: KIMI,
     runtimeHarness: "Kimi Code",
-    capabilities: AcpProviderCapabilitiesV2,
+    capabilities: {
+      ...AcpProviderCapabilitiesV2,
+      runtimePolicy: {
+        ...AcpProviderCapabilitiesV2.runtimePolicy,
+        workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.kimi,
+      },
+    },
     makeRuntime: (input) =>
       options.makeRuntime(input).pipe(
         Effect.map((runtime) => ({

@@ -156,6 +156,7 @@ import {
   makeSubagentConversationArtifacts,
   subagentThreadTitle,
 } from "../SubagentProjection.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 export const CODEX_DRIVER_KIND = CODEX_PROVIDER;
@@ -325,8 +326,7 @@ export const CodexProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
-    // Unverified until a live test reads and edits a file in an extra folder.
-    workspaceFolderAccess: "unverified",
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.codex,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

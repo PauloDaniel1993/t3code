@@ -9,7 +9,13 @@ import * as Repositories from "../../../sourceControl/SourceControlRepositorySer
 import { expectedProjectMutationFailure } from "../../../project/ProjectMutation.ts";
 import { projectFolders } from "@t3tools/shared/workspaceFolders";
 import type { Project as ProjectRecord } from "@t3tools/contracts";
-import { newCommandId, readCaller, readMutationCaller, unavailable } from "../../threadAccess.ts";
+import {
+  launchRefusal,
+  newCommandId,
+  readCaller,
+  readMutationCaller,
+  unavailable,
+} from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
 function projectFailure(error: Project.ProjectServiceError) {
@@ -117,7 +123,7 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
         Effect.mapError((error) =>
           error._tag === "AttachmentClaimError"
             ? new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message })
-            : unavailable(),
+            : launchRefusal(error),
         ),
       );
       const thread = result.projection.thread;

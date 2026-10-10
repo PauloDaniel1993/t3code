@@ -61,6 +61,7 @@ import * as AcpRegistrySupport from "../acp/AcpRegistrySupport.ts";
 import * as AcpRegistryRuntimeCoordinator from "../acp/AcpRegistryRuntimeCoordinator.ts";
 import * as AcpRegistryAuth from "../acp/AcpRegistryAuth.ts";
 import * as AcpRegistryAuthenticationState from "../acp/AcpRegistryAuthenticationState.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 const decodeSettings = Schema.decodeSync(AcpRegistrySettings);
@@ -212,9 +213,7 @@ function baseSnapshot(
     // so selectors must not offer these instances for commit, PR, branch, or
     // title generation.
     supportsTextGeneration: false,
-    // Unverified even when an agent advertises extra directories, until a
-    // live test proves it reads and edits files in them.
-    workspaceFolderAccess: "unverified",
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.acpRegistry,
     enabled: input.settings.enabled,
     installed: input.installed,
     version: input.version,

@@ -60,7 +60,13 @@ const dependencies = Layer.mergeAll(
   Layer.mock(Sessions.ProviderSessionManagerV2)({ open: () => Effect.succeed(session) }),
   Layer.mock(Policy.RuntimePolicyV2)({
     resolve: () =>
-      Effect.succeed({ cwd: "/synthetic", interactionMode: "default", runtimeMode: "full-access" }),
+      Effect.succeed({
+        cwd: "/synthetic",
+        additionalDirectories: [],
+        interactionMode: "default",
+        runtimeMode: "full-access",
+      }),
+    requireWorkspaceFolderAccess: () => Effect.void,
   }),
   Layer.mock(Run.RunExecutionServiceV2)({
     startRootRun: (input) =>

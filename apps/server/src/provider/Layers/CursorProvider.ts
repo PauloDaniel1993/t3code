@@ -22,12 +22,13 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import * as CursorSdkCatalog from "./CursorSdkCatalog.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 
 const CURSOR_PRESENTATION = {
   displayName: "Cursor",
   supportsConversationRollback: false,
   showInteractionModeToggle: true,
-  workspaceFolderAccess: "unverified",
+  workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.cursor,
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],

@@ -632,8 +632,6 @@ export const AcpProviderCapabilitiesV2 = {
     // ACP agents run their own tools; T3 only answers their permission
     // requests by policy.
     enforcement: "client-boundary",
-    // Unverified until a live test reads and edits a file in an extra folder.
-    workspaceFolderAccess: "unverified",
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

@@ -1,6 +1,8 @@
 import { expect, it } from "@effect/vitest";
 import {
+  CommandId,
   EnvironmentId,
+  PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -13,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import { ProviderWorkspaceFolderAccessError } from "../../../orchestration-v2/RuntimePolicy.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
@@ -261,5 +264,75 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
       expect(rejected.at(-1)?.result).toMatchObject({ code: "invalid_request" });
     }
     expect(named).toEqual(["Pinball Stats"]);
+  }),
+);
+
+it.effect("tells an agent why a launch into a linked project was refused", () =>
+  Effect.gen(function* () {
+    const sourceThreadId = ThreadId.make("source-thread");
+    const projectId = ProjectId.make("project");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const caller = {
+      id: sourceThreadId,
+      projectId,
+      providerInstanceId,
+      modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      activeRunId: "active-run",
+      archivedAt: null,
+      deletedAt: null,
+    } as OrchestrationV2ThreadShell;
+    const refusal = (operation: ThreadLaunch.ThreadLaunchError["operation"]) =>
+      new ThreadLaunch.ThreadLaunchError({
+        operation,
+        commandId: CommandId.make("launch"),
+        projectId,
+        cause: new ProviderWorkspaceFolderAccessError({
+          threadId: ThreadId.make("launched"),
+          providerInstanceId,
+        }),
+      });
+    const handle = (operation: ThreadLaunch.ThreadLaunchError["operation"]) => {
+      const dependencies = Layer.mergeAll(
+        NodeCrypto.layer,
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment"),
+          threadId: sourceThreadId,
+          providerSessionId: "session",
+          providerInstanceId,
+          issuedAt: 0,
+          capabilities: new Set(["orchestration" as const]),
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(caller),
+        }),
+        Layer.mock(ThreadLaunch.ThreadLaunchService)({
+          launch: () => Effect.fail(refusal(operation)),
+        }),
+        Layer.mock(Project.ProjectService)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
+        NodeServices.layer,
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-launch-refusal-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      );
+      return Effect.gen(function* () {
+        const toolkit = yield* ProjectToolkit.pipe(
+          Effect.provide(ProjectHandlersLive.pipe(Layer.provide(dependencies))),
+        );
+        const results = yield* toolkit
+          .handle("t3_thread_launch", { title: "Audit", message: "Review both folders" })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+        return results.at(-1)?.result;
+      });
+    };
+
+    expect(yield* handle("validate-workspace")).toMatchObject({
+      code: "invalid_request",
+      message: PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+    });
+    // A failure that isn't the agent's to fix stays opaque.
+    expect(yield* handle("create-thread")).toMatchObject({ code: "orchestration_error" });
   }),
 );

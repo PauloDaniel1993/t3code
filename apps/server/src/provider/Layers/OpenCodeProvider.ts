@@ -24,11 +24,12 @@ import * as OpenCodeRuntime from "../opencodeRuntime.ts";
 import type { ProbedOpenCode } from "../opencodeVersionProbe.ts";
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 
 const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
   showInteractionModeToggle: false,
-  workspaceFolderAccess: "unverified",
+  workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.opencode,
 } as const;
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
@@ -484,7 +485,7 @@ const OPENCODE_2_PRESENTATION = {
   ...OPENCODE_PRESENTATION,
   showInteractionModeToggle: true,
   supportedRuntimeModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
-  workspaceFolderAccess: "unsupported",
+  workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.opencode2,
 } as const;
 
 function openCode2ModelCapabilities(model: OpenCode2Model): ModelCapabilities {

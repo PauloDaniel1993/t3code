@@ -185,14 +185,27 @@ export const layer: Layer.Layer<
       }
 
       const modelSelection = projection.thread.modelSelection;
-      // Outside a run, so the folders it can reach are probed now.
-      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
+      // Outside a run, so the folders it can reach are probed now. A rewind
+      // needs only the conversation, so a provider that can't reach every
+      // folder isn't given them.
+      const folderScope = yield* runtimePolicy.resolve({
         thread: projection.thread,
         modelSelection,
         unavailableFolderPaths: yield* probeUnavailableFolderPaths(projection.thread).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
         ),
       });
+      const folderAccess = yield* Effect.result(
+        runtimePolicy.requireWorkspaceFolderAccess({
+          threadId: input.threadId,
+          providerInstanceId: modelSelection.instanceId,
+          scope: folderScope,
+        }),
+      );
+      const resolvedRuntimePolicy =
+        folderAccess._tag === "Success"
+          ? folderScope
+          : { ...folderScope, additionalDirectories: [] };
       const existingSession = projection.providerSessions.find(
         (candidate) => candidate.id === providerThread.providerSessionId,
       );

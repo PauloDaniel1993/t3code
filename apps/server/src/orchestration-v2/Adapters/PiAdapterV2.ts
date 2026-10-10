@@ -93,6 +93,7 @@ import {
   resolvePiLaunchArgs,
 } from "./piT3McpInjection.ts";
 import { PI_FILE_CHANGE_TOOLS } from "./piT3McpExtensionSource.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 export const PI_PROVIDER = ProviderDriverKind.make("pi");
 const PI_DRIVER_KIND = PI_PROVIDER;
@@ -116,7 +117,10 @@ const SETTLE_PROBE_MAX_ATTEMPTS = 3;
 const SETTLE_PROBE_RETRY_DELAY = Duration.millis(100);
 
 const PiProviderCapabilitiesV2 = {
-  runtimePolicy: { enforcement: "client-boundary", workspaceFolderAccess: "unverified" },
+  runtimePolicy: {
+    enforcement: "client-boundary",
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.pi,
+  },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,

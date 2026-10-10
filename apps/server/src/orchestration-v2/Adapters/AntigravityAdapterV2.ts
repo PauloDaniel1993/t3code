@@ -41,6 +41,7 @@ import {
   type AcpAdapterV2Flavor,
   type AcpAdapterV2RuntimeInput,
 } from "./AcpAdapterV2.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 const ANTIGRAVITY_PROVIDER = ProviderDriverKind.make("antigravity");
 
@@ -58,6 +59,10 @@ const AntigravityProviderCapabilitiesV2 = {
   subagents: {
     ...AcpProviderCapabilitiesV2.subagents,
     supportsSubagents: true,
+  },
+  runtimePolicy: {
+    ...AcpProviderCapabilitiesV2.runtimePolicy,
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.antigravity,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
