@@ -1,6 +1,10 @@
 import type { ThreadMoveDestination } from "../threads/threadOrder";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
+import { orphanedThreadWorktreePaths } from "@t3tools/shared/workspaceFolders";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
 import { useCallback, useRef } from "react";
@@ -12,8 +16,10 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { refreshArchivedThreadsForEnvironment } from "../archive/useArchivedThreadSnapshots";
 import { pinOrderKeyBetween } from "@t3tools/client-runtime/state/thread-sort";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { environmentProjects } from "../../state/projects";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
+import { vcsEnvironment } from "../../state/vcs";
 import { queuedThreadKeysAtom } from "../../state/use-thread-outbox";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -200,23 +206,110 @@ function useThreadActionExecutor(
   return executeAction;
 }
 
+/**
+ * The worktrees to offer removing with a thread, and the checkout they came
+ * from: those no loaded thread uses, when the server removes whole sets and
+ * automatic cleanup won't. The server still refuses while an archived thread
+ * uses one.
+ */
+function removableThreadWorktrees(thread: EnvironmentThreadShell): {
+  readonly paths: ReadonlyArray<string>;
+  readonly projectRoot: string | null;
+} {
+  const none = { paths: [], projectRoot: null };
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(thread.environmentId);
+  if (config?.environment.capabilities.threadWorktreeRemoval !== true) return none;
+  if (resolveWorktreeCleanup(config.settings, thread.projectId).worktreeOnDelete) return none;
+  const project = appAtomRegistry.get(
+    environmentProjects.projectAtom(scopeProjectRef(thread.environmentId, thread.projectId)),
+  );
+  // A Scratch thread's folder is not a git worktree.
+  if (project === null || isScratchProject(project, config.scratchWorkspaceRoot)) return none;
+  const others = appAtomRegistry
+    .get(environmentThreadShells.threadShellsAtom)
+    .filter((shell) => shell.environmentId === thread.environmentId && shell.id !== thread.id);
+  return {
+    paths: orphanedThreadWorktreePaths([thread, ...others], thread.id),
+    projectRoot: project.workspaceRoot,
+  };
+}
+
+const worktreeName = (path: string) =>
+  path.split(/[\\/]/).findLast((segment) => segment.length > 0) ?? path;
+
 function useConfirmDeleteThread(
   executeAction: (action: ThreadListAction, thread: EnvironmentThreadShell) => Promise<boolean>,
 ) {
+  const removeThreadWorktrees = useAtomCommand(vcsEnvironment.removeThreadWorktrees, {
+    reportFailure: false,
+  });
+  const refreshVcsStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
+    reportFailure: false,
+  });
   return useCallback(
     (thread: EnvironmentThreadShell) => {
+      const { paths: worktreePaths, projectRoot } = removableThreadWorktrees(thread);
+      const count = worktreePaths.length;
+      const deleteThread = async (removeWorktrees: boolean) => {
+        if (!(await executeAction("delete", thread)) || !removeWorktrees) return;
+        const result = await removeThreadWorktrees({
+          environmentId: thread.environmentId,
+          input: { threadId: thread.id, force: true },
+        });
+        if (result._tag === "Failure") {
+          const error = Cause.squash(result.cause);
+          Alert.alert(
+            count === 1 ? "Could not remove worktree" : "Could not remove worktrees",
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : "The thread was deleted, but its worktrees were kept.",
+          );
+          return;
+        }
+        // Refreshing the checkout also drops its cached branch list, which
+        // still shows the removed worktrees.
+        if (projectRoot !== null) {
+          await refreshVcsStatus({
+            environmentId: thread.environmentId,
+            input: { cwd: projectRoot },
+          });
+        }
+      };
+      // Asked only once the delete is confirmed; keeping them still deletes the thread.
+      const confirmWorktreeRemoval = () => {
+        if (count === 0) {
+          void deleteThread(false);
+          return;
+        }
+        const title = count === 1 ? "Remove its worktree too?" : `Remove ${count} worktrees too?`;
+        const message = `Deletes ${worktreePaths.map(worktreeName).join(", ")} and any uncommitted changes there. Branches are kept.`;
+        if (process.env.EXPO_OS === "ios") {
+          Alert.alert(title, message, [
+            { text: "Keep", style: "cancel", onPress: () => void deleteThread(false) },
+            {
+              text: count === 1 ? "Remove" : `Remove ${count}`,
+              style: "destructive",
+              onPress: () => void deleteThread(true),
+            },
+          ]);
+          return;
+        }
+        showConfirmDialog({
+          title,
+          message,
+          cancelText: "Keep",
+          confirmText: count === 1 ? "Remove" : `Remove ${count}`,
+          destructive: true,
+          onConfirm: () => void deleteThread(true),
+          onCancel: () => void deleteThread(false),
+        });
+      };
       const title = "Delete thread?";
       const message = `“${thread.title}” will be permanently deleted, including its terminal history.`;
       if (process.env.EXPO_OS === "ios") {
         Alert.alert(title, message, [
           { text: "Cancel", style: "cancel" },
-          {
-            text: "Delete",
-            style: "destructive",
-            onPress: () => {
-              void executeAction("delete", thread);
-            },
-          },
+          { text: "Delete", style: "destructive", onPress: confirmWorktreeRemoval },
         ]);
         return;
       }
@@ -225,12 +318,10 @@ function useConfirmDeleteThread(
         message,
         confirmText: "Delete",
         destructive: true,
-        onConfirm: () => {
-          void executeAction("delete", thread);
-        },
+        onConfirm: confirmWorktreeRemoval,
       });
     },
-    [executeAction],
+    [executeAction, refreshVcsStatus, removeThreadWorktrees],
   );
 }
 

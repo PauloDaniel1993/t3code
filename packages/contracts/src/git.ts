@@ -174,6 +174,13 @@ export const VcsRemoveWorktreeInput = Schema.Struct({
 });
 export type VcsRemoveWorktreeInput = typeof VcsRemoveWorktreeInput.Type;
 
+/** Removes every worktree of a thread's set, or none while another thread still uses one. */
+export const VcsRemoveThreadWorktreesInput = Schema.Struct({
+  threadId: ThreadId,
+  force: Schema.optional(Schema.Boolean),
+});
+export type VcsRemoveThreadWorktreesInput = typeof VcsRemoveThreadWorktreesInput.Type;
+
 export const VcsCreateRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,
@@ -359,6 +366,19 @@ export class GitCommandError extends Schema.TaggedError<GitCommandError>()("GitC
 }) {
   override get message(): string {
     return `Git command failed in ${this.operation} (${this.cwd}): ${this.detail}`;
+  }
+}
+
+export class VcsThreadWorktreesError extends Schema.TaggedError<VcsThreadWorktreesError>()(
+  "VcsThreadWorktreesError",
+  {
+    threadId: ThreadId,
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
   }
 }
 

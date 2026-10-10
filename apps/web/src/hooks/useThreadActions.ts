@@ -9,6 +9,7 @@ import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-se
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
+import { orphanedThreadWorktreePaths } from "@t3tools/shared/workspaceFolders";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -43,7 +44,7 @@ import {
 import { useUiStateStore } from "../uiStateStore";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
+import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useClientSettings } from "./useSettings";
 import * as ThreadUndo from "./threadUndo";
@@ -262,6 +263,9 @@ export function useThreadActions() {
   const removeWorktree = useAtomCommand(vcsEnvironment.removeWorktree, {
     reportFailure: false,
   });
+  const removeThreadWorktrees = useAtomCommand(vcsEnvironment.removeThreadWorktrees, {
+    reportFailure: false,
+  });
   const refreshVcsStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
     reportFailure: false,
   });
@@ -422,20 +426,21 @@ export function useThreadActions() {
         deletedIds && deletedIds.size > 0
           ? threads.filter((entry) => entry.id === threadRef.threadId || !deletedIds.has(entry.id))
           : threads;
-      const orphanedWorktreePath = getOrphanedWorktreePathForThread(
+      // A worktree set is removed whole, so this is empty while another thread
+      // still works in any of its worktrees.
+      const orphanedWorktreePaths = orphanedThreadWorktreePaths(
         survivingThreads,
         threadRef.threadId,
       );
-      const displayWorktreePath = orphanedWorktreePath
-        ? formatWorktreePathForDisplay(orphanedWorktreePath)
-        : null;
+      const worktreeCount = orphanedWorktreePaths.length;
+      const displayWorktreePaths = orphanedWorktreePaths.map(formatWorktreePathForDisplay);
       const environmentConfig = appAtomRegistry
         .get(environmentServerConfigsAtom)
         .get(threadRef.environmentId);
       // A Scratch thread's folder is not a git worktree, and deleting the
       // thread keeps its files.
       const canDeleteWorktree =
-        orphanedWorktreePath !== null &&
+        worktreeCount > 0 &&
         threadProject !== null &&
         !isScratchProject(threadProject, environmentConfig?.scratchWorkspaceRoot);
       const localApi = readLocalApi();
@@ -448,10 +453,14 @@ export function useThreadActions() {
         const confirmationResult = await settlePromise(() =>
           localApi.dialogs.confirm(
             [
-              "This thread is the only one linked to this worktree:",
-              displayWorktreePath ?? orphanedWorktreePath,
+              worktreeCount === 1
+                ? "This thread is the only one linked to this worktree:"
+                : `This thread is the only one linked to these ${worktreeCount} worktrees:`,
+              ...displayWorktreePaths,
               "",
-              "Delete the worktree too?",
+              worktreeCount === 1
+                ? "Delete the worktree too?"
+                : `Remove ${worktreeCount} worktrees too?`,
             ].join("\n"),
             { variant: "destructive" },
           ),
@@ -518,18 +527,25 @@ export function useThreadActions() {
         );
       }
 
-      if (!shouldDeleteWorktree || !orphanedWorktreePath || !threadProject) {
+      if (!shouldDeleteWorktree || worktreeCount === 0 || !threadProject) {
         return deleteResult;
       }
 
-      const removeResult = await removeWorktree({
-        environmentId: threadRef.environmentId,
-        input: {
-          cwd: threadProject.workspaceRoot,
-          path: orphanedWorktreePath,
-          force: true,
-        },
-      });
+      // Older servers know only single-worktree removal, and never bind a set.
+      const removeResult =
+        environmentConfig?.environment.capabilities.threadWorktreeRemoval === true
+          ? await removeThreadWorktrees({
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId, force: true },
+            })
+          : await removeWorktree({
+              environmentId: threadRef.environmentId,
+              input: {
+                cwd: threadProject.workspaceRoot,
+                path: orphanedWorktreePaths[0]!,
+                force: true,
+              },
+            });
       const refreshResult =
         removeResult._tag === "Success"
           ? await refreshVcsStatus({
@@ -550,17 +566,21 @@ export function useThreadActions() {
         console.error("Worktree cleanup failed after thread deletion", {
           threadId: threadRef.threadId,
           projectCwd: threadProject.workspaceRoot,
-          worktreePath: orphanedWorktreePath,
+          worktreePaths: orphanedWorktreePaths,
           error,
         });
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: removalFailed
-              ? "Failed to delete worktree"
-              : "Worktree deleted, but Git status refresh failed",
+              ? worktreeCount === 1
+                ? "Failed to delete worktree"
+                : "Failed to delete worktrees"
+              : worktreeCount === 1
+                ? "Worktree deleted, but Git status refresh failed"
+                : "Worktrees deleted, but Git status refresh failed",
             description: removalFailed
-              ? `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`
+              ? `Could not remove ${displayWorktreePaths.join(", ")}. ${message}`
               : message,
           }),
         );
@@ -577,6 +597,7 @@ export function useThreadActions() {
       deleteThreadMutation,
       getCurrentRouteThreadRef,
       refreshVcsStatus,
+      removeThreadWorktrees,
       removeWorktree,
       router,
       resolveThreadTarget,

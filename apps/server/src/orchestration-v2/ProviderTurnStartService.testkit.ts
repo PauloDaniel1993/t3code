@@ -4,8 +4,12 @@ import * as Option from "effect/Option";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as WorktreeSet from "./WorktreeSetService.ts";
 
-export const worktreeRepairDependenciesTestLayer = Layer.merge(
+export const worktreeRepairDependenciesTestLayer = Layer.mergeAll(
+  Layer.mock(WorktreeSet.WorktreeSetService)({
+    recreateMissing: () => Effect.void,
+  }),
   Layer.mock(GitWorkflow.GitWorkflowService)({
     pruneWorktrees: () => Effect.void,
     createWorktree: () => Effect.succeed({} as never),
