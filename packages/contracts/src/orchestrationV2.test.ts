@@ -22,6 +22,7 @@ import {
   TurnItemId,
 } from "./index.ts";
 import {
+  OrchestrationV2AppThreadJson,
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointScope,
   OrchestrationV2Command,
@@ -31,6 +32,7 @@ import {
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
+  OrchestrationV2RunJson,
   OrchestrationV2ShellSnapshot,
   OrchestrationV2SubscribeThreadInput,
   OrchestrationV2Subagent,
@@ -1044,6 +1046,81 @@ describe("orchestration V2 contracts", () => {
     });
     expect(imported.latestTaskDeliveredAt).toBe("2026-04-19T00:00:00.000Z");
     expect(imported.legacyImportedAt).toBe("2026-04-20T00:00:00.000Z");
+    expect(shell).not.toHaveProperty("workspaceFolderCount");
+    expect(shell).not.toHaveProperty("worktrees");
+  });
+
+  it("keeps a thread's folder snapshot and worktree set optional on the wire", () => {
+    const decodeThread = Schema.decodeUnknownSync(OrchestrationV2AppThreadJson);
+    const encodeThread = Schema.encodeSync(OrchestrationV2AppThreadJson);
+    const legacy = {
+      createdBy: "user",
+      creationSource: "web",
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Thread",
+      providerInstanceId: "codex",
+      modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" },
+      forkedFrom: null,
+      createdAt: "2026-04-20T00:00:00.000Z",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      archivedAt: null,
+      deletedAt: null,
+    };
+    const plain = decodeThread(legacy);
+    expect(plain).not.toHaveProperty("workspaceFolders");
+    expect(plain).not.toHaveProperty("worktrees");
+
+    const binding = {
+      branch: "t3code/feature",
+      worktreePath: "/wt/feature/repo/web",
+      workspaceFolders: [
+        { path: "/repo/web", name: "web", label: "web", checkoutRoot: "/repo" },
+        { uri: "vscode-remote://ssh-remote+box/srv", name: "srv", label: "srv" },
+      ],
+      worktrees: [{ repositoryRoot: "/repo", path: "/wt/feature/repo", branch: "t3code/feature" }],
+    };
+    const bound = decodeThread(encodeThread(decodeThread({ ...legacy, ...binding })));
+    expect(bound.workspaceFolders).toEqual(binding.workspaceFolders);
+    expect(bound.worktrees).toEqual(binding.worktrees);
+
+    const decodeRun = Schema.decodeUnknownSync(OrchestrationV2RunJson);
+    const run = {
+      id: "run-1",
+      threadId: "thread-1",
+      ordinal: 1,
+      providerInstanceId: "codex",
+      modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+      providerThreadId: null,
+      userMessageId: "message-1",
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "completed",
+      requestedAt: "2026-04-20T00:00:00.000Z",
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+    expect(decodeRun(run)).not.toHaveProperty("unavailableFolderPaths");
+    expect(
+      decodeRun({ ...run, unavailableFolderPaths: ["/srv/notes"] }).unavailableFolderPaths,
+    ).toEqual(["/srv/notes"]);
+
+    // Clearing a set is an explicit null, distinct from leaving it unchanged.
+    const cleared = decodeOrchestrationV2Command({
+      type: "thread.metadata.update",
+      commandId: "command-1",
+      threadId: "thread-1",
+      worktrees: null,
+    });
+    expect(cleared).toHaveProperty("worktrees", null);
   });
 });
 

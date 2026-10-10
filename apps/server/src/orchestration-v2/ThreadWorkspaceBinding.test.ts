@@ -228,16 +228,19 @@ it.layer(testLayer)("thread workspace binding", (it) => {
         yield* rejection(update("rebind", { workspaceFolders: workspaceFolders.slice(1) })),
         "can't change after binding",
       );
-      assert.include(
-        yield* rejection(
-          update("primary-outside-set", {
-            branch: "t3code/feature",
-            worktreePath: "/wt/feature/lib",
-            worktrees,
-          }),
-        ),
-        "inside its primary worktree",
-      );
+      // The primary /repo/web lives at /wt/feature/repo/web in this set, nowhere else.
+      for (const worktreePath of ["/wt/feature/lib", "/wt/feature/repo/other"]) {
+        assert.include(
+          yield* rejection(
+            update(`primary-at-${worktreePath}`, {
+              branch: "t3code/feature",
+              worktreePath,
+              worktrees,
+            }),
+          ),
+          "primary folder's place in its primary worktree",
+        );
+      }
       assert.include(
         yield* rejection(
           createThread(ThreadId.make("thread:binding-remote-primary"), {

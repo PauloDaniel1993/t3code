@@ -139,10 +139,9 @@ export interface ThreadWorkspace {
 }
 
 /**
- * Resolve a thread's folders from its frozen snapshot. A folder inside a
- * worktree set member moves to the same place below that member's worktree,
- * the deepest member winning; any other folder stays in place. A thread
- * without a snapshot gets exactly one folder at `worktreePath ??
+ * Resolve a thread's folders from its frozen snapshot. Each folder lives where
+ * `worktreeSetPath` puts it, and the primary at the thread's `worktreePath`. A
+ * thread without a snapshot gets exactly one folder at `worktreePath ??
  * project.workspaceRoot`. `unavailableFolderPaths` is the run's record of
  * snapshot folders it can't reach.
  */
@@ -182,7 +181,7 @@ export function resolveThreadWorkspace(input: {
           ? null
           : index === 0
             ? primaryPath
-            : mapIntoWorktreeSet(folder.path, members),
+            : worktreeSetPath(folder.path, members),
       isPrimary: index === 0,
       checkoutRoot: folder.checkoutRoot,
     })),
@@ -194,26 +193,21 @@ export function isPathWithin(root: string, path: string): boolean {
   return segmentsBelow(root, path) !== null;
 }
 
-function pathSegments(path: string): ReadonlyArray<string> {
-  return path.split(/[\\/]+/).filter((segment) => segment.length > 0);
+/** Whether two paths name one location, compared as `isPathWithin` compares them. */
+export function isSamePath(left: string, right: string): boolean {
+  return segmentsBelow(left, right)?.length === 0;
 }
 
-function segmentsBelow(root: string, path: string): ReadonlyArray<string> | null {
-  const windows = isWindowsAbsolutePath(root);
-  if (windows !== isWindowsAbsolutePath(path)) return null;
-  const rootSegments = pathSegments(root);
-  const segments = pathSegments(path);
-  const key = (segment: string) => (windows ? segment.toLowerCase() : segment);
-  return rootSegments.length <= segments.length &&
-    rootSegments.every((segment, index) => key(segment) === key(segments[index]!))
-    ? segments.slice(rootSegments.length)
-    : null;
-}
-
-function mapIntoWorktreeSet(
+/**
+ * Where a folder lives in a thread's worktree set: at the same place below the
+ * worktree of the deepest member whose checkout contains it. A folder outside
+ * every member's checkout, or already inside a member's worktree, stays put.
+ */
+export function worktreeSetPath(
   path: string,
   members: ReadonlyArray<OrchestrationV2ThreadWorktree>,
 ): string {
+  if (members.some((member) => isPathWithin(member.path, path))) return path;
   let deepest: { readonly worktree: string; readonly rest: ReadonlyArray<string> } | undefined;
   for (const member of members) {
     const rest = segmentsBelow(member.repositoryRoot, path);
@@ -226,4 +220,21 @@ function mapIntoWorktreeSet(
   if (deepest.rest.length === 0) return deepest.worktree;
   const separator = isWindowsAbsolutePath(deepest.worktree) ? "\\" : "/";
   return `${deepest.worktree.replace(/[\\/]+$/, "")}${separator}${deepest.rest.join(separator)}`;
+}
+
+// A backslash separates segments only in Windows paths; in POSIX it is a name character.
+function pathSegments(path: string, windows: boolean): ReadonlyArray<string> {
+  return path.split(windows ? /[\\/]+/ : /\/+/).filter((segment) => segment.length > 0);
+}
+
+function segmentsBelow(root: string, path: string): ReadonlyArray<string> | null {
+  const windows = isWindowsAbsolutePath(root);
+  if (windows !== isWindowsAbsolutePath(path)) return null;
+  const rootSegments = pathSegments(root, windows);
+  const segments = pathSegments(path, windows);
+  const key = (segment: string) => (windows ? segment.toLowerCase() : segment);
+  return rootSegments.length <= segments.length &&
+    rootSegments.every((segment, index) => key(segment) === key(segments[index]!))
+    ? segments.slice(rootSegments.length)
+    : null;
 }

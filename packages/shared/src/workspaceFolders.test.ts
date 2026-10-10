@@ -3,9 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   allocateFolderLabels,
   isPathWithin,
+  isSamePath,
   projectFolders,
   resolveThreadWorkspace,
   threadPrimaryPath,
+  worktreeSetPath,
 } from "./workspaceFolders.ts";
 
 const labels = (entries: Parameters<typeof allocateFolderLabels>[0]) =>
@@ -198,6 +200,17 @@ describe("resolveThreadWorkspace", () => {
   });
 });
 
+describe("worktreeSetPath", () => {
+  it("leaves a folder that already lies in a member's worktree where it is", () => {
+    // A worktree kept inside its own repository, bound before the project was linked.
+    const members = [{ repositoryRoot: "/repo", path: "/repo/.worktrees/feature", branch: "b" }];
+    expect(worktreeSetPath("/repo/.worktrees/feature/web", members)).toBe(
+      "/repo/.worktrees/feature/web",
+    );
+    expect(worktreeSetPath("/repo/web", members)).toBe("/repo/.worktrees/feature/web");
+  });
+});
+
 describe("isPathWithin", () => {
   it("compares whole segments, never across path kinds", () => {
     expect(isPathWithin("/repo", "/repo")).toBe(true);
@@ -207,5 +220,12 @@ describe("isPathWithin", () => {
     expect(isPathWithin("C:\\Repo", "c:/repo/web")).toBe(true);
     expect(isPathWithin("/Repo", "/repo")).toBe(false);
     expect(isPathWithin("/repo", "C:\\repo")).toBe(false);
+  });
+
+  it("treats a backslash as part of a POSIX name", () => {
+    expect(isPathWithin("/repo", "/repo\\notes")).toBe(false);
+    expect(isSamePath("/repo/", "/repo")).toBe(true);
+    expect(isSamePath("C:\\Repo\\", "c:/repo")).toBe(true);
+    expect(isSamePath("/repo/web", "/repo")).toBe(false);
   });
 });

@@ -3,7 +3,7 @@ import type {
   OrchestrationV2ThreadWorkspaceFolder,
   OrchestrationV2ThreadWorktree,
 } from "@t3tools/contracts";
-import { isPathWithin } from "@t3tools/shared/workspaceFolders";
+import { isPathWithin, isSamePath, worktreeSetPath } from "@t3tools/shared/workspaceFolders";
 import * as Result from "effect/Result";
 
 /** The thread fields that bind it to its workspace. */
@@ -23,13 +23,15 @@ export interface ThreadWorkspaceUpdate {
  * Why a binding is malformed, or undefined when it is sound. A folder snapshot
  * starts with the local primary folder, and each folder has exactly one of a
  * path or a URI. A worktree set belongs to a snapshot, and its first member is
- * the primary's: the thread's `worktreePath` lies inside that member's
- * worktree, and its `branch` is that member's, unless the primary is detached.
+ * the primary's: the thread's `worktreePath` is the primary folder's place in
+ * that member's worktree, and its `branch` is that member's, unless the
+ * primary is detached.
  */
 export function threadWorkspaceViolation(binding: ThreadWorkspaceBinding): string | undefined {
   const folders = binding.workspaceFolders;
+  const primaryFolderPath = folders?.[0]?.path;
   if (folders !== undefined) {
-    if (folders[0]?.path === undefined) {
+    if (primaryFolderPath === undefined) {
       return "A thread's folder snapshot must start with its local primary folder.";
     }
     if (folders.some((folder) => (folder.path === undefined) === (folder.uri === undefined))) {
@@ -38,11 +40,15 @@ export function threadWorkspaceViolation(binding: ThreadWorkspaceBinding): strin
   }
   const worktrees = binding.worktrees;
   if (worktrees === undefined) return undefined;
-  if (folders === undefined) return "A thread's worktree set needs its folder snapshot.";
+  if (primaryFolderPath === undefined) return "A thread's worktree set needs its folder snapshot.";
   const primary = worktrees[0];
   if (primary === undefined) return "A thread's worktree set needs at least one member.";
-  if (binding.worktreePath === null || !isPathWithin(primary.path, binding.worktreePath)) {
-    return "A thread's worktree path must lie inside its primary worktree.";
+  if (
+    binding.worktreePath === null ||
+    !isPathWithin(primary.path, binding.worktreePath) ||
+    !isSamePath(binding.worktreePath, worktreeSetPath(primaryFolderPath, worktrees))
+  ) {
+    return "A thread's worktree path must be its primary folder's place in its primary worktree.";
   }
   if (binding.branch !== null && binding.branch !== primary.branch) {
     return "A thread's branch must be its primary worktree's branch.";
