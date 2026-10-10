@@ -1,4 +1,9 @@
-import type { ProjectWorkspaceFolder, RepositoryIdentity } from "@t3tools/contracts";
+import type {
+  ProjectId,
+  ProjectWorkspaceFolder,
+  RepositoryIdentity,
+  WorkspaceFileStatus,
+} from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -71,6 +76,15 @@ export class ProjectEnrichmentService extends Context.Service<
     readonly getAvailableFolders: (
       folders: ReadonlyArray<ProjectWorkspaceFolder>,
     ) => Effect.Effect<ReadonlyArray<ProjectWorkspaceFolder>>;
+    /** A linked project's workspace-file sync health; undefined until its file is read. */
+    readonly getWorkspaceFileStatus: (
+      projectId: ProjectId,
+    ) => Effect.Effect<WorkspaceFileStatus | undefined>;
+    /** Record a linked project's sync health, or forget it with undefined. */
+    readonly setWorkspaceFileStatus: (
+      projectId: ProjectId,
+      status: WorkspaceFileStatus | undefined,
+    ) => Effect.Effect<void>;
     /** Invalidate workspace-derived metadata. */
     readonly invalidate: (workspaceRoots: Iterable<string>) => Effect.Effect<void>;
     /** Subscribe to ephemeral completion notifications. */
@@ -154,6 +168,11 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   const repositoryIdentityLane = yield* makeWorkLane;
   const faviconLane = yield* makeWorkLane;
   const folderLane = yield* makeWorkLane;
+  // Linked projects' workspace-file health, by project. It is never an event,
+  // so a restart derives it again.
+  const workspaceFileStatuses = yield* Ref.make<ReadonlyMap<ProjectId, WorkspaceFileStatus>>(
+    new Map(),
+  );
   const changes = yield* Effect.acquireRelease(
     PubSub.sliding<ProjectEnrichmentChange>(256),
     (pubsub) => PubSub.shutdown(pubsub),
@@ -375,6 +394,21 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     );
   });
 
+  const getWorkspaceFileStatus: ProjectEnrichmentService["Service"]["getWorkspaceFileStatus"] = (
+    projectId,
+  ) => Ref.get(workspaceFileStatuses).pipe(Effect.map((statuses) => statuses.get(projectId)));
+
+  const setWorkspaceFileStatus: ProjectEnrichmentService["Service"]["setWorkspaceFileStatus"] = (
+    projectId,
+    status,
+  ) =>
+    Ref.update(workspaceFileStatuses, (current) => {
+      const next = new Map(current);
+      if (status === undefined) next.delete(projectId);
+      else next.set(projectId, status);
+      return next;
+    });
+
   const invalidate: ProjectEnrichmentService["Service"]["invalidate"] = Effect.fn(
     "ProjectEnrichmentService.invalidate",
   )(function* (workspaceRoots) {
@@ -398,6 +432,8 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     getAvailable,
     probeFolders,
     getAvailableFolders,
+    getWorkspaceFileStatus,
+    setWorkspaceFileStatus,
     invalidate,
     subscribeChanges: PubSub.subscribe(changes),
   });

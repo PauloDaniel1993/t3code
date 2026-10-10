@@ -252,6 +252,8 @@ const makeTestRelay = Effect.fnUntraced(function* (
       importWorkspaceFile: unused,
       linkWorkspaceFile: unused,
       unlinkWorkspaceFile: unused,
+      refreshWorkspaceFile: unused,
+      watchWorkspaceFiles: unused(),
       snapshotWorkspaceFolders: unused,
       delete: unused,
       getByWorkspaceRoot: unused,

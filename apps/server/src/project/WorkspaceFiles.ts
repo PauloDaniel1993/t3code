@@ -1,18 +1,32 @@
-import { WorkspaceFileDiagnostic, type WorkspaceFolderEntry } from "@t3tools/contracts";
+import {
+  type ProjectId,
+  WorkspaceFileDiagnostic,
+  type WorkspaceFolderEntry,
+} from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 
 import { expandHomePathWith } from "../pathExpansion.ts";
+import { watchDirectory } from "../wayfinder/WayfinderFiles.ts";
 import { parseWorkspaceFile } from "./workspaceFileDefinition.ts";
 
 // VS Code workspace files are a few kilobytes; anything far larger is not one.
 const MAX_WORKSPACE_FILE_BYTES = 1024 * 1024;
+// Editors write a file in several steps; a burst of them is one change.
+const WATCH_DEBOUNCE = Duration.millis(100);
 
 /** A workspace file's folders, read from its normalized server path. */
 export interface WorkspaceFileDefinition {
@@ -31,6 +45,10 @@ export class WorkspaceFileReadError extends Schema.TaggedError<WorkspaceFileRead
   }
 }
 
+/** The normalized server path a requested workspace-file path names. */
+export const resolveWorkspaceFilePath = (requestedPath: string, path: Path.Path): string =>
+  path.resolve(expandHomePathWith(requestedPath.trim(), path));
+
 export class WorkspaceFiles extends Context.Service<
   WorkspaceFiles,
   {
@@ -41,17 +59,41 @@ export class WorkspaceFiles extends Context.Service<
     readonly read: (
       filePath: string,
     ) => Effect.Effect<WorkspaceFileDefinition, WorkspaceFileReadError>;
+    /**
+     * Watch a linked project's workspace file until it is unwatched, replacing
+     * the project's earlier watch. `onHint` runs after each burst of changes
+     * to the file, and once more if the watch stops working; it only hints
+     * that the file should be read again. False when the file can't be
+     * watched, so changes are seen only when something reads it.
+     */
+    readonly watch: (
+      projectId: ProjectId,
+      filePath: string,
+      onHint: Effect.Effect<void>,
+    ) => Effect.Effect<boolean>;
+    readonly unwatch: (projectId: ProjectId) => Effect.Effect<void>;
+    /** Whether the project's workspace file is watched and the watch still works. */
+    readonly isWatching: (projectId: ProjectId) => Effect.Effect<boolean>;
   }
 >()("t3/project/WorkspaceFiles") {}
 
-const make = Effect.gen(function* () {
+interface ProjectWatch {
+  readonly scope: Scope.Closeable;
+  /** Completes when the watch stops working. */
+  readonly closed: Deferred.Deferred<void>;
+}
+
+export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcessPlatform;
+  const layerScope = yield* Scope.Scope;
+  const watches = new Map<ProjectId, ProjectWatch>();
+  const watchLock = yield* Semaphore.make(1);
 
   const read: WorkspaceFiles["Service"]["read"] = Effect.fn("WorkspaceFiles.read")(
     function* (requestedPath) {
-      const filePath = path.resolve(expandHomePathWith(requestedPath.trim(), path));
+      const filePath = resolveWorkspaceFilePath(requestedPath, path);
       const fail = (diagnostic: Omit<WorkspaceFileDiagnostic, "path">) =>
         Effect.fail(new WorkspaceFileReadError({ diagnostic: { ...diagnostic, path: filePath } }));
       const unreadable = () =>
@@ -87,7 +129,74 @@ const make = Effect.gen(function* () {
     },
   );
 
-  return WorkspaceFiles.of({ read });
+  const closeWatch = (projectId: ProjectId) =>
+    Effect.suspend(() => {
+      const existing = watches.get(projectId);
+      if (existing === undefined) return Effect.void;
+      watches.delete(projectId);
+      return Scope.close(existing.scope, Exit.void);
+    });
+
+  // The parent directory is watched, without recursion, so a file replaced by
+  // a save or recreated after a delete is still seen.
+  const watch: WorkspaceFiles["Service"]["watch"] = (projectId, filePath, onHint) =>
+    watchLock.withPermit(
+      Effect.gen(function* () {
+        yield* closeWatch(projectId);
+        const scope = yield* Scope.fork(layerScope, "sequential");
+        const name = path.basename(filePath);
+        const isFile =
+          platform === "win32"
+            ? (changed: string) => changed.toLowerCase() === name.toLowerCase()
+            : (changed: string) => changed === name;
+        // One slot, full once the file changed since the last hint.
+        const changed = yield* Queue.dropping<void>(1);
+        const watched = yield* watchDirectory(path.dirname(filePath), false, (_event, entry) => {
+          if (isFile(entry)) Queue.offerUnsafe(changed, undefined);
+        }).pipe(Scope.provide(scope), Effect.result);
+        if (Result.isFailure(watched)) {
+          yield* Scope.close(scope, Exit.void);
+          yield* Effect.logWarning("Can't watch a workspace file; changes apply on Refresh", {
+            projectId,
+            filePath,
+            code: watched.failure.code,
+          });
+          return false;
+        }
+        yield* Effect.forever(
+          Queue.take(changed).pipe(
+            Effect.andThen(Effect.sleep(WATCH_DEBOUNCE)),
+            Effect.andThen(Queue.clear(changed)),
+            Effect.andThen(onHint),
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterrupts(cause),
+              (cause) =>
+                Effect.logWarning("Workspace file change failed to apply", { projectId, cause }),
+            ),
+          ),
+        ).pipe(Effect.forkIn(scope));
+        // A watch that stops, as when its directory goes away, hints once more.
+        yield* Deferred.await(watched.success).pipe(
+          Effect.andThen(Queue.offer(changed, undefined)),
+          Effect.forkIn(scope),
+        );
+        watches.set(projectId, { scope, closed: watched.success });
+        return true;
+      }),
+    );
+
+  const unwatch: WorkspaceFiles["Service"]["unwatch"] = (projectId) =>
+    watchLock.withPermit(closeWatch(projectId));
+
+  const isWatching: WorkspaceFiles["Service"]["isWatching"] = (projectId) =>
+    Effect.suspend(() => {
+      const existing = watches.get(projectId);
+      return existing === undefined
+        ? Effect.succeed(false)
+        : Deferred.isDone(existing.closed).pipe(Effect.map((closed) => !closed));
+    });
+
+  return WorkspaceFiles.of({ read, watch, unwatch, isWatching });
 });
 
 export const layer = Layer.effect(WorkspaceFiles, make);

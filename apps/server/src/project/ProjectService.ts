@@ -10,6 +10,8 @@ import {
   type ProjectUpdatePayload,
   type ProjectSnapshot,
   type ThreadId,
+  type WorkspaceFileDiagnostic,
+  type WorkspaceFileStatus,
   type WorkspaceFolderEntry,
   WorkspaceFileProjectsDisabledError,
   WorkspaceFileUnavailableError,
@@ -75,6 +77,18 @@ export interface ProjectLinkWorkspaceFileInput {
 export interface ProjectUnlinkWorkspaceFileInput {
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
+}
+
+/**
+ * Why a workspace file is read again: a project's first activation after
+ * server start, import or relink (`load`), an explicit Refresh, a change its
+ * watch saw, or a new thread binding its folders.
+ */
+export type WorkspaceFileRefreshReason = "load" | "refresh" | "watch" | "bind";
+
+export interface ProjectRefreshWorkspaceFileInput {
+  readonly projectId: ProjectId;
+  readonly reason: WorkspaceFileRefreshReason;
 }
 
 export interface ProjectDeleteInput {
@@ -193,8 +207,8 @@ export class ProjectService extends Context.Service<
     ) => Effect.Effect<Project, ProjectServiceError>;
     /**
      * Link a plain project to a workspace file whose first folder is the
-     * project's own, relink a linked project to another file, or re-read its
-     * file. Threads bound before keep their folders.
+     * project's own, or relink a linked project to another file. Its own file
+     * again is a Refresh. Threads bound before keep their folders.
      */
     readonly linkWorkspaceFile: (
       input: ProjectLinkWorkspaceFileInput,
@@ -207,14 +221,26 @@ export class ProjectService extends Context.Service<
       input: ProjectUnlinkWorkspaceFileInput,
     ) => Effect.Effect<Project, ProjectServiceError>;
     /**
-     * The folder snapshot a new thread of a linked project binds, probed now;
-     * undefined for a plain project, whose threads bind none.
+     * Read a linked project's workspace file again. A changed definition is one
+     * project update; a missing, unreadable or invalid file keeps the folders
+     * the project has and shows in `workspaceFileStatus`, blocking new threads
+     * until it recovers. A plain project is returned as it is.
+     */
+    readonly refreshWorkspaceFile: (
+      input: ProjectRefreshWorkspaceFileInput,
+    ) => Effect.Effect<Project, ProjectServiceError>;
+    /** Watch and load every linked project's workspace file. Run once at server start. */
+    readonly watchWorkspaceFiles: Effect.Effect<void, ProjectOperationError>;
+    /**
+     * The folder snapshot a new thread of a linked project binds, from its
+     * workspace file read now and its folders probed now; undefined for a
+     * plain project, whose threads bind none.
      */
     readonly snapshotWorkspaceFolders: (
       projectId: ProjectId,
     ) => Effect.Effect<
       ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder> | undefined,
-      ProjectNotFoundError | ProjectOperationError | WorkspacePrimaryFolderUnavailableError
+      ProjectServiceError | WorkspacePrimaryFolderUnavailableError
     >;
     readonly delete: (input: ProjectDeleteInput) => Effect.Effect<Project, ProjectServiceError>;
     readonly getById: (
@@ -258,11 +284,15 @@ export const make = Effect.gen(function* () {
   const projectLocks = yield* makeKeyedSerialExecutor<ProjectId>();
   const workspaceLocks = yield* makeKeyedSerialExecutor<string>();
   const workspaceFileLocks = yield* makeKeyedSerialExecutor<string>();
+  // Reading a linked project's workspace file and acting on it runs in order
+  // per project, with link, relink and unlink too, so an older read never
+  // lands after a newer one or after the link changed.
+  const workspaceFileSyncLocks = yield* makeKeyedSerialExecutor<ProjectId>();
 
   const toProject = (
     row: ProjectStore.ProjectRow,
     enrichment: ProjectEnrichmentService.ProjectEnrichment | null,
-    workspaceFileFields: ReturnType<typeof ProjectStore.workspaceFileFields>,
+    workspaceFileFields: Pick<Project, "workspaceFile" | "folders" | "workspaceFileStatus">,
   ): Project => ({
     id: row.projectId,
     title: row.title,
@@ -286,6 +316,10 @@ export const make = Effect.gen(function* () {
         ? yield* projectEnrichment.getAvailable(row.workspaceRoot)
         : yield* projectEnrichment.peek(row.workspaceRoot);
     const { folders, ...workspaceFile } = ProjectStore.workspaceFileFields(row);
+    const workspaceFileStatus =
+      folders === undefined || row.deletedAt !== null
+        ? undefined
+        : yield* projectEnrichment.getWorkspaceFileStatus(row.projectId);
     return toProject(row, enrichment, {
       ...workspaceFile,
       ...(folders === undefined
@@ -296,6 +330,7 @@ export const make = Effect.gen(function* () {
                 ? yield* projectEnrichment.getAvailableFolders(folders)
                 : folders,
           }),
+      ...(workspaceFileStatus === undefined ? {} : { workspaceFileStatus }),
     });
   });
 
@@ -611,6 +646,189 @@ export const make = Effect.gen(function* () {
     primary?.name.trim() ||
     "Project";
 
+  /** Whether two folder lists define the same workspace, entry for entry. */
+  const sameFolders = (
+    left: ReadonlyArray<WorkspaceFolderEntry>,
+    right: ReadonlyArray<WorkspaceFolderEntry> | null,
+  ) =>
+    right !== null &&
+    left.length === right.length &&
+    left.every(
+      (folder, index) =>
+        folder.path === right[index]?.path &&
+        folder.uri === right[index]?.uri &&
+        folder.name === right[index]?.name,
+    );
+
+  /**
+   * A workspace file's folders for a project at `workspaceRoot`. A primary
+   * that stays at that folder keeps the project's spelling of it, so a
+   * different spelling in the file never reads as a move.
+   */
+  const withProjectPrimary = (
+    folders: ReadonlyArray<WorkspaceFolderEntry>,
+    workspaceRoot: string,
+  ): ReadonlyArray<WorkspaceFolderEntry> => {
+    const [primary, ...secondaries] = folders;
+    return primary?.path !== undefined && isSamePath(primary.path, workspaceRoot)
+      ? [{ ...primary, path: workspaceRoot }, ...secondaries]
+      : folders;
+  };
+
+  const workspaceFileStatus = (
+    diagnostic: WorkspaceFileDiagnostic | undefined,
+    liveDetection: boolean,
+  ): WorkspaceFileStatus =>
+    diagnostic === undefined
+      ? { state: "ok", diagnostics: [], liveDetection }
+      : {
+          state:
+            diagnostic.code === "file-not-found" || diagnostic.code === "not-a-file"
+              ? "missing"
+              : diagnostic.code === "unreadable"
+                ? "unreadable"
+                : "invalid",
+          diagnostics: [diagnostic],
+          liveDetection,
+        };
+
+  /** Watch a project's workspace file, reading it again after each change. */
+  const watchWorkspaceFile = (projectId: ProjectId, filePath: string) =>
+    workspaceFiles.watch(
+      projectId,
+      filePath,
+      workspaceFileSyncLocks.withLock(projectId, syncWorkspaceFile(projectId, "watch")).pipe(
+        Effect.asVoid,
+        Effect.catch((error) =>
+          Effect.logWarning("Could not follow a workspace file change", { projectId, error }),
+        ),
+      ),
+    );
+
+  const forgetWorkspaceFile = (projectId: ProjectId) =>
+    Effect.all(
+      [
+        workspaceFiles.unwatch(projectId),
+        projectEnrichment.setWorkspaceFileStatus(projectId, undefined),
+      ],
+      { discard: true },
+    );
+
+  /**
+   * Read a linked project's workspace file and follow it. A changed definition
+   * commits as one update, moving the primary if entry 0 changed; a file that
+   * can't be used leaves the project as it is. Either way the read's health is
+   * recorded. The caller holds the project's sync lock. Returns why the file
+   * can't be used, if it can't.
+   */
+  const syncWorkspaceFile = Effect.fn("ProjectService.syncWorkspaceFile")(function* (
+    projectId: ProjectId,
+    reason: WorkspaceFileRefreshReason,
+  ) {
+    const existing = yield* readRow(projectId);
+    if (Option.isNone(existing)) return yield* new ProjectNotFoundError({ projectId });
+    const row = existing.value;
+    if (row.workspaceFile === null) return undefined;
+    // A watch that failed or stopped is tried again on every read but its own.
+    if (reason !== "watch" && !(yield* workspaceFiles.isWatching(projectId))) {
+      yield* watchWorkspaceFile(projectId, row.workspaceFile);
+    }
+    const read = yield* Effect.result(workspaceFiles.read(row.workspaceFile));
+    const liveDetection = yield* workspaceFiles.isWatching(projectId);
+    if (Result.isFailure(read)) {
+      const { diagnostic } = read.failure;
+      yield* projectEnrichment.setWorkspaceFileStatus(
+        projectId,
+        workspaceFileStatus(diagnostic, liveDetection),
+      );
+      return diagnostic;
+    }
+    const folders = withProjectPrimary(read.success.folders, row.workspaceRoot);
+    // The parser rejects a file whose first folder isn't a local path.
+    const workspaceRoot = folders[0]!.path!;
+    if (!sameFolders(folders, row.folders)) {
+      const commandId = yield* idAllocator.allocate
+        .command({ fixtureName: "workspace-file", commandName: reason })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProjectOperationError({
+                operation: "dispatch-project-command",
+                projectId,
+                cause,
+              }),
+          ),
+        );
+      if (workspaceRoot !== row.workspaceRoot) {
+        // Threads a link left unfrozen freeze at the primary before it moves.
+        yield* bindThreadsAtLink({
+          commandId,
+          projectId,
+          workspaceRoot: row.workspaceRoot,
+          primaryName: row.folders?.[0]?.name ?? folders[0]!.name,
+        });
+      }
+      yield* commit({
+        type: "project.meta.update",
+        commandId,
+        projectId,
+        folders,
+        ...(workspaceRoot === row.workspaceRoot ? {} : { workspaceRoot }),
+        expectedWorkspaceFile: row.workspaceFile,
+      });
+      if (workspaceRoot !== row.workspaceRoot) {
+        yield* projectEnrichment.invalidate([row.workspaceRoot, workspaceRoot]);
+      }
+    }
+    // Load and Refresh probe the folders as well, so their facts catch up.
+    if (reason === "load" || reason === "refresh") {
+      yield* projectEnrichment.probeFolders(
+        folders.flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
+      );
+    }
+    yield* projectEnrichment.setWorkspaceFileStatus(
+      projectId,
+      workspaceFileStatus(undefined, liveDetection),
+    );
+    return undefined;
+  });
+
+  const refreshWorkspaceFile: ProjectService["Service"]["refreshWorkspaceFile"] = Effect.fn(
+    "ProjectService.refreshWorkspaceFile",
+  )(function* (input) {
+    yield* requireWorkspaceFileProjects;
+    yield* workspaceFileSyncLocks.withLock(
+      input.projectId,
+      syncWorkspaceFile(input.projectId, input.reason),
+    );
+    return yield* readCommitted(input.projectId);
+  });
+
+  const watchWorkspaceFiles: ProjectService["Service"]["watchWorkspaceFiles"] = Effect.gen(
+    function* () {
+      if (config.workspaceFileProjects !== true) return;
+      const rows = yield* projects
+        .list()
+        .pipe(
+          Effect.mapError(
+            (cause) => new ProjectOperationError({ operation: "list-projects", cause }),
+          ),
+        );
+      yield* Effect.forEach(
+        rows.filter((row) => row.workspaceFile !== null),
+        ({ projectId }) =>
+          workspaceFileSyncLocks
+            .withLock(projectId, syncWorkspaceFile(projectId, "load"))
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("Could not load a workspace file", { projectId, error }),
+              ),
+            ),
+        { concurrency: 4, discard: true },
+      );
+    },
+  ).pipe(Effect.withSpan("ProjectService.watchWorkspaceFiles"));
+
   const importWorkspaceFile: ProjectService["Service"]["importWorkspaceFile"] = Effect.fn(
     "ProjectService.importWorkspaceFile",
   )(function* (input) {
@@ -626,6 +844,12 @@ export const make = Effect.gen(function* () {
       folders: definition.folders,
     });
     yield* projectEnrichment.invalidate([definition.workspaceRoot]);
+    // Loading starts the watch, then reads again so a change made since the
+    // first read isn't missed.
+    yield* workspaceFileSyncLocks.withLock(
+      input.projectId,
+      syncWorkspaceFile(input.projectId, "load"),
+    );
     return yield* readCommitted(input.projectId);
   });
 
@@ -633,72 +857,78 @@ export const make = Effect.gen(function* () {
     "ProjectService.linkWorkspaceFile",
   )(function* (input) {
     yield* requireWorkspaceFileProjects;
-    const existing = yield* readRow(input.projectId);
-    if (Option.isNone(existing)) {
-      return yield* new ProjectNotFoundError({ projectId: input.projectId });
-    }
-    const row = existing.value;
-    const definition = yield* readUsableWorkspaceFile(input.projectId, input.workspaceFilePath);
-    const linking = row.workspaceFile === null;
-    if (linking && !isSamePath(definition.workspaceRoot, row.workspaceRoot)) {
-      return yield* new WorkspaceFileUnavailableError({
-        projectId: input.projectId,
-        diagnostic: {
-          code: "primary-unusable",
-          message: `The workspace file's first folder must be this project's folder, ${row.workspaceRoot}. Reorder its folders in VS Code, or import it as a new project.`,
-          entryIndex: 0,
-          path: definition.workspaceRoot,
-        },
-      });
-    }
-    if (!linking) {
-      // Threads a link left unfrozen (it was interrupted, or they were created
-      // while it committed) freeze at the current primary before it can move.
-      yield* bindThreadsAtLink({
-        commandId: input.commandId,
-        projectId: input.projectId,
-        workspaceRoot: row.workspaceRoot,
-        primaryName: row.folders?.[0]?.name ?? definition.folders[0]!.name,
-      });
-    }
-    // A plain project keeps its root's stored spelling as the primary's path.
-    const workspaceRoot = linking ? row.workspaceRoot : definition.workspaceRoot;
-    const [, ...secondaryFolders] = definition.folders;
-    const folders = [{ ...definition.folders[0]!, path: workspaceRoot }, ...secondaryFolders];
-    const unchanged =
-      definition.filePath === row.workspaceFile &&
-      workspaceRoot === row.workspaceRoot &&
-      row.folders?.length === folders.length &&
-      folders.every(
-        (folder, index) =>
-          folder.path === row.folders?.[index]?.path &&
-          folder.uri === row.folders?.[index]?.uri &&
-          folder.name === row.folders?.[index]?.name,
-      );
-    if (!unchanged) {
-      yield* commit({
-        type: "project.meta.update",
-        commandId: input.commandId,
-        projectId: input.projectId,
-        workspaceFile: definition.filePath,
-        folders,
-        ...(workspaceRoot === row.workspaceRoot ? {} : { workspaceRoot }),
-        // Link and relink were decided against this read, primary check included.
-        expectedWorkspaceFile: row.workspaceFile,
-      });
-    }
-    if (workspaceRoot !== row.workspaceRoot) {
-      yield* projectEnrichment.invalidate([row.workspaceRoot, workspaceRoot]);
-    }
-    if (linking) {
-      yield* bindThreadsAtLink({
-        commandId: input.commandId,
-        projectId: input.projectId,
-        workspaceRoot,
-        primaryName: folders[0]!.name,
-      });
-    }
-    return yield* readCommitted(input.projectId);
+    return yield* workspaceFileSyncLocks.withLock(
+      input.projectId,
+      Effect.gen(function* () {
+        const existing = yield* readRow(input.projectId);
+        if (Option.isNone(existing)) {
+          return yield* new ProjectNotFoundError({ projectId: input.projectId });
+        }
+        const row = existing.value;
+        // The project's own file again is a Refresh, which keeps the project
+        // as it is when the file can't be used.
+        if (
+          row.workspaceFile !== null &&
+          isSamePath(
+            WorkspaceFiles.resolveWorkspaceFilePath(input.workspaceFilePath, path),
+            row.workspaceFile,
+          )
+        ) {
+          yield* syncWorkspaceFile(input.projectId, "refresh");
+          return yield* readCommitted(input.projectId);
+        }
+        const definition = yield* readUsableWorkspaceFile(input.projectId, input.workspaceFilePath);
+        const linking = row.workspaceFile === null;
+        if (linking && !isSamePath(definition.workspaceRoot, row.workspaceRoot)) {
+          return yield* new WorkspaceFileUnavailableError({
+            projectId: input.projectId,
+            diagnostic: {
+              code: "primary-unusable",
+              message: `The workspace file's first folder must be this project's folder, ${row.workspaceRoot}. Reorder its folders in VS Code, or import it as a new project.`,
+              entryIndex: 0,
+              path: definition.workspaceRoot,
+            },
+          });
+        }
+        if (!linking) {
+          // Threads a link left unfrozen (it was interrupted, or they were created
+          // while it committed) freeze at the current primary before it can move.
+          yield* bindThreadsAtLink({
+            commandId: input.commandId,
+            projectId: input.projectId,
+            workspaceRoot: row.workspaceRoot,
+            primaryName: row.folders?.[0]?.name ?? definition.folders[0]!.name,
+          });
+        }
+        const folders = withProjectPrimary(definition.folders, row.workspaceRoot);
+        const workspaceRoot = folders[0]!.path!;
+        yield* commit({
+          type: "project.meta.update",
+          commandId: input.commandId,
+          projectId: input.projectId,
+          workspaceFile: definition.filePath,
+          folders,
+          ...(workspaceRoot === row.workspaceRoot ? {} : { workspaceRoot }),
+          // Link and relink were decided against this read, primary check included.
+          expectedWorkspaceFile: row.workspaceFile,
+        });
+        if (workspaceRoot !== row.workspaceRoot) {
+          yield* projectEnrichment.invalidate([row.workspaceRoot, workspaceRoot]);
+        }
+        if (linking) {
+          yield* bindThreadsAtLink({
+            commandId: input.commandId,
+            projectId: input.projectId,
+            workspaceRoot,
+            primaryName: folders[0]!.name,
+          });
+        }
+        // The new file replaces any old one's watch, then loads like an import.
+        yield* watchWorkspaceFile(input.projectId, definition.filePath);
+        yield* syncWorkspaceFile(input.projectId, "load");
+        return yield* readCommitted(input.projectId);
+      }),
+    );
   });
 
   const unlinkWorkspaceFile: ProjectService["Service"]["unlinkWorkspaceFile"] = Effect.fn(
@@ -706,20 +936,26 @@ export const make = Effect.gen(function* () {
   )(function* (input) {
     // Unlinking is the way back to a plain project, so it works with the
     // feature off and with the file gone. It never touches the disk.
-    const existing = yield* readRow(input.projectId);
-    if (Option.isNone(existing)) {
-      return yield* new ProjectNotFoundError({ projectId: input.projectId });
-    }
-    if (existing.value.workspaceFile !== null) {
-      yield* commit({
-        type: "project.meta.update",
-        commandId: input.commandId,
-        projectId: input.projectId,
-        workspaceFile: null,
-        folders: null,
-      });
-    }
-    return yield* readCommitted(input.projectId);
+    return yield* workspaceFileSyncLocks.withLock(
+      input.projectId,
+      Effect.gen(function* () {
+        const existing = yield* readRow(input.projectId);
+        if (Option.isNone(existing)) {
+          return yield* new ProjectNotFoundError({ projectId: input.projectId });
+        }
+        if (existing.value.workspaceFile !== null) {
+          yield* commit({
+            type: "project.meta.update",
+            commandId: input.commandId,
+            projectId: input.projectId,
+            workspaceFile: null,
+            folders: null,
+          });
+        }
+        yield* forgetWorkspaceFile(input.projectId);
+        return yield* readCommitted(input.projectId);
+      }),
+    );
   });
 
   /**
@@ -749,7 +985,20 @@ export const make = Effect.gen(function* () {
   )(function* (projectId) {
     const existing = yield* readRow(projectId);
     if (Option.isNone(existing)) return yield* new ProjectNotFoundError({ projectId });
-    const row = existing.value;
+    if (existing.value.workspaceFile === null) return undefined;
+    // A new thread binds what its file says now, and none while it can't be used.
+    if (config.workspaceFileProjects === true) {
+      const diagnostic = yield* workspaceFileSyncLocks.withLock(
+        projectId,
+        syncWorkspaceFile(projectId, "bind"),
+      );
+      if (diagnostic !== undefined) {
+        return yield* new WorkspaceFileUnavailableError({ projectId, diagnostic });
+      }
+    }
+    const current = yield* readRow(projectId);
+    if (Option.isNone(current)) return yield* new ProjectNotFoundError({ projectId });
+    const row = current.value;
     if (row.workspaceFile === null || row.folders === null) return undefined;
     const folders = allocateFolderLabels(row.folders);
     const probes = yield* projectEnrichment.probeFolders(
@@ -996,6 +1245,9 @@ export const make = Effect.gen(function* () {
         yield* deleteChildThreads(input);
       }
       yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
+      if (existing.value.workspaceFile !== null) {
+        yield* workspaceFileSyncLocks.withLock(projectId, forgetWorkspaceFile(projectId));
+      }
       yield* projectEnrichment.invalidate([existing.value.workspaceRoot]);
       return yield* readCommitted(projectId);
     },
@@ -1057,6 +1309,8 @@ export const make = Effect.gen(function* () {
     importWorkspaceFile,
     linkWorkspaceFile,
     unlinkWorkspaceFile,
+    refreshWorkspaceFile,
+    watchWorkspaceFiles,
     snapshotWorkspaceFolders,
     delete: deleteProject,
     getById,

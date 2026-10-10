@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 
 import * as ServerConfig from "../config.ts";
@@ -29,7 +30,9 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { OrchestrationV2EventSinkLayerLive } from "../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { planThreadWorkspaceUpdate } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
+import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as OrchestrationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
@@ -50,15 +53,83 @@ const configLayer = (workspaceFileProjects: boolean) =>
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "project-workspace-file-" })),
   );
 
+/**
+ * Watches the tests drive in place of the filesystem's: each watched project's
+ * hint, projects whose watch can't start, and reads held until released.
+ */
+const watches = {
+  hints: new Map<ProjectId, Effect.Effect<void>>(),
+  failing: new Set<ProjectId>(),
+  heldReads: new Map<
+    string,
+    { readonly reached: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
+  >(),
+};
+
+const drivenWorkspaceFiles = Layer.effect(
+  WorkspaceFiles.WorkspaceFiles,
+  WorkspaceFiles.make.pipe(
+    Effect.map((real) =>
+      WorkspaceFiles.WorkspaceFiles.of({
+        read: (filePath) =>
+          Effect.suspend(() => {
+            const held = watches.heldReads.get(filePath);
+            if (held === undefined) return real.read(filePath);
+            watches.heldReads.delete(filePath);
+            return Deferred.succeed(held.reached, undefined).pipe(
+              Effect.andThen(Deferred.await(held.release)),
+              Effect.andThen(real.read(filePath)),
+            );
+          }),
+        watch: (projectId, _filePath, onHint) =>
+          Effect.sync(() => {
+            if (watches.failing.has(projectId)) {
+              watches.hints.delete(projectId);
+              return false;
+            }
+            watches.hints.set(projectId, onHint);
+            return true;
+          }),
+        unwatch: (projectId) => Effect.sync(() => watches.hints.delete(projectId)),
+        isWatching: (projectId) => Effect.sync(() => watches.hints.has(projectId)),
+      }),
+    ),
+  ),
+);
+
+/** Deliver the project's watch hint, as a change to its workspace file would. */
+const hint = (projectId: ProjectId) => Effect.suspend(() => watches.hints.get(projectId)!);
+
+/** The project's committed `project.meta-updated` events, oldest first. */
+const metaUpdates = Effect.fn("ProjectWorkspaceFileTest.metaUpdates")(function* (
+  projectId: ProjectId,
+) {
+  const events = yield* OrchestrationEventStore.OrchestrationEventStore;
+  const stored = yield* events
+    .readApplicationEvents({
+      afterSequence: 0,
+      throughSequence: yield* events.latestApplicationSequence,
+    })
+    .pipe(Stream.runCollect);
+  return Array.from(stored).flatMap((event) =>
+    "aggregateKind" in event &&
+    event.aggregateId === projectId &&
+    event.type === "project.meta-updated"
+      ? [event.payload]
+      : [],
+  );
+});
+
 /** Every dependency of ProjectService.make, with real folders, git and workspace files. */
 const dependencies = (workspaceFileProjects: boolean) =>
   Layer.mergeAll(
     OrchestrationV2EventSinkLayerLive,
+    OrchestrationEventStoreLive,
     ProjectStore.layer,
     ProjectionStore.layer,
     IdAllocator.layer,
     ThreadCommandExecutor.layer,
-    WorkspaceFiles.layer,
+    drivenWorkspaceFiles,
   ).pipe(
     Layer.provideMerge(
       LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
@@ -686,6 +757,315 @@ it.layer(dependencies(true))("ProjectService workspace files", (it) => {
         assert.equal(moved._tag, "ProjectInvalidRequestError");
       }),
   );
+
+  it.effect("follows its workspace file with one update per change, and none for formatting", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* workspace(["app", "lib"]);
+      const filePath = yield* dir.writeFile("team.code-workspace", ["app", "lib"]);
+      const projectId = ProjectId.make("project:follow");
+      const imported = yield* service.importWorkspaceFile({
+        commandId: commandId("follow-import"),
+        projectId,
+        workspaceFilePath: filePath,
+      });
+      assert.isTrue(watches.hints.has(projectId));
+      assert.deepEqual(imported.workspaceFileStatus, {
+        state: "ok",
+        diagnostics: [],
+        liveDetection: true,
+      });
+
+      // Comments, whitespace and unrelated keys change nothing.
+      yield* fs.writeFileString(
+        filePath,
+        `// team\n{\n  "folders": [ { "path": "app" }, { "path": "lib" }, ],\n  "settings": {},\n}\n`,
+      );
+      yield* hint(projectId);
+      assert.deepEqual(yield* metaUpdates(projectId), []);
+
+      // A burst of hints for one change is one update. A missing folder keeps
+      // its place, and the primary stays.
+      yield* dir.writeFile("team.code-workspace", ["app", "gone", "lib"]);
+      yield* Effect.all([hint(projectId), hint(projectId), hint(projectId)], {
+        concurrency: "unbounded",
+        discard: true,
+      });
+      const updates = yield* metaUpdates(projectId);
+      assert.equal(updates.length, 1);
+      assert.deepEqual(
+        updates[0]?.folders?.map((folder) => folder.path),
+        [dir.at("app"), dir.at("gone"), dir.at("lib")],
+      );
+      assert.isUndefined(updates[0]?.workspaceRoot);
+
+      // Refresh is the same path linked again, and probes the folders too.
+      const refreshed = yield* service.update({
+        commandId: commandId("follow-refresh"),
+        projectId,
+        workspaceFilePath: filePath,
+      });
+      assert.equal(refreshed.workspaceRoot, dir.at("app"));
+      assert.deepEqual(
+        refreshed.folders?.map((folder) => [folder.path, folder.availability]),
+        [
+          [dir.at("app"), "available"],
+          [dir.at("gone"), "unavailable"],
+          [dir.at("lib"), "available"],
+        ],
+      );
+      assert.equal((yield* metaUpdates(projectId)).length, 1);
+    }),
+  );
+
+  it.effect("moves the primary in the same update, freezing unbound threads at the old one", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const dir = yield* workspace(["app", "lib"]);
+      const projectId = ProjectId.make("project:reorder");
+      yield* service.importWorkspaceFile({
+        commandId: commandId("reorder-import"),
+        projectId,
+        workspaceFilePath: yield* dir.writeFile("team.code-workspace", ["app", "lib"]),
+      });
+      // A thread from before the link has no folders of its own yet.
+      const threadId = ThreadId.make("thread:reorder");
+      yield* seedThread({ projectId, threadId });
+
+      yield* dir.writeFile("team.code-workspace", ["lib", "app"]);
+      yield* hint(projectId);
+
+      const updates = yield* metaUpdates(projectId);
+      assert.equal(updates.length, 1);
+      assert.equal(updates[0]?.workspaceRoot, dir.at("lib"));
+      assert.deepEqual(
+        updates[0]?.folders?.map((folder) => folder.path),
+        [dir.at("lib"), dir.at("app")],
+      );
+      assert.equal(
+        Option.getOrThrow(yield* service.getById(projectId)).workspaceRoot,
+        dir.at("lib"),
+      );
+      assert.deepEqual(
+        (yield* projections.getThread(threadId)).workspaceFolders?.map((folder) => folder.path),
+        [dir.at("app")],
+      );
+    }),
+  );
+
+  it.effect(
+    "keeps its folders while the file is broken, blocking new threads until it recovers",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ProjectService.make;
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* workspace(["app", "lib"]);
+        const filePath = yield* dir.writeFile("team.code-workspace", ["app", "lib"]);
+        const projectId = ProjectId.make("project:broken");
+        yield* service.importWorkspaceFile({
+          commandId: commandId("broken-import"),
+          projectId,
+          workspaceFilePath: filePath,
+        });
+        const expectBroken = Effect.fn("expectBroken")(function* (state: string, code: string) {
+          yield* hint(projectId);
+          const project = Option.getOrThrow(yield* service.getById(projectId));
+          assert.equal(project.workspaceFileStatus?.state, state);
+          assert.deepEqual(
+            project.workspaceFileStatus?.diagnostics.map((diagnostic) => diagnostic.code),
+            [code],
+          );
+          assert.deepEqual(
+            project.folders?.map((folder) => folder.path),
+            [dir.at("app"), dir.at("lib")],
+          );
+          const blocked = yield* service.snapshotWorkspaceFolders(projectId).pipe(Effect.flip);
+          assert.equal(
+            blocked._tag === "WorkspaceFileUnavailableError"
+              ? blocked.diagnostic.code
+              : blocked._tag,
+            code,
+          );
+        });
+
+        yield* fs.writeFileString(filePath, `{ "folders": [ `);
+        yield* expectBroken("invalid", "malformed-jsonc");
+        yield* fs.writeFileString(filePath, `{ "folders": [] }`);
+        yield* expectBroken("invalid", "empty-folders");
+        yield* fs.remove(filePath);
+        yield* expectBroken("missing", "file-not-found");
+        // A Refresh of a missing file reports it rather than failing.
+        const stillMissing = yield* service.update({
+          commandId: commandId("broken-refresh-missing"),
+          projectId,
+          workspaceFilePath: filePath,
+        });
+        assert.equal(stillMissing.workspaceFileStatus?.state, "missing");
+
+        // The file coming back at its path recovers on its own.
+        yield* dir.writeFile("team.code-workspace", ["app", "lib"]);
+        yield* hint(projectId);
+        const recovered = Option.getOrThrow(yield* service.getById(projectId));
+        assert.equal(recovered.workspaceFileStatus?.state, "ok");
+        assert.equal((yield* service.snapshotWorkspaceFolders(projectId))?.length, 2);
+        assert.deepEqual(yield* metaUpdates(projectId), []);
+      }),
+  );
+
+  it.effect("binds a new thread to what the file says now", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const dir = yield* workspace(["app", "lib"]);
+      const projectId = ProjectId.make("project:bind-reads");
+      yield* service.importWorkspaceFile({
+        commandId: commandId("bind-reads-import"),
+        projectId,
+        workspaceFilePath: yield* dir.writeFile("team.code-workspace", ["app"]),
+      });
+      // Changed with no hint, as when the watch missed it.
+      yield* dir.writeFile("team.code-workspace", ["app", "lib"]);
+
+      const snapshot = yield* service.snapshotWorkspaceFolders(projectId);
+      assert.deepEqual(
+        snapshot?.map((folder) => folder.path),
+        [dir.at("app"), dir.at("lib")],
+      );
+      assert.equal((yield* metaUpdates(projectId)).length, 1);
+    }),
+  );
+
+  it.effect("reports a file it can't watch, and Refresh still follows it and retries", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const dir = yield* workspace(["app", "lib"]);
+      const filePath = yield* dir.writeFile("team.code-workspace", ["app"]);
+      const projectId = ProjectId.make("project:unwatched");
+      watches.failing.add(projectId);
+      const imported = yield* service.importWorkspaceFile({
+        commandId: commandId("unwatched-import"),
+        projectId,
+        workspaceFilePath: filePath,
+      });
+      assert.isFalse(imported.workspaceFileStatus?.liveDetection);
+
+      yield* dir.writeFile("team.code-workspace", ["app", "lib"]);
+      const refreshed = yield* service.update({
+        commandId: commandId("unwatched-refresh"),
+        projectId,
+        workspaceFilePath: filePath,
+      });
+      assert.equal(refreshed.folders?.length, 2);
+      assert.isFalse(refreshed.workspaceFileStatus?.liveDetection);
+
+      watches.failing.delete(projectId);
+      const watched = yield* service.update({
+        commandId: commandId("unwatched-retry"),
+        projectId,
+        workspaceFilePath: filePath,
+      });
+      assert.isTrue(watched.workspaceFileStatus?.liveDetection);
+      assert.isTrue(watches.hints.has(projectId));
+    }),
+  );
+
+  it.effect("never lets an older read land after a relink", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const dir = yield* workspace(["app", "lib"]);
+      const oldFile = yield* dir.writeFile("old.code-workspace", ["app"]);
+      const projectId = ProjectId.make("project:relink-race");
+      yield* service.importWorkspaceFile({
+        commandId: commandId("relink-race-import"),
+        projectId,
+        workspaceFilePath: oldFile,
+      });
+      const newFile = yield* dir.writeFile("new.code-workspace", ["lib", "app"]);
+
+      // The old file changes, and its read is held mid-flight.
+      yield* dir.writeFile("old.code-workspace", ["app", "lib"]);
+      const held = { reached: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+      watches.heldReads.set(oldFile, held);
+      const oldRead = yield* hint(projectId).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(held.reached);
+      const relink = yield* service
+        .linkWorkspaceFile({
+          commandId: commandId("relink-race"),
+          projectId,
+          workspaceFilePath: newFile,
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.yieldNow;
+      assert.isUndefined(relink.pollUnsafe());
+      yield* Deferred.succeed(held.release, undefined);
+      yield* Fiber.join(oldRead);
+      yield* Fiber.join(relink);
+
+      const project = Option.getOrThrow(yield* service.getById(projectId));
+      assert.equal(project.workspaceFile, newFile);
+      assert.deepEqual(
+        project.folders?.map((folder) => folder.path),
+        [dir.at("lib"), dir.at("app")],
+      );
+      assert.deepEqual(
+        (yield* metaUpdates(projectId)).map((update) => update.workspaceFile),
+        [undefined, newFile],
+      );
+    }),
+  );
+
+  it.effect("watches and loads every linked project at server start", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const dir = yield* workspace(["app", "lib"]);
+      const projectId = ProjectId.make("project:startup");
+      yield* service.importWorkspaceFile({
+        commandId: commandId("startup-import"),
+        projectId,
+        workspaceFilePath: yield* dir.writeFile("team.code-workspace", ["app"]),
+      });
+      // A restart forgets the watch; the file changes while the server is down.
+      watches.hints.delete(projectId);
+      yield* dir.writeFile("team.code-workspace", ["app", "lib"]);
+
+      yield* service.watchWorkspaceFiles;
+      assert.isTrue(watches.hints.has(projectId));
+      const project = Option.getOrThrow(yield* service.getById(projectId));
+      assert.equal(project.folders?.length, 2);
+      assert.isTrue(project.workspaceFileStatus?.liveDetection);
+    }),
+  );
+
+  it.effect("stops following a file once unlinked or deleted", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const dir = yield* workspace(["app", "lib"]);
+      const unlinkedId = ProjectId.make("project:stop-unlink");
+      yield* service.importWorkspaceFile({
+        commandId: commandId("stop-unlink-import"),
+        projectId: unlinkedId,
+        workspaceFilePath: yield* dir.writeFile("app.code-workspace", ["app"]),
+      });
+      yield* service.unlinkWorkspaceFile({
+        commandId: commandId("stop-unlink"),
+        projectId: unlinkedId,
+      });
+      const enrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
+      assert.isFalse(watches.hints.has(unlinkedId));
+      assert.isUndefined(yield* enrichment.getWorkspaceFileStatus(unlinkedId));
+
+      const deletedId = ProjectId.make("project:stop-delete");
+      yield* service.importWorkspaceFile({
+        commandId: commandId("stop-delete-import"),
+        projectId: deletedId,
+        workspaceFilePath: yield* dir.writeFile("lib.code-workspace", ["lib"]),
+      });
+      yield* service.delete({ commandId: commandId("stop-delete"), projectId: deletedId });
+      assert.isFalse(watches.hints.has(deletedId));
+      assert.isUndefined(yield* enrichment.getWorkspaceFileStatus(deletedId));
+    }),
+  );
 });
 
 it.layer(dependencies(false))("ProjectService workspace files, turned off", (it) => {
@@ -713,6 +1093,10 @@ it.layer(dependencies(false))("ProjectService workspace files, turned off", (it)
         .update({ commandId: commandId("off-link"), projectId, workspaceFilePath: filePath })
         .pipe(Effect.flip);
       assert.equal(linked._tag, "WorkspaceFileProjectsDisabledError");
+      const refreshed = yield* service
+        .refreshWorkspaceFile({ projectId, reason: "refresh" })
+        .pipe(Effect.flip);
+      assert.equal(refreshed._tag, "WorkspaceFileProjectsDisabledError");
     }),
   );
 });

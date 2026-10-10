@@ -130,6 +130,8 @@ const TestLayer = Layer.mergeAll(OrchestrationV2LayerLive, OrchestrationV2EventS
       invalidate: () => Effect.void,
       probeFolders: () => Effect.succeed([]),
       getAvailableFolders: (folders) => Effect.succeed(folders),
+      getWorkspaceFileStatus: () => Effect.succeed(undefined),
+      setWorkspaceFileStatus: () => Effect.void,
       subscribeChanges: Effect.never,
     }),
   ),
