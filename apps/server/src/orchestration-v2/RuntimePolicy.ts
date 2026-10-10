@@ -11,11 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import {
-  additionalFolderPaths,
-  resolveThreadWorkspace,
-  threadPrimaryPath,
-} from "@t3tools/shared/workspaceFolders";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import {
@@ -54,24 +50,18 @@ export class ProviderWorkspaceFolderAccessError extends Schema.TaggedError<Provi
 }
 
 /**
- * Whether a run of this thread reaches folders beyond its working directory:
- * available snapshot folders outside the primary. No provider is granted
- * those yet, so such a run must not start.
+ * Whether a run of this thread reaches more than its primary folder: any other
+ * snapshot folder it can reach, even one inside the primary. Until providers,
+ * worktree sets and checkpoints handle several folders, such a run must not
+ * start.
  */
-export function runNeedsAdditionalFolders(
+export function runSpansWorkspaceFolders(
   thread: OrchestrationV2AppThread,
   unavailableFolderPaths: ReadonlyArray<string> | undefined,
 ): boolean {
-  const primaryPath = thread.workspaceFolders?.[0]?.path;
-  return (
-    primaryPath !== undefined &&
-    additionalFolderPaths(
-      resolveThreadWorkspace({
-        thread,
-        project: { workspaceRoot: primaryPath },
-        unavailableFolderPaths,
-      }),
-    ).length > 0
+  const [, ...others] = thread.workspaceFolders ?? [];
+  return others.some(
+    (folder) => folder.path !== undefined && !unavailableFolderPaths?.includes(folder.path),
   );
 }
 

@@ -378,6 +378,25 @@ describe("planProjectCommand", () => {
       failureOf(plan(unlink, { project: linked, workspaceOwner: plainOwner }))._tag,
       "ProjectWorkspaceConflictError",
     );
+
+    // A link decided while the project was plain can't land once it's linked.
+    const staleLink = {
+      type: "project.meta.update",
+      commandId: CommandId.make("cmd-stale-link"),
+      projectId,
+      workspaceFile: "/work/other.code-workspace",
+      folders: [{ path: "/work/app", name: "app" }],
+      expectedWorkspaceFile: null,
+    } satisfies ProjectCommand;
+    assert.equal(
+      failureOf(plan(staleLink, { project: linked }))._tag,
+      "ProjectCommandInvariantError",
+    );
+    assert.isTrue(
+      Result.isSuccess(
+        plan({ ...staleLink, expectedWorkspaceFile: workspaceFile }, { project: linked }),
+      ),
+    );
   });
 
   it("names every identity a command claims or releases", () => {

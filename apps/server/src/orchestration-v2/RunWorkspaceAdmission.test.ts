@@ -9,6 +9,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  WorkspacePrimaryFolderUnavailableError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -99,11 +100,17 @@ const folders = Effect.gen(function* () {
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-run-admission-" });
   yield* fs.makeDirectory(path.join(root, "app"));
   yield* fs.makeDirectory(path.join(root, "lib"));
+  const at = {
+    app: path.join(root, "app"),
+    lib: path.join(root, "lib"),
+    gone: path.join(root, "gone"),
+  };
   return {
+    at,
     snapshot: [
-      { path: path.join(root, "app"), name: "app", label: "app", checkoutRoot: null },
-      { path: path.join(root, "lib"), name: "lib", label: "lib", checkoutRoot: null },
-      { path: path.join(root, "gone"), name: "gone", label: "gone" },
+      { path: at.app, name: "app", label: "app", checkoutRoot: null },
+      { path: at.lib, name: "lib", label: "lib", checkoutRoot: null },
+      { path: at.gone, name: "gone", label: "gone" },
       { uri: "vscode-remote://ssh-remote+devbox/srv/api", name: "api", label: "api" },
     ],
     remove: (name: string) => fs.remove(path.join(root, name), { recursive: true }),
@@ -113,26 +120,26 @@ const folders = Effect.gen(function* () {
 it.layer(testLayer)("run workspace admission", (it) => {
   it.effect("records once per run which snapshot folders it can't reach", () =>
     Effect.gen(function* () {
-      const { snapshot, remove } = yield* folders;
+      const { at, snapshot, remove } = yield* folders;
       const threadId = ThreadId.make("thread:admission-record");
       yield* createThread(threadId, { workspaceFolders: snapshot });
 
       yield* send(threadId, "first", { type: "start_immediately" });
       const [first] = yield* runs(threadId);
-      assert.deepEqual(first?.unavailableFolderPaths, [snapshot[2]!.path]);
+      assert.deepEqual(first?.unavailableFolderPaths, [at.gone]);
 
       // A folder that goes away is skipped from the next run on; the first keeps its answer.
       yield* remove("lib");
       yield* send(threadId, "second", { type: "queue_after_active" });
       const [kept, second] = yield* runs(threadId);
-      assert.deepEqual(kept?.unavailableFolderPaths, [snapshot[2]!.path]);
-      assert.deepEqual(second?.unavailableFolderPaths, [snapshot[1]!.path, snapshot[2]!.path]);
+      assert.deepEqual(kept?.unavailableFolderPaths, [at.gone]);
+      assert.deepEqual(second?.unavailableFolderPaths, [at.lib, at.gone]);
     }),
   );
 
   it.effect("records it when a prepared launch run is released", () =>
     Effect.gen(function* () {
-      const { snapshot } = yield* folders;
+      const { at, snapshot } = yield* folders;
       const threadId = ThreadId.make("thread:admission-release");
       yield* createThread(threadId, { workspaceFolders: snapshot });
       yield* send(threadId, "prepared", { type: "defer_start" });
@@ -148,13 +155,13 @@ it.layer(testLayer)("run workspace admission", (it) => {
       });
       const [released] = yield* runs(threadId);
       assert.equal(released?.status, "starting");
-      assert.deepEqual(released?.unavailableFolderPaths, [snapshot[2]!.path]);
+      assert.deepEqual(released?.unavailableFolderPaths, [at.gone]);
     }),
   );
 
   it.effect("blocks a run while a root-mode thread's primary folder is gone", () =>
     Effect.gen(function* () {
-      const { snapshot, remove } = yield* folders;
+      const { at, snapshot, remove } = yield* folders;
       const threadId = ThreadId.make("thread:admission-primary");
       yield* createThread(threadId, { workspaceFolders: snapshot });
       yield* remove("app");
@@ -162,7 +169,11 @@ it.layer(testLayer)("run workspace admission", (it) => {
       const failure = yield* send(threadId, "blocked", { type: "start_immediately" }).pipe(
         Effect.flip,
       );
-      assert.include(JSON.stringify(failure), "WorkspacePrimaryFolderUnavailableError");
+      assert.equal(failure._tag, "OrchestratorDispatchError");
+      assert.instanceOf(
+        "cause" in failure ? failure.cause : undefined,
+        WorkspacePrimaryFolderUnavailableError,
+      );
       assert.deepEqual(yield* runs(threadId), []);
     }),
   );
@@ -179,7 +190,7 @@ it.layer(testLayer)("run workspace admission", (it) => {
 
   it.effect("names a root-mode snapshot thread's primary on its shell", () =>
     Effect.gen(function* () {
-      const { snapshot } = yield* folders;
+      const { at, snapshot } = yield* folders;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const rootId = ThreadId.make("thread:admission-shell-root");
       const worktreeId = ThreadId.make("thread:admission-shell-worktree");
@@ -189,15 +200,9 @@ it.layer(testLayer)("run workspace admission", (it) => {
         worktreePath: "/wt/app",
       });
 
-      assert.equal(
-        (yield* projections.getThreadShell(rootId))?.workspacePrimaryPath,
-        snapshot[0]!.path,
-      );
+      assert.equal((yield* projections.getThreadShell(rootId))?.workspacePrimaryPath, at.app);
       const listed = (yield* projections.getShellSnapshot()).threads;
-      assert.equal(
-        listed.find((thread) => thread.id === rootId)?.workspacePrimaryPath,
-        snapshot[0]!.path,
-      );
+      assert.equal(listed.find((thread) => thread.id === rootId)?.workspacePrimaryPath, at.app);
       // A worktree thread's primary is its worktree path, already on the shell.
       assert.notProperty(
         listed.find((thread) => thread.id === worktreeId),

@@ -98,6 +98,7 @@ interface HarnessOptions {
   readonly threadReadFailsOnRecheck?: boolean;
   readonly continuation?: "queued" | "fails" | "dies";
   readonly projectMissing?: boolean;
+  readonly projectLinked?: boolean;
   readonly projectReadFails?: boolean;
   readonly existingBranchWorktreePath?: string | null;
   readonly pathSemantics?: "win32" | "posix";
@@ -190,7 +191,11 @@ const makeHarness = (options: HarnessOptions = {}) => {
       ? (Effect.fail("simulated project read failure") as never)
       : Effect.succeed(
           id === projectId && options.projectMissing !== true
-            ? Option.some(project)
+            ? Option.some(
+                options.projectLinked === true
+                  ? { ...project, workspaceFile: "/workspace/project.code-workspace" }
+                  : project,
+              )
             : Option.none(),
         ),
   );
@@ -592,6 +597,15 @@ describe("t3_worktree_handoff", () => {
     return Effect.gen(function* () {
       const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/no-project" }));
       expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "project_not_found" });
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("refuses a handoff for a project linked to a workspace file", () => {
+    const harness = makeHarness({ projectLinked: true });
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/linked" }));
+      expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "invalid_request" });
       expect(harness.createWorktree).not.toHaveBeenCalled();
     });
   });

@@ -112,8 +112,11 @@ describe("parseWorkspaceFile", () => {
       { path: "C:\\Work\\team\\app", name: "First" },
       { path: "C:\\Work\\team\\app\\src", name: "src" },
     ]);
-    // POSIX paths are case-sensitive.
+    // POSIX paths are case-sensitive, and a trailing slash names the same folder.
     expect(folders(posix(`{ "folders": [{ "path": "app" }, { "path": "APP" }] }`))).toHaveLength(2);
+    expect(
+      folders(posix(`{ "folders": [{ "uri": "file:///srv/a/" }, { "path": "/srv/a" }] }`)),
+    ).toEqual([{ path: "/srv/a", name: "a" }]);
   });
 
   it("rejects a file with no folders, or a remote folder first", () => {

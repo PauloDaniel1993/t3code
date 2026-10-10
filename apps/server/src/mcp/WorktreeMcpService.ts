@@ -153,6 +153,14 @@ const make = Effect.gen(function* () {
     }
 
     const project = yield* loadProject(scope, projection.thread.projectId);
+    // A linked project's threads work in their folders until worktree sets
+    // land; its current root may not even be the thread's repository.
+    if (project.workspaceFile != null) {
+      return yield* failure(
+        "invalid_request",
+        "Worktrees aren't supported yet for projects linked to a workspace file.",
+      );
+    }
     const projectCwd = project.workspaceRoot;
 
     if (input.path !== undefined && !path.isAbsolute(input.path)) {

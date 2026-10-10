@@ -396,10 +396,11 @@ it.effect("serves folder facts once probed, and probes missing ones in the backg
         probed.map((folder) => folder.availability),
         ["available", "available", "unavailable"],
       );
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const [, lib] = yield* service.getAvailableFolders(folders);
-        if (lib?.vcs?.repositoryIdentity !== undefined) break;
-        yield* Effect.yieldNow;
+      // A probed git folder asks for its own identity; wait for that to land.
+      const changes = yield* service.subscribeChanges;
+      yield* service.getAvailableFolders(folders);
+      while ((yield* PubSub.take(changes)).workspaceRoot !== "/work/lib") {
+        // Other roots' notifications are not this test's.
       }
       const served = yield* service.getAvailableFolders(folders);
       // The primary's identity is the project's own, so its folder omits it.

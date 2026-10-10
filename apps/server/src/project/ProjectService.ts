@@ -15,6 +15,7 @@ import {
   WorkspaceFileUnavailableError,
   WorkspacePrimaryFolderUnavailableError,
 } from "@t3tools/contracts";
+import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { allocateFolderLabels, isSamePath } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -392,9 +393,17 @@ export const make = Effect.gen(function* () {
             yield* readRow(projectId, { includeDeleted: true }),
           );
           const identities = projectCommandIdentities(command, project);
+          // A Windows path names one file in any case, so its lock does too.
+          const fileKeys = new Set(
+            identities.files.map((file) =>
+              isWindowsAbsolutePath(file) ? file.toLowerCase() : file,
+            ),
+          );
           const locks = [
             ...identities.roots.map((root) => [workspaceLocks, root] as const),
-            ...identities.files.map((file) => [workspaceFileLocks, file] as const),
+            ...Array.from(fileKeys, (file) => [workspaceFileLocks, file] as const).toSorted(
+              ([, left], [, right]) => left.localeCompare(right),
+            ),
           ];
           // The first lock is outermost, so every command takes them in one order.
           return yield* locks.reduceRight(
@@ -642,6 +651,16 @@ export const make = Effect.gen(function* () {
         },
       });
     }
+    if (!linking) {
+      // Threads a link left unfrozen (it was interrupted, or they were created
+      // while it committed) freeze at the current primary before it can move.
+      yield* bindThreadsAtLink({
+        commandId: input.commandId,
+        projectId: input.projectId,
+        workspaceRoot: row.workspaceRoot,
+        primaryName: row.folders?.[0]?.name ?? definition.folders[0]!.name,
+      });
+    }
     // A plain project keeps its root's stored spelling as the primary's path.
     const workspaceRoot = linking ? row.workspaceRoot : definition.workspaceRoot;
     const [, ...secondaryFolders] = definition.folders;
@@ -664,6 +683,8 @@ export const make = Effect.gen(function* () {
         workspaceFile: definition.filePath,
         folders,
         ...(workspaceRoot === row.workspaceRoot ? {} : { workspaceRoot }),
+        // Link and relink were decided against this read, primary check included.
+        expectedWorkspaceFile: row.workspaceFile,
       });
     }
     if (workspaceRoot !== row.workspaceRoot) {
@@ -746,10 +767,11 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * Linking freezes each existing thread at the one folder it works in, with
-   * its worktree as a one-member set, so a later primary change never moves
-   * it and the link never widens what it reaches. Each thread commits under
-   * its own lock, idempotently per link command.
+   * Linking freezes each existing thread at the project's one folder, so a
+   * later primary change never moves it and the link never widens what it
+   * reaches. A thread in its own worktree of that folder keeps working there,
+   * with the worktree as a one-member set. Each thread commits under its own
+   * lock, idempotently per link command.
    */
   const bindThreadsAtLink = Effect.fn("ProjectService.bindThreadsAtLink")(function* (input: {
     readonly commandId: CommandId;
@@ -789,13 +811,16 @@ export const make = Effect.gen(function* () {
       ) {
         return;
       }
-      const folderPath = thread.worktreePath ?? input.workspaceRoot;
-      const probe = probeAt(folderPath);
+      // The folder is the project's, wherever the thread works on it, so a
+      // thread that leaves its worktree comes back to the project's folder.
       const folder = snapshotFolder(
-        { path: folderPath, name: input.primaryName, label: label!.label },
-        probe,
+        { path: input.workspaceRoot, name: input.primaryName, label: label!.label },
+        probeAt(input.workspaceRoot),
       );
-      // The thread's own worktree of the primary's repository is its set.
+      // A worktree of the project's repository is the thread's set, when the
+      // folder maps exactly to where the thread works; otherwise the thread
+      // keeps its worktree path without one.
+      const probe = thread.worktreePath === null ? undefined : probeAt(thread.worktreePath);
       const checkout = probe?.availability === "available" ? probe.vcs : null;
       const member: OrchestrationV2ThreadWorktree | undefined =
         thread.worktreePath !== null &&

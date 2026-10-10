@@ -16,6 +16,9 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 
 import * as ServerConfig from "../config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -25,6 +28,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { OrchestrationV2EventSinkLayerLive } from "../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
+import { planThreadWorkspaceUpdate } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -87,6 +91,8 @@ const git = (cwd: string, args: ReadonlyArray<string>) =>
     if (result.code !== 0) return yield* Effect.die(new Error(result.stderr));
   }).pipe(Effect.provide(ProcessRunner.layer));
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 /** A temp directory with the named folders, and a writer for workspace files in it. */
 const workspace = Effect.fn("ProjectWorkspaceFileTest.workspace")(function* (
   folders: ReadonlyArray<string>,
@@ -100,7 +106,7 @@ const workspace = Effect.fn("ProjectWorkspaceFileTest.workspace")(function* (
     fs
       .writeFileString(
         path.join(root, name),
-        JSON.stringify({ folders: folderPaths.map((folderPath) => ({ path: folderPath })) }),
+        encodeJson({ folders: folderPaths.map((folderPath) => ({ path: folderPath })) }),
       )
       .pipe(Effect.as(path.join(root, name)));
   return { root, at: (...segments: Array<string>) => path.join(root, ...segments), writeFile };
@@ -330,29 +336,95 @@ it.layer(dependencies(true))("ProjectService workspace files", (it) => {
         [dir.at("app"), dir.at("lib")],
       );
 
-      // Each existing thread keeps the one folder it worked in; the link adds none.
+      // Each existing thread keeps the project's one folder; the link adds none.
       const appCheckout = yield* fs.realPath(dir.at("app"));
       const featureCheckout = yield* fs.realPath(dir.at("app-feature"));
+      const appFolder = {
+        path: dir.at("app"),
+        name: "app",
+        label: "app",
+        checkoutRoot: appCheckout,
+        checkoutPrefix: "",
+      };
       const root = yield* projections.getThread(rootThread);
-      assert.deepEqual(root.workspaceFolders, [
-        {
-          path: dir.at("app"),
-          name: "app",
-          label: "app",
-          checkoutRoot: appCheckout,
-          checkoutPrefix: "",
-        },
-      ]);
+      assert.deepEqual(root.workspaceFolders, [appFolder]);
       assert.isUndefined(root.worktrees);
+      // A thread in its worktree keeps working there, the worktree as its set.
       const worktree = yield* projections.getThread(worktreeThread);
-      assert.deepEqual(
-        worktree.workspaceFolders?.map((folder) => folder.path),
-        [dir.at("app-feature")],
-      );
+      assert.deepEqual(worktree.workspaceFolders, [appFolder]);
       assert.deepEqual(worktree.worktrees, [
         { repositoryRoot: appCheckout, path: featureCheckout, branch: "feature" },
       ]);
       assert.equal(worktree.worktreePath, dir.at("app-feature"));
+      // Leaving the worktree drops the set and returns it to the project's folder.
+      const local = Result.getOrThrow(
+        planThreadWorkspaceUpdate(worktree, { worktreePath: null, branch: null }),
+      );
+      assert.isUndefined(local.worktrees);
+      assert.equal(threadPrimaryPath(local, linked), dir.at("app"));
+    }),
+  );
+
+  it.effect("freezes threads a link missed before the project's primary can move", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const dir = yield* workspace(["app", "lib"]);
+      const projectId = ProjectId.make("project:link-interrupted");
+      yield* (yield* ProjectService.make).create({
+        commandId: commandId("link-interrupted-create"),
+        projectId,
+        title: "App",
+        workspaceRoot: dir.at("app"),
+      });
+      const threadId = ThreadId.make("thread:link-interrupted");
+      yield* seedThread({ projectId, threadId });
+      const filePath = yield* dir.writeFile("team.code-workspace", ["app", "lib"]);
+      const link = {
+        commandId: commandId("link-interrupted"),
+        projectId,
+        workspaceFilePath: filePath,
+      };
+
+      // The link lands, but freezing the thread fails after it.
+      const failing = yield* ProjectService.make.pipe(
+        Effect.provideService(
+          EventSink.EventSinkV2,
+          EventSink.EventSinkV2.of({
+            ...eventSink,
+            commitCommand: (input) =>
+              Effect.fail(
+                new EventSink.EventSinkWriteError({
+                  commandId: input.commandId,
+                  eventCount: input.events.length,
+                  cause: "simulated crash while freezing threads",
+                }),
+              ),
+          }),
+        ),
+      );
+      assert.equal(
+        (yield* failing.linkWorkspaceFile(link).pipe(Effect.flip))._tag,
+        "ProjectOperationError",
+      );
+      assert.equal(Option.getOrThrow(yield* failing.getById(projectId)).workspaceFile, filePath);
+      assert.isUndefined((yield* projections.getThread(threadId)).workspaceFolders);
+
+      // Relinking to a file that moves the primary freezes it at the old one first.
+      const service = yield* ProjectService.make;
+      yield* service.linkWorkspaceFile({
+        commandId: commandId("link-interrupted-relink"),
+        projectId,
+        workspaceFilePath: yield* dir.writeFile("lib-first.code-workspace", ["lib", "app"]),
+      });
+      assert.deepEqual(
+        (yield* projections.getThread(threadId)).workspaceFolders?.map((folder) => folder.path),
+        [dir.at("app")],
+      );
+      assert.equal(
+        Option.getOrThrow(yield* service.getById(projectId)).workspaceRoot,
+        dir.at("lib"),
+      );
     }),
   );
 
@@ -444,7 +516,7 @@ it.layer(dependencies(true))("ProjectService workspace files", (it) => {
       const filePath = path.join(dir.root, "team.code-workspace");
       yield* fs.writeFileString(
         filePath,
-        JSON.stringify({
+        encodeJson({
           folders: [
             { path: "app/web", name: "Web" },
             { path: "notes" },

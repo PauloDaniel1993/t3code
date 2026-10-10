@@ -67,11 +67,12 @@ const make = Effect.gen(function* () {
       .pipe(Effect.option);
     if (result._tag === "None" || result.value.code !== 0) return null;
     const [topLevel = "", commonDir = "", prefix = ""] = result.value.stdout.split(/\r?\n/);
-    if (topLevel.trim() === "" || commonDir.trim() === "") return null;
+    // Lines are taken verbatim: a folder name may start or end with a space.
+    if (topLevel === "" || commonDir === "") return null;
     return {
-      checkoutRoot: yield* realPath(topLevel.trim()),
-      checkoutPrefix: prefix.trim().replace(/\/+$/, ""),
-      commonDir: yield* realPath(commonDir.trim()),
+      checkoutRoot: yield* realPath(topLevel),
+      checkoutPrefix: prefix.replace(/\/+$/, ""),
+      commonDir: yield* realPath(commonDir),
     } satisfies WorkspaceFolderCheckout;
   });
 

@@ -853,37 +853,44 @@ const workspaceFolders = [
   { path: "/work/lib", name: "lib", label: "lib", checkoutRoot: "/work/lib" },
 ];
 
-effectIt.effect(
-  "fails a run that reaches workspace folders beyond its cwd before any provider",
-  () =>
-    Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({ text: "Continue", workspaceFolders });
+for (const unavailableFolderPaths of [undefined, ["/work/lib"]]) {
+  effectIt.effect(
+    `fails a run that reaches another workspace folder before any provider (${unavailableFolderPaths?.length ?? 0} unavailable)`,
+    () =>
+      Effect.gen(function* () {
+        // With the other folder gone, the nested one still counts.
+        const harness = makeLocalCommandHarness({
+          text: "Continue",
+          workspaceFolders,
+          ...(unavailableFolderPaths === undefined ? {} : { unavailableFolderPaths }),
+        });
 
-      yield* harness.start;
+        yield* harness.start;
 
-      expect(harness.open).not.toHaveBeenCalled();
-      expect(harness.startRootRun).not.toHaveBeenCalled();
-      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-      expect(harness.projection().turnItems).toMatchObject([
-        {
-          type: "error",
-          failure: {
-            class: "validation_error",
-            message:
-              "This provider cannot yet access every workspace folder; choose a supported provider.",
-            retryable: false,
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.projection().turnItems).toMatchObject([
+          {
+            type: "error",
+            failure: {
+              class: "validation_error",
+              message:
+                "This provider cannot yet access every workspace folder; choose a supported provider.",
+              retryable: false,
+            },
           },
-        },
-      ]);
-    }),
-);
+        ]);
+      }),
+  );
+}
 
-effectIt.effect("starts a run whose other folders are unavailable or inside its cwd", () =>
+effectIt.effect("starts a run whose other workspace folders are all unavailable", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "Continue",
       workspaceFolders,
-      unavailableFolderPaths: ["/work/lib"],
+      unavailableFolderPaths: ["/work/app/docs", "/work/lib"],
       openFailure: "provider offline",
     });
 

@@ -9,7 +9,7 @@ import {
   ThreadEnvMode,
   WorkspaceFolderEntry,
 } from "@t3tools/contracts";
-import { allocateFolderLabels } from "@t3tools/shared/workspaceFolders";
+import { allocateFolderLabels, isSamePath } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -113,7 +113,10 @@ export class ProjectStoreV2 extends Context.Service<
       workspaceRoot: string,
       options?: { readonly includeLinked?: boolean },
     ) => Effect.Effect<Option.Option<ProjectRow>, ProjectStoreV2Error>;
-    /** The active project linked to a workspace file, matched like a root. */
+    /**
+     * The active project linked to a workspace file. Windows paths match
+     * case-insensitively, since they name one file in any case.
+     */
     readonly findActiveByWorkspaceFile: (
       workspaceFile: string,
     ) => Effect.Effect<Option.Option<ProjectRow>, ProjectStoreV2Error>;
@@ -138,7 +141,7 @@ export const make = Effect.gen(function* () {
       projectId: Schema.optional(ProjectId),
       projectIds: Schema.optional(Schema.Array(ProjectId)),
       workspaceRoot: Schema.optional(Schema.String),
-      workspaceFile: Schema.optional(Schema.String),
+      linkedOnly: Schema.optional(Schema.Boolean),
       includeDeleted: Schema.Boolean,
     }),
     Result: ProjectDbRow,
@@ -166,9 +169,7 @@ export const make = Effect.gen(function* () {
         ...(request.workspaceRoot === undefined
           ? []
           : [sql`workspace_root = ${request.workspaceRoot}`]),
-        ...(request.workspaceFile === undefined
-          ? []
-          : [sql`workspace_file = ${request.workspaceFile}`]),
+        ...(request.linkedOnly === true ? [sql`workspace_file IS NOT NULL`] : []),
       ])}
       ORDER BY created_at ASC, project_id ASC
     `,
@@ -263,8 +264,14 @@ export const make = Effect.gen(function* () {
   const findActiveByWorkspaceFile: ProjectStoreV2["Service"]["findActiveByWorkspaceFile"] = (
     workspaceFile,
   ) =>
-    selectRows({ workspaceFile, includeDeleted: false }).pipe(
-      Effect.map((rows) => Option.fromUndefinedOr(rows[0])),
+    selectRows({ linkedOnly: true, includeDeleted: false }).pipe(
+      Effect.map((rows) =>
+        Option.fromUndefinedOr(
+          rows.find(
+            (row) => row.workspaceFile !== null && isSamePath(row.workspaceFile, workspaceFile),
+          ),
+        ),
+      ),
       mapError("findActiveByWorkspaceFile"),
     );
 

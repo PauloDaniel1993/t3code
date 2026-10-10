@@ -149,7 +149,8 @@ function readEntry(
     if (url.protocol !== "file:") return named({ uri: rawUri.trim() });
     try {
       return named({
-        path: serverPath(path.normalize(NodeURL.fileURLToPath(url, { windows })), windows),
+        // `resolve` also drops a trailing separator, so `file:///srv/a/` matches `/srv/a`.
+        path: serverPath(path.resolve(NodeURL.fileURLToPath(url, { windows })), windows),
       });
     } catch {
       return Result.fail("A folder's file URI doesn't name a path on this server.");

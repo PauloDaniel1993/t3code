@@ -446,9 +446,9 @@ export const layer: Layer.Layer<
           return;
         }
       }
-      // Until a provider can be given folders beyond its working directory, a
-      // run that reaches them fails here, before the provider sees it.
-      if (RuntimePolicy.runNeedsAdditionalFolders(projection.thread, run.unavailableFolderPaths)) {
+      // Until a provider can be given every workspace folder, a run that
+      // reaches more than one fails here, before the provider sees it.
+      if (RuntimePolicy.runSpansWorkspaceFolders(projection.thread, run.unavailableFolderPaths)) {
         const now = yield* DateTime.now;
         const accessError = new RuntimePolicy.ProviderWorkspaceFolderAccessError({
           threadId: projection.thread.id,

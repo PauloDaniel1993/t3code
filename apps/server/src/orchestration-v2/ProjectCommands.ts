@@ -38,6 +38,11 @@ export interface ProjectMetaUpdateCommand {
   /** Absent leaves the link unchanged; null unlinks, together with `folders: null`. */
   readonly workspaceFile?: string | null;
   readonly folders?: ReadonlyArray<WorkspaceFolderEntry> | null;
+  /**
+   * The workspace file the caller read the project with (null: plain). A
+   * link decided against that read is rejected once another command changed it.
+   */
+  readonly expectedWorkspaceFile?: string | null;
   readonly defaultModelSelection?: ModelSelection | null;
   readonly defaultThreadEnvMode?: ThreadEnvMode | null;
   readonly autoPull?: boolean;
@@ -327,6 +332,12 @@ export function planProjectCommand(input: {
             );
           }
         }
+      }
+      if (
+        command.expectedWorkspaceFile !== undefined &&
+        command.expectedWorkspaceFile !== project.workspaceFile
+      ) {
+        return invariant("The project's workspace file changed meanwhile; try again.");
       }
       if (
         command.workspaceRoot !== undefined ||

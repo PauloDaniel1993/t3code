@@ -704,9 +704,18 @@ const make = Effect.gen(function* () {
         const workspaceFolders =
           input.reuseExistingThread === true || Option.isSome(launchReceipt)
             ? undefined
-            : yield* projects
-                .snapshotWorkspaceFolders(input.projectId)
-                .pipe(Effect.mapError(mapError(input, "validate-workspace", candidateThreadId)));
+            : yield* projects.snapshotWorkspaceFolders(input.projectId).pipe(
+                // Only a workspace problem is the user's to fix; the rest is ours.
+                Effect.mapError((cause) =>
+                  mapError(
+                    input,
+                    cause._tag === "WorkspacePrimaryFolderUnavailableError"
+                      ? "validate-workspace"
+                      : "resolve-project",
+                    candidateThreadId,
+                  )(cause),
+                ),
+              );
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({

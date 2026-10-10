@@ -192,21 +192,6 @@ export function resolveThreadWorkspace(input: {
   };
 }
 
-/**
- * The folders a thread reaches beyond its working directory: the effective
- * paths of its available non-primary folders that aren't inside the primary
- * path, in snapshot order, each once. Empty for a one-folder workspace.
- */
-export function additionalFolderPaths(workspace: ThreadWorkspace): ReadonlyArray<string> {
-  const paths: Array<string> = [];
-  for (const folder of workspace.folders) {
-    const path = folder.effectivePath;
-    if (folder.isPrimary || path === null || isPathWithin(workspace.primaryPath, path)) continue;
-    if (!paths.some((existing) => isSamePath(existing, path))) paths.push(path);
-  }
-  return paths;
-}
-
 /** Whether `path` is `root` or inside it. Windows paths compare case-insensitively. */
 export function isPathWithin(root: string, path: string): boolean {
   return segmentsBelow(root, path) !== null;

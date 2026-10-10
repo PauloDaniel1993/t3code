@@ -54,16 +54,29 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   command: OrchestrationV2Command,
 ) {
   const threads = yield* ThreadManagement.ThreadManagementService;
-  if (command.type === "thread.create" && command.workspaceFolders === undefined) {
+  // Folder snapshots and worktree sets are the server's to write, never a
+  // client's. Clearing a set is the one change a client may ask for.
+  if (command.type === "thread.create") {
+    const { workspaceFolders: _folders, worktrees: _worktrees, ...create } = command;
     // A client's new thread of a linked project binds the project's folders
-    // now; the server probes them, so clients never send a snapshot. A
+    // now. A retried create replays its receipt without probing again, and a
     // missing project is the orchestrator's to reject.
-    const workspaceFolders = yield* (yield* ProjectService.ProjectService)
-      .snapshotWorkspaceFolders(command.projectId)
-      .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(undefined)));
+    const workspaceFolders =
+      (yield* threads.getThreadShell(command.threadId)) !== null
+        ? undefined
+        : yield* (yield* ProjectService.ProjectService)
+            .snapshotWorkspaceFolders(command.projectId)
+            .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(undefined)));
     return yield* threads.dispatch(
-      workspaceFolders === undefined ? command : { ...command, workspaceFolders },
+      workspaceFolders === undefined ? create : { ...create, workspaceFolders },
     );
+  }
+  if (
+    command.type === "thread.metadata.update" &&
+    (command.workspaceFolders !== undefined || (command.worktrees ?? null) !== null)
+  ) {
+    const { workspaceFolders: _folders, worktrees, ...update } = command;
+    return yield* threads.dispatch(worktrees === null ? { ...update, worktrees } : update);
   }
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
