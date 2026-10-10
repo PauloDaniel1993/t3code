@@ -4,6 +4,7 @@ import {
   allocateFolderLabels,
   isPathWithin,
   isSamePath,
+  orphanedThreadWorktreePaths,
   projectFolders,
   resolveThreadWorkspace,
   threadPrimaryPath,
@@ -232,5 +233,63 @@ describe("isPathWithin", () => {
     expect(isSamePath("/repo/", "/repo")).toBe(true);
     expect(isSamePath("C:\\Repo\\", "c:/repo")).toBe(true);
     expect(isSamePath("/repo/web", "/repo")).toBe(false);
+  });
+});
+
+describe("orphanedThreadWorktreePaths", () => {
+  const thread = (
+    id: string,
+    worktreePath: string | null,
+    worktrees?: ReadonlyArray<{ readonly repositoryRoot: string; readonly path: string }>,
+  ) => ({
+    id,
+    worktreePath,
+    ...(worktrees === undefined
+      ? {}
+      : { worktrees: worktrees.map((member) => ({ ...member, branch: "feature" })) }),
+  });
+  const set = [
+    { repositoryRoot: "/repos/web", path: "/worktrees/s" },
+    { repositoryRoot: "/repos/api", path: "/worktrees/s/api" },
+  ];
+
+  it("names a plain thread's one worktree, and nothing without one or for an unknown thread", () => {
+    expect(orphanedThreadWorktreePaths([thread("a", "/worktrees/a")], "a")).toEqual([
+      "/worktrees/a",
+    ]);
+    expect(orphanedThreadWorktreePaths([thread("a", null)], "a")).toEqual([]);
+    expect(orphanedThreadWorktreePaths([], "a")).toEqual([]);
+  });
+
+  it("names every member of a set", () => {
+    expect(orphanedThreadWorktreePaths([thread("a", "/worktrees/s/web", set)], "a")).toEqual([
+      "/worktrees/s",
+      "/worktrees/s/api",
+    ]);
+  });
+
+  it("names nothing while another thread works inside any member", () => {
+    const threads = [
+      thread("a", "/worktrees/s/web", set),
+      // Picked only the nested member's worktree in the branch picker.
+      thread("b", "/worktrees/s/api/src"),
+    ];
+    expect(orphanedThreadWorktreePaths(threads, "a")).toEqual([]);
+    expect(
+      orphanedThreadWorktreePaths(
+        [thread("a", "C:\\Worktrees\\a"), thread("b", "c:/worktrees/a")],
+        "a",
+      ),
+    ).toEqual([]);
+  });
+
+  it("ignores threads in other worktrees and in the source checkout", () => {
+    const threads = [
+      thread("a", "/worktrees/s/web", set),
+      thread("b", "/worktrees/s-2"),
+      thread("c", null),
+      thread("d", "/repos/web"),
+    ];
+    expect(orphanedThreadWorktreePaths(threads, "a")).toEqual(["/worktrees/s", "/worktrees/s/api"]);
   });
 });

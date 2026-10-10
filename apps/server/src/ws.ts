@@ -115,6 +115,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import * as WorktreeSet from "./orchestration-v2/WorktreeSetService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as IdAllocator from "./orchestration-v2/IdAllocator.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
@@ -1121,6 +1122,7 @@ const makeWsRpcLayer = (
         }
       };
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
+      const worktreeSets = yield* WorktreeSet.WorktreeSetService;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -3325,6 +3327,19 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.vcsRemoveWorktree,
             gitWorkflow.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsRemoveThreadWorktrees]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsRemoveThreadWorktrees,
+            worktreeSets.remove(input).pipe(
+              Effect.tap((removed) =>
+                Effect.forEach(removed, (member) => refreshGitStatus(member.repositoryRoot), {
+                  discard: true,
+                }),
+              ),
+              Effect.asVoid,
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>

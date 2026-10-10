@@ -221,6 +221,40 @@ export function worktreeSetPath(
   return `${deepest.worktree.replace(/[\\/]+$/, "")}${separator}${deepest.rest.join(separator)}`;
 }
 
+/** The worktrees a thread owns: each member of its set, or the one it is bound to. */
+export function threadWorktreePaths(
+  thread: Pick<WorkspaceThread, "worktreePath" | "worktrees">,
+): ReadonlyArray<string> {
+  return (
+    thread.worktrees?.map((member) => member.path) ??
+    (thread.worktreePath === null ? [] : [thread.worktreePath])
+  );
+}
+
+/**
+ * The worktrees deleting `threadId` would leave unused. A set is removed whole
+ * or not at all, so this is empty while any other thread still works inside
+ * one of its worktrees.
+ */
+export function orphanedThreadWorktreePaths(
+  threads: ReadonlyArray<
+    Pick<WorkspaceThread, "worktreePath" | "worktrees"> & { readonly id: string }
+  >,
+  threadId: string,
+): ReadonlyArray<string> {
+  const thread = threads.find((candidate) => candidate.id === threadId);
+  if (thread === undefined) return [];
+  const paths = threadWorktreePaths(thread);
+  const inUse = threads.some(
+    (other) =>
+      other.id !== threadId &&
+      threadWorktreePaths(other).some((otherPath) =>
+        paths.some((path) => isPathWithin(path, otherPath)),
+      ),
+  );
+  return inUse ? [] : paths;
+}
+
 // A backslash separates segments only in Windows paths; in POSIX it is a name character.
 function pathSegments(path: string, windows: boolean): ReadonlyArray<string> {
   return path.split(windows ? /[\\/]+/ : /\/+/).filter((segment) => segment.length > 0);

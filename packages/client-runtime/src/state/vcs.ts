@@ -334,6 +334,12 @@ export function createVcsEnvironmentAtoms<R, E>(
       concurrency: vcsCommandConcurrency,
       onSettled: invalidateRefs,
     }),
+    // Removes a thread's whole worktree set. Keyed by thread, not checkout, so
+    // callers refresh the checkouts they show afterwards.
+    removeThreadWorktrees: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:remove-thread-worktrees",
+      tag: WS_METHODS.vcsRemoveThreadWorktrees,
+    }),
     createRef: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:create-ref",
       tag: WS_METHODS.vcsCreateRef,

@@ -43,6 +43,7 @@ import * as IdAllocator from "./IdAllocator.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
 import { randomUuidV4 } from "./RandomUuid.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import * as WorktreeSet from "./WorktreeSetService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
   | { readonly type: "root"; readonly branch?: string | undefined }
@@ -157,6 +158,7 @@ const make = Effect.gen(function* () {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
+  const worktreeSets = yield* WorktreeSet.WorktreeSetService;
   const preparationScope = yield* Scope.make("sequential");
   const scheduledLaunches = yield* Ref.make<ReadonlySet<CommandId>>(new Set());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
@@ -218,7 +220,9 @@ const make = Effect.gen(function* () {
     );
 
     const tracked = input.workspaceStrategy.type === "worktree";
-    let createdWorktreePath: string | null = null;
+    let createdSet: WorktreeSet.WorktreeSet | null = null;
+    let bindStarted = false;
+    let bound = false;
     let setupTerminalId: string | null = null;
     if (tracked) {
       yield* setupTracker.begin({
@@ -292,73 +296,38 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }
-        let startRef = input.workspaceStrategy.baseRef;
-        // "Start from origin" is a stored default; repos without the requested
-        // remote branch fall back to the local base branch.
-        const startFromOrigin =
-          input.workspaceStrategy.startFromOrigin === true &&
-          (yield* git
-            .remoteExists({ cwd: project.workspaceRoot, remoteName: "origin" })
-            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))));
-        yield* setupTracker.stageStatus(threadId, "fetch", startFromOrigin ? "running" : "skipped");
-        if (startFromOrigin) {
-          yield* git
-            .fetchRemote({
-              cwd: project.workspaceRoot,
-              remoteName: "origin",
-              refName: input.workspaceStrategy.baseRef,
-            })
-            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-          const remoteBaseExists = yield* git
-            .remoteBranchExists({
-              cwd: project.workspaceRoot,
-              refName: input.workspaceStrategy.baseRef,
-              remoteName: "origin",
-            })
-            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-          if (remoteBaseExists) {
-            startRef = yield* git
-              .resolveRemoteTrackingCommit({
-                cwd: project.workspaceRoot,
-                refName: input.workspaceStrategy.baseRef,
-                fallbackRemoteName: "origin",
-              })
-              .pipe(
-                Effect.map((resolved) => resolved.commitSha),
-                Effect.mapError(mapError(input, "provision-worktree", threadId)),
-              );
-          }
-        }
-        if (startFromOrigin) yield* setupTracker.stageStatus(threadId, "fetch", "done");
-        yield* setupTracker.stageStatus(threadId, "checkout", "running");
-        const worktree = yield* git
-          .createWorktree(
-            {
-              cwd: project.workspaceRoot,
-              refName: startRef,
-              newRefName: branch!,
-              baseRefName: input.workspaceStrategy.baseRef,
-              path: null,
-            },
-            {
-              progress: {
-                onWorktreeClaimed: (path) =>
-                  Effect.sync(() => {
-                    createdWorktreePath = path;
-                  }),
-                onCheckoutProgress: (progress) =>
-                  setupTracker.stage(threadId, "checkout", { percent: progress.percent }),
+        const strategy = input.workspaceStrategy;
+        // Only the creation stays interruptible: once it returns, the set is
+        // recorded for rollback before a cancel can land.
+        const set = yield* Effect.uninterruptibleMask((restore) =>
+          restore(
+            worktreeSets.create(
+              {
+                repositoryRoot: project.workspaceRoot,
+                baseRef: strategy.baseRef,
+                branch: branch!,
+                startFromOrigin: strategy.startFromOrigin === true,
               },
-            },
-          )
-          .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-        worktreePath = worktree.worktree.path;
-        branch = worktree.worktree.refName;
-        createdWorktreePath = worktreePath;
+              {
+                stage: (stage, status) => setupTracker.stageStatus(threadId, stage, status),
+                checkoutPercent: (percent) => setupTracker.stage(threadId, "checkout", { percent }),
+              },
+            ),
+          ).pipe(
+            Effect.tap((created) =>
+              Effect.sync(() => {
+                createdSet = created;
+              }),
+            ),
+          ),
+        ).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+        // Plain projects keep today's binding: the worktree root, no tuple.
+        worktreePath = set.members[0]!.path;
+        branch = set.members[0]!.branch;
         yield* setupTracker.update(threadId, (snapshot) => ({ ...snapshot, worktreePath, branch }));
-        yield* setupTracker.stageStatus(threadId, "checkout", "done");
       }
 
+      bindStarted = true;
       yield* threads
         .dispatch({
           type: "thread.metadata.update",
@@ -368,6 +337,7 @@ const make = Effect.gen(function* () {
           worktreePath,
         })
         .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      bound = true;
 
       // Rename temporary branches (server-invented above, or sent by clients
       // that name worktrees themselves) in the background so generation latency
@@ -513,18 +483,16 @@ const make = Effect.gen(function* () {
             cancelled ? "cancelled" : "failed",
             cancelled ? null : failureDetail(Cause.squash(cause)),
           );
-          if (cancelled && tracked && createdWorktreePath) {
-            if (setupTerminalId)
-              yield* terminals
-                .close({ threadId, terminalId: setupTerminalId, deleteHistory: true })
-                .pipe(Effect.ignore);
-            yield* git
-              .removeWorktree({
-                cwd: project.workspaceRoot,
-                path: createdWorktreePath,
-                force: true,
-              })
+          // A set the thread never got bound to is rolled back on any failure.
+          // A bound one only on cancel: a setup failure leaves the thread bound
+          // so the user can retry.
+          if (createdSet === null || (bound && !cancelled)) return;
+          if (setupTerminalId)
+            yield* terminals
+              .close({ threadId, terminalId: setupTerminalId, deleteHistory: true })
               .pipe(Effect.ignore);
+          yield* worktreeSets.discard(createdSet);
+          if (bindStarted)
             yield* threads
               .dispatch({
                 type: "thread.metadata.update",
@@ -534,7 +502,6 @@ const make = Effect.gen(function* () {
                 branch: null,
               })
               .pipe(Effect.ignore);
-          }
         }),
       ),
     );

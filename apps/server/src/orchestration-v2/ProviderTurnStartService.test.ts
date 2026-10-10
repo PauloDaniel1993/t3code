@@ -19,13 +19,9 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import * as GitWorkflow from "../git/GitWorkflowService.ts";
-import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/Services/ProviderAuthService.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
@@ -36,6 +32,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as WorktreeSet from "./WorktreeSetService.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -86,22 +83,14 @@ it("does not commit running state when inherited background routing cannot be re
     Effect.succeed({ committed: true, storedEvents: [] } as never),
   );
   const startRootRun = vi.fn(() => Effect.void);
-  const pruneWorktrees = vi.fn(() => Effect.void);
-  const createWorktree = vi.fn(() => Effect.succeed({} as never));
+  const recreateMissing = vi.fn(() => Effect.void);
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
-        Layer.succeed(FileSystem.FileSystem, { exists: () => Effect.succeed(false) } as never),
-        Layer.mock(GitWorkflow.GitWorkflowService)({ pruneWorktrees, createWorktree }),
-        Layer.mock(ProjectService.ProjectService)({
-          getById: () =>
-            Effect.succeed(
-              Option.some({ workspaceRoot: "/tmp/provider-turn-start-project" } as never),
-            ),
-        }),
+        Layer.mock(WorktreeSet.WorktreeSetService)({ recreateMissing }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getTurnStartContext: () => {
             projectionReadCount += 1;
@@ -141,12 +130,7 @@ it("does not commit running state when inherited background routing cannot be re
 
     expect(error._tag).toBe("ProviderTurnStartError");
     expect(projectionReadCount).toBe(2);
-    expect(pruneWorktrees).toHaveBeenCalledWith({ cwd: "/tmp/provider-turn-start-project" });
-    expect(createWorktree).toHaveBeenCalledWith({
-      cwd: "/tmp/provider-turn-start-project",
-      refName: "feature/restore",
-      path: "/tmp/missing-provider-turn-start-worktree",
-    });
+    expect(recreateMissing).toHaveBeenCalledWith(projection.thread);
     expect(writeIfRunCurrent).not.toHaveBeenCalled();
     expect(startRootRun).not.toHaveBeenCalled();
   }).pipe(Effect.provide(layer), Effect.runPromise);
@@ -168,6 +152,7 @@ function makeLocalCommandHarness(input: {
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
+  readonly recreateFailure?: unknown;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -457,9 +442,18 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
-        FileSystem.layerNoop({}),
-        Layer.mock(GitWorkflow.GitWorkflowService)({}),
-        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(WorktreeSet.WorktreeSetService)({
+          recreateMissing: () =>
+            input.recreateFailure === undefined
+              ? Effect.void
+              : Effect.fail(
+                  new WorktreeSet.WorktreeRecreateError({
+                    threadId,
+                    path: "/tmp/removed-worktree",
+                    cause: input.recreateFailure,
+                  }),
+                ),
+        }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getTurnStartContext: () =>
             Effect.succeed({
@@ -563,6 +557,50 @@ effectIt.effect("leaves the run starting when a session-open failure will be ret
     const error = yield* harness.startWithRetry.pipe(Effect.flip);
 
     expect(error._tag).toBe("ProviderTurnStartError");
+    expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+  }),
+);
+
+effectIt.effect("fails the run instead of starting it when its worktree can't be recreated", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      recreateFailure: new Error("fatal: invalid reference: feature/gone"),
+    });
+
+    yield* harness.start;
+
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    const projection = harness.projection();
+    expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.turnItems).toMatchObject([
+      {
+        type: "error",
+        status: "failed",
+        title: "Worktree could not be recreated",
+        failure: {
+          class: "validation_error",
+          message:
+            "Could not recreate the worktree at /tmp/removed-worktree. fatal: invalid reference: feature/gone",
+        },
+      },
+    ]);
+  }),
+);
+
+effectIt.effect("leaves the run starting when a worktree recreation will be retried", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      recreateFailure: new Error("index.lock exists"),
+    });
+
+    const error = yield* harness.startWithRetry.pipe(Effect.flip);
+
+    expect(error._tag).toBe("ProviderTurnStartError");
+    expect(harness.open).not.toHaveBeenCalled();
     expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
     expect(harness.projection().runs.at(-1)?.status).toBe("starting");
   }),

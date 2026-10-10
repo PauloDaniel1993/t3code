@@ -47,19 +47,20 @@ export function ConfirmDialogHost() {
     };
   }, []);
 
+  // Dismiss before running the callback, so it can present the next dialog.
   const handleCancel = useCallback(() => {
-    presented?.request.onCancel?.();
     setPresented(null);
+    presented?.request.onCancel?.();
   }, [presented]);
 
   const handleConfirm = useCallback(
     (nativeInputValue?: string) => {
+      setPresented(null);
       if (presented?.kind === "confirm") {
         presented.request.onConfirm();
       } else if (presented?.kind === "text-input") {
         presented.request.onConfirm(nativeInputValue ?? inputValue);
       }
-      setPresented(null);
     },
     [inputValue, presented],
   );

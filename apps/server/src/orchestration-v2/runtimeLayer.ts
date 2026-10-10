@@ -57,6 +57,7 @@ import { layer as threadForkServiceLayer } from "./ThreadForkService.ts";
 import { layer as turnItemPositionStoreLayer } from "./TurnItemPositionStore.ts";
 import { layer as scheduledTaskServiceLayer } from "../scheduledTasks/ScheduledTaskService.ts";
 import { startAttachmentReferenceIndex } from "./AttachmentReferenceIndex.ts";
+import * as WorktreeSet from "./WorktreeSetService.ts";
 
 /** The shared application event log and its command receipts. */
 export const OrchestrationEventInfrastructureLayerLive = Layer.mergeAll(
@@ -153,6 +154,13 @@ const runExecutionServiceProvided = runExecutionServiceLayer.pipe(
   ),
 );
 
+// Turn start takes ProjectService from its environment, as before the
+// coordinator existed; launches and transports get the live one.
+const worktreeSetProvided = WorktreeSet.layer.pipe(Layer.provide(projectionStoreLayer));
+const worktreeSetWithProjectsProvided = worktreeSetProvided.pipe(
+  Layer.provide(ProjectServiceLayerLive),
+);
+
 const providerTurnStartServiceProvided = providerTurnStartServiceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -164,6 +172,7 @@ const providerTurnStartServiceProvided = providerTurnStartServiceLayer.pipe(
       providerAuthServiceProvided,
       runExecutionServiceProvided,
       runtimePolicyProvided,
+      worktreeSetProvided,
     ),
   ),
 );
@@ -257,6 +266,7 @@ const threadLaunchProvided = threadLaunchServiceLayer.pipe(
       threadManagementProvided,
       commandReceiptStoreProvided,
       idAllocatorLayer,
+      worktreeSetWithProjectsProvided,
     ),
   ),
 );
@@ -325,6 +335,7 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   ProjectServiceLayerLive,
   managedProjectFoldersProvided,
   threadLaunchProvided,
+  worktreeSetWithProjectsProvided,
   threadLifecycleProvided,
   scheduledTaskProvided,
   UsageLimitRecoveryWorker.workerLive.pipe(
