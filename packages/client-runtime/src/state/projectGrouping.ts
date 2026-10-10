@@ -7,7 +7,7 @@ import type {
 import type { ClientSettings } from "@t3tools/contracts/settings";
 
 import type { EnvironmentProject } from "./models.ts";
-import { normalizeProjectPathForComparison } from "./projects.ts";
+import { getBrowseLeafPathSegment, normalizeProjectPathForComparison } from "./projects.ts";
 
 export interface ProjectGroupingSettings {
   readonly sidebarProjectGroupingMode: SidebarProjectGroupingMode;
@@ -69,25 +69,28 @@ export function derivePhysicalProjectKeyFromPath(environmentId: string, cwd: str
 }
 
 export function derivePhysicalProjectKey(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
+  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot" | "workspaceFile">,
 ): string {
+  if (project.workspaceFile) {
+    return `${project.environmentId}:workspace-file:${normalizeProjectPathForComparison(project.workspaceFile)}`;
+  }
   return derivePhysicalProjectKeyFromPath(project.environmentId, project.workspaceRoot);
 }
 
 export function deriveProjectGroupingOverrideKey(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
+  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot" | "workspaceFile">,
 ): string {
   return derivePhysicalProjectKey(project);
 }
 
 export function getProjectOrderKey(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
+  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot" | "workspaceFile">,
 ): string {
   return derivePhysicalProjectKey(project);
 }
 
 export function resolveProjectGroupingMode(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
+  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot" | "workspaceFile">,
   settings: ProjectGroupingSettings,
 ): SidebarProjectGroupingMode {
   return (
@@ -122,7 +125,7 @@ function deriveRepositoryScopedKey(
 export function deriveLogicalProjectKey(
   project: Pick<
     EnvironmentProject,
-    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity"
+    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "workspaceFile"
   >,
   options?: {
     readonly groupingMode?: SidebarProjectGroupingMode;
@@ -131,6 +134,17 @@ export function deriveLogicalProjectKey(
   const groupingMode = options?.groupingMode ?? "repository";
   if (groupingMode === "separate") {
     return derivePhysicalProjectKey(project);
+  }
+
+  if (project.workspaceFile) {
+    const repositoryKey = deriveRepositoryScopedKey(project, groupingMode);
+    if (!repositoryKey) {
+      return derivePhysicalProjectKey(project);
+    }
+    // Match workspace-file names across server path styles while retaining the
+    // selected grouping mode for the primary repository.
+    const workspaceFileName = getBrowseLeafPathSegment(project.workspaceFile);
+    return `workspace-file:${JSON.stringify([repositoryKey, workspaceFileName])}`;
   }
 
   return (
@@ -143,7 +157,7 @@ export function deriveLogicalProjectKey(
 export function deriveLogicalProjectKeyFromSettings(
   project: Pick<
     EnvironmentProject,
-    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity"
+    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "workspaceFile"
   >,
   settings: ProjectGroupingSettings,
 ): string {
