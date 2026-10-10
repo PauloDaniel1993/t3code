@@ -104,6 +104,7 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   {
     operation: Schema.Literals([
       "resolve-project",
+      "validate-workspace",
       "read-receipt",
       "generate-metadata",
       "provision-worktree",
@@ -135,6 +136,9 @@ export class ThreadLaunchService extends Context.Service<
 >()("t3/orchestration-v2/ThreadLaunchService") {}
 
 const isThreadLaunchError = Schema.is(ThreadLaunchError);
+
+const LINKED_PROJECT_WORKTREES_UNSUPPORTED =
+  "Worktrees aren't supported yet for projects linked to a workspace file. Start the thread in the project's folders.";
 
 function failureDetail(error: unknown): string {
   if (isThreadLaunchError(error)) {
@@ -629,6 +633,10 @@ const make = Effect.gen(function* () {
           "update-thread",
         )("Reusing an existing thread requires a thread id.");
       }
+      // A linked project's threads work in its folders until worktree sets land.
+      if (project.workspaceFile != null && input.workspaceStrategy.type !== "root") {
+        return yield* mapError(input, "validate-workspace")(LINKED_PROJECT_WORKTREES_UNSUPPORTED);
+      }
 
       const launchReceipt = yield* readReceipt(input, input.commandId);
       return yield* Effect.gen(function* () {
@@ -691,6 +699,23 @@ const make = Effect.gen(function* () {
         const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
+        // A new thread of a linked project binds its folders at creation. A
+        // retry replays the create it already made.
+        const workspaceFolders =
+          input.reuseExistingThread === true || Option.isSome(launchReceipt)
+            ? undefined
+            : yield* projects.snapshotWorkspaceFolders(input.projectId).pipe(
+                // Only a workspace problem is the user's to fix; the rest is ours.
+                Effect.mapError((cause) =>
+                  mapError(
+                    input,
+                    cause._tag === "WorkspacePrimaryFolderUnavailableError"
+                      ? "validate-workspace"
+                      : "resolve-project",
+                    candidateThreadId,
+                  )(cause),
+                ),
+              );
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({
@@ -710,6 +735,7 @@ const make = Effect.gen(function* () {
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
+                ...(workspaceFolders === undefined ? {} : { workspaceFolders }),
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),

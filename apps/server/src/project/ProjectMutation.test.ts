@@ -1,10 +1,20 @@
 import { assert, it } from "@effect/vitest";
-import { CommandId, ProjectId, type Project } from "@t3tools/contracts";
+import {
+  CommandId,
+  ProjectId,
+  type Project,
+  WorkspaceFileUnavailableError,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 
-import { projectMutationOperation } from "./ProjectMutation.ts";
-import { type ProjectService } from "./ProjectService.ts";
+import { expectedProjectMutationFailure, projectMutationOperation } from "./ProjectMutation.ts";
+import {
+  ProjectConflictError,
+  ProjectFileConflictError,
+  ProjectOperationError,
+  type ProjectService,
+} from "./ProjectService.ts";
 
 const projectId = ProjectId.make("project:mutation-mapping");
 const project = {
@@ -26,8 +36,13 @@ const project = {
 it.effect("preserves every project mutation field", () =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<unknown>>([]);
-    const projects: Pick<ProjectService["Service"], "create" | "delete" | "update"> = {
+    const projects: Pick<
+      ProjectService["Service"],
+      "create" | "delete" | "importWorkspaceFile" | "update"
+    > = {
       create: (input) =>
+        Ref.update(calls, (entries) => [...entries, input]).pipe(Effect.as(project)),
+      importWorkspaceFile: (input) =>
         Ref.update(calls, (entries) => [...entries, input]).pipe(Effect.as(project)),
       update: (input) =>
         Ref.update(calls, (entries) => [...entries, input]).pipe(Effect.as(project)),
@@ -59,6 +74,20 @@ it.effect("preserves every project mutation field", () =>
       scripts: [],
     });
     yield* projectMutationOperation(projects, {
+      type: "project.import-workspace-file",
+      commandId: CommandId.make("command:import"),
+      projectId,
+      workspaceFilePath: "/work/team.code-workspace",
+      title: "Team",
+    });
+    // Null unlinks, so it must reach the service rather than read as absent.
+    yield* projectMutationOperation(projects, {
+      type: "project.update",
+      commandId: CommandId.make("command:unlink"),
+      projectId,
+      workspaceFilePath: null,
+    });
+    yield* projectMutationOperation(projects, {
       type: "project.delete",
       commandId: CommandId.make("command:delete"),
       projectId,
@@ -87,7 +116,47 @@ it.effect("preserves every project mutation field", () =>
         defaultThreadEnvMode: null,
         scripts: [],
       },
+      {
+        commandId: "command:import",
+        projectId,
+        workspaceFilePath: "/work/team.code-workspace",
+        title: "Team",
+      },
+      { commandId: "command:unlink", projectId, workspaceFilePath: null },
       { commandId: "command:delete", projectId, force: true },
     ]);
   }),
 );
+
+it("tells clients why an expected mutation was refused, and hides operational failures", () => {
+  const other = ProjectId.make("project:other");
+  const diagnostic = { code: "file-not-found" as const, message: "Workspace file not found." };
+  assert.deepEqual(
+    expectedProjectMutationFailure(new WorkspaceFileUnavailableError({ projectId, diagnostic })),
+    { message: "Workspace file not found.", diagnostic },
+  );
+  const fileConflict = expectedProjectMutationFailure(
+    new ProjectFileConflictError({
+      projectId,
+      workspaceFile: "/work/team.code-workspace",
+      conflictingProjectId: other,
+    }),
+  );
+  assert.equal(fileConflict?.diagnostic?.code, "conflict");
+  assert.equal(fileConflict?.conflictingProjectId, other);
+  assert.equal(
+    expectedProjectMutationFailure(
+      new ProjectConflictError({
+        projectId,
+        workspaceRoot: "/work/app",
+        conflictingProjectId: other,
+      }),
+    )?.conflictingProjectId,
+    other,
+  );
+  assert.isUndefined(
+    expectedProjectMutationFailure(
+      new ProjectOperationError({ operation: "read-project", projectId, cause: "SQL text" }),
+    ),
+  );
+});

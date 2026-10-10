@@ -97,6 +97,8 @@ export interface EnvironmentThreadShell {
   readonly worktreePath: string | null;
   /** Size of the folder snapshot; only threads of linked projects have one. */
   readonly workspaceFolderCount?: number;
+  /** The snapshot's primary folder, for a thread without a worktree. */
+  readonly workspacePrimaryPath?: string;
   readonly worktrees?: OrchestrationV2ThreadShell["worktrees"];
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
   readonly forkedFrom: OrchestrationV2ThreadShell["forkedFrom"];
@@ -233,6 +235,9 @@ export function presentThreadShell(
     ...(thread.workspaceFolderCount === undefined
       ? {}
       : { workspaceFolderCount: thread.workspaceFolderCount }),
+    ...(thread.workspacePrimaryPath === undefined
+      ? {}
+      : { workspacePrimaryPath: thread.workspacePrimaryPath }),
     ...(thread.worktrees === undefined ? {} : { worktrees: thread.worktrees }),
     pullRequests: threadPullRequestsOf(thread),
     linkedPullRequest: thread.linkedPullRequest ?? null,

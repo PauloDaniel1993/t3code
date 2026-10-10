@@ -27,6 +27,8 @@ import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import * as WorkspaceFiles from "./WorkspaceFiles.ts";
+import * as WorkspaceFolderResolver from "./WorkspaceFolderResolver.ts";
 
 const workspacePathsLayer = Layer.succeed(WorkspacePaths.WorkspacePaths, {
   normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot.replace(/\/$/, "")),
@@ -62,6 +64,7 @@ const makeTestLayer = (
     Layer.provideMerge(ProjectEnrichmentService.layer),
     Layer.provideMerge(workspacePathsLayer),
     Layer.provideMerge(projectMetadataLayer),
+    Layer.provideMerge(WorkspaceFolderResolver.layer),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "project-service-test-" })),
     Layer.provide(NodeServices.layer),
@@ -76,6 +79,7 @@ const ProjectServiceDependenciesLayer = Layer.mergeAll(
   ProjectionStore.layer,
   IdAllocator.layer,
   ThreadCommandExecutor.layer,
+  WorkspaceFiles.layer,
 ).pipe(
   Layer.provideMerge(
     LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
@@ -83,9 +87,10 @@ const ProjectServiceDependenciesLayer = Layer.mergeAll(
   Layer.provideMerge(ProjectEnrichmentService.layer),
   Layer.provideMerge(workspacePathsLayer),
   Layer.provideMerge(metadataLayer),
+  Layer.provideMerge(WorkspaceFolderResolver.layer),
   Layer.provideMerge(SqlitePersistenceMemory),
-  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "project-service-race-" })),
-  Layer.provide(NodeServices.layer),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "project-service-race-" })),
+  Layer.provideMerge(NodeServices.layer),
 );
 
 const waitForProject = Effect.fn("ProjectServiceTest.waitForProject")(function* (

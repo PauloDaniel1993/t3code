@@ -82,7 +82,7 @@ export class WorktreeSetService extends Context.Service<
     readonly recreateMissing: (
       thread: Pick<
         OrchestrationV2AppThread,
-        "id" | "projectId" | "branch" | "worktreePath" | "worktrees"
+        "id" | "projectId" | "branch" | "worktreePath" | "workspaceFolders" | "worktrees"
       >,
     ) => Effect.Effect<void, WorktreeRecreateError>;
     /**
@@ -232,16 +232,20 @@ const make = Effect.gen(function* () {
         ),
       );
     if (thread.worktrees === undefined) {
-      // A plain thread's worktree comes from its project's checkout. The
-      // project is read only once the worktree is known to be gone.
+      // A plain thread's worktree comes from its project's checkout, and a
+      // snapshot thread's from its own primary folder, which a relink of the
+      // project's workspace file never moves. The project is read only once
+      // the worktree is known to be gone.
       const { worktreePath, branch } = thread;
       if (worktreePath === null || branch === null || !(yield* missing(worktreePath))) return;
-      const project = yield* projects.getById(thread.projectId).pipe(
-        Effect.map(Option.getOrUndefined),
-        Effect.orElseSucceed(() => undefined),
-      );
-      if (project === undefined) return;
-      yield* recreate({ repositoryRoot: project.workspaceRoot, path: worktreePath, branch });
+      const repositoryRoot =
+        thread.workspaceFolders?.[0]?.path ??
+        (yield* projects.getById(thread.projectId).pipe(
+          Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
+          Effect.orElseSucceed(() => undefined),
+        ));
+      if (repositoryRoot === undefined) return;
+      yield* recreate({ repositoryRoot, path: worktreePath, branch });
       return;
     }
     for (const member of parentsFirst(thread.worktrees)) {
@@ -264,7 +268,12 @@ const make = Effect.gen(function* () {
         if (Option.isNone(project)) {
           return yield* failure("The thread's project no longer exists.");
         }
-        members = [{ repositoryRoot: project.value.workspaceRoot, path: thread.worktreePath }];
+        members = [
+          {
+            repositoryRoot: thread.workspaceFolders?.[0]?.path ?? project.value.workspaceRoot,
+            path: thread.worktreePath,
+          },
+        ];
       }
       if (members.length === 0) return [];
 

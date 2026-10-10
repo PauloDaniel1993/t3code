@@ -120,6 +120,15 @@ describe("threadPrimaryPath", () => {
       ),
     ).toBe("/repo/web");
   });
+
+  it("reads a shell's snapshot primary, which has no folder list", () => {
+    expect(
+      threadPrimaryPath(
+        { worktreePath: null, workspacePrimaryPath: "/repo/web" },
+        { workspaceRoot: "/elsewhere" },
+      ),
+    ).toBe("/repo/web");
+  });
 });
 
 describe("resolveThreadWorkspace", () => {

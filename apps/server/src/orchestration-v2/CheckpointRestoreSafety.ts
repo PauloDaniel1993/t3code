@@ -10,6 +10,19 @@ import type * as ProjectStore from "./ProjectStore.ts";
 export const SHARED_WORKSPACE_RESTORE_MESSAGE =
   "File restore requires an isolated worktree. This workspace may contain changes from another thread. Rewind the conversation without restoring files instead.";
 
+export const MULTI_FOLDER_RESTORE_MESSAGE =
+  "File restore isn't available yet for a thread with several workspace folders. Rewind the conversation without restoring files instead.";
+
+/**
+ * A checkpoint holds one checkout, so a thread whose folder snapshot spans
+ * several folders can only rewind its conversation for now.
+ */
+export function spansWorkspaceFolders(
+  thread: Pick<OrchestrationV2AppThread, "workspaceFolders">,
+): boolean {
+  return (thread.workspaceFolders?.length ?? 0) > 1;
+}
+
 // A checkpoint snapshots the whole checkout. Check at command admission and
 // again before provider rollback so a newly shared worktree is rejected too.
 export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpointRestoreIsolated")(

@@ -127,6 +127,8 @@ const TestLayer = Layer.mergeAll(OrchestrationV2LayerLive, OrchestrationV2EventS
           repositoryIdentityResolved: false,
         }),
       invalidate: () => Effect.void,
+      probeFolders: () => Effect.succeed([]),
+      getAvailableFolders: (folders) => Effect.succeed(folders),
       subscribeChanges: Effect.never,
     }),
   ),

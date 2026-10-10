@@ -9,6 +9,7 @@ import * as Ref from "effect/Ref";
 import * as ProjectEnrichment from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import * as WorkspaceFolderResolver from "./WorkspaceFolderResolver.ts";
 
 const identity = (workspaceRoot: string, version = 1): RepositoryIdentity => ({
   canonicalKey: `example.test/v${version}${workspaceRoot}`,
@@ -33,15 +34,21 @@ const waitForAvailable = Effect.fn("ProjectEnrichmentServiceTest.waitForAvailabl
   return yield* Effect.die(`Project metadata for ${workspaceRoot} was not resolved in time.`);
 });
 
+const folderResolverLayer = (
+  probe: WorkspaceFolderResolver.WorkspaceFolderResolver["Service"]["probe"] = (path) =>
+    Effect.succeed({ path, availability: "available", vcs: null }),
+) => Layer.succeed(WorkspaceFolderResolver.WorkspaceFolderResolver, { probe });
+
 const makeLayer = (
   metadataLayer: Layer.Layer<
     | ProjectFaviconResolver.ProjectFaviconResolver
     | RepositoryIdentityResolver.RepositoryIdentityResolver
   >,
   options: ProjectEnrichment.ProjectEnrichmentServiceOptions = {},
+  folderResolver = folderResolverLayer(),
 ) =>
   Layer.effect(ProjectEnrichment.ProjectEnrichmentService, ProjectEnrichment.make(options)).pipe(
-    Layer.provide(metadataLayer),
+    Layer.provide(Layer.merge(metadataLayer, folderResolver)),
   );
 
 it.effect("preserves either enrichment field when the other resolver fails", () =>
@@ -339,5 +346,79 @@ it.effect("deduplicates requests, bounds pending work, and reloads invalidated r
         }),
       ),
     );
+  }),
+);
+
+it.effect("serves folder facts once probed, and probes missing ones in the background", () =>
+  Effect.gen(function* () {
+    const probes = yield* Ref.make<ReadonlyArray<string>>([]);
+    const probe: WorkspaceFolderResolver.WorkspaceFolderResolver["Service"]["probe"] = (path) =>
+      Ref.update(probes, (paths) => [...paths, path]).pipe(
+        Effect.as(
+          path === "/work/gone"
+            ? { path, availability: "unavailable" as const, unavailableReason: "missing" as const }
+            : {
+                path,
+                availability: "available" as const,
+                vcs: { checkoutRoot: path, checkoutPrefix: "", commonDir: `${path}/.git` },
+              },
+        ),
+      );
+    const metadataLayer = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      const folders = [
+        { path: "/work/app", name: "app", label: "app" },
+        { path: "/work/lib", name: "lib", label: "lib" },
+        { path: "/work/gone", name: "gone", label: "gone" },
+        { uri: "vscode-remote://ssh-remote+devbox/srv/api", name: "api", label: "api" },
+      ];
+
+      // Nothing is probed yet: facts stay absent, but a remote folder needs no probe.
+      const unprobed = yield* service.getAvailableFolders(folders);
+      assert.deepEqual(unprobed.slice(0, 3), folders.slice(0, 3));
+      assert.deepEqual(unprobed[3], {
+        ...folders[3]!,
+        availability: "unavailable",
+        unavailableReason: "remote",
+        remoteDescription: "SSH: devbox",
+      });
+
+      const probed = yield* service.probeFolders(["/work/app", "/work/lib", "/work/gone"]);
+      assert.deepEqual(
+        probed.map((folder) => folder.availability),
+        ["available", "available", "unavailable"],
+      );
+      // A probed git folder asks for its own identity; wait for that to land.
+      const changes = yield* service.subscribeChanges;
+      yield* service.getAvailableFolders(folders);
+      while ((yield* PubSub.take(changes)).workspaceRoot !== "/work/lib") {
+        // Other roots' notifications are not this test's.
+      }
+      const served = yield* service.getAvailableFolders(folders);
+      // The primary's identity is the project's own, so its folder omits it.
+      assert.deepEqual(served[0], {
+        ...folders[0]!,
+        availability: "available",
+        vcs: { checkoutRoot: "/work/app" },
+      });
+      assert.deepEqual(served[1], {
+        ...folders[1]!,
+        availability: "available",
+        vcs: { checkoutRoot: "/work/lib", repositoryIdentity: identity("/work/lib") },
+      });
+      assert.deepEqual(served[2], {
+        ...folders[2]!,
+        availability: "unavailable",
+        unavailableReason: "missing",
+      });
+    }).pipe(Effect.provide(makeLayer(metadataLayer, {}, folderResolverLayer(probe))));
   }),
 );

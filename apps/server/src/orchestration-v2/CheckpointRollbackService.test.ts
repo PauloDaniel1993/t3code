@@ -344,6 +344,9 @@ it.effect.each([
   { restoreFiles: false, shared: "worktree" },
   { restoreFiles: true, shared: "historical" },
   { restoreFiles: false, shared: "none", targetOrdinal: 1 },
+  // A checkpoint holds one checkout, so a multi-folder thread only rewinds its conversation.
+  { restoreFiles: true, shared: "multi-folder" },
+  { restoreFiles: false, shared: "multi-folder" },
 ])("rewinds safely with %s", ({ restoreFiles, shared, targetOrdinal = 0 }) => {
   const threadId = ThreadId.make("rewind-files");
   const providerThreadId = ProviderThreadId.make("rewind-provider");
@@ -362,6 +365,14 @@ it.effect.each([
       worktreePath: shared === "root" ? null : process.cwd(),
       activeProviderThreadId: providerThreadId,
       modelSelection: { instanceId, model: "test" },
+      ...(shared === "multi-folder"
+        ? {
+            workspaceFolders: [
+              { path: process.cwd(), name: "app", label: "app", checkoutRoot: process.cwd() },
+              { path: "/work/lib", name: "lib", label: "lib", checkoutRoot: "/work/lib" },
+            ],
+          }
+        : {}),
     },
     providerThreads: [providerThread],
     providerSessions: [],
@@ -457,7 +468,10 @@ it.effect.each([
       const error = yield* Effect.flip(
         service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles }),
       );
-      assert.equal(error.reason, "shared-workspace");
+      assert.equal(
+        error.reason,
+        shared === "multi-folder" ? "multi-folder-workspace" : "shared-workspace",
+      );
       assert.deepEqual(calls, []);
       return;
     }

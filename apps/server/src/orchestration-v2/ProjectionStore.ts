@@ -1571,14 +1571,20 @@ function visibleItemCountForShell(input: {
 }
 
 // The shell carries the snapshot's size, not its folders, so sidebar
-// snapshots don't grow with workspace files. Plain-project threads omit both.
+// snapshots don't grow with workspace files. A thread without a worktree also
+// names its snapshot's primary, which its project's primary may have left.
+// Plain-project threads omit all of them.
 function shellWorkspaceFields(
   thread: OrchestrationV2ThreadProjection["thread"],
-): Pick<OrchestrationV2ThreadShell, "workspaceFolderCount" | "worktrees"> {
+): Pick<OrchestrationV2ThreadShell, "workspaceFolderCount" | "workspacePrimaryPath" | "worktrees"> {
+  const primaryPath = thread.workspaceFolders?.[0]?.path;
   return {
     ...(thread.workspaceFolders === undefined || thread.workspaceFolders.length === 0
       ? {}
       : { workspaceFolderCount: thread.workspaceFolders.length }),
+    ...(primaryPath === undefined || thread.worktreePath !== null
+      ? {}
+      : { workspacePrimaryPath: primaryPath }),
     ...(thread.worktrees === undefined ? {} : { worktrees: thread.worktrees }),
   };
 }

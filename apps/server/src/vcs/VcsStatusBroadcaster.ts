@@ -157,7 +157,7 @@ export const autoPullPolicyLayer = Layer.effect(
     return {
       isEnabled: Effect.fn("VcsAutoPullPolicy.isEnabled")(
         function* (cwd: string) {
-          const project = yield* projects.findActiveByWorkspaceRoot(cwd);
+          const project = yield* projects.findActiveByWorkspaceRoot(cwd, { includeLinked: true });
           if (project._tag === "None") return false;
           const settings = yield* serverSettings.getSettings;
           return resolveProjectSettings(settings, project.value.projectId).settings.defaultAutoPull;

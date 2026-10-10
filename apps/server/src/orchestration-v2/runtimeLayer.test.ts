@@ -407,6 +407,8 @@ const SharedApplicationDataPlaneTestLayer = Layer.mergeAll(
           repositoryIdentityResolved: false,
         }),
       invalidate: () => Effect.void,
+      probeFolders: () => Effect.succeed([]),
+      getAvailableFolders: (folders) => Effect.succeed(folders),
       subscribeChanges: Effect.never,
     }),
   ),
@@ -749,6 +751,26 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.match(String(shared.cause), /isolated worktree/);
           assert.equal(yield* orchestrator.getThreadEventSequence(threadId), sequence);
           assert.deepEqual(yield* outbox.listByCommandId(sharedCommandId), []);
+          // A thread spanning several workspace folders can only rewind its conversation.
+          yield* orchestrator.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make("runtime-rollback-folders"),
+            threadId,
+            workspaceFolders: [
+              { path: process.cwd(), name: "app", label: "app", checkoutRoot: null },
+              { path: path.dirname(process.cwd()), name: "parent", label: "parent" },
+            ],
+          });
+          const multiFolder = yield* orchestrator
+            .dispatch({
+              type: "checkpoint.rollback",
+              commandId: CommandId.make("runtime-rollback-multi-folder"),
+              threadId,
+              checkpointId,
+              scopeId: scope.id,
+            })
+            .pipe(Effect.flip);
+          assert.match(String(multiFolder.cause), /several workspace folders/);
           const conversationOnly = yield* orchestrator.dispatch({
             type: "checkpoint.rollback",
             commandId: CommandId.make("runtime-rollback-conversation"),

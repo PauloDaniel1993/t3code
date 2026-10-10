@@ -7,6 +7,8 @@ import {
   ChatAttachmentId,
   CommandId,
   EventId,
+  ProjectId,
+  ProviderInstanceId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -20,6 +22,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import {
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorDispatchError,
@@ -27,9 +30,23 @@ import {
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { dispatchCommand } from "./ThreadMessageIntake.ts";
 
+const linkedProjectId = ProjectId.make("project:linked");
+const linkedSnapshot = [
+  { path: "/work/app", name: "app", label: "app", checkoutRoot: "/work/app", checkoutPrefix: "" },
+  { path: "/work/docs", name: "docs", label: "docs", checkoutRoot: null },
+];
+
 const intakeTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-question-intake-",
-}).pipe(Layer.provideMerge(NodeServices.layer));
+}).pipe(
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(
+    Layer.mock(ProjectService.ProjectService)({
+      snapshotWorkspaceFolders: (projectId) =>
+        Effect.succeed(projectId === linkedProjectId ? linkedSnapshot : undefined),
+    }),
+  ),
+);
 
 const failingDispatch = (captured: OrchestrationV2ServerCommand[]) =>
   Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -762,5 +779,60 @@ it.effect("applies the image budget across all questions before dispatch", () =>
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure") expect(String(result.cause)).toContain("80 MiB");
     expect(captured).toEqual([]);
+  }).pipe(Effect.provide(intakeTestLayer)),
+);
+
+it.effect("binds a client's new thread of a linked project to the project's folders", () =>
+  Effect.gen(function* () {
+    const captured: OrchestrationV2ServerCommand[] = [];
+    const existing = ThreadId.make("thread:retried");
+    const create = (projectId: ProjectId, name: string) =>
+      ({
+        type: "thread.create",
+        commandId: CommandId.make(name),
+        threadId: ThreadId.make(`thread:${name}`),
+        projectId,
+        title: "New thread",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      }) satisfies OrchestrationV2Command;
+    const recordingDispatch = Layer.mock(ThreadManagementService.ThreadManagementService)({
+      getThreadShell: (threadId) => Effect.succeed(threadId === existing ? ({} as never) : null),
+      dispatch: (command) => {
+        captured.push(command);
+        return Effect.succeed({ sequence: 1, storedEvents: [] } as never);
+      },
+    });
+    const send = (command: OrchestrationV2Command) =>
+      dispatchCommand(command).pipe(Effect.provide(recordingDispatch));
+    const clientFolders = [{ path: "/anywhere", name: "x", label: "x", checkoutRoot: null }];
+
+    yield* send(create(linkedProjectId, "linked"));
+    // A client never chooses a thread's folders, for a plain project or a linked one.
+    yield* send({
+      ...create(ProjectId.make("project:plain"), "plain"),
+      workspaceFolders: clientFolders,
+    });
+    // A retried create replays; it doesn't probe the folders again.
+    yield* send({ ...create(linkedProjectId, "retried"), threadId: existing });
+    yield* send({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("update"),
+      threadId: existing,
+      workspaceFolders: clientFolders,
+      worktrees: [{ repositoryRoot: "/anywhere", path: "/wt", branch: "b" }],
+      title: "Renamed",
+    });
+
+    expect(
+      captured.map((command) => ("workspaceFolders" in command ? command.workspaceFolders : null)),
+    ).toEqual([linkedSnapshot, null, null, null]);
+    expect(captured[3]).toMatchObject({ type: "thread.metadata.update", title: "Renamed" });
+    expect(captured[3]).not.toHaveProperty("worktrees");
   }).pipe(Effect.provide(intakeTestLayer)),
 );

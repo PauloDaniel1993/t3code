@@ -4,6 +4,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   type RuntimeMode,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -33,6 +34,35 @@ export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyR
   override get message(): string {
     return `Failed to resolve runtime policy for provider instance ${this.providerInstanceId} in project ${this.projectId}.`;
   }
+}
+
+/** The run reaches folders beyond its working directory, which its provider can't be given yet. */
+export class ProviderWorkspaceFolderAccessError extends Schema.TaggedError<ProviderWorkspaceFolderAccessError>()(
+  "ProviderWorkspaceFolderAccessError",
+  {
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+  },
+) {
+  override get message(): string {
+    return "This provider cannot yet access every workspace folder; choose a supported provider.";
+  }
+}
+
+/**
+ * Whether a run of this thread reaches more than its primary folder: any other
+ * snapshot folder it can reach, even one inside the primary. Until providers,
+ * worktree sets and checkpoints handle several folders, such a run must not
+ * start.
+ */
+export function runSpansWorkspaceFolders(
+  thread: OrchestrationV2AppThread,
+  unavailableFolderPaths: ReadonlyArray<string> | undefined,
+): boolean {
+  const [, ...others] = thread.workspaceFolders ?? [];
+  return others.some(
+    (folder) => folder.path !== undefined && !unavailableFolderPaths?.includes(folder.path),
+  );
 }
 
 export const RuntimePolicyV2Error = Schema.Union([RuntimePolicyResolveError]);

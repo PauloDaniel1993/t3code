@@ -199,7 +199,10 @@ import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
-import { projectMutationOperation } from "./project/ProjectMutation.ts";
+import {
+  expectedProjectMutationFailure,
+  projectMutationOperation,
+} from "./project/ProjectMutation.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
@@ -1098,6 +1101,7 @@ const makeWsRpcLayer = (
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
         | ThreadLaunchService.ThreadLaunchService
+        | ProjectService.ProjectService
         | FileSystem.FileSystem
         | ServerConfig.ServerConfig
       >();
@@ -1955,7 +1959,11 @@ const makeWsRpcLayer = (
                     new OrchestrationV2ThreadLaunchError({
                       commandId: input.commandId,
                       projectId: input.projectId,
-                      message: "Failed to launch thread",
+                      // A workspace the thread can't start in is the user's to fix.
+                      message:
+                        (cause.operation === "validate-workspace"
+                          ? userFacingDispatchErrorMessage(cause.cause)
+                          : undefined) ?? "Failed to launch thread",
                       cause,
                     }),
                   ServerRuntimeStartupError: (cause) =>
@@ -3056,17 +3064,23 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.projectsMutate,
             startup.enqueueCommand(mutateProject(mutation)).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectMutationError({
-                    commandId: mutation.commandId,
-                    message:
-                      cause._tag === "ProjectNotEmptyError"
-                        ? cause.message
-                        : "Failed to mutate project.",
-                    cause,
-                  }),
-              ),
+              Effect.mapError((cause) => {
+                const expected =
+                  cause._tag === "ServerRuntimeStartupError"
+                    ? undefined
+                    : expectedProjectMutationFailure(cause);
+                return new ProjectMutationError({
+                  commandId: mutation.commandId,
+                  message: expected?.message ?? "Failed to mutate project.",
+                  ...(expected?.diagnostic === undefined
+                    ? {}
+                    : { diagnostic: expected.diagnostic }),
+                  ...(expected?.conflictingProjectId === undefined
+                    ? {}
+                    : { conflictingProjectId: expected.conflictingProjectId }),
+                  cause,
+                });
+              }),
             ),
             { "rpc.aggregate": "orchestration" },
           ),
@@ -3134,7 +3148,7 @@ const makeWsRpcLayer = (
               }
               if (input.resource._tag === "project-favicon") {
                 const project = yield* projectStore
-                  .findActiveByWorkspaceRoot(input.resource.cwd)
+                  .findActiveByWorkspaceRoot(input.resource.cwd, { includeLinked: true })
                   .pipe(
                     Effect.mapError(
                       (cause) =>

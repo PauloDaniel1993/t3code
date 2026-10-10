@@ -14,6 +14,7 @@ import * as Result from "effect/Result";
 import {
   planProjectCommand,
   type ProjectCommand,
+  projectCommandIdentities,
   type ProjectCommandState,
 } from "./ProjectCommands.ts";
 import type { ProjectRow } from "./ProjectStore.ts";
@@ -50,7 +51,12 @@ const script = (id: string): ProjectScript => ({
 const plan = (command: ProjectCommand, state: Partial<ProjectCommandState> = {}) =>
   planProjectCommand({
     command,
-    state: { project: undefined, workspaceOwner: undefined, ...state },
+    state: {
+      project: undefined,
+      workspaceOwner: undefined,
+      workspaceFileOwner: undefined,
+      ...state,
+    },
     eventId: EventId.make("event:planned"),
     now,
   });
@@ -327,6 +333,123 @@ describe("planProjectCommand", () => {
       failureOf(update({ workspaceFile, folders: [{ path: "/work/app", name: "app" }] }))._tag,
       "ProjectCommandInvariantError",
     );
+  });
+
+  it("claims a workspace file for one project, and a plain root only for plain projects", () => {
+    const workspaceFile = "/work/app.code-workspace";
+    const owner = row({
+      projectId: ProjectId.make("project-owner"),
+      workspaceRoot: "/work/app",
+      workspaceFile,
+      folders: [{ path: "/work/app", name: "app" }],
+    });
+    const importing = {
+      type: "project.create",
+      commandId: CommandId.make("cmd-import"),
+      projectId,
+      title: "App",
+      workspaceRoot: "/work/app",
+      workspaceFile,
+      folders: [{ path: "/work/app", name: "app" }],
+    } satisfies ProjectCommand;
+    const conflict = failureOf(plan(importing, { workspaceFileOwner: owner }));
+    assert.equal(conflict._tag, "ProjectWorkspaceFileConflictError");
+    assert.deepInclude(conflict, { workspaceFile, conflictingProjectId: owner.projectId });
+    // A plain project at the primary is no conflict for a linked one.
+    const plainOwner = row({
+      projectId: ProjectId.make("project-plain"),
+      workspaceRoot: "/work/app",
+    });
+    assert.isTrue(Result.isSuccess(plan(importing, { workspaceOwner: plainOwner })));
+
+    const linked = row({
+      workspaceRoot: "/work/app",
+      workspaceFile,
+      folders: [{ path: "/work/app", name: "app" }],
+    });
+    const unlink = {
+      type: "project.meta.update",
+      commandId: CommandId.make("cmd-unlink"),
+      projectId,
+      workspaceFile: null,
+      folders: null,
+    } satisfies ProjectCommand;
+    assert.equal(
+      failureOf(plan(unlink, { project: linked, workspaceOwner: plainOwner }))._tag,
+      "ProjectWorkspaceConflictError",
+    );
+
+    // A link decided while the project was plain can't land once it's linked.
+    const staleLink = {
+      type: "project.meta.update",
+      commandId: CommandId.make("cmd-stale-link"),
+      projectId,
+      workspaceFile: "/work/other.code-workspace",
+      folders: [{ path: "/work/app", name: "app" }],
+      expectedWorkspaceFile: null,
+    } satisfies ProjectCommand;
+    assert.equal(
+      failureOf(plan(staleLink, { project: linked }))._tag,
+      "ProjectCommandInvariantError",
+    );
+    assert.isTrue(
+      Result.isSuccess(
+        plan({ ...staleLink, expectedWorkspaceFile: workspaceFile }, { project: linked }),
+      ),
+    );
+  });
+
+  it("names every identity a command claims or releases", () => {
+    const workspaceFile = "/work/app.code-workspace";
+    const plain = row({ workspaceRoot: "/work/app" });
+    const linked = row({
+      workspaceRoot: "/work/app",
+      workspaceFile,
+      folders: [{ path: "/work/app", name: "app" }],
+    });
+    const meta = (fields: Partial<Extract<ProjectCommand, { type: "project.meta.update" }>>) =>
+      ({
+        type: "project.meta.update",
+        commandId: CommandId.make("cmd-meta"),
+        projectId,
+        ...fields,
+      }) satisfies ProjectCommand;
+    const folders = [{ path: "/work/app", name: "app" }];
+
+    // Link gives up the plain root and claims the file.
+    assert.deepEqual(projectCommandIdentities(meta({ workspaceFile, folders }), plain), {
+      claimedFile: workspaceFile,
+      roots: ["/work/app"],
+      files: [workspaceFile],
+    });
+    // Relink claims the new file and releases the old one.
+    assert.deepEqual(
+      projectCommandIdentities(meta({ workspaceFile: "/work/b.code-workspace", folders }), linked),
+      {
+        claimedFile: "/work/b.code-workspace",
+        roots: [],
+        files: ["/work/app.code-workspace", "/work/b.code-workspace"],
+      },
+    );
+    // Unlink claims the root back and releases the file.
+    assert.deepEqual(
+      projectCommandIdentities(meta({ workspaceFile: null, folders: null }), linked),
+      { claimedRoot: "/work/app", roots: ["/work/app"], files: [workspaceFile] },
+    );
+    // A refresh that moves the primary claims nothing: linked projects own no root.
+    assert.deepEqual(
+      projectCommandIdentities(meta({ workspaceRoot: "/work/api", folders }), linked),
+      { roots: [], files: [] },
+    );
+    assert.deepEqual(projectCommandIdentities(meta({ workspaceRoot: "/work/x" }), plain), {
+      claimedRoot: "/work/x",
+      roots: ["/work/x"],
+      files: [],
+    });
+    assert.deepEqual(projectCommandIdentities(meta({ title: "Renamed" }), plain), {
+      roots: [],
+      files: [],
+    });
   });
 
   it("deletes with a single project.deleted event", () => {

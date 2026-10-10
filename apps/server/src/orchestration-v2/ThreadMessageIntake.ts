@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 
 import * as AttachmentClaims from "./AttachmentClaims.ts";
@@ -53,6 +54,30 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   command: OrchestrationV2Command,
 ) {
   const threads = yield* ThreadManagement.ThreadManagementService;
+  // Folder snapshots and worktree sets are the server's to write, never a
+  // client's. Clearing a set is the one change a client may ask for.
+  if (command.type === "thread.create") {
+    const { workspaceFolders: _folders, worktrees: _worktrees, ...create } = command;
+    // A client's new thread of a linked project binds the project's folders
+    // now. A retried create replays its receipt without probing again, and a
+    // missing project is the orchestrator's to reject.
+    const workspaceFolders =
+      (yield* threads.getThreadShell(command.threadId)) !== null
+        ? undefined
+        : yield* (yield* ProjectService.ProjectService)
+            .snapshotWorkspaceFolders(command.projectId)
+            .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(undefined)));
+    return yield* threads.dispatch(
+      workspaceFolders === undefined ? create : { ...create, workspaceFolders },
+    );
+  }
+  if (
+    command.type === "thread.metadata.update" &&
+    (command.workspaceFolders !== undefined || (command.worktrees ?? null) !== null)
+  ) {
+    const { workspaceFolders: _folders, worktrees, ...update } = command;
+    return yield* threads.dispatch(worktrees === null ? { ...update, worktrees } : update);
+  }
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
     const incomingByQuestionId = command.attachmentsByQuestionId;

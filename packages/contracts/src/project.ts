@@ -283,9 +283,23 @@ export const ProjectCreatePayload = Schema.Struct({
 });
 export type ProjectCreatePayload = typeof ProjectCreatePayload.Type;
 
+/** A project made from a VS Code workspace file; the server reads its folders. */
+export const ProjectImportWorkspaceFilePayload = Schema.Struct({
+  /** A server path to the `.code-workspace` file. */
+  workspaceFilePath: TrimmedNonEmptyString,
+  /** Defaults to the file name without `.code-workspace`. */
+  title: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProjectImportWorkspaceFilePayload = typeof ProjectImportWorkspaceFilePayload.Type;
+
 export const ProjectUpdatePayload = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Absent leaves the link unchanged. A path links a plain project, relinks a
+   * linked one, or re-reads the same file; null unlinks. Sent on its own.
+   */
+  workspaceFilePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   autoPull: Schema.optional(Schema.Boolean),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
@@ -295,12 +309,20 @@ export const ProjectUpdatePayload = Schema.Struct({
 });
 export type ProjectUpdatePayload = typeof ProjectUpdatePayload.Type;
 
+// An older server rejects a variant it doesn't know, so an import never falls
+// through to directory or name-only creation.
 export const ProjectMutation = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("project.create"),
     commandId: CommandId,
     projectId: ProjectId,
     ...ProjectCreatePayload.fields,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("project.import-workspace-file"),
+    commandId: CommandId,
+    projectId: ProjectId,
+    ...ProjectImportWorkspaceFilePayload.fields,
   }),
   Schema.Struct({
     type: Schema.Literal("project.update"),
@@ -322,9 +344,49 @@ export class ProjectMutationError extends Schema.TaggedError<ProjectMutationErro
   {
     commandId: CommandId,
     message: Schema.String,
+    /** Why a workspace file can't be imported or linked. A newer server's code decodes as absent. */
+    diagnostic: ForwardCompatibleOptional(WorkspaceFileDiagnostic),
+    /** The project that already holds the requested workspace file or folder. */
+    conflictingProjectId: Schema.optional(ProjectId),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
+
+/** The workspace file is missing, unreadable or invalid, so it can't be imported, linked or bound. */
+export class WorkspaceFileUnavailableError extends Schema.TaggedError<WorkspaceFileUnavailableError>()(
+  "WorkspaceFileUnavailableError",
+  {
+    projectId: ProjectId,
+    diagnostic: WorkspaceFileDiagnostic,
+  },
+) {
+  override get message(): string {
+    return this.diagnostic.message;
+  }
+}
+
+/** A linked project's primary folder is unavailable, so no thread can start or run in it. */
+export class WorkspacePrimaryFolderUnavailableError extends Schema.TaggedError<WorkspacePrimaryFolderUnavailableError>()(
+  "WorkspacePrimaryFolderUnavailableError",
+  {
+    projectId: ProjectId,
+    folderPath: TrimmedNonEmptyString,
+  },
+) {
+  override get message(): string {
+    return `Primary folder unavailable: ${this.folderPath}. Restore the folder or fix the workspace file.`;
+  }
+}
+
+/** Workspace-file projects are turned off on this server. */
+export class WorkspaceFileProjectsDisabledError extends Schema.TaggedError<WorkspaceFileProjectsDisabledError>()(
+  "WorkspaceFileProjectsDisabledError",
+  {},
+) {
+  override get message(): string {
+    return "Workspace-file projects are not enabled on this server.";
+  }
+}
 
 export const ProjectEntryKind = Schema.Literals(["file", "directory"]);
 export type ProjectEntryKind = typeof ProjectEntryKind.Type;

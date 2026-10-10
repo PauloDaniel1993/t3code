@@ -446,6 +446,39 @@ export const layer: Layer.Layer<
           return;
         }
       }
+      // Until a provider can be given every workspace folder, a run that
+      // reaches more than one fails here, before the provider sees it.
+      if (RuntimePolicy.runSpansWorkspaceFolders(projection.thread, run.unavailableFolderPaths)) {
+        const now = yield* DateTime.now;
+        const accessError = new RuntimePolicy.ProviderWorkspaceFolderAccessError({
+          threadId: projection.thread.id,
+          providerInstanceId: run.providerInstanceId,
+        });
+        yield* settleRunBeforeStart({
+          signal: "workspace-folder-access",
+          status: "failed",
+          now,
+          startedAt: now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Provider can't reach every workspace folder",
+            failure: makeProviderFailure({
+              class: "validation_error",
+              message: accessError.message,
+              retryable: false,
+              cause: accessError,
+            }),
+          },
+          providerThreadUpdate: {
+            ...providerThread,
+            status: providerThread.nativeThreadRef === null ? "not_loaded" : "idle",
+            updatedAt: now,
+          },
+        });
+        return;
+      }
       // A turn never runs anywhere but the thread's own worktrees.
       const recreated = yield* Effect.result(worktreeSets.recreateMissing(projection.thread));
       if (recreated._tag === "Failure") {

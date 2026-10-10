@@ -86,6 +86,38 @@ it.layer(
     }),
   );
 
+  it.effect("finds plain projects by root, and linked ones by workspace file", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectStore.ProjectStoreV2;
+      const linked = ProjectId.make("project-lookup-linked");
+      const plain = ProjectId.make("project-lookup-plain");
+      const root = "C:\\Lookup\\app";
+      yield* projects.apply({
+        sequence: 1,
+        ...created(linked, {
+          workspaceRoot: root,
+          workspaceFile: "C:\\Lookup\\Team.code-workspace",
+          folders: [{ path: root, name: "app" }],
+        }),
+      });
+
+      // A linked project never owns its root, unless a caller asks for it by cwd.
+      assert.isTrue(Option.isNone(yield* projects.findActiveByWorkspaceRoot(root)));
+      const byCwd = () => projects.findActiveByWorkspaceRoot(root, { includeLinked: true });
+      assert.equal(Option.getOrThrow(yield* byCwd()).projectId, linked);
+      yield* projects.apply({ sequence: 2, ...created(plain, { workspaceRoot: root }) });
+      assert.equal(Option.getOrThrow(yield* byCwd()).projectId, plain);
+
+      // One Windows file in any case is one workspace file.
+      const byFile = (file: string) => projects.findActiveByWorkspaceFile(file);
+      assert.equal(
+        Option.getOrThrow(yield* byFile("c:\\lookup\\team.code-workspace")).projectId,
+        linked,
+      );
+      assert.isTrue(Option.isNone(yield* byFile("C:\\Lookup\\Other.code-workspace")));
+    }),
+  );
+
   it.effect("keeps workspace-file fields off plain project shells", () =>
     Effect.gen(function* () {
       const projects = yield* ProjectStore.ProjectStoreV2;

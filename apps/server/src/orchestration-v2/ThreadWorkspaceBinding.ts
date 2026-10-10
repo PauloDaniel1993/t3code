@@ -108,7 +108,8 @@ function sameWorkspaceFolders(
         folder.uri === other.uri &&
         folder.name === other.name &&
         folder.label === other.label &&
-        folder.checkoutRoot === other.checkoutRoot
+        folder.checkoutRoot === other.checkoutRoot &&
+        folder.checkoutPrefix === other.checkoutPrefix
       );
     })
   );
