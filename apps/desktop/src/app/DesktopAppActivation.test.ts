@@ -111,6 +111,18 @@ describe("desktop app control server", () => {
 
         expect(received).toHaveLength(1);
         expect(response).toMatchObject({ ok: true, requestId: "request-1" });
+        const fileRequest: DesktopAppActivationRequest = {
+          version: 1,
+          requestId: "file-request",
+          type: "open-workspace-file",
+          workspaceFilePath: NodePath.join(root, "Team Space.CODE-WORKSPACE"),
+          platform: request("platform", platform).platform,
+        };
+        expect(await exchange(target.address, fileRequest)).toMatchObject({
+          ok: true,
+          requestId: "file-request",
+        });
+        expect(received[1]).toEqual(fileRequest);
         await server.close();
         openServers.splice(openServers.indexOf(server), 1);
         if (target.directory !== null) {

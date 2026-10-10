@@ -1,3 +1,5 @@
+import { ProjectMutationError } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type {
   DesktopAppActivationFailure,
   DesktopAppActivationRequest,
@@ -15,9 +17,12 @@ export interface DesktopAppActivationProject {
   readonly workspaceRoot: string;
 }
 
+const isProjectMutationError = Schema.is(ProjectMutationError);
+
 export interface DesktopAppActivationTarget {
   readonly environmentId: EnvironmentId;
   readonly platform: ExecutionEnvironmentPlatformOs;
+  readonly workspaceFileProjects?: boolean;
 }
 
 export interface DesktopAppActivationDependencies {
@@ -29,6 +34,14 @@ export interface DesktopAppActivationDependencies {
   readonly createProject: (
     environmentId: EnvironmentId,
     workspaceRoot: string,
+  ) => Promise<ProjectId>;
+  readonly findWorkspaceFileProject: (
+    environmentId: EnvironmentId,
+    workspaceFilePath: string,
+  ) => DesktopAppActivationProject | null;
+  readonly importWorkspaceFile: (
+    environmentId: EnvironmentId,
+    workspaceFilePath: string,
   ) => Promise<ProjectId>;
   readonly waitForProject: (projectRef: ScopedProjectRef) => Promise<void>;
   readonly openThread: (
@@ -76,17 +89,49 @@ export async function handleDesktopAppActivationRequest(
     );
   }
 
-  let projectId = dependencies.findProject(target.environmentId, request.workspaceRoot)?.id ?? null;
+  const fileRequest = request.type === "open-workspace-file";
+  if (fileRequest && target.workspaceFileProjects !== true) {
+    return failure(
+      request.requestId,
+      "project-create-failed",
+      "Workspace file projects are disabled in this environment.",
+    );
+  }
+  let projectId =
+    request.type === "open-workspace-file"
+      ? (dependencies.findWorkspaceFileProject(target.environmentId, request.workspaceFilePath)
+          ?.id ?? null)
+      : (dependencies.findProject(target.environmentId, request.workspaceRoot)?.id ?? null);
   if (projectId === null) {
     try {
-      projectId = await dependencies.createProject(target.environmentId, request.workspaceRoot);
+      projectId =
+        request.type === "open-workspace-file"
+          ? await dependencies.importWorkspaceFile(target.environmentId, request.workspaceFilePath)
+          : await dependencies.createProject(target.environmentId, request.workspaceRoot);
       await dependencies.waitForProject({ environmentId: target.environmentId, projectId });
     } catch (error) {
-      return failure(
-        request.requestId,
-        "project-create-failed",
-        errorMessage(error, "T3 Code could not add the project."),
-      );
+      if (
+        fileRequest &&
+        isProjectMutationError(error) &&
+        error.conflictingProjectId !== undefined
+      ) {
+        projectId = error.conflictingProjectId;
+        try {
+          await dependencies.waitForProject({ environmentId: target.environmentId, projectId });
+        } catch (waitError) {
+          return failure(
+            request.requestId,
+            "project-create-failed",
+            errorMessage(waitError, "T3 Code could not find the imported project."),
+          );
+        }
+      } else {
+        return failure(
+          request.requestId,
+          "project-create-failed",
+          errorMessage(error, "T3 Code could not add the project."),
+        );
+      }
     }
   }
 

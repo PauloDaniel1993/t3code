@@ -2,6 +2,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import { Argument, Command } from "effect/unstable/cli";
 import * as CliError from "effect/unstable/cli/CliError";
 
@@ -27,6 +28,13 @@ import { themeCommand } from "./cli/theme.ts";
 import { traceCommand } from "./cli/trace.ts";
 import { triageCommand } from "./cli/triage.ts";
 import { maintenanceCommand } from "./cli/maintenance.ts";
+import * as WorkspaceFiles from "./project/WorkspaceFiles.ts";
+
+class WorkspaceFileCommandRequiredError extends CliError.UserError {
+  override get message() {
+    return "Use `t3 app FILE` to open or `t3 project add FILE` to register";
+  }
+}
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -57,7 +65,18 @@ const connectUnavailableCommand = Command.make("connect", {
 export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
   Command.make("t3", { ...sharedServerCommandFlags }).pipe(
     Command.withDescription("Run the T3 Code server."),
-    Command.withHandler((flags) => runServerCommand(flags)),
+    Command.withHandler((flags) =>
+      Effect.gen(function* () {
+        if (Option.isSome(flags.cwd)) {
+          const workspaceFiles = yield* WorkspaceFiles.WorkspaceFiles;
+          const projectPath = yield* workspaceFiles.resolveProjectPath(flags.cwd.value);
+          if (projectPath.kind === "workspace-file") {
+            return yield* new WorkspaceFileCommandRequiredError({ cause: projectPath.path });
+          }
+        }
+        return yield* runServerCommand(flags);
+      }).pipe(Effect.provide(WorkspaceFiles.layer)),
+    ),
     Command.withSubcommands([
       acpMcpBridgeCommand,
       acpMcpCallCommand,

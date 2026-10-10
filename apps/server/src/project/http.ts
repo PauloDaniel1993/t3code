@@ -19,11 +19,16 @@ import { expectedProjectMutationFailure, projectMutationOperation } from "./Proj
 export const failProjectMutation = Effect.fn("environment.projects.failMutation")(function* (
   cause: ProjectService.ProjectServiceError | ServerRuntimeStartup.ServerRuntimeStartupError,
 ) {
-  if (
-    cause._tag !== "ServerRuntimeStartupError" &&
-    expectedProjectMutationFailure(cause) !== undefined
-  ) {
-    return yield* failEnvironmentInvalidRequest("invalid_command");
+  const expected =
+    cause._tag === "ServerRuntimeStartupError" ? undefined : expectedProjectMutationFailure(cause);
+  if (expected !== undefined) {
+    return yield* failEnvironmentInvalidRequest("invalid_command", {
+      detail: expected.message,
+      ...(expected.diagnostic === undefined ? {} : { diagnostic: expected.diagnostic }),
+      ...(expected.conflictingProjectId === undefined
+        ? {}
+        : { conflictingProjectId: expected.conflictingProjectId }),
+    });
   }
   return yield* failEnvironmentInternal("project_mutation_failed", cause);
 });

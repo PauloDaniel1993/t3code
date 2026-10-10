@@ -14,6 +14,7 @@ import {
   type OrchestrationV2CreationSource,
   type PlanId,
   type ProjectId,
+  type ProjectMutation,
   type ProjectIconOverride,
   type ProjectScript,
   type ProviderApprovalDecision,
@@ -46,6 +47,12 @@ export interface CreateProjectInput extends CommandMetadata {
   readonly createWorkspaceRootIfMissing?: boolean;
   readonly defaultModelSelection?: ModelSelection | null;
   readonly scripts?: ReadonlyArray<ProjectScript>;
+}
+
+export interface ImportWorkspaceFileProjectInput extends CommandMetadata {
+  readonly projectId: ProjectId;
+  readonly workspaceFilePath: string;
+  readonly title?: string;
 }
 
 export interface UpdateProjectInput extends CommandMetadata {
@@ -303,34 +310,21 @@ const persistAttachments = Effect.fn("EnvironmentCommands.persistAttachments")(f
 });
 
 const mutateProject = Effect.fn("EnvironmentCommands.mutateProject")(function* (
-  mutation:
-    | {
-        readonly type: "project.create";
-        readonly commandId: CommandId;
-        readonly projectId: ProjectId;
-        readonly title: string;
-        readonly workspaceRoot: string;
-        readonly createWorkspaceRootIfMissing?: boolean;
-        readonly defaultModelSelection?: ModelSelection | null;
-        readonly scripts?: ReadonlyArray<ProjectScript>;
-      }
-    | {
-        readonly type: "project.update";
-        readonly commandId: CommandId;
-        readonly projectId: ProjectId;
-        readonly title?: string;
-        readonly workspaceRoot?: string;
-        readonly defaultModelSelection?: ModelSelection | null;
-        readonly scripts?: ReadonlyArray<ProjectScript>;
-      }
-    | {
-        readonly type: "project.delete";
-        readonly commandId: CommandId;
-        readonly projectId: ProjectId;
-        readonly force?: boolean;
-      },
+  mutation: ProjectMutation,
 ) {
   return yield* request(WS_METHODS.projectsMutate, mutation);
+});
+
+export const importWorkspaceFileProject = Effect.fn(
+  "EnvironmentCommands.importWorkspaceFileProject",
+)(function* (input: ImportWorkspaceFileProjectInput) {
+  return yield* mutateProject({
+    type: "project.import-workspace-file",
+    commandId: yield* allocateCommandId(input),
+    projectId: input.projectId,
+    workspaceFilePath: input.workspaceFilePath,
+    ...(input.title === undefined ? {} : { title: input.title }),
+  });
 });
 
 export const createProject = Effect.fn("EnvironmentCommands.createProject")(function* (

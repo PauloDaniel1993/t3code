@@ -32,6 +32,8 @@ import {
 import {
   DpopFailureReason,
   AuthSessionId,
+  ProjectId,
+  ForwardCompatibleOptional,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -41,7 +43,7 @@ import {
   OrchestrationV2ThreadDetailSnapshot,
   OrchestrationV2ThreadHistoryPage,
 } from "./orchestrationV2.ts";
-import { Project, ProjectMutation, ProjectSnapshot } from "./project.ts";
+import { Project, ProjectMutation, ProjectSnapshot, WorkspaceFileDiagnostic } from "./project.ts";
 import {
   PullRequestDiffInput,
   PullRequestDiffResult,
@@ -119,6 +121,9 @@ export class EnvironmentRequestInvalidError extends Schema.TaggedError<Environme
     code: Schema.Literal("invalid_request"),
     reason: EnvironmentRequestInvalidReason,
     traceId: TrimmedNonEmptyString,
+    detail: Schema.optionalKey(TrimmedNonEmptyString),
+    diagnostic: ForwardCompatibleOptional(WorkspaceFileDiagnostic),
+    conflictingProjectId: Schema.optionalKey(ProjectId),
   },
   { httpApiStatus: 400 },
 ) {
@@ -127,7 +132,7 @@ export class EnvironmentRequestInvalidError extends Schema.TaggedError<Environme
   }
 
   override get message(): string {
-    return `The environment rejected the request (${this.reason}).`;
+    return this.detail ?? `The environment rejected the request (${this.reason}).`;
   }
 }
 

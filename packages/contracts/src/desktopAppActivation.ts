@@ -7,13 +7,24 @@ export const DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION = 1 as const;
 export const DesktopAppActivationPlatform = Schema.Literals(["darwin", "linux", "win32"]);
 export type DesktopAppActivationPlatform = typeof DesktopAppActivationPlatform.Type;
 
-export const DesktopAppActivationRequest = Schema.Struct({
+const desktopAppActivationFields = {
   version: Schema.Literal(DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION),
   requestId: TrimmedNonEmptyString,
-  type: Schema.Literal("open-workspace"),
-  workspaceRoot: TrimmedNonEmptyString,
   platform: DesktopAppActivationPlatform,
-});
+};
+
+export const DesktopAppActivationRequest = Schema.Union([
+  Schema.Struct({
+    ...desktopAppActivationFields,
+    type: Schema.Literal("open-workspace"),
+    workspaceRoot: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    ...desktopAppActivationFields,
+    type: Schema.Literal("open-workspace-file"),
+    workspaceFilePath: TrimmedNonEmptyString,
+  }),
+]);
 export type DesktopAppActivationRequest = typeof DesktopAppActivationRequest.Type;
 
 export const DesktopAppActivationErrorCode = Schema.Literals([

@@ -3,6 +3,7 @@ export {
   canNavigateUp,
   ensureBrowseDirectoryPath,
   findProjectByPath,
+  findProjectByWorkspaceFile,
   getBrowseDirectoryPath,
   getBrowseLeafPathSegment,
   getBrowseParentPath,

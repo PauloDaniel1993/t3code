@@ -52,6 +52,10 @@ export const resolveWorkspaceFilePath = (requestedPath: string, path: Path.Path)
 export class WorkspaceFiles extends Context.Service<
   WorkspaceFiles,
   {
+    /** A suffix selects file mode unless the path is an existing directory. */
+    readonly resolveProjectPath: (
+      input: string,
+    ) => Effect.Effect<{ readonly path: string; readonly kind: "directory" | "workspace-file" }>;
     /**
      * Read a workspace file chosen explicitly as one. A directory is not a
      * workspace file whatever its name: callers choose file mode only for files.
@@ -91,6 +95,23 @@ export const make = Effect.gen(function* () {
   const layerScope = yield* Scope.Scope;
   const watches = new Map<ProjectId, ProjectWatch>();
   const watchLock = yield* Semaphore.make(1);
+
+  const resolveProjectPath: WorkspaceFiles["Service"]["resolveProjectPath"] = Effect.fn(
+    "WorkspaceFiles.resolveProjectPath",
+  )(function* (input) {
+    const resolvedPath = path.resolve(expandHomePathWith(input.trim(), path));
+    if (!/\.code-workspace$/i.test(resolvedPath)) {
+      return { path: resolvedPath, kind: "directory" as const };
+    }
+    const stat = yield* Effect.result(fileSystem.stat(resolvedPath));
+    return {
+      path: resolvedPath,
+      kind:
+        stat._tag === "Success" && stat.success.type === "Directory"
+          ? ("directory" as const)
+          : ("workspace-file" as const),
+    };
+  });
 
   const read: WorkspaceFiles["Service"]["read"] = Effect.fn("WorkspaceFiles.read")(
     function* (requestedPath) {
@@ -221,7 +242,7 @@ export const make = Effect.gen(function* () {
         : Deferred.isDone(existing.closed).pipe(Effect.map((closed) => !closed));
     });
 
-  return WorkspaceFiles.of({ read, watch, unwatch, isWatching });
+  return WorkspaceFiles.of({ read, resolveProjectPath, watch, unwatch, isWatching });
 });
 
 export const layer = Layer.effect(WorkspaceFiles, make);

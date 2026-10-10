@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
+import { ProjectId } from "./baseSchemas.ts";
 
 import {
   EnvironmentAuthInvalidError,
@@ -12,6 +14,29 @@ import {
 const traceId = "trace-1";
 
 describe("environment HTTP errors", () => {
+  it("decodes old invalid-request payloads and preserves workspace diagnostics on new ones", () => {
+    const decode = Schema.decodeUnknownSync(EnvironmentRequestInvalidError);
+    const old = {
+      _tag: "EnvironmentRequestInvalidError",
+      code: "invalid_request",
+      reason: "invalid_command",
+      traceId,
+    };
+    expect(decode(old).diagnostic).toBeUndefined();
+    const error = decode({
+      ...old,
+      detail: "Workspace file is already linked.",
+      diagnostic: { code: "conflict", message: "Already linked", path: "C:/team.code-workspace" },
+      conflictingProjectId: ProjectId.make("existing"),
+    });
+    expect(error.message).toBe("Workspace file is already linked.");
+    expect(error.diagnostic?.code).toBe("conflict");
+    expect(error.conflictingProjectId).toBe("existing");
+    expect(
+      decode({ ...old, diagnostic: { code: "future-code", message: "New server diagnostic" } })
+        .diagnostic,
+    ).toBeUndefined();
+  });
   // A client squashes the cause and shows `message`; an empty one becomes a generic
   // "The environment request failed." that names nothing the reader can act on.
   it("each carries a message that names its reason", () => {

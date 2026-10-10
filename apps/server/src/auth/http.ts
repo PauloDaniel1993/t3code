@@ -113,10 +113,23 @@ export function failEnvironmentAuthInvalid(
   );
 }
 
-export function failEnvironmentInvalidRequest(reason: EnvironmentRequestInvalidReason) {
+export function failEnvironmentInvalidRequest(
+  reason: EnvironmentRequestInvalidReason,
+  details: Pick<
+    EnvironmentRequestInvalidError,
+    "detail" | "diagnostic" | "conflictingProjectId"
+  > = {},
+) {
   return currentEnvironmentTraceId.pipe(
     Effect.flatMap((traceId) =>
-      Effect.fail(new EnvironmentRequestInvalidError({ code: "invalid_request", reason, traceId })),
+      Effect.fail(
+        new EnvironmentRequestInvalidError({
+          code: "invalid_request",
+          reason,
+          traceId,
+          ...details,
+        }),
+      ),
     ),
   );
 }

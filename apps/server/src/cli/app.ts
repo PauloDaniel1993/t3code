@@ -24,7 +24,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Argument, Command } from "effect/unstable/cli";
 
-import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
+import { resolveBaseDir } from "../os-jank.ts";
+import * as WorkspaceFiles from "../project/WorkspaceFiles.ts";
 import { baseDirFlag } from "./config.ts";
 
 const CLI_RESPONSE_TIMEOUT_MS = 17_000;
@@ -69,11 +70,21 @@ export class DesktopAppRequestFailedError extends Schema.TaggedError<DesktopAppR
     code: DesktopAppActivationErrorCode,
     requestId: Schema.String,
     workspaceRoot: Schema.String,
+    detail: Schema.optionalKey(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `T3 Code could not open ${this.workspaceRoot} (${this.code}).`;
+    return this.detail ?? `T3 Code could not open ${this.workspaceRoot} (${this.code}).`;
+  }
+}
+
+export class DesktopAppWorkspaceFilesUnsupportedError extends Schema.TaggedError<DesktopAppWorkspaceFilesUnsupportedError>()(
+  "DesktopAppWorkspaceFilesUnsupportedError",
+  {},
+) {
+  override get message(): string {
+    return "Update T3 Code desktop to open workspace files";
   }
 }
 
@@ -202,7 +213,9 @@ const runAppCommand = Effect.fn("cli.app")(function* (flags: {
   const allowDevFallback = Option.isNone(flags.baseDir) && !environment.t3Home?.trim();
   const rawWorkspaceRoot =
     Option.getOrUndefined(flags.workspaceRoot) ?? (yield* HostProcessWorkingDirectory);
-  const workspaceRoot = path.resolve(yield* expandHomePath(rawWorkspaceRoot));
+  const workspaceFiles = yield* WorkspaceFiles.WorkspaceFiles;
+  const projectPath = yield* workspaceFiles.resolveProjectPath(rawWorkspaceRoot);
+  const workspaceRoot = projectPath.path;
   const userId = yield* HostProcessUserId;
   const resolveAddress = (stateSubdirectory: "userdata" | "dev") =>
     resolveDesktopAppControlAddress({
@@ -215,8 +228,9 @@ const runAppCommand = Effect.fn("cli.app")(function* (flags: {
   const request: DesktopAppActivationRequest = {
     version: DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
     requestId: NodeCrypto.randomUUID(),
-    type: "open-workspace",
-    workspaceRoot,
+    ...(projectPath.kind === "workspace-file"
+      ? { type: "open-workspace-file" as const, workspaceFilePath: workspaceRoot }
+      : { type: "open-workspace" as const, workspaceRoot }),
     platform: hostPlatform,
   };
   const address = resolveAddress("userdata");
@@ -238,10 +252,14 @@ const runAppCommand = Effect.fn("cli.app")(function* (flags: {
       }),
   });
   if (!response.ok) {
+    if (request.type === "open-workspace-file" && response.code === "invalid-request") {
+      return yield* new DesktopAppWorkspaceFilesUnsupportedError({});
+    }
     return yield* new DesktopAppRequestFailedError({
       code: response.code,
       requestId: response.requestId,
       workspaceRoot,
+      ...(request.type === "open-workspace-file" ? { detail: response.message } : {}),
       cause: response,
     });
   }
@@ -252,10 +270,12 @@ const runAppCommand = Effect.fn("cli.app")(function* (flags: {
 export const appCommand = Command.make("app", {
   baseDir: baseDirFlag,
   workspaceRoot: Argument.String("path").pipe(
-    Argument.withDescription("Project directory. Default: current directory."),
+    Argument.withDescription(
+      "Project directory or .code-workspace file. Default: current directory.",
+    ),
     Argument.optional,
   ),
 }).pipe(
   Command.withDescription("Open a project in the running T3 Code desktop app."),
-  Command.withHandler(runAppCommand),
+  Command.withHandler((flags) => runAppCommand(flags).pipe(Effect.provide(WorkspaceFiles.layer))),
 );

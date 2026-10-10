@@ -9,7 +9,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  AuthAdministrativeScopes,
+  AuthSessionId,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentAuthenticatedPrincipal,
+  EnvironmentHttpApi,
   EnvironmentInternalError,
+  EnvironmentRequestInvalidError,
   EventId,
   ProviderInstanceId,
   ThreadId,
@@ -18,12 +24,15 @@ import {
 } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
 import * as DateTime from "effect/DateTime";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
 import { Command } from "effect/unstable/cli";
+import { FetchHttpClient, HttpRouter, HttpPlatform, Etag } from "effect/unstable/http";
+import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { cli } from "../binCli.ts";
 import * as ServerConfig from "../config.ts";
@@ -42,6 +51,9 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { projectHttpApiLayer } from "../project/http.ts";
+import { persistServerRuntimeState } from "../serverRuntimeState.ts";
+import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
 import {
   ProjectLiveServerDeclaredResponseError,
   ProjectLiveServerRequestError,
@@ -49,8 +61,12 @@ import {
 } from "./project.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
-const runCli = (args: ReadonlyArray<string>) =>
-  Command.runWith(cli, { version: "0.0.0" })(args).pipe(Effect.provide(CliRuntimeLayer));
+const runCli = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
+  Command.runWith(cli, { version: "0.0.0" })(args).pipe(
+    Effect.provide(
+      Layer.mergeAll(CliRuntimeLayer, ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+    ),
+  );
 
 const makeConfig = (baseDir: string) =>
   Effect.gen(function* () {
@@ -108,6 +124,250 @@ const readProjects = (baseDir: string) =>
       Effect.provide(layer),
     );
   });
+
+const workspaceFileEnvironment = { T3CODE_WORKSPACE_FILE_PROJECTS: "true" };
+
+class ProjectCliTestApi extends HttpApi.make("environment").add(
+  EnvironmentHttpApi.groups.projects,
+) {}
+
+it.effect("uses the same import service over live HTTP and preserves its file conflict", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-live-file-" });
+    const baseDir = NodePath.join(root, "state");
+    const primary = NodePath.join(root, "app");
+    const filePath = NodePath.join(root, "Live Team.code-workspace");
+    yield* fs.makeDirectory(primary);
+    yield* fs.writeFileString(filePath, '{"folders":[{"path":"app"}]}');
+    const config = { ...(yield* makeConfig(baseDir)), workspaceFileProjects: true };
+    const serviceLayer = ProjectServiceLayerLive.pipe(
+      Layer.provideMerge(ProjectEnrichmentService.layer),
+      Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(WorkspaceFolderResolver.layer),
+      Layer.provideMerge(ProjectFaviconResolver.layer),
+      Layer.provideMerge(T3ProjectFileLoader.layer),
+      Layer.provideMerge(WorkspacePaths.layer),
+      Layer.provideMerge(SqlitePersistence.layerConfig),
+      Layer.provide(ServerConfig.layer(config)),
+    );
+    const authLayer = Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
+      effect.pipe(
+        Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+          sessionId: AuthSessionId.make("test"),
+          subject: "test",
+          method: "bearer-access-token",
+          scopes: new Set(AuthAdministrativeScopes),
+        }),
+      ),
+    );
+    const startupLayer = Layer.succeed(ServerRuntimeStartup, {
+      awaitCommandReady: Effect.void,
+      markHttpListening: Effect.void,
+      enqueueCommand: (effect) => effect,
+    });
+    const routesLayer = HttpApiBuilder.layer(ProjectCliTestApi).pipe(
+      Layer.provide(projectHttpApiLayer),
+      Layer.provide(serviceLayer),
+      Layer.provide(authLayer),
+      Layer.provide(startupLayer),
+      Layer.provide(HttpPlatform.layer),
+      Layer.provide(Etag.layerWeak),
+      Layer.provide(NodeServices.layer),
+    );
+    const web = yield* Effect.acquireRelease(
+      Effect.sync(() => HttpRouter.toWebHandler(routesLayer, { disableLogger: true })),
+      (web) => Effect.promise(() => web.dispose()),
+    );
+    // A running server has finished startup before the CLI's one-second probe.
+    const ready = yield* Effect.promise(() =>
+      web.handler(
+        new Request(
+          `http://project.test${EnvironmentHttpApi.groups.projects.endpoints.snapshot.path}`,
+        ),
+      ),
+    );
+    assert.equal(ready.status, 200);
+    yield* persistServerRuntimeState({
+      path: config.serverRuntimeStatePath,
+      state: {
+        version: 1,
+        pid: process.pid,
+        port: 1,
+        origin: "http://project.test",
+        startedAt: "2026-10-10T00:00:00Z",
+      },
+    });
+    const requests: string[] = [];
+    const fetch: typeof globalThis.fetch = (input, init) => {
+      const request = new Request(input, init);
+      requests.push(`${request.method} ${new URL(request.url).pathname}`);
+      return web.handler(request);
+    };
+    yield* runCli(
+      ["project", "add", filePath, "--title", "  Explicit title  ", "--base-dir", baseDir],
+      workspaceFileEnvironment,
+    ).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch));
+    const added = (yield* readProjects(baseDir)).projects[0]!;
+    assert.equal(added.title, "Explicit title");
+    assert.equal(added.workspaceFile, filePath);
+    assert.include(requests, "POST /api/projects/mutate");
+    const duplicate = yield* runCli(
+      ["project", "add", filePath, "--base-dir", baseDir],
+      workspaceFileEnvironment,
+    ).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.flip);
+    assert.instanceOf(duplicate, ProjectLiveServerDeclaredResponseError);
+    assert.equal(duplicate.diagnostic?.code, "conflict");
+    assert.equal(duplicate.conflictingProjectId, added.id);
+    assert.equal((yield* readProjects(baseDir)).projects.length, 1);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("imports workspace files alongside plain projects and preserves file identity", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-file-" });
+    const baseDir = NodePath.join(root, "state");
+    const primary = NodePath.join(root, "app");
+    const secondary = NodePath.join(root, "shared");
+    const filePath = NodePath.join(root, "Team Space.CODE-WORKSPACE");
+    yield* fs.makeDirectory(primary);
+    yield* fs.makeDirectory(secondary);
+    yield* fs.writeFileString(
+      filePath,
+      '{ // JSONC\n "folders": [{"path":"app"}, {"path":"shared", "name":"Shared"}], }',
+    );
+    yield* runCli(["project", "add", filePath, "--base-dir", baseDir], workspaceFileEnvironment);
+    yield* runCli(["project", "add", primary, "--base-dir", baseDir]);
+    const snapshot = yield* readProjects(baseDir);
+    assert.equal(snapshot.projects.length, 2);
+    const linked = snapshot.projects.find((project) => project.workspaceFile != null)!;
+    assert.equal(linked.title, "Team Space");
+    assert.equal(linked.workspaceRoot, primary);
+    assert.deepEqual(
+      linked.folders?.map((folder) => folder.path),
+      [primary, secondary],
+    );
+    const duplicate = yield* runCli(
+      ["project", "add", filePath, "--base-dir", baseDir],
+      workspaceFileEnvironment,
+    ).pipe(Effect.flip);
+    assert.equal((duplicate as { conflictingProjectId?: string }).conflictingProjectId, linked.id);
+    yield* runCli(["project", "rename", primary, "Plain", "--base-dir", baseDir]);
+    assert.equal(
+      (yield* readProjects(baseDir)).projects.find((project) => project.id === linked.id)?.title,
+      "Team Space",
+    );
+    const plain = (yield* readProjects(baseDir)).projects.find(
+      (project) => project.workspaceFile == null,
+    )!;
+    const unlinkConflict = yield* runCli([
+      "project",
+      "unlink",
+      filePath,
+      "--base-dir",
+      baseDir,
+    ]).pipe(Effect.flip);
+    assert.equal(
+      (unlinkConflict as { conflictingProjectId?: string }).conflictingProjectId,
+      plain.id,
+    );
+    assert.equal(
+      (yield* readProjects(baseDir)).projects.find((project) => project.id === linked.id)
+        ?.workspaceFile,
+      filePath,
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("links, relinks, rereads and unlinks through the project mutation service", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-link-" });
+    const baseDir = NodePath.join(root, "state");
+    const primary = NodePath.join(root, "app");
+    yield* fs.makeDirectory(primary);
+    yield* runCli(["project", "add", primary, "--base-dir", baseDir]);
+    const id = (yield* readProjects(baseDir)).projects[0]!.id;
+    const first = NodePath.join(root, "first.code-workspace");
+    const second = NodePath.join(root, "second.code-workspace");
+    yield* fs.writeFileString(first, '{"folders":[{"path":"app"}]}');
+    yield* fs.writeFileString(second, '{"folders":[{"path":"app"},{"path":"other"}]}');
+    const disabledLink = yield* runCli(["project", "link", id, first, "--base-dir", baseDir]).pipe(
+      Effect.flip,
+    );
+    assert.equal((disabledLink as { _tag?: string })._tag, "WorkspaceFileProjectsDisabledError");
+    yield* runCli(["project", "link", id, first, "--base-dir", baseDir], workspaceFileEnvironment);
+    yield* runCli(
+      ["project", "link", first, second, "--base-dir", baseDir],
+      workspaceFileEnvironment,
+    );
+    yield* fs.writeFileString(second, '{"folders":[{"path":"app"},{"path":"shared"}]}');
+    yield* runCli(["project", "link", id, second, "--base-dir", baseDir], workspaceFileEnvironment);
+    assert.equal((yield* readProjects(baseDir)).projects[0]?.folders?.length, 2);
+    yield* fs.remove(second);
+    yield* runCli(["project", "unlink", second, "--base-dir", baseDir]);
+    const unlinked = (yield* readProjects(baseDir)).projects[0]!;
+    assert.isTrue(unlinked.workspaceFile == null);
+    assert.isUndefined(unlinked.folders);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keeps suffix-named directories plain and never creates missing file paths", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-file-errors-" });
+    const baseDir = NodePath.join(root, "state");
+    const directory = NodePath.join(root, "folder.code-workspace");
+    yield* fs.makeDirectory(directory);
+    yield* runCli(["project", "add", directory, "--base-dir", baseDir]);
+    assert.isTrue((yield* readProjects(baseDir)).projects[0]?.workspaceFile == null);
+    const missing = NodePath.join(root, "missing.code-workspace");
+    const disabled = yield* runCli(["project", "add", missing, "--base-dir", baseDir]).pipe(
+      Effect.flip,
+    );
+    assert.equal((disabled as { _tag?: string })._tag, "WorkspaceFileProjectsDisabledError");
+    const absent = yield* runCli(
+      ["project", "add", missing, "--base-dir", baseDir],
+      workspaceFileEnvironment,
+    ).pipe(Effect.flip);
+    assert.equal((absent as { diagnostic?: { code: string } }).diagnostic?.code, "file-not-found");
+    assert.isFalse(yield* fs.exists(missing));
+    const malformed = NodePath.join(root, "bad.code-workspace");
+    yield* fs.writeFileString(malformed, '{"folders":[');
+    const broken = yield* runCli(
+      ["project", "add", malformed, "--base-dir", baseDir],
+      workspaceFileEnvironment,
+    ).pipe(Effect.flip);
+    assert.equal((broken as { diagnostic?: { code: string } }).diagnostic?.code, "malformed-jsonc");
+    const emptyTitle = yield* runCli(
+      ["project", "add", malformed, "--title", "   ", "--base-dir", baseDir],
+      workspaceFileEnvironment,
+    ).pipe(Effect.flip);
+    assert.equal((emptyTitle as { _tag?: string })._tag, "ProjectTitleEmptyError");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it("preserves live workspace diagnostics and conflict identity", () => {
+  const diagnostic = {
+    code: "conflict" as const,
+    message: "Already linked",
+    path: "C:/Team Space/team.code-workspace",
+  };
+  const cause = new EnvironmentRequestInvalidError({
+    code: "invalid_request",
+    reason: "invalid_command",
+    traceId: "trace",
+    detail: diagnostic.message,
+    diagnostic,
+    conflictingProjectId: "existing" as ProjectId,
+  });
+  const error = projectCommandErrorFromLiveServerRequest(cause);
+  assert.instanceOf(error, ProjectLiveServerDeclaredResponseError);
+  assert.equal(error.message, diagnostic.message);
+  assert.deepEqual(error.diagnostic, diagnostic);
+  assert.equal(error.conflictingProjectId, cause.conflictingProjectId);
+});
 
 it("maps declared server failures into structural project command errors", () => {
   const cause = new EnvironmentInternalError({
