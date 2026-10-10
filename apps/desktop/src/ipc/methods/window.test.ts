@@ -411,6 +411,19 @@ describe("pickWorkspaceFile", () => {
     }),
   );
 
+  it.effect("keeps the folder picker's host fallback for non-local target ids", () =>
+    Effect.gen(function* () {
+      showOpenDialog.mockResolvedValue({ canceled: false, filePaths: ["C:\\workspaces\\project"] });
+      assert.strictEqual(
+        yield* pickFolder.handler({ targetEnvironmentId: "remote:server" }),
+        "C:\\workspaces\\project",
+      );
+      assert.deepEqual(showOpenDialog.mock.calls, [
+        [owner, { properties: ["openDirectory", "createDirectory"] }],
+      ]);
+    }).pipe(Effect.provide(pickerLayer())),
+  );
+
   it.effect("keeps folder selection and its WSL mapping unchanged", () =>
     Effect.gen(function* () {
       showOpenDialog.mockResolvedValue({
