@@ -351,7 +351,7 @@ describe("workspace-file project grouping", () => {
         workspaceFile: "/work/t3.code-workspace",
         repositoryIdentity: { ...repositoryIdentity, rootPath: "/work/t3code" },
       });
-      const remote = makeProject("remote", "C:/src/t3code/packages/shared", {
+      const remote = makeProject("remote", "C:/src/t3code/apps/web", {
         environmentId: remoteEnvironmentId,
         workspaceFile: "C:\\workspaces\\t3.code-workspace",
         repositoryIdentity: { ...repositoryIdentity, rootPath: "C:/src/t3code" },
@@ -367,6 +367,32 @@ describe("workspace-file project grouping", () => {
       expect(groups[0]?.representative).toBe(remote);
     },
   );
+
+  it("retains repository-relative primary paths when grouping linked projects by repository and path", () => {
+    const linked = makeProject("linked", "/work/t3code/apps/web", {
+      workspaceFile: "/work/t3.code-workspace",
+      repositoryIdentity: { ...repositoryIdentity, rootPath: "/work/t3code" },
+    });
+    const remote = makeProject("remote", "C:/src/t3code/packages/shared", {
+      environmentId: remoteEnvironmentId,
+      workspaceFile: "C:/src/t3.code-workspace",
+      repositoryIdentity: { ...repositoryIdentity, rootPath: "C:/src/t3code" },
+    });
+    const projects = [linked, remote];
+    expect(buildProjectGroups({ projects, settings: settings("repository") })).toHaveLength(1);
+    expect(buildProjectGroups({ projects, settings: settings("repository_path") })).toHaveLength(2);
+  });
+
+  it("preserves physical clones of matching linked projects in the same environment", () => {
+    const projects = [
+      makeProject("first", "/work/t3code", { workspaceFile: "/work/t3.code-workspace" }),
+      makeProject("second", "/other/t3code", { workspaceFile: "/other/t3.code-workspace" }),
+    ];
+    const groups = buildProjectGroups({ projects, settings: settings("repository") });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.members.map((member) => member.project.id)).toEqual(["first", "second"]);
+    expect(groups[0]?.memberProjectRefs).toHaveLength(2);
+  });
 
   it.each(["repository", "repository_path"] as const)(
     "keeps different file names, primary identities, and plain projects separate in %s mode",

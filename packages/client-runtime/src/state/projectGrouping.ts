@@ -137,14 +137,14 @@ export function deriveLogicalProjectKey(
   }
 
   if (project.workspaceFile) {
-    const canonicalKey = project.repositoryIdentity?.canonicalKey;
-    if (!canonicalKey) {
+    const repositoryKey = deriveRepositoryScopedKey(project, groupingMode);
+    if (!repositoryKey) {
       return derivePhysicalProjectKey(project);
     }
-    // Match the file name across server path styles; only the primary repository
-    // identity participates, even when plain projects group by repository path.
+    // Match workspace-file names across server path styles while retaining the
+    // selected grouping mode for the primary repository.
     const workspaceFileName = getBrowseLeafPathSegment(project.workspaceFile);
-    return `workspace-file:${JSON.stringify([canonicalKey, workspaceFileName])}`;
+    return `workspace-file:${JSON.stringify([repositoryKey, workspaceFileName])}`;
   }
 
   return (
