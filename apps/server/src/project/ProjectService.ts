@@ -80,11 +80,16 @@ export interface ProjectUnlinkWorkspaceFileInput {
 }
 
 /**
- * Why a workspace file is read again: a project's first activation after
- * server start, import or relink (`load`), an explicit Refresh, a change its
- * watch saw, or a new thread binding its folders.
+ * Why a workspace file is read again from outside: a project's first activation
+ * after server start (`load`), or an explicit Refresh.
  */
-export type WorkspaceFileRefreshReason = "load" | "refresh" | "watch" | "bind";
+export type WorkspaceFileRefreshReason = "load" | "refresh";
+
+/**
+ * Every reason a workspace file is read: a public one, a change its watch saw,
+ * a new thread binding its folders, or the read that follows an import or link.
+ */
+type WorkspaceFileSyncReason = WorkspaceFileRefreshReason | "watch" | "bind" | "linked";
 
 export interface ProjectRefreshWorkspaceFileInput {
   readonly projectId: ProjectId;
@@ -285,8 +290,10 @@ export const make = Effect.gen(function* () {
   const workspaceLocks = yield* makeKeyedSerialExecutor<string>();
   const workspaceFileLocks = yield* makeKeyedSerialExecutor<string>();
   // Reading a linked project's workspace file and acting on it runs in order
-  // per project, with link, relink and unlink too, so an older read never
-  // lands after a newer one or after the link changed.
+  // per project, with link, relink, unlink and new bindings too, so an older
+  // read never lands after a newer one or after the link changed. It is the
+  // outermost lock: under it a command takes the project, root, file and
+  // thread locks, so nothing may wait for it while holding one of those.
   const workspaceFileSyncLocks = yield* makeKeyedSerialExecutor<ProjectId>();
 
   const toProject = (
@@ -646,19 +653,28 @@ export const make = Effect.gen(function* () {
     primary?.name.trim() ||
     "Project";
 
-  /** Whether two folder lists define the same workspace, entry for entry. */
+  /**
+   * Whether two folder lists define the same workspace, entry for entry. Paths
+   * compare as the host compares them, so a case-only respelling on Windows is
+   * no change.
+   */
   const sameFolders = (
     left: ReadonlyArray<WorkspaceFolderEntry>,
     right: ReadonlyArray<WorkspaceFolderEntry> | null,
   ) =>
     right !== null &&
     left.length === right.length &&
-    left.every(
-      (folder, index) =>
-        folder.path === right[index]?.path &&
-        folder.uri === right[index]?.uri &&
-        folder.name === right[index]?.name,
-    );
+    left.every((folder, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        (folder.path === undefined || other.path === undefined
+          ? folder.path === other.path
+          : isSamePath(folder.path, other.path)) &&
+        folder.uri === other.uri &&
+        folder.name === other.name
+      );
+    });
 
   /**
    * A workspace file's folders for a project at `workspaceRoot`. A primary
@@ -693,7 +709,7 @@ export const make = Effect.gen(function* () {
         };
 
   /** Watch a project's workspace file, reading it again after each change. */
-  const watchWorkspaceFile = (projectId: ProjectId, filePath: string) =>
+  const watchWorkspaceFile = (projectId: ProjectId, filePath: string): Effect.Effect<boolean> =>
     workspaceFiles.watch(
       projectId,
       filePath,
@@ -723,30 +739,30 @@ export const make = Effect.gen(function* () {
    */
   const syncWorkspaceFile = Effect.fn("ProjectService.syncWorkspaceFile")(function* (
     projectId: ProjectId,
-    reason: WorkspaceFileRefreshReason,
+    reason: WorkspaceFileSyncReason,
   ) {
     const existing = yield* readRow(projectId);
     if (Option.isNone(existing)) return yield* new ProjectNotFoundError({ projectId });
     const row = existing.value;
     if (row.workspaceFile === null) return undefined;
-    // A watch that failed or stopped is tried again on every read but its own.
-    if (reason !== "watch" && !(yield* workspaceFiles.isWatching(projectId))) {
+    // Refresh always starts the watch afresh, since one can stop without a
+    // sign. Load and bind start one that failed or stopped. The watch's own
+    // read never does, and import and link have just started theirs.
+    if (
+      reason === "refresh" ||
+      ((reason === "load" || reason === "bind") &&
+        !(yield* workspaceFiles.isWatching(projectId, row.workspaceFile)))
+    ) {
       yield* watchWorkspaceFile(projectId, row.workspaceFile);
     }
     const read = yield* Effect.result(workspaceFiles.read(row.workspaceFile));
-    const liveDetection = yield* workspaceFiles.isWatching(projectId);
-    if (Result.isFailure(read)) {
-      const { diagnostic } = read.failure;
-      yield* projectEnrichment.setWorkspaceFileStatus(
-        projectId,
-        workspaceFileStatus(diagnostic, liveDetection),
-      );
-      return diagnostic;
-    }
-    const folders = withProjectPrimary(read.success.folders, row.workspaceRoot);
-    // The parser rejects a file whose first folder isn't a local path.
-    const workspaceRoot = folders[0]!.path!;
-    if (!sameFolders(folders, row.folders)) {
+    const liveDetection = yield* workspaceFiles.isWatching(projectId, row.workspaceFile);
+    const folders = Result.isSuccess(read)
+      ? withProjectPrimary(read.success.folders, row.workspaceRoot)
+      : (row.folders ?? []);
+    if (Result.isSuccess(read) && !sameFolders(folders, row.folders)) {
+      // The parser rejects a file whose first folder isn't a local path.
+      const workspaceRoot = folders[0]!.path!;
       const commandId = yield* idAllocator.allocate
         .command({ fixtureName: "workspace-file", commandName: reason })
         .pipe(
@@ -780,17 +796,19 @@ export const make = Effect.gen(function* () {
         yield* projectEnrichment.invalidate([row.workspaceRoot, workspaceRoot]);
       }
     }
-    // Load and Refresh probe the folders as well, so their facts catch up.
+    // Load and Refresh probe the folders as well, so their facts catch up,
+    // even while the file keeps the project at its last folders.
     if (reason === "load" || reason === "refresh") {
       yield* projectEnrichment.probeFolders(
         folders.flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
       );
     }
+    const diagnostic = Result.isFailure(read) ? read.failure.diagnostic : undefined;
     yield* projectEnrichment.setWorkspaceFileStatus(
       projectId,
-      workspaceFileStatus(undefined, liveDetection),
+      workspaceFileStatus(diagnostic, liveDetection),
     );
-    return undefined;
+    return diagnostic;
   });
 
   const refreshWorkspaceFile: ProjectService["Service"]["refreshWorkspaceFile"] = Effect.fn(
@@ -844,11 +862,13 @@ export const make = Effect.gen(function* () {
       folders: definition.folders,
     });
     yield* projectEnrichment.invalidate([definition.workspaceRoot]);
-    // Loading starts the watch, then reads again so a change made since the
-    // first read isn't missed.
+    // The file is watched from now on, and read again so a change made since
+    // the first read isn't missed.
     yield* workspaceFileSyncLocks.withLock(
       input.projectId,
-      syncWorkspaceFile(input.projectId, "load"),
+      watchWorkspaceFile(input.projectId, definition.filePath).pipe(
+        Effect.andThen(syncWorkspaceFile(input.projectId, "linked")),
+      ),
     );
     return yield* readCommitted(input.projectId);
   });
@@ -923,9 +943,9 @@ export const make = Effect.gen(function* () {
             primaryName: folders[0]!.name,
           });
         }
-        // The new file replaces any old one's watch, then loads like an import.
+        // The new file replaces any old one's watch, and is read again like an import's.
         yield* watchWorkspaceFile(input.projectId, definition.filePath);
-        yield* syncWorkspaceFile(input.projectId, "load");
+        yield* syncWorkspaceFile(input.projectId, "linked");
         return yield* readCommitted(input.projectId);
       }),
     );
@@ -986,33 +1006,36 @@ export const make = Effect.gen(function* () {
     const existing = yield* readRow(projectId);
     if (Option.isNone(existing)) return yield* new ProjectNotFoundError({ projectId });
     if (existing.value.workspaceFile === null) return undefined;
-    // A new thread binds what its file says now, and none while it can't be used.
-    if (config.workspaceFileProjects === true) {
-      const diagnostic = yield* workspaceFileSyncLocks.withLock(
-        projectId,
-        syncWorkspaceFile(projectId, "bind"),
-      );
-      if (diagnostic !== undefined) {
-        return yield* new WorkspaceFileUnavailableError({ projectId, diagnostic });
-      }
-    }
-    const current = yield* readRow(projectId);
-    if (Option.isNone(current)) return yield* new ProjectNotFoundError({ projectId });
-    const row = current.value;
-    if (row.workspaceFile === null || row.folders === null) return undefined;
-    const folders = allocateFolderLabels(row.folders);
-    const probes = yield* projectEnrichment.probeFolders(
-      folders.flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
+    // A new thread binds what its file says now, and none while it can't be
+    // used. One lock covers the read and the folders it leaves.
+    return yield* workspaceFileSyncLocks.withLock(
+      projectId,
+      Effect.gen(function* () {
+        if (config.workspaceFileProjects === true) {
+          const diagnostic = yield* syncWorkspaceFile(projectId, "bind");
+          if (diagnostic !== undefined) {
+            return yield* new WorkspaceFileUnavailableError({ projectId, diagnostic });
+          }
+        }
+        const current = yield* readRow(projectId);
+        if (Option.isNone(current)) return yield* new ProjectNotFoundError({ projectId });
+        const row = current.value;
+        if (row.workspaceFile === null || row.folders === null) return undefined;
+        const folders = allocateFolderLabels(row.folders);
+        const probes = yield* projectEnrichment.probeFolders(
+          folders.flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
+        );
+        const probeOf = (folder: WorkspaceFolderEntry) =>
+          probes.find((probe) => probe.path === folder.path);
+        if (probeOf(folders[0]!)?.availability !== "available") {
+          return yield* new WorkspacePrimaryFolderUnavailableError({
+            projectId,
+            folderPath: row.workspaceRoot,
+          });
+        }
+        return folders.map((folder) => snapshotFolder(folder, probeOf(folder)));
+      }),
     );
-    const probeOf = (folder: WorkspaceFolderEntry) =>
-      probes.find((probe) => probe.path === folder.path);
-    if (probeOf(folders[0]!)?.availability !== "available") {
-      return yield* new WorkspacePrimaryFolderUnavailableError({
-        projectId,
-        folderPath: row.workspaceRoot,
-      });
-    }
-    return folders.map((folder) => snapshotFolder(folder, probeOf(folder)));
   });
 
   /**
@@ -1245,9 +1268,17 @@ export const make = Effect.gen(function* () {
         yield* deleteChildThreads(input);
       }
       yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
-      if (existing.value.workspaceFile !== null) {
-        yield* workspaceFileSyncLocks.withLock(projectId, forgetWorkspaceFile(projectId));
-      }
+      // Read again under the sync lock: a link may have landed since the first read.
+      yield* workspaceFileSyncLocks.withLock(
+        projectId,
+        readRow(projectId, { includeDeleted: true }).pipe(
+          Effect.flatMap((row) =>
+            Option.isSome(row) && row.value.workspaceFile !== null
+              ? forgetWorkspaceFile(projectId)
+              : Effect.void,
+          ),
+        ),
+      );
       yield* projectEnrichment.invalidate([existing.value.workspaceRoot]);
       return yield* readCommitted(projectId);
     },

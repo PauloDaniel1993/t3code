@@ -72,13 +72,14 @@ export class WorkspaceFiles extends Context.Service<
       onHint: Effect.Effect<void>,
     ) => Effect.Effect<boolean>;
     readonly unwatch: (projectId: ProjectId) => Effect.Effect<void>;
-    /** Whether the project's workspace file is watched and the watch still works. */
-    readonly isWatching: (projectId: ProjectId) => Effect.Effect<boolean>;
+    /** Whether the project's watch is on this file and still works. */
+    readonly isWatching: (projectId: ProjectId, filePath: string) => Effect.Effect<boolean>;
   }
 >()("t3/project/WorkspaceFiles") {}
 
 interface ProjectWatch {
   readonly scope: Scope.Closeable;
+  readonly filePath: string;
   /** Completes when the watch stops working. */
   readonly closed: Deferred.Deferred<void>;
 }
@@ -138,60 +139,84 @@ export const make = Effect.gen(function* () {
     });
 
   // The parent directory is watched, without recursion, so a file replaced by
-  // a save or recreated after a delete is still seen.
+  // a save or recreated after a delete is still seen. Registration can't be
+  // interrupted halfway, so no watch outlives its place in `watches`.
   const watch: WorkspaceFiles["Service"]["watch"] = (projectId, filePath, onHint) =>
     watchLock.withPermit(
-      Effect.gen(function* () {
-        yield* closeWatch(projectId);
-        const scope = yield* Scope.fork(layerScope, "sequential");
-        const name = path.basename(filePath);
-        const isFile =
-          platform === "win32"
-            ? (changed: string) => changed.toLowerCase() === name.toLowerCase()
-            : (changed: string) => changed === name;
-        // One slot, full once the file changed since the last hint.
-        const changed = yield* Queue.dropping<void>(1);
-        const watched = yield* watchDirectory(path.dirname(filePath), false, (_event, entry) => {
-          if (isFile(entry)) Queue.offerUnsafe(changed, undefined);
-        }).pipe(Scope.provide(scope), Effect.result);
-        if (Result.isFailure(watched)) {
-          yield* Scope.close(scope, Exit.void);
-          yield* Effect.logWarning("Can't watch a workspace file; changes apply on Refresh", {
-            projectId,
-            filePath,
-            code: watched.failure.code,
-          });
-          return false;
-        }
-        yield* Effect.forever(
-          Queue.take(changed).pipe(
-            Effect.andThen(Effect.sleep(WATCH_DEBOUNCE)),
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          yield* closeWatch(projectId);
+          const scope = yield* Scope.fork(layerScope, "sequential");
+          const directory = path.dirname(filePath);
+          // Case-insensitive everywhere: a stray match costs one small read,
+          // a missed one on a case-insensitive disk costs every change.
+          const name = path.basename(filePath).toLowerCase();
+          // One slot, full once the file changed since the last hint.
+          const changed = yield* Queue.dropping<void>(1);
+          const noteChange = () => {
+            Queue.offerUnsafe(changed, undefined);
+          };
+          const watched = yield* watchDirectory(
+            directory,
+            false,
+            (_event, entry) => {
+              if (entry.toLowerCase() === name) noteChange();
+            },
+            noteChange,
+          ).pipe(Scope.provide(scope), Effect.result);
+          if (Result.isFailure(watched)) {
+            yield* Scope.close(scope, Exit.void);
+            yield* Effect.logWarning("Can't watch a workspace file; changes apply on Refresh", {
+              projectId,
+              filePath,
+              code: watched.failure.code,
+            });
+            return false;
+          }
+          const closed = watched.success;
+          // Waits until changes stop for the debounce, so one save is one read.
+          const settle: Effect.Effect<void> = Effect.sleep(WATCH_DEBOUNCE).pipe(
             Effect.andThen(Queue.clear(changed)),
-            Effect.andThen(onHint),
-            Effect.catchCauseIf(
-              (cause) => !Cause.hasInterrupts(cause),
-              (cause) =>
-                Effect.logWarning("Workspace file change failed to apply", { projectId, cause }),
+            Effect.flatMap((seen) => (seen.length > 0 ? settle : Effect.void)),
+          );
+          // Some platforms report nothing more once the directory is gone, so a
+          // watch whose directory went away counts as stopped.
+          const checkDirectory = fileSystem.exists(directory).pipe(
+            Effect.orElseSucceed(() => false),
+            Effect.flatMap((exists) =>
+              exists ? Effect.void : Deferred.succeed(closed, undefined),
             ),
-          ),
-        ).pipe(Effect.forkIn(scope));
-        // A watch that stops, as when its directory goes away, hints once more.
-        yield* Deferred.await(watched.success).pipe(
-          Effect.andThen(Queue.offer(changed, undefined)),
-          Effect.forkIn(scope),
-        );
-        watches.set(projectId, { scope, closed: watched.success });
-        return true;
-      }),
+          );
+          yield* Effect.forever(
+            Queue.take(changed).pipe(
+              Effect.andThen(settle),
+              Effect.andThen(checkDirectory),
+              Effect.andThen(onHint),
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterrupts(cause),
+                (cause) =>
+                  Effect.logWarning("Workspace file change failed to apply", { projectId, cause }),
+              ),
+            ),
+          ).pipe(Effect.forkIn(scope));
+          // A watch that stops hints once more, so its file's state is read.
+          yield* Deferred.await(closed).pipe(
+            Effect.andThen(Queue.offer(changed, undefined)),
+            Effect.forkIn(scope),
+          );
+          watches.set(projectId, { scope, filePath, closed });
+          return true;
+        }),
+      ),
     );
 
   const unwatch: WorkspaceFiles["Service"]["unwatch"] = (projectId) =>
     watchLock.withPermit(closeWatch(projectId));
 
-  const isWatching: WorkspaceFiles["Service"]["isWatching"] = (projectId) =>
+  const isWatching: WorkspaceFiles["Service"]["isWatching"] = (projectId, filePath) =>
     Effect.suspend(() => {
       const existing = watches.get(projectId);
-      return existing === undefined
+      return existing === undefined || existing.filePath !== filePath
         ? Effect.succeed(false)
         : Deferred.isDone(existing.closed).pipe(Effect.map((closed) => !closed));
     });

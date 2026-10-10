@@ -61,25 +61,53 @@ it.layer(TestLayer)("WorkspaceFiles", (it) => {
 });
 
 it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFiles watching", (it) => {
-  it.effect("hints after its file changes, until unwatched", () =>
+  it.effect("hints after its file changes, in any letter case", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const files = yield* WorkspaceFiles.WorkspaceFiles;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-file-watch-" });
-      const filePath = path.join(root, "team.code-workspace");
-      yield* fs.writeFileString(filePath, `{ "folders": [{ "path": "app" }] }`);
+      yield* fs.writeFileString(path.join(root, "team.code-workspace"), `{ "folders": [] }`);
+      // Linked under another spelling of its name, as a case-insensitive disk allows.
+      const filePath = path.join(root, "Team.code-workspace");
       const projectId = ProjectId.make("project:watched");
       const hints = yield* Queue.unbounded<void>();
 
       assert.isTrue(yield* files.watch(projectId, filePath, Queue.offer(hints, undefined)));
-      assert.isTrue(yield* files.isWatching(projectId));
-      yield* fs.writeFileString(path.join(root, "other.txt"), "unrelated");
-      yield* fs.writeFileString(filePath, `{ "folders": [{ "path": "lib" }] }`);
+      assert.isTrue(yield* files.isWatching(projectId, filePath));
+      assert.isFalse(yield* files.isWatching(projectId, path.join(root, "other.code-workspace")));
+      yield* fs.writeFileString(
+        path.join(root, "team.code-workspace"),
+        `{ "folders": [{ "path": "lib" }] }`,
+      );
       yield* Queue.take(hints);
 
       yield* files.unwatch(projectId);
-      assert.isFalse(yield* files.isWatching(projectId));
+      assert.isFalse(yield* files.isWatching(projectId, filePath));
+    }),
+  );
+
+  it.effect("stops, hinting once more, when its directory goes away", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const files = yield* WorkspaceFiles.WorkspaceFiles;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-file-gone-" });
+      const directory = path.join(root, ".vscode");
+      yield* fs.makeDirectory(directory);
+      const filePath = path.join(directory, "team.code-workspace");
+      yield* fs.writeFileString(filePath, `{ "folders": [{ "path": ".." }] }`);
+      const projectId = ProjectId.make("project:directory-gone");
+      const hints = yield* Queue.unbounded<void>();
+      assert.isTrue(yield* files.watch(projectId, filePath, Queue.offer(hints, undefined)));
+
+      yield* fs.remove(directory, { recursive: true });
+      // Each hint is a chance to read; the watch reports itself stopped by one of them.
+      yield* Queue.take(hints).pipe(
+        Effect.andThen(files.isWatching(projectId, filePath)),
+        Effect.repeat({ until: (watching) => !watching }),
+      );
+      yield* files.unwatch(projectId);
     }),
   );
 
@@ -90,11 +118,10 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFiles watching", (i
       const files = yield* WorkspaceFiles.WorkspaceFiles;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-file-unwatched-" });
       const projectId = ProjectId.make("project:unwatched");
+      const filePath = path.join(root, "gone", "team.code-workspace");
 
-      assert.isFalse(
-        yield* files.watch(projectId, path.join(root, "gone", "team.code-workspace"), Effect.void),
-      );
-      assert.isFalse(yield* files.isWatching(projectId));
+      assert.isFalse(yield* files.watch(projectId, filePath, Effect.void));
+      assert.isFalse(yield* files.isWatching(projectId, filePath));
     }),
   );
 });

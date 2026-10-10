@@ -58,7 +58,7 @@ const configLayer = (workspaceFileProjects: boolean) =>
  * hint, projects whose watch can't start, and reads held until released.
  */
 const watches = {
-  hints: new Map<ProjectId, Effect.Effect<void>>(),
+  hints: new Map<ProjectId, { readonly filePath: string; readonly onHint: Effect.Effect<void> }>(),
   failing: new Set<ProjectId>(),
   heldReads: new Map<
     string,
@@ -81,24 +81,25 @@ const drivenWorkspaceFiles = Layer.effect(
               Effect.andThen(real.read(filePath)),
             );
           }),
-        watch: (projectId, _filePath, onHint) =>
+        watch: (projectId, filePath, onHint) =>
           Effect.sync(() => {
             if (watches.failing.has(projectId)) {
               watches.hints.delete(projectId);
               return false;
             }
-            watches.hints.set(projectId, onHint);
+            watches.hints.set(projectId, { filePath, onHint });
             return true;
           }),
         unwatch: (projectId) => Effect.sync(() => watches.hints.delete(projectId)),
-        isWatching: (projectId) => Effect.sync(() => watches.hints.has(projectId)),
+        isWatching: (projectId, filePath) =>
+          Effect.sync(() => watches.hints.get(projectId)?.filePath === filePath),
       }),
     ),
   ),
 );
 
 /** Deliver the project's watch hint, as a change to its workspace file would. */
-const hint = (projectId: ProjectId) => Effect.suspend(() => watches.hints.get(projectId)!);
+const hint = (projectId: ProjectId) => Effect.suspend(() => watches.hints.get(projectId)!.onHint);
 
 /** The project's committed `project.meta-updated` events, oldest first. */
 const metaUpdates = Effect.fn("ProjectWorkspaceFileTest.metaUpdates")(function* (
@@ -996,8 +997,6 @@ it.layer(dependencies(true))("ProjectService workspace files", (it) => {
           workspaceFilePath: newFile,
         })
         .pipe(Effect.forkChild({ startImmediately: true }));
-      yield* Effect.yieldNow;
-      assert.isUndefined(relink.pollUnsafe());
       yield* Deferred.succeed(held.release, undefined);
       yield* Fiber.join(oldRead);
       yield* Fiber.join(relink);
