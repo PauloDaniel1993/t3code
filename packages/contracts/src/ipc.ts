@@ -1200,6 +1200,8 @@ export interface DesktopBridge {
   setWslOnly: (enabled: boolean) => Promise<DesktopWslState>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   /** Optional while older desktop shells can host a newer web client. */
+  pickWorkspaceFile?: (options?: PickFolderOptions) => Promise<string | null>;
+  /** Optional while older desktop shells can host a newer web client. */
   pickProjectFavicon?: (initialPath?: string) => Promise<string | null>;
   /**
    * Multi-select JSON file picker that opens in the VS Code extensions
@@ -1370,6 +1372,7 @@ export interface ConfirmDialogOptions {
 export interface LocalApi {
   dialogs: {
     pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
+    pickWorkspaceFile: (options?: PickFolderOptions) => Promise<string | null>;
     confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>;
   };
   shell: {

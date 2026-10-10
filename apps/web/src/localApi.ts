@@ -13,6 +13,10 @@ function createBrowserLocalApi(): LocalApi {
         if (!window.desktopBridge) return null;
         return window.desktopBridge.pickFolder(options);
       },
+      pickWorkspaceFile: async (options) => {
+        if (!window.desktopBridge?.pickWorkspaceFile) return null;
+        return window.desktopBridge.pickWorkspaceFile(options);
+      },
       confirm: async (message, options?: ConfirmDialogOptions) => {
         return requestConfirmDialog(message, options) ?? false;
       },
