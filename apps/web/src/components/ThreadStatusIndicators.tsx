@@ -3,6 +3,7 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 
 import { pullRequestDetailToVcsStatus } from "@t3tools/client-runtime/state/pull-requests";
@@ -894,8 +895,7 @@ export function ThreadRowLeadingStatus({
       [thread.environmentId, thread.projectId],
     ),
   );
-  const threadProjectCwd = threadProject?.workspaceRoot ?? null;
-  const gitCwd = thread.worktreePath ?? threadProjectCwd;
+  const gitCwd = threadPrimaryPath(thread, threadProject);
   const linkedPullRequest = useLinkedThreadPullRequest(
     thread.environmentId,
     thread.linkedPullRequest,

@@ -8,6 +8,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import { threadPrimaryPath, type WorkspaceProject } from "@t3tools/shared/workspaceFolders";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
@@ -64,11 +65,11 @@ function failureToast(title: string, error: unknown) {
  */
 export function useThreadActionMenu(input: {
   readonly threadRef: ScopedThreadRef | null;
-  /** Fallback for "Copy path" when the thread has no worktree. */
-  readonly projectCwd: string | null;
+  /** The thread's project, for "Copy path" when the thread has no worktree. */
+  readonly project: WorkspaceProject | null;
   readonly onStartRename: () => void;
 }) {
-  const { threadRef, projectCwd, onStartRename } = input;
+  const { threadRef, project, onStartRename } = input;
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -249,7 +250,7 @@ export function useThreadActionMenu(input: {
             markThreadUnread(threadRef);
             return;
           case "copy-path": {
-            const workspacePath = thread.worktreePath ?? projectCwd;
+            const workspacePath = threadPrimaryPath(thread, project);
             if (!workspacePath) {
               toastManager.add(
                 stackedThreadToast({
@@ -337,7 +338,7 @@ export function useThreadActionMenu(input: {
       markThreadUnread,
       onStartRename,
       pinThread,
-      projectCwd,
+      project,
       projectGroupingSettings,
       projects,
       router,

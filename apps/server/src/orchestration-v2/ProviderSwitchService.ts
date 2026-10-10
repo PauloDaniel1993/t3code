@@ -6,6 +6,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -142,7 +143,7 @@ export const layer: Layer.Layer<
                           interactionMode: projection.thread.interactionMode,
                           workspace:
                             currentSession?.cwd ??
-                            projection.thread.worktreePath ??
+                            threadPrimaryPath(projection.thread, null) ??
                             "<unresolved-workspace>",
                           capabilities:
                             negotiatedCapabilities ?? currentInstance.value.capabilities,
@@ -157,7 +158,7 @@ export const layer: Layer.Layer<
                     runtimeMode: projection.thread.runtimeMode,
                     interactionMode: projection.thread.interactionMode,
                     workspace:
-                      projection.thread.worktreePath ??
+                      threadPrimaryPath(projection.thread, null) ??
                       currentSession?.cwd ??
                       "<unresolved-workspace>",
                     capabilities: targetInstance.value.capabilities,

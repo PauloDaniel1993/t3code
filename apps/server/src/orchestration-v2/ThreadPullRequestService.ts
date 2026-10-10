@@ -11,6 +11,7 @@ import {
   type ThreadLinkedPullRequest,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -191,11 +192,11 @@ export const make = Effect.gen(function* () {
               refresh: request.refresh,
             });
           if (first.branch !== null && repository === null) return finishBackfill(group);
-          const worktreeExists =
-            first.worktreePath !== null && (yield* fileSystem.exists(first.worktreePath));
+          // A removed worktree falls back to the project's checkout.
+          const primaryPath = threadPrimaryPath(first, project);
           const cwd =
-            worktreeExists && first.worktreePath !== null
-              ? first.worktreePath
+            first.worktreePath === null || (yield* fileSystem.exists(primaryPath))
+              ? primaryPath
               : project.workspaceRoot;
           const detected =
             first.branch === null

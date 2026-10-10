@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 
 import { useSelectedThreadWorktreePath } from "./use-thread-detail";
 import { useThreadSelection } from "./use-thread-selection";
@@ -19,6 +20,9 @@ export function useSelectedThreadWorktree() {
 
   return {
     selectedThreadWorktreePath,
-    selectedThreadCwd: selectedThreadWorktreePath ?? selectedThreadProject?.workspaceRoot ?? null,
+    selectedThreadCwd: threadPrimaryPath(
+      { worktreePath: selectedThreadWorktreePath },
+      selectedThreadProject,
+    ),
   };
 }

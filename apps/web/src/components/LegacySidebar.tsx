@@ -1,5 +1,6 @@
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import { Spinner } from "~/components/ui/spinner";
 import {
   ArchiveIcon,
@@ -2249,7 +2250,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
       const threadWorkspacePath =
-        thread.worktreePath ?? threadProject?.workspaceRoot ?? project.workspaceRoot ?? null;
+        threadPrimaryPath(thread, threadProject) ?? project.workspaceRoot ?? null;
       const clicked = await api.contextMenu.show(
         [
           ...(thread.branch

@@ -29,6 +29,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { buildTemporaryWorktreeBranchName, isTemporaryWorktreeBranch } from "@t3tools/shared/git";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -410,7 +411,7 @@ const make = Effect.gen(function* () {
         );
       }
 
-      const cwd = worktreePath ?? project.workspaceRoot;
+      const cwd = threadPrimaryPath({ worktreePath }, project);
       if (runId !== null) {
         yield* threads
           .dispatch({

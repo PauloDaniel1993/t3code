@@ -1,4 +1,5 @@
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import {
   CommandId,
   type ChatAttachment,
@@ -108,7 +109,7 @@ const make = Effect.gen(function* () {
         projection.thread.projectId,
       ).settings;
       const result = yield* textGeneration.generateThreadTitle({
-        cwd: projection.thread.worktreePath ?? project.value.workspaceRoot,
+        cwd: threadPrimaryPath(projection.thread, project.value),
         message: context.message,
         attachments: context.attachments,
         ...(input.kind.type === "regenerate" ? { previousTitle: projection.thread.title } : {}),

@@ -30,6 +30,7 @@ function makeThread(input: {
   readonly now: DateTime.Utc;
   readonly worktreePath: string | null;
   readonly runtimeMode?: RuntimeMode;
+  readonly workspaceFolders?: OrchestrationV2AppThread["workspaceFolders"];
 }): OrchestrationV2AppThread {
   const threadId = ThreadId.make("thread:runtime-policy");
   return {
@@ -44,6 +45,7 @@ function makeThread(input: {
     interactionMode: "default",
     branch: null,
     worktreePath: input.worktreePath,
+    ...(input.workspaceFolders === undefined ? {} : { workspaceFolders: input.workspaceFolders }),
     activeProviderThreadId: null,
     lineage: {
       parentThreadId: null,
@@ -133,6 +135,26 @@ it.layer(TestLayer)("RuntimePolicyV2", (it) => {
         modelSelection,
       });
       assert.equal(resolved.cwd, "/project-worktree");
+    }),
+  );
+
+  it.effect("keeps a thread with a folder snapshot in its own primary folder", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      // The project's primary has since moved to /project-root.
+      const resolved = yield* policy.resolve({
+        thread: makeThread({
+          now,
+          worktreePath: null,
+          workspaceFolders: [
+            { path: "/bound-primary", name: "app", label: "app", checkoutRoot: null },
+            { path: "/bound-docs", name: "docs", label: "docs", checkoutRoot: null },
+          ],
+        }),
+        modelSelection,
+      });
+      assert.equal(resolved.cwd, "/bound-primary");
     }),
   );
 

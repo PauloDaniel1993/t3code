@@ -1,5 +1,6 @@
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import {
   CommandId,
   type ThreadId,
@@ -335,15 +336,12 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const project = projects.get(thread.projectId);
           if (project === undefined || thread.branch === null) return;
+          // A removed worktree falls back to the project's checkout.
+          const primaryPath = threadPrimaryPath(thread, project);
           const worktreeExists =
-            thread.worktreePath !== null &&
-            (yield* fileSystem.exists(thread.worktreePath).pipe(Effect.orElseSucceed(() => false)));
-          lookupCwdByThreadId.set(
-            thread.id,
-            worktreeExists && thread.worktreePath !== null
-              ? thread.worktreePath
-              : project.workspaceRoot,
-          );
+            thread.worktreePath === null ||
+            (yield* fileSystem.exists(primaryPath).pipe(Effect.orElseSucceed(() => false)));
+          lookupCwdByThreadId.set(thread.id, worktreeExists ? primaryPath : project.workspaceRoot);
         }),
       { concurrency: 8, discard: true },
     );

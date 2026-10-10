@@ -11,6 +11,7 @@ import { releaseComposerDraftUploads } from "../lib/composerDraftUploads";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
+import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import { useAtomValue } from "@effect/atom-react";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import * as Schema from "effect/Schema";
@@ -1239,7 +1240,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     [clearComposerContent, threadRef],
   );
 
-  const gitCwd = thread.worktreePath ?? props.project?.workspaceRoot ?? null;
+  const gitCwd = threadPrimaryPath(thread, props.project);
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
     thread.environmentId,
     thread.linkedPullRequest,
@@ -2221,7 +2222,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
   );
   // Same details tooltip as the regular rows: a search hit is still a thread,
   // and the hover card is how you disambiguate identically-titled results.
-  const gitCwd = thread.worktreePath ?? props.project?.workspaceRoot ?? null;
+  const gitCwd = threadPrimaryPath(thread, props.project);
   const gitStatus = useEnvironmentQuery(
     leaseLiveStatus && (thread.branch != null || thread.worktreePath !== null) && gitCwd !== null
       ? vcsEnvironment.status({
@@ -4407,10 +4408,10 @@ export default function Sidebar() {
           taskThreadByKeyRef.current.get(threadKey) ??
           threadByKeyRef.current.get(threadKey);
         if (!thread) return;
-        const threadWorkspacePath =
-          thread.worktreePath ??
-          projectByKey.get(`${thread.environmentId}:${thread.projectId}`)?.workspaceRoot ??
-          null;
+        const threadWorkspacePath = threadPrimaryPath(
+          thread,
+          projectByKey.get(`${thread.environmentId}:${thread.projectId}`),
+        );
         // Un-settle pins the thread active until real activity clears the pin.
         // Environments without
         // the settlement capability get no lifecycle items at all.
