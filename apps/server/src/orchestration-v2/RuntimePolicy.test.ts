@@ -353,12 +353,11 @@ it.layer(TestLayer)("RuntimePolicyV2", (it) => {
   );
 });
 
+const decodeRuntimePolicy = Schema.decodeUnknownSync(ProviderAdapterV2RuntimePolicy);
+
 it("reads a policy without additional directories as a one-folder scope", () => {
   const legacy = { runtimeMode: "full-access", interactionMode: "default", cwd: "/work/app" };
-  assert.deepEqual(
-    Schema.decodeUnknownSync(ProviderAdapterV2RuntimePolicy)(legacy).additionalDirectories,
-    [],
-  );
+  assert.deepEqual(decodeRuntimePolicy(legacy).additionalDirectories, []);
   assert.deepEqual(
     ProviderAdapterV2RuntimePolicy.make({
       runtimeMode: "full-access",

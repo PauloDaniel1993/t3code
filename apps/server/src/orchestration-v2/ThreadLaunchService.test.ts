@@ -254,11 +254,11 @@ function makeHarness(options: HarnessOptions = {}) {
           getInstance: () =>
             Effect.succeed({
               snapshot: {
-                getSnapshot: Effect.succeed({
-                  ...(options.workspaceFolderAccess === undefined
+                getSnapshot: Effect.succeed(
+                  (options.workspaceFolderAccess === undefined
                     ? {}
-                    : { workspaceFolderAccess: options.workspaceFolderAccess }),
-                } as ServerProvider),
+                    : { workspaceFolderAccess: options.workspaceFolderAccess }) as ServerProvider,
+                ),
               },
             } as ProviderInstance),
           listInstances: Effect.succeed([]),

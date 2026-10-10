@@ -62,9 +62,11 @@ function runtimePolicyLayer(workspaceFolderAccess?: ProviderWorkspaceFolderAcces
           getInstance: () =>
             Effect.succeed({
               snapshot: {
-                getSnapshot: Effect.succeed({
-                  ...(workspaceFolderAccess === undefined ? {} : { workspaceFolderAccess }),
-                } as ServerProvider),
+                getSnapshot: Effect.succeed(
+                  (workspaceFolderAccess === undefined
+                    ? {}
+                    : { workspaceFolderAccess }) as ServerProvider,
+                ),
               },
             } as ProviderInstance),
           listInstances: Effect.succeed([]),
