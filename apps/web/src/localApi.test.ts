@@ -78,6 +78,17 @@ describe("LocalApi", () => {
     expect(api.shell).not.toHaveProperty("openInEditor");
   });
 
+  it("returns no workspace-file selection in a browser or an older desktop shell", async () => {
+    const { createLocalApi } = await import("./localApi");
+    const api = createLocalApi();
+    await expect(api.dialogs.pickWorkspaceFile()).resolves.toBeNull();
+
+    const pickFolder = vi.fn().mockResolvedValue("/tmp/project");
+    testWindow().desktopBridge = { pickFolder } as unknown as DesktopBridge;
+    await expect(api.dialogs.pickWorkspaceFile({ initialPath: "/tmp" })).resolves.toBeNull();
+    expect(pickFolder).not.toHaveBeenCalled();
+  });
+
   it("uses the browser context-menu fallback without a desktop bridge", async () => {
     showContextMenuFallbackMock.mockResolvedValue("rename");
     const { createLocalApi } = await import("./localApi");

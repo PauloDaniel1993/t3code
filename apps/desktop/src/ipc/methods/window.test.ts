@@ -1,34 +1,43 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "@effect/platform-node/NodePath";
+import { PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { vi } from "vite-plus/test";
+import { beforeEach, vi } from "vite-plus/test";
 
 import type * as Electron from "electron";
 
-const { focusedWebContents, ownerWindow } = vi.hoisted(() => ({
+const { focusedWebContents, ownerWindow, showOpenDialog } = vi.hoisted(() => ({
   focusedWebContents: vi.fn(),
   ownerWindow: vi.fn(),
+  showOpenDialog: vi.fn(),
 }));
 vi.mock("electron", () => ({
   webContents: { getFocusedWebContents: focusedWebContents },
   BrowserWindow: { fromWebContents: ownerWindow },
+  dialog: { showOpenDialog },
 }));
 
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
+import * as DesktopConfig from "../../app/DesktopConfig.ts";
+import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
+import * as DesktopWslEnvironment from "../../wsl/DesktopWslEnvironment.ts";
 import {
   getLocalEnvironmentBootstraps,
   getWindowFullscreenState,
   pasteAsText,
+  pickFolder,
   pickProjectFavicon,
+  pickWorkspaceFile,
   probeRemoteEditors,
 } from "./window.ts";
 
@@ -208,6 +217,218 @@ describe("pasteAsText", () => {
         ),
       );
     },
+  );
+});
+
+describe("pickWorkspaceFile", () => {
+  const owner = { id: 19 } as Electron.BrowserWindow;
+  const environmentLayer = DesktopEnvironment.layer({
+    dirname: "C:\\repo\\apps\\desktop\\dist-electron",
+    homeDirectory: "C:\\Users\\alice",
+    platform: "win32",
+    processArch: "x64",
+    appVersion: "0.0.45",
+    appPath: "C:\\repo",
+    isPackaged: false,
+    resourcesPath: "C:\\repo\\resources",
+    runningUnderArm64Translation: false,
+  }).pipe(
+    Layer.provide(
+      Layer.mergeAll(NodeServices.layer, NodePath.layerWin32, DesktopConfig.layerTest({})),
+    ),
+  );
+  const pickerLayer = (
+    settings = DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+    wsl: DesktopWslEnvironment.DesktopWslEnvironmentTestStub = {},
+  ) =>
+    Layer.mergeAll(
+      ElectronDialog.layer,
+      Layer.mock(ElectronWindow.ElectronWindow)({ focusedMainOrFirst: Effect.succeedSome(owner) }),
+      environmentLayer,
+      DesktopAppSettings.layerTest(settings),
+      DesktopWslEnvironment.layerTest(wsl),
+    );
+
+  beforeEach(() => {
+    showOpenDialog.mockReset();
+    showOpenDialog.mockResolvedValue({
+      canceled: false,
+      filePaths: ["C:\\workspaces\\app.code-workspace"],
+    });
+  });
+
+  it.effect("opens a single workspace-file dialog at the expanded host path", () =>
+    Effect.gen(function* () {
+      const result = yield* pickWorkspaceFile.handler({
+        initialPath: " ~/workspaces ",
+        targetEnvironmentId: PRIMARY_LOCAL_ENVIRONMENT_ID,
+      });
+      assert.strictEqual(result, "C:\\workspaces\\app.code-workspace");
+      assert.deepEqual(showOpenDialog.mock.calls, [
+        [
+          owner,
+          {
+            defaultPath: "C:\\Users\\alice\\workspaces",
+            properties: ["openFile"],
+            filters: [{ name: "VS Code workspace files", extensions: ["code-workspace"] }],
+          },
+        ],
+      ]);
+    }).pipe(Effect.provide(pickerLayer())),
+  );
+
+  it.effect("defaults to the host filesystem with no picker options", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        yield* pickWorkspaceFile.handler(undefined),
+        "C:\\workspaces\\app.code-workspace",
+      );
+      assert.notProperty(showOpenDialog.mock.calls[0]![1], "defaultPath");
+    }).pipe(
+      Effect.provide(
+        pickerLayer({ ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS, wslDistro: "Ubuntu" }),
+      ),
+    ),
+  );
+
+  it.effect("returns null on cancellation even if the native result has a path", () =>
+    Effect.gen(function* () {
+      showOpenDialog.mockResolvedValue({ canceled: true, filePaths: ["/ignored.code-workspace"] });
+      assert.strictEqual(yield* pickWorkspaceFile.handler(undefined), null);
+    }).pipe(Effect.provide(pickerLayer())),
+  );
+
+  it.effect("returns null when the native result has no selection", () =>
+    Effect.gen(function* () {
+      showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [] });
+      assert.strictEqual(yield* pickWorkspaceFile.handler(undefined), null);
+    }).pipe(Effect.provide(pickerLayer())),
+  );
+
+  it.effect("does not open a dialog when local environments are disabled", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(yield* pickWorkspaceFile.handler(undefined), null);
+      assert.strictEqual(showOpenDialog.mock.calls.length, 0);
+    }).pipe(
+      Effect.provide(
+        pickerLayer({
+          ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+          localEnvironmentEnabled: false,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("does not offer a host file path to a remote environment", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        yield* pickWorkspaceFile.handler({ targetEnvironmentId: "remote:server" }),
+        null,
+      );
+      assert.strictEqual(showOpenDialog.mock.calls.length, 0);
+    }).pipe(Effect.provide(pickerLayer())),
+  );
+
+  it.effect("uses the target WSL distro and returns its UNC selection as a Linux path", () =>
+    Effect.gen(function* () {
+      showOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: ["\\\\wsl.localhost\\Debian\\home\\alice\\app.code-workspace"],
+      });
+      const result = yield* pickWorkspaceFile.handler({
+        initialPath: "~/workspaces",
+        targetEnvironmentId: "wsl:Debian",
+      });
+      assert.strictEqual(result, "/home/alice/app.code-workspace");
+      assert.strictEqual(
+        showOpenDialog.mock.calls[0]![1].defaultPath,
+        "\\\\wsl.localhost\\Debian\\home\\alice\\workspaces",
+      );
+    }).pipe(
+      Effect.provide(
+        pickerLayer(
+          { ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS, wslDistro: "Ubuntu" },
+          { getUserHome: () => Option.some("/home/alice") },
+        ),
+      ),
+    ),
+  );
+
+  it.effect("uses the persisted distro for wsl:default and accepts legacy UNC selections", () =>
+    Effect.gen(function* () {
+      showOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: ["\\\\wsl$\\Debian\\workspaces\\app.code-workspace"],
+      });
+      assert.strictEqual(
+        yield* pickWorkspaceFile.handler({
+          initialPath: "/workspaces",
+          targetEnvironmentId: "wsl:default",
+        }),
+        "/workspaces/app.code-workspace",
+      );
+      assert.strictEqual(
+        showOpenDialog.mock.calls[0]![1].defaultPath,
+        "\\\\wsl.localhost\\Debian\\workspaces",
+      );
+    }).pipe(
+      Effect.provide(
+        pickerLayer({ ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS, wslDistro: "Debian" }),
+      ),
+    ),
+  );
+
+  it.effect("uses the default installed WSL distro when none is persisted", () =>
+    Effect.gen(function* () {
+      yield* pickWorkspaceFile.handler({ initialPath: "~", targetEnvironmentId: "wsl:default" });
+      assert.strictEqual(
+        showOpenDialog.mock.calls[0]![1].defaultPath,
+        "\\\\wsl.localhost\\Ubuntu\\home\\alice",
+      );
+    }).pipe(
+      Effect.provide(
+        pickerLayer(
+          { ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS, wslDistro: null },
+          {
+            distros: [{ name: "Ubuntu", isDefault: true, version: 2 }],
+            getUserHome: () => Option.some("/home/alice"),
+          },
+        ),
+      ),
+    ),
+  );
+
+  it.effect("converts a Windows selection through the selected WSL distro", () =>
+    Effect.gen(function* () {
+      const windowsToWslPath = vi.fn(() => Option.some("/mnt/c/workspaces/app.code-workspace"));
+      const result = yield* pickWorkspaceFile
+        .handler({ targetEnvironmentId: "wsl:Debian" })
+        .pipe(Effect.provide(pickerLayer(undefined, { windowsToWslPath })));
+      assert.strictEqual(result, "/mnt/c/workspaces/app.code-workspace");
+      assert.deepEqual(windowsToWslPath.mock.calls, [
+        ["Debian", "C:\\workspaces\\app.code-workspace"],
+      ]);
+    }),
+  );
+
+  it.effect("keeps folder selection and its WSL mapping unchanged", () =>
+    Effect.gen(function* () {
+      showOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: ["\\\\wsl.localhost\\Debian\\home\\alice\\project"],
+      });
+      assert.strictEqual(
+        yield* pickFolder.handler({
+          initialPath: "/home/alice",
+          targetEnvironmentId: "wsl:Debian",
+        }),
+        "/home/alice/project",
+      );
+      assert.deepEqual(showOpenDialog.mock.calls[0]![1], {
+        defaultPath: "\\\\wsl.localhost\\Debian\\home\\alice",
+        properties: ["openDirectory", "createDirectory"],
+      });
+    }).pipe(Effect.provide(pickerLayer())),
   );
 });
 
