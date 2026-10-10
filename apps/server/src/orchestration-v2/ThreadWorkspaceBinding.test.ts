@@ -80,17 +80,17 @@ const createThread = (
     });
   });
 
-const attachSession = (threadId: ThreadId) =>
+const attachSession = (threadId: ThreadId, name = "session") =>
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const now = yield* DateTime.now;
     yield* projections.apply({
-      id: EventId.make(`attach:${threadId}`),
+      id: EventId.make(`attach:${threadId}:${name}`),
       type: "provider-session.attached",
       threadId,
       occurredAt: now,
       payload: {
-        id: ProviderSessionId.make(`session:${threadId}`),
+        id: ProviderSessionId.make(`${name}:${threadId}`),
         driver: adapter.driver,
         providerInstanceId: instanceId,
         status: "ready",
@@ -186,6 +186,15 @@ it.layer(testLayer)("thread workspace binding", (it) => {
       assert.equal((yield* thread()).worktrees?.[1]?.path, "/wt/other/lib");
       assert.equal(yield* sessionCount(threadId), 0);
 
+      // Clearing the set with an explicit null puts the folders back in place.
+      yield* attachSession(threadId, "after-move");
+      yield* update("clear-set", { worktrees: null });
+      const cleared = yield* thread();
+      assert.notProperty(cleared, "worktrees");
+      assert.equal(cleared.worktreePath, "/wt/feature/repo/web");
+      assert.equal(yield* sessionCount(threadId), 0);
+      yield* update("restore-set", { branch: "t3code/feature", worktrees });
+
       // A new worktree path from a writer that knows nothing of sets drops the set.
       yield* update("pick-worktree", { branch: "main", worktreePath: "/wt/picked" });
       const picked = yield* thread();
@@ -241,6 +250,36 @@ it.layer(testLayer)("thread workspace binding", (it) => {
           "primary folder's place in its primary worktree",
         );
       }
+      assert.include(
+        yield* rejection(
+          update("other-branch", {
+            branch: "feature/other",
+            worktreePath: "/wt/feature/repo/web",
+            worktrees,
+          }),
+        ),
+        "primary worktree's branch",
+      );
+      assert.include(
+        yield* rejection(
+          update("empty-set", {
+            branch: "t3code/feature",
+            worktreePath: "/wt/feature/repo/web",
+            worktrees: [],
+          }),
+        ),
+        "at least one member",
+      );
+      assert.include(
+        yield* rejection(
+          createThread(ThreadId.make("thread:binding-path-and-uri"), {
+            workspaceFolders: [
+              { path: "/repo/web", uri: "file:///repo/web", name: "web", label: "web" },
+            ],
+          }),
+        ),
+        "exactly one of a path or a URI",
+      );
       assert.include(
         yield* rejection(
           createThread(ThreadId.make("thread:binding-remote-primary"), {

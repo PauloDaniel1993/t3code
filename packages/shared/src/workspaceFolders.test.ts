@@ -222,6 +222,11 @@ describe("isPathWithin", () => {
     expect(isPathWithin("/repo", "C:\\repo")).toBe(false);
   });
 
+  it("never nests a relative path in an absolute one", () => {
+    expect(isPathWithin("/repo", "repo/notes")).toBe(false);
+    expect(isSamePath("/repo", "repo")).toBe(false);
+  });
+
   it("treats a backslash as part of a POSIX name", () => {
     expect(isPathWithin("/repo", "/repo\\notes")).toBe(false);
     expect(isSamePath("/repo/", "/repo")).toBe(true);

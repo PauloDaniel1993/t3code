@@ -1,5 +1,6 @@
 import type {
   OrchestrationV2AppThread,
+  OrchestrationV2Command,
   OrchestrationV2ThreadWorkspaceFolder,
   OrchestrationV2ThreadWorktree,
 } from "@t3tools/contracts";
@@ -12,12 +13,10 @@ export type ThreadWorkspaceBinding = Pick<
   "branch" | "worktreePath" | "workspaceFolders" | "worktrees"
 >;
 
-export interface ThreadWorkspaceUpdate {
-  readonly branch?: string | null | undefined;
-  readonly worktreePath?: string | null | undefined;
-  readonly workspaceFolders?: ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder> | undefined;
-  readonly worktrees?: ReadonlyArray<OrchestrationV2ThreadWorktree> | null | undefined;
-}
+type ThreadWorkspaceUpdate = Pick<
+  Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }>,
+  "branch" | "worktreePath" | "workspaceFolders" | "worktrees"
+>;
 
 /**
  * Why a binding is malformed, or undefined when it is sound. A folder snapshot

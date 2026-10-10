@@ -152,7 +152,6 @@ export function resolveThreadWorkspace(input: {
 }): ThreadWorkspace {
   const { thread, project } = input;
   const primaryPath = threadPrimaryPath(thread, project);
-  const unavailable = new Set(input.unavailableFolderPaths);
   const snapshot = thread.workspaceFolders;
   if (snapshot === undefined || snapshot.length === 0) {
     const primary = projectFolders(project)[0]!;
@@ -162,14 +161,14 @@ export function resolveThreadWorkspace(input: {
         {
           folder: primary,
           label: primary.label,
-          effectivePath:
-            primary.path !== undefined && unavailable.has(primary.path) ? null : primaryPath,
+          effectivePath: primaryPath,
           isPrimary: true,
           checkoutRoot: undefined,
         },
       ],
     };
   }
+  const unavailable = new Set(input.unavailableFolderPaths);
   const members = thread.worktrees ?? [];
   return {
     primaryPath,
@@ -227,9 +226,11 @@ function pathSegments(path: string, windows: boolean): ReadonlyArray<string> {
   return path.split(windows ? /[\\/]+/ : /\/+/).filter((segment) => segment.length > 0);
 }
 
+// Both paths are absolute server paths; an absolute and a relative one never nest.
 function segmentsBelow(root: string, path: string): ReadonlyArray<string> | null {
   const windows = isWindowsAbsolutePath(root);
   if (windows !== isWindowsAbsolutePath(path)) return null;
+  if (!windows && root.startsWith("/") !== path.startsWith("/")) return null;
   const rootSegments = pathSegments(root, windows);
   const segments = pathSegments(path, windows);
   const key = (segment: string) => (windows ? segment.toLowerCase() : segment);
