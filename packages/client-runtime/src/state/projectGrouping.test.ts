@@ -6,6 +6,8 @@ import { chooseLoadBalancedEnvironment } from "../load-balancing.ts";
 import {
   buildProjectGroups,
   derivePhysicalProjectKey,
+  deriveProjectGroupingOverrideKey,
+  getProjectOrderKey,
   type ProjectGroupingSettings,
 } from "./projectGrouping.ts";
 
@@ -277,5 +279,172 @@ describe("buildProjectGroups", () => {
     });
     expect(groups).toHaveLength(1);
     expect(groups[0]?.members.map((member) => member.project.id)).toEqual(["winner", "sibling"]);
+  });
+});
+
+describe("workspace-file project grouping", () => {
+  const remoteEnvironmentId = EnvironmentId.make("remote-environment");
+
+  it("keeps plain project keys unchanged when the workspace file is absent or null", () => {
+    const plain = makeProject("plain", "/work/t3code/");
+    expect(derivePhysicalProjectKey(plain)).toBe("environment:/work/t3code");
+    expect(derivePhysicalProjectKey({ ...plain, workspaceFile: null })).toBe(
+      derivePhysicalProjectKey(plain),
+    );
+  });
+
+  it("keys linked projects by the normalized workspace file rather than the primary folder", () => {
+    const linked = makeProject("linked", "C:/work/t3code", {
+      workspaceFile: "C:/work/T3.code-workspace",
+    });
+    const refreshed = {
+      ...linked,
+      workspaceRoot: "C:/work/another-primary",
+      workspaceFile: "c:\\work\\t3.code-workspace",
+    };
+    expect(derivePhysicalProjectKey(refreshed)).toBe(derivePhysicalProjectKey(linked));
+    expect(derivePhysicalProjectKey({ ...linked, environmentId: remoteEnvironmentId })).not.toBe(
+      derivePhysicalProjectKey(linked),
+    );
+    expect(
+      derivePhysicalProjectKey({ ...linked, workspaceFile: "C:/other/T3.code-workspace" }),
+    ).not.toBe(derivePhysicalProjectKey(linked));
+  });
+
+  it("distinguishes a workspace file from a plain directory with the same path", () => {
+    const plain = makeProject("plain", "/work/t3.code-workspace");
+    const linked = makeProject("linked", "/work/t3code", {
+      workspaceFile: plain.workspaceRoot,
+    });
+    expect(derivePhysicalProjectKey(linked)).not.toBe(derivePhysicalProjectKey(plain));
+  });
+
+  it.each(["repository", "repository_path", "separate"] as const)(
+    "preserves plain and linked projects sharing a primary folder in %s mode",
+    (mode) => {
+      const projects = [
+        makeProject("plain", "/work/t3code"),
+        makeProject("linked", "/work/t3code", { workspaceFile: "/work/t3.code-workspace" }),
+        makeProject("other-linked", "/work/t3code", {
+          workspaceFile: "/work/other.code-workspace",
+        }),
+      ];
+      const groups = buildProjectGroups({ projects, settings: settings(mode) });
+      expect(groups).toHaveLength(3);
+      expect(groups.flatMap((group) => group.members.map((member) => member.project.id))).toEqual([
+        "plain",
+        "linked",
+        "other-linked",
+      ]);
+      expect(groups.map((group) => group.memberProjectRefs)).toEqual(
+        projects.map((project) => [
+          { environmentId: project.environmentId, projectId: project.id },
+        ]),
+      );
+    },
+  );
+
+  it.each(["repository", "repository_path"] as const)(
+    "groups matching file names and primary repository identities across environments in %s mode",
+    (mode) => {
+      const local = makeProject("local", "/work/t3code/apps/web", {
+        workspaceFile: "/work/t3.code-workspace",
+        repositoryIdentity: { ...repositoryIdentity, rootPath: "/work/t3code" },
+      });
+      const remote = makeProject("remote", "C:/src/t3code/packages/shared", {
+        environmentId: remoteEnvironmentId,
+        workspaceFile: "C:\\workspaces\\t3.code-workspace",
+        repositoryIdentity: { ...repositoryIdentity, rootPath: "C:/src/t3code" },
+      });
+      const groups = buildProjectGroups({
+        projects: [local, remote],
+        settings: settings(mode),
+        preferredEnvironmentId: remoteEnvironmentId,
+      });
+      expect(groups).toHaveLength(1);
+      expect(groups[0]?.members.map((member) => member.project.id)).toEqual(["local", "remote"]);
+      expect(groups[0]?.memberProjectRefs).toHaveLength(2);
+      expect(groups[0]?.representative).toBe(remote);
+    },
+  );
+
+  it.each(["repository", "repository_path"] as const)(
+    "keeps different file names, primary identities, and plain projects separate in %s mode",
+    (mode) => {
+      const linked = makeProject("linked", "/work/t3code", {
+        workspaceFile: "/work/t3.code-workspace",
+      });
+      const projects = [
+        linked,
+        makeProject("different-name", "/remote/t3code", {
+          environmentId: remoteEnvironmentId,
+          workspaceFile: "/remote/other.code-workspace",
+        }),
+        makeProject("different-repository", "/remote/other", {
+          environmentId: remoteEnvironmentId,
+          workspaceFile: "/remote/t3.code-workspace",
+          repositoryIdentity: { ...repositoryIdentity, canonicalKey: "github.com/t3tools/other" },
+        }),
+        makeProject("plain", "/remote/plain", { environmentId: remoteEnvironmentId }),
+      ];
+      expect(buildProjectGroups({ projects, settings: settings(mode) })).toHaveLength(4);
+    },
+  );
+
+  it("keeps matching files without primary repository identities physically scoped", () => {
+    const linked = makeProject("linked", "/work/t3code", {
+      workspaceFile: "/work/t3.code-workspace",
+      repositoryIdentity: null,
+    });
+    const remote = { ...linked, id: ProjectId.make("remote"), environmentId: remoteEnvironmentId };
+    const groups = buildProjectGroups({
+      projects: [linked, remote],
+      settings: settings("repository"),
+    });
+    expect(groups.map((group) => group.key)).toEqual([
+      derivePhysicalProjectKey(linked),
+      derivePhysicalProjectKey(remote),
+    ]);
+  });
+
+  it("honors separate mode for matching linked projects across environments", () => {
+    const linked = makeProject("linked", "/work/t3code", {
+      workspaceFile: "/work/t3.code-workspace",
+    });
+    const remote = { ...linked, id: ProjectId.make("remote"), environmentId: remoteEnvironmentId };
+    expect(
+      buildProjectGroups({ projects: [linked, remote], settings: settings("separate") }),
+    ).toHaveLength(2);
+  });
+
+  it("keeps ordering and grouping overrides independent for projects sharing a primary folder", () => {
+    const plain = makeProject("plain", "/work/t3code");
+    const linked = makeProject("linked", plain.workspaceRoot, {
+      workspaceFile: "/work/t3.code-workspace",
+    });
+    const remote = { ...linked, id: ProjectId.make("remote"), environmentId: remoteEnvironmentId };
+    expect(getProjectOrderKey(linked)).not.toBe(getProjectOrderKey(plain));
+    expect(deriveProjectGroupingOverrideKey(linked)).not.toBe(
+      deriveProjectGroupingOverrideKey(plain),
+    );
+    const groups = buildProjectGroups({
+      projects: [plain, linked, remote],
+      settings: settings("repository", { [deriveProjectGroupingOverrideKey(linked)]: "separate" }),
+    });
+    expect(groups).toHaveLength(3);
+  });
+
+  it("deduplicates refreshed registrations of one workspace file and preserves their thread targets", () => {
+    const stale = makeProject("stale", "/work/t3code", {
+      workspaceFile: "/work/t3.code-workspace",
+    });
+    const fresh = makeProject("fresh", "/work/new-primary", {
+      workspaceFile: stale.workspaceFile,
+      updatedAt: "2026-07-02T00:00:00.000Z",
+    });
+    const groups = buildProjectGroups({ projects: [stale, fresh], settings: settings("separate") });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.members.map((member) => member.project.id)).toEqual(["fresh"]);
+    expect(groups[0]?.memberProjectRefs).toHaveLength(2);
   });
 });
