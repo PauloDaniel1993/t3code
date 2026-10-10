@@ -25,11 +25,14 @@ import {
 import * as NetService from "@t3tools/shared/Net";
 import * as DateTime from "effect/DateTime";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { Command } from "effect/unstable/cli";
 import { FetchHttpClient, HttpRouter, HttpPlatform, Etag } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
@@ -131,95 +134,147 @@ class ProjectCliTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.projects,
 ) {}
 
-it.effect("uses the same import service over live HTTP and preserves its file conflict", () =>
+it.effect.each(["import", "link"] as const)(
+  "allows slow live %s completion and preserves its file conflict",
+  (operation) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-live-file-" });
+      const baseDir = NodePath.join(root, "state");
+      const primary = NodePath.join(root, "app");
+      const filePath = NodePath.join(root, "Live Team.code-workspace");
+      yield* fs.makeDirectory(primary);
+      yield* fs.writeFileString(filePath, '{"folders":[{"path":"app"}]}');
+      const existingProjectId =
+        operation === "link"
+          ? (yield* runCli(["project", "add", primary, "--base-dir", baseDir]).pipe(
+              Effect.andThen(readProjects(baseDir)),
+            )).projects[0]!.id
+          : undefined;
+      const config = { ...(yield* makeConfig(baseDir)), workspaceFileProjects: true };
+      const serviceLayer = ProjectServiceLayerLive.pipe(
+        Layer.provideMerge(ProjectEnrichmentService.layer),
+        Layer.provideMerge(RepositoryIdentityResolver.layer),
+        Layer.provideMerge(WorkspaceFolderResolver.layer),
+        Layer.provideMerge(ProjectFaviconResolver.layer),
+        Layer.provideMerge(T3ProjectFileLoader.layer),
+        Layer.provideMerge(WorkspacePaths.layer),
+        Layer.provideMerge(SqlitePersistence.layerConfig),
+        Layer.provide(ServerConfig.layer(config)),
+      );
+      const authLayer = Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
+        effect.pipe(
+          Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+            sessionId: AuthSessionId.make("test"),
+            subject: "test",
+            method: "bearer-access-token",
+            scopes: new Set(AuthAdministrativeScopes),
+          }),
+        ),
+      );
+      const startupLayer = Layer.succeed(ServerRuntimeStartup, {
+        awaitCommandReady: Effect.void,
+        markHttpListening: Effect.void,
+        enqueueCommand: (effect) => effect,
+      });
+      const routesLayer = HttpApiBuilder.layer(ProjectCliTestApi).pipe(
+        Layer.provide(projectHttpApiLayer),
+        Layer.provide(serviceLayer),
+        Layer.provide(authLayer),
+        Layer.provide(startupLayer),
+        Layer.provide(HttpPlatform.layer),
+        Layer.provide(Etag.layerWeak),
+        Layer.provide(NodeServices.layer),
+      );
+      const web = yield* Effect.acquireRelease(
+        Effect.sync(() => HttpRouter.toWebHandler(routesLayer, { disableLogger: true })),
+        (web) => Effect.promise(() => web.dispose()),
+      );
+      // A running server has finished startup before the CLI's one-second probe.
+      const ready = yield* Effect.promise(() =>
+        web.handler(
+          new Request(
+            `http://project.test${EnvironmentHttpApi.groups.projects.endpoints.snapshot.path}`,
+          ),
+        ),
+      );
+      assert.equal(ready.status, 200);
+      yield* persistServerRuntimeState({
+        path: config.serverRuntimeStatePath,
+        state: {
+          version: 1,
+          pid: process.pid,
+          port: 1,
+          origin: "http://project.test",
+          startedAt: "2026-10-10T00:00:00Z",
+        },
+      });
+      const requests: string[] = [];
+      const mutationStarted = yield* Deferred.make<void>();
+      const finishMutation = Promise.withResolvers<void>();
+      let delayMutation = true;
+      const fetch: typeof globalThis.fetch = (input, init) => {
+        const request = new Request(input, init);
+        requests.push(`${request.method} ${new URL(request.url).pathname}`);
+        if (request.method === "POST" && delayMutation) {
+          delayMutation = false;
+          Deferred.doneUnsafe(mutationStarted, Effect.void);
+          return finishMutation.promise.then(() => web.handler(request));
+        }
+        return web.handler(request);
+      };
+      const mutation = yield* runCli(
+        operation === "import"
+          ? ["project", "add", filePath, "--title", "  Explicit title  ", "--base-dir", baseDir]
+          : ["project", "link", existingProjectId!, filePath, "--base-dir", baseDir],
+        workspaceFileEnvironment,
+      ).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.forkChild);
+      yield* Deferred.await(mutationStarted);
+      yield* TestClock.adjust("2 seconds");
+      finishMutation.resolve();
+      yield* Fiber.join(mutation);
+      const added = (yield* readProjects(baseDir)).projects[0]!;
+      assert.equal(added.title, operation === "import" ? "Explicit title" : "app");
+      assert.equal(added.workspaceFile, filePath);
+      assert.include(requests, "POST /api/projects/mutate");
+      const duplicate = yield* runCli(
+        ["project", "add", filePath, "--base-dir", baseDir],
+        workspaceFileEnvironment,
+      ).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.flip);
+      assert.instanceOf(duplicate, ProjectLiveServerDeclaredResponseError);
+      assert.equal(duplicate.diagnostic?.code, "conflict");
+      assert.equal(duplicate.conflictingProjectId, added.id);
+      assert.equal((yield* readProjects(baseDir)).projects.length, 1);
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("directory mutations preserve a linked project with the same stored file path", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-live-file-" });
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-file-directory-" });
     const baseDir = NodePath.join(root, "state");
     const primary = NodePath.join(root, "app");
-    const filePath = NodePath.join(root, "Live Team.code-workspace");
+    const filePath = NodePath.join(root, "team.code-workspace");
     yield* fs.makeDirectory(primary);
     yield* fs.writeFileString(filePath, '{"folders":[{"path":"app"}]}');
-    const config = { ...(yield* makeConfig(baseDir)), workspaceFileProjects: true };
-    const serviceLayer = ProjectServiceLayerLive.pipe(
-      Layer.provideMerge(ProjectEnrichmentService.layer),
-      Layer.provideMerge(RepositoryIdentityResolver.layer),
-      Layer.provideMerge(WorkspaceFolderResolver.layer),
-      Layer.provideMerge(ProjectFaviconResolver.layer),
-      Layer.provideMerge(T3ProjectFileLoader.layer),
-      Layer.provideMerge(WorkspacePaths.layer),
-      Layer.provideMerge(SqlitePersistence.layerConfig),
-      Layer.provide(ServerConfig.layer(config)),
+    yield* runCli(["project", "add", filePath, "--base-dir", baseDir], workspaceFileEnvironment);
+    const linked = (yield* readProjects(baseDir)).projects[0]!;
+    const threadId = ThreadId.make("linked-history");
+    yield* seedNativeThreads(baseDir, [{ id: threadId, projectId: linked.id, archived: false }]);
+    const threadBefore = yield* readNativeThreadState(baseDir, threadId);
+    yield* fs.remove(filePath);
+    yield* fs.makeDirectory(filePath);
+    yield* runCli(["project", "add", filePath, "--base-dir", baseDir]);
+    yield* runCli(["project", "rename", filePath, "Plain directory", "--base-dir", baseDir]);
+    const renamed = (yield* readProjects(baseDir)).projects;
+    assert.equal(renamed.find((project) => project.id === linked.id)?.title, linked.title);
+    assert.equal(
+      renamed.find((project) => project.workspaceFile == null)?.title,
+      "Plain directory",
     );
-    const authLayer = Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
-      effect.pipe(
-        Effect.provideService(EnvironmentAuthenticatedPrincipal, {
-          sessionId: AuthSessionId.make("test"),
-          subject: "test",
-          method: "bearer-access-token",
-          scopes: new Set(AuthAdministrativeScopes),
-        }),
-      ),
-    );
-    const startupLayer = Layer.succeed(ServerRuntimeStartup, {
-      awaitCommandReady: Effect.void,
-      markHttpListening: Effect.void,
-      enqueueCommand: (effect) => effect,
-    });
-    const routesLayer = HttpApiBuilder.layer(ProjectCliTestApi).pipe(
-      Layer.provide(projectHttpApiLayer),
-      Layer.provide(serviceLayer),
-      Layer.provide(authLayer),
-      Layer.provide(startupLayer),
-      Layer.provide(HttpPlatform.layer),
-      Layer.provide(Etag.layerWeak),
-      Layer.provide(NodeServices.layer),
-    );
-    const web = yield* Effect.acquireRelease(
-      Effect.sync(() => HttpRouter.toWebHandler(routesLayer, { disableLogger: true })),
-      (web) => Effect.promise(() => web.dispose()),
-    );
-    // A running server has finished startup before the CLI's one-second probe.
-    const ready = yield* Effect.promise(() =>
-      web.handler(
-        new Request(
-          `http://project.test${EnvironmentHttpApi.groups.projects.endpoints.snapshot.path}`,
-        ),
-      ),
-    );
-    assert.equal(ready.status, 200);
-    yield* persistServerRuntimeState({
-      path: config.serverRuntimeStatePath,
-      state: {
-        version: 1,
-        pid: process.pid,
-        port: 1,
-        origin: "http://project.test",
-        startedAt: "2026-10-10T00:00:00Z",
-      },
-    });
-    const requests: string[] = [];
-    const fetch: typeof globalThis.fetch = (input, init) => {
-      const request = new Request(input, init);
-      requests.push(`${request.method} ${new URL(request.url).pathname}`);
-      return web.handler(request);
-    };
-    yield* runCli(
-      ["project", "add", filePath, "--title", "  Explicit title  ", "--base-dir", baseDir],
-      workspaceFileEnvironment,
-    ).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch));
-    const added = (yield* readProjects(baseDir)).projects[0]!;
-    assert.equal(added.title, "Explicit title");
-    assert.equal(added.workspaceFile, filePath);
-    assert.include(requests, "POST /api/projects/mutate");
-    const duplicate = yield* runCli(
-      ["project", "add", filePath, "--base-dir", baseDir],
-      workspaceFileEnvironment,
-    ).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.flip);
-    assert.instanceOf(duplicate, ProjectLiveServerDeclaredResponseError);
-    assert.equal(duplicate.diagnostic?.code, "conflict");
-    assert.equal(duplicate.conflictingProjectId, added.id);
-    assert.equal((yield* readProjects(baseDir)).projects.length, 1);
+    yield* runCli(["project", "remove", filePath, "--force", "--base-dir", baseDir]);
+    assert.deepEqual((yield* readProjects(baseDir)).projects, [linked]);
+    assert.deepEqual(yield* readNativeThreadState(baseDir, threadId), threadBefore);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
@@ -302,9 +357,13 @@ it.effect("links, relinks, rereads and unlinks through the project mutation serv
       ["project", "link", first, second, "--base-dir", baseDir],
       workspaceFileEnvironment,
     );
+    assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceFile, second);
     yield* fs.writeFileString(second, '{"folders":[{"path":"app"},{"path":"shared"}]}');
     yield* runCli(["project", "link", id, second, "--base-dir", baseDir], workspaceFileEnvironment);
-    assert.equal((yield* readProjects(baseDir)).projects[0]?.folders?.length, 2);
+    assert.deepEqual(
+      (yield* readProjects(baseDir)).projects[0]?.folders?.map((folder) => folder.path),
+      [primary, NodePath.join(root, "shared")],
+    );
     yield* fs.remove(second);
     yield* runCli(["project", "unlink", second, "--base-dir", baseDir]);
     const unlinked = (yield* readProjects(baseDir)).projects[0]!;

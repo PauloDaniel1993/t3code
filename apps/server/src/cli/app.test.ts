@@ -182,19 +182,23 @@ describe("t3 app", () => {
     ),
   );
 
-  it.effect("rejects bare workspace files before creating server state or a missing path", () =>
-    withTempDirectory("t3-bare-file-", (root) =>
-      Effect.gen(function* () {
-        const filePath = NodePath.join(root, "missing.CODE-WORKSPACE");
-        const baseDir = NodePath.join(root, "state");
-        const error = yield* runCli([filePath, "--base-dir", baseDir]).pipe(Effect.flip);
-        expect(error.message).toBe(
-          "Use `t3 app FILE` to open or `t3 project add FILE` to register",
-        );
-        expect(yield* pathExists(baseDir)).toBe(false);
-        expect(yield* pathExists(filePath)).toBe(false);
-      }),
-    ),
+  it.effect.each([[], ["start"], ["serve"]])(
+    "rejects workspace files before creating server state or a missing path (%j)",
+    (command) =>
+      withTempDirectory("t3-bare-file-", (root) =>
+        Effect.gen(function* () {
+          const filePath = NodePath.join(root, "missing.CODE-WORKSPACE");
+          const baseDir = NodePath.join(root, "state");
+          const error = yield* runCli([...command, filePath, "--base-dir", baseDir]).pipe(
+            Effect.flip,
+          );
+          expect(error.message).toBe(
+            "Use `t3 app FILE` to open or `t3 project add FILE` to register",
+          );
+          expect(yield* pathExists(baseDir)).toBe(false);
+          expect(yield* pathExists(filePath)).toBe(false);
+        }),
+      ),
   );
 
   it.effect("shows the desktop's workspace import diagnostic", () =>

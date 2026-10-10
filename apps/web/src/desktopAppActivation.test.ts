@@ -4,6 +4,7 @@ import {
   ProjectId,
   ProjectMutationError,
   ThreadId,
+  WorkspaceFileProjectsDisabledError,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -115,6 +116,7 @@ describe("desktop app activation", () => {
         throw new ProjectMutationError({
           commandId: CommandId.make("import"),
           message: "Already linked",
+          diagnostic: { code: "conflict", message: "Already linked" },
           conflictingProjectId: existingProjectId,
         });
       },
@@ -134,6 +136,7 @@ describe("desktop app activation", () => {
     expect(await handleDesktopAppActivationRequest(fileRequest, deps)).toMatchObject({
       ok: false,
       code: "project-create-failed",
+      message: new WorkspaceFileProjectsDisabledError().message,
     });
     expect(deps.importWorkspaceFile).not.toHaveBeenCalled();
     expect(deps.openThread).not.toHaveBeenCalled();

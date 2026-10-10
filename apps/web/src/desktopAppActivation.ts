@@ -1,4 +1,4 @@
-import { ProjectMutationError } from "@t3tools/contracts";
+import { ProjectMutationError, WorkspaceFileProjectsDisabledError } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import type {
   DesktopAppActivationFailure,
@@ -94,7 +94,7 @@ export async function handleDesktopAppActivationRequest(
     return failure(
       request.requestId,
       "project-create-failed",
-      "Workspace file projects are disabled in this environment.",
+      new WorkspaceFileProjectsDisabledError().message,
     );
   }
   let projectId =
@@ -113,6 +113,7 @@ export async function handleDesktopAppActivationRequest(
       if (
         fileRequest &&
         isProjectMutationError(error) &&
+        error.diagnostic?.code === "conflict" &&
         error.conflictingProjectId !== undefined
       ) {
         projectId = error.conflictingProjectId;

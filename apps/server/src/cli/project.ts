@@ -233,7 +233,7 @@ const ProjectCliRuntimeLive = ProjectServiceLayerLive.pipe(
   Layer.provideMerge(SqlitePersistence.layerConfig),
 );
 
-const PROJECT_CLI_LIVE_SERVER_TIMEOUT = Duration.seconds(1);
+const PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT = Duration.seconds(1);
 const withProjectCliSessionToken = <A, E, R>(
   environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"],
   run: (token: string) => Effect.Effect<A, E, R>,
@@ -247,8 +247,8 @@ const withProjectCliSessionToken = <A, E, R>(
     (issued) => environmentAuth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
   );
 
-const withProjectCliLiveServerTimeout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.timeout(PROJECT_CLI_LIVE_SERVER_TIMEOUT));
+const withProjectCliLiveServerProbeTimeout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.timeout(PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT));
 
 const makeLiveServerClient = (origin: string) =>
   HttpApiClient.make(EnvironmentHttpApi, {
@@ -315,11 +315,14 @@ const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (
   const matchesPath = (storedPath: string) =>
     normalizeProjectPathForComparison(storedPath) ===
     normalizeProjectPathForComparison(projectPath.path);
-  // Stored paths still identify projects after their directory or file is gone.
+  // File mode can recover a stored plain directory after it disappears, but a
+  // directory identifier never selects a linked project's file identity.
   const exactWorkspaceMatch =
-    activeProjects.find(
-      (project) => project.workspaceFile != null && matchesPath(project.workspaceFile),
-    ) ??
+    (projectPath.kind === "workspace-file"
+      ? activeProjects.find(
+          (project) => project.workspaceFile != null && matchesPath(project.workspaceFile),
+        )
+      : undefined) ??
     activeProjects.find(
       (project) => project.workspaceFile == null && matchesPath(project.workspaceRoot),
     );
@@ -351,10 +354,12 @@ const fetchLiveOrchestrationSnapshot = (origin: string, bearerToken: string) =>
       headers: { authorization: `Bearer ${bearerToken}` },
     });
   }).pipe(
-    withProjectCliLiveServerTimeout,
+    withProjectCliLiveServerProbeTimeout,
     Effect.mapError(projectCommandErrorFromLiveServerRequest),
   );
 
+// Folder probes are bounded by the service and can outlive discovery's short
+// deadline. Await the mutation response so live and offline results agree.
 const dispatchLiveOrchestrationCommand = (
   origin: string,
   bearerToken: string,
@@ -366,10 +371,7 @@ const dispatchLiveOrchestrationCommand = (
       headers: { authorization: `Bearer ${bearerToken}` },
       payload: command,
     } as Parameters<typeof client.projects.mutate>[0]);
-  }).pipe(
-    withProjectCliLiveServerTimeout,
-    Effect.mapError(projectCommandErrorFromLiveServerRequest),
-  );
+  }).pipe(Effect.mapError(projectCommandErrorFromLiveServerRequest));
 
 const getOfflineSnapshot = Effect.fn("getOfflineSnapshot")(function* () {
   const projects = yield* ProjectService.ProjectService;
