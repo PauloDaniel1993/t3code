@@ -210,14 +210,6 @@ export function relativePathWithin(root: string, path: string): string | null {
   return segmentsBelow(root, path)?.join("/") ?? null;
 }
 
-/** The inverse of `relativePathWithin`: `root` joined with `/`-separated segments. */
-export function pathBelow(root: string, relativePath: string): string {
-  const segments = relativePath.split("/").filter((segment) => segment.length > 0);
-  if (segments.length === 0) return root;
-  const separator = isWindowsAbsolutePath(root) ? "\\" : "/";
-  return `${root.replace(/[\\/]+$/, "")}${separator}${segments.join(separator)}`;
-}
-
 /**
  * Where a folder lives in a thread's worktree set: at the same place below the
  * worktree of the deepest member whose checkout contains it. A folder outside
@@ -237,7 +229,9 @@ export function worktreeSetPath(
     }
   }
   if (deepest === undefined) return path;
-  return pathBelow(deepest.worktree, deepest.rest.join("/"));
+  if (deepest.rest.length === 0) return deepest.worktree;
+  const separator = isWindowsAbsolutePath(deepest.worktree) ? "\\" : "/";
+  return `${deepest.worktree.replace(/[\\/]+$/, "")}${separator}${deepest.rest.join(separator)}`;
 }
 
 /** The worktrees a thread owns: each member of its set, or the one it is bound to. */

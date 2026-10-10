@@ -952,7 +952,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           }
         }
 
-        const stageFiles = (exclusions: ReadonlyArray<string>) =>
+        const stageFiles = (specs: ReadonlyArray<string>) =>
           execute({
             operation,
             cwd: input.cwd,
@@ -964,21 +964,74 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
               ...(sparseCheckout ? ["--sparse"] : []),
               "-A",
               "--",
-              ...pathspecs,
-              ...exclusions,
+              ...specs,
             ],
             env: commitEnv,
           });
-        yield* stageFiles([]).pipe(
+        // A part names its folders, and git refuses a pathspec naming an ignored
+        // path, or a folder deleted during the turn with nothing tracked in it.
+        // Neither has anything to capture, so drop them.
+        const usablePathspecs = (error: VcsProcessExitError) =>
+          Effect.gen(function* () {
+            const named = pathspecs.flatMap((spec) => {
+              const match = /^:\((exclude,)?literal\)(.+)$/.exec(spec);
+              return match?.[2] === undefined
+                ? []
+                : [{ spec, name: match[2], exclude: match[1] !== undefined }];
+            });
+            if (named.length === 0) return pathspecs;
+            const checked = yield* execute({
+              operation,
+              cwd: input.cwd,
+              args: ["check-ignore", "-z", "--stdin"],
+              stdin: named.map(({ name }) => `${name}\0`).join(""),
+              env: commitEnv,
+              allowNonZeroExit: true,
+            });
+            // Exit 1 means nothing is ignored.
+            if (checked.exitCode > 1) return yield* error;
+            const dropped = new Set(splitNullSeparatedGitStdoutPaths(checked));
+            const absent = yield* Effect.filter(
+              named.filter(({ exclude, name }) => !exclude && !dropped.has(name)),
+              ({ name }) =>
+                fileSystem.exists(path.join(input.cwd, name)).pipe(
+                  Effect.map((exists) => !exists),
+                  Effect.mapError(() => error),
+                ),
+            );
+            if (absent.length > 0) {
+              const tracked = splitNullSeparatedGitStdoutPaths(
+                yield* execute({
+                  operation,
+                  cwd: input.cwd,
+                  args: ["ls-files", "--cached", "-z", "--", ...absent.map(({ spec }) => spec)],
+                  env: commitEnv,
+                  maxOutputBytes: WORKSPACE_FILES_MAX_OUTPUT_BYTES,
+                }),
+              );
+              for (const { name } of absent) {
+                if (!tracked.some((file) => file === name || file.startsWith(`${name}/`))) {
+                  dropped.add(name);
+                }
+              }
+            }
+            return pathspecs.filter(
+              (spec) => !named.some((entry) => entry.spec === spec && dropped.has(entry.name)),
+            );
+          });
+        yield* stageFiles(pathspecs).pipe(
           Effect.catchTags({
             VcsProcessExitError: (error) =>
               Effect.gen(function* () {
+                const usable = yield* usablePathspecs(error);
+                // Nothing left to capture: the checkpoint keeps HEAD's content.
+                if (usable.every((spec) => spec.startsWith(":(exclude"))) return;
                 // Git cannot stage an embedded repository until it has a commit. Discover these
                 // only after staging fails so ordinary checkpoints do not need another file scan.
                 const untracked = yield* execute({
                   operation,
                   cwd: input.cwd,
-                  args: ["ls-files", "--others", "--exclude-standard", "-z", "--", ...pathspecs],
+                  args: ["ls-files", "--others", "--exclude-standard", "-z", "--", ...usable],
                   env: commitEnv,
                   maxOutputBytes: WORKSPACE_FILES_MAX_OUTPUT_BYTES,
                 });
@@ -1010,8 +1063,10 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                     exclusions.push(`:(exclude,literal)${entry}`);
                   }
                 }
-                if (exclusions.length === 0) return yield* error;
-                return yield* stageFiles(exclusions);
+                if (exclusions.length === 0 && usable.length === pathspecs.length) {
+                  return yield* error;
+                }
+                return yield* stageFiles([...usable, ...exclusions]);
               }).pipe(
                 // One budget covers discovery, queued Git admission, probes, and the staging retry.
                 Effect.timeoutOrElse({

@@ -1,14 +1,21 @@
 import { assert, describe, it } from "@effect/vitest";
-import type {
-  OrchestrationV2ThreadWorkspaceFolder,
-  OrchestrationV2ThreadWorktree,
+import {
+  CheckpointScopeId,
+  NodeId,
+  type OrchestrationV2CheckpointScope,
+  type OrchestrationV2ThreadWorkspaceFolder,
+  type OrchestrationV2ThreadWorktree,
+  RunId,
+  ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as NodeCrypto from "node:crypto";
 
 import {
   checkpointBarrierStatus,
-  checkpointScopeLocations,
+  checkpointScopeForRun,
   checkpointScopeParts,
+  runFolderPaths,
 } from "./CheckpointScopeParts.ts";
 
 const hashKey = (location: string) =>
@@ -178,34 +185,111 @@ describe("checkpointScopeParts", () => {
   });
 });
 
-describe("checkpointScopeLocations", () => {
-  it("lists each checkout, then each folder in it, once", () => {
-    assert.deepStrictEqual(checkpointScopeLocations({ cwd: "/repo/app" }), ["/repo/app"]);
-    assert.deepStrictEqual(
-      checkpointScopeLocations({
-        cwd: "/mono",
-        parts: [
-          {
-            key: "primary",
-            cwd: "/mono",
-            vcs: "git",
-            pathspecs: [":(literal)a", "."],
-            folders: [
-              { folderPath: "/mono/a", label: "a", relativePath: "a" },
-              { folderPath: "/mono", label: "mono", relativePath: "" },
-            ],
-          },
-          {
-            key: "notes",
-            cwd: "/notes",
-            vcs: null,
-            pathspecs: ["."],
-            folders: [{ folderPath: "/notes", label: "notes", relativePath: "" }],
-          },
+describe("checkpointScopeParts with moved or missing folders", () => {
+  it("keeps a primary that a legacy writer moved into a worktree on its own part", () => {
+    const parts = checkpointScopeParts({
+      thread: {
+        worktreePath: "/wt/feature",
+        workspaceFolders: [
+          folder("/mono/a", "a", { root: "/mono", prefix: "a" }),
+          folder("/mono/b", "b", { root: "/mono", prefix: "b" }),
         ],
-      }),
-      ["/mono", "/mono/a", "/notes"],
+      },
+    });
+
+    assert.deepStrictEqual(
+      parts?.map((part) => [part.key, part.cwd, part.vcs, part.pathspecs, part.folders]),
+      [
+        [
+          "primary",
+          "/wt/feature",
+          "git",
+          ["."],
+          [{ folderPath: "/mono/a", label: "a", relativePath: "" }],
+        ],
+        [
+          hashKey("/mono"),
+          "/mono",
+          "git",
+          [":(literal)b"],
+          [{ folderPath: "/mono/b", label: "b", relativePath: "b" }],
+        ],
+      ],
     );
+  });
+
+  it("still excludes a nested checkout this run can't reach", () => {
+    const parts = checkpointScopeParts({
+      thread: rootThread([
+        folder("/mono/a", "a", { root: "/mono", prefix: "a" }),
+        folder("/mono/a/inner", "inner", { root: "/mono/a/inner", prefix: "" }),
+      ]),
+      unavailableFolderPaths: ["/mono/a/inner"],
+    });
+
+    assert.deepStrictEqual(
+      parts?.map((part) => part.pathspecs),
+      [[":(literal)a", ":(exclude,literal)a/inner"]],
+    );
+  });
+
+  it("never widens a folder without a known place in its checkout to the whole checkout", () => {
+    const parts = checkpointScopeParts({
+      thread: rootThread([
+        folder("/repo", "repo", { root: "/repo", prefix: "" }),
+        // Reached through a symlink, and recorded without its prefix.
+        folder("/link/lib", "lib", { root: "/real/mono" }),
+      ]),
+    });
+
+    assert.deepStrictEqual(
+      parts?.map((part) => [part.cwd, part.vcs, part.pathspecs]),
+      [
+        ["/repo", "git", ["."]],
+        ["/link/lib", null, ["."]],
+      ],
+    );
+  });
+});
+
+describe("checkpointScopeForRun", () => {
+  const scope = {
+    id: CheckpointScopeId.make("scope:for-run"),
+    threadId: ThreadId.make("thread:for-run"),
+    runId: RunId.make("run:later"),
+    nodeId: NodeId.make("node:for-run"),
+    parentScopeId: null,
+    providerThreadId: null,
+    kind: "root_run",
+    ordinalWithinParent: 0,
+    advancesAppRunCount: true,
+    cwd: "/app",
+    createdAt: DateTime.makeUnsafe("2026-10-10T00:00:00.000Z"),
+  } satisfies OrchestrationV2CheckpointScope;
+  const thread = rootThread([
+    folder("/app", "app", { root: "/app", prefix: "" }),
+    folder("/lib", "lib", { root: "/lib", prefix: "" }),
+  ]);
+
+  it("plans a run's parts from its own folder facts, not the scope row's latest plan", () => {
+    // A later run planned both folders; this one couldn't reach lib.
+    const later = { ...scope, parts: checkpointScopeParts({ thread }) ?? [] };
+    const own = checkpointScopeForRun({
+      scope: later,
+      thread,
+      run: { unavailableFolderPaths: ["/lib"] },
+    });
+
+    assert.deepStrictEqual(
+      own.parts?.map((part) => part.cwd),
+      ["/app"],
+    );
+    assert.deepStrictEqual(runFolderPaths(thread, { unavailableFolderPaths: ["/lib"] }), ["/app"]);
+  });
+
+  it("leaves a scope without parts as it is", () => {
+    assert.strictEqual(checkpointScopeForRun({ scope, thread, run: {} }), scope);
+    assert.deepStrictEqual(runFolderPaths({ worktreePath: null }, {}), []);
   });
 });
 

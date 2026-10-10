@@ -610,7 +610,8 @@ export const layer: Layer.Layer<
               cause: `Checkpoint status is ${input.checkpoint.status}.`,
             });
           }
-          // Restoring the primary part alone would restore its whole checkout.
+          // Both rollback gates already refuse this. Should one let it through,
+          // refusing beats restoring the primary part's whole checkout alone.
           if (input.checkpoint.parts !== undefined || input.scope.parts !== undefined) {
             return yield* new CheckpointRestoreError({
               scopeId: input.scope.id,

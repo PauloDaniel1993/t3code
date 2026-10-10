@@ -1,6 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
 import {
+  CheckpointId,
+  CheckpointRef,
   CheckpointScopeId,
   NodeId,
   ProviderThreadId,
@@ -342,6 +344,148 @@ it.effect("holds one lock per checkout, however its path is spelled", () => {
   );
 });
 
+const multiFolderScope = Effect.gen(function* () {
+  const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+  return yield* checkpoints.prepareRootRunScope({
+    threadId,
+    runId,
+    rootNodeId: nodeId,
+    providerThreadId,
+    cwd: "/api",
+    thread: {
+      worktreePath: null,
+      workspaceFolders: [
+        snapshotFolder("/api", "api", "/api"),
+        snapshotFolder("/lib", "lib", "/lib"),
+        snapshotFolder("/notes", "notes", null),
+      ],
+    },
+    createdAt,
+  });
+});
+
+it.effect("captures each missing part baseline, even when another part's fails", () => {
+  const captured: Array<CheckpointStore.CaptureCheckpointInput> = [];
+  return Effect.gen(function* () {
+    const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+    const scope = yield* multiFolderScope;
+    const lib = scope.parts?.[1];
+
+    const failure = yield* checkpoints
+      .captureBaseline({ scope, ordinalWithinScope: 1 })
+      .pipe(Effect.flip);
+
+    assert.equal(failure._tag, "CheckpointBaselineCaptureError");
+    // The api lookup failed; lib, which joined after turn 1, still got its baseline.
+    assert.deepStrictEqual(captured, [
+      {
+        cwd: "/lib",
+        checkpointRef: CheckpointService.checkpointRefForScopeOrdinal({
+          scopeId: scope.id,
+          ordinalWithinScope: 1,
+          partKey: lib!.key,
+        }),
+        pathspecs: ["."],
+      },
+    ]);
+  }).pipe(
+    Effect.provide(
+      mockedService({
+        hasCheckpointRef: ({ cwd }) =>
+          cwd === "/api"
+            ? Effect.fail(
+                new VcsProcessTimeoutError({
+                  operation: "test.ref",
+                  command: "git",
+                  cwd,
+                  timeoutMs: 30000,
+                }),
+              )
+            : Effect.succeed(false),
+        captureCheckpoint: (input) => Effect.sync(() => void captured.push(input)),
+      }),
+    ),
+  );
+});
+
+it.effect("deletes each part's stale refs in its own checkout, the primary's strictly", () => {
+  const deleted: Array<CheckpointStore.DeleteCheckpointRefsInput> = [];
+  const failAt = new Set<string>();
+  return Effect.gen(function* () {
+    const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+    const scope = yield* multiFolderScope;
+    const [api, lib, notes] = scope.parts ?? [];
+    const stale = [1, 2].map((ordinal) => ({
+      id: CheckpointId.make(`checkpoint:stale-${ordinal}`),
+      threadId,
+      scopeId: scope.id,
+      runId,
+      nodeId,
+      parentCheckpointId: null,
+      ordinalWithinScope: ordinal,
+      appRunOrdinal: ordinal,
+      ref: CheckpointRef.make(`ref:api-${ordinal}`),
+      status: "ready" as const,
+      files: [],
+      parts: [
+        { ...api!, ref: CheckpointRef.make(`ref:api-${ordinal}`), status: "ready" as const },
+        // Captured where lib's worktree used to be; its current checkout is the scope's.
+        {
+          ...lib!,
+          cwd: "/old/lib",
+          ref: CheckpointRef.make(`ref:lib-${ordinal}`),
+          status: "ready" as const,
+        },
+        { ...notes!, ref: null, status: "missing" as const },
+        // A folder this scope no longer has keeps the checkout it was captured in.
+        {
+          key: "gone",
+          cwd: "/gone",
+          vcs: "git" as const,
+          pathspecs: ["."],
+          folders: [],
+          ref: CheckpointRef.make(`ref:gone-${ordinal}`),
+          status: "ready" as const,
+        },
+      ],
+      capturedAt: createdAt,
+    }));
+
+    failAt.add("/gone");
+    yield* checkpoints.deleteStaleRefs({ scope, checkpoints: stale });
+    assert.deepStrictEqual(
+      deleted.map((input) => `${input.cwd} ${input.checkpointRefs.join(" ")}`).sort(),
+      ["/api ref:api-1 ref:api-2", "/gone ref:gone-1 ref:gone-2", "/lib ref:lib-1 ref:lib-2"],
+    );
+
+    failAt.add("/api");
+    const failure = yield* checkpoints
+      .deleteStaleRefs({ scope, checkpoints: stale })
+      .pipe(Effect.flip);
+    assert.equal(failure._tag, "CheckpointDeleteStaleRefsError");
+  }).pipe(
+    Effect.provide(
+      mockedService({
+        deleteCheckpointRefs: (input) =>
+          Effect.suspend(() => {
+            deleted.push(input);
+            return failAt.has(input.cwd)
+              ? Effect.fail(
+                  new VcsProcessExitError({
+                    operation: "test.delete",
+                    command: "git update-ref",
+                    cwd: input.cwd,
+                    exitCode: 128,
+                    detail: "not a git repository",
+                  }),
+                )
+              : Effect.void;
+          }),
+      }),
+    ),
+  );
+});
+
 const VcsProcessTestLayer = VcsProcess.layer.pipe(Layer.provide(NodeServices.layer));
 const GitServiceLayer = CheckpointService.layer.pipe(
   Layer.provideMerge(
@@ -469,5 +613,99 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
           ["a/keep.txt", "b/new.txt"],
         );
       }),
+  );
+  it.effect("drops member folders git ignores or that vanished, instead of failing the part", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "checkpoint-ignored-" });
+      const mono = path.join(root, "mono");
+      const write = (file: string, contents: string) =>
+        Effect.andThen(
+          fileSystem.makeDirectory(path.dirname(file), { recursive: true }),
+          fileSystem.writeFileString(file, contents),
+        );
+      const commitAll = (cwd: string) =>
+        Effect.forEach(
+          [
+            ["init"],
+            ["config", "user.email", "test@test.com"],
+            ["config", "user.name", "Test"],
+            ["add", "."],
+            ["commit", "-m", "initial"],
+          ],
+          (args) => git(cwd, args),
+          { discard: true },
+        );
+      yield* write(path.join(mono, ".gitignore"), "libs/child/\n.scratch/\n");
+      yield* write(path.join(mono, "a", "keep.txt"), "a0");
+      yield* write(path.join(mono, "libs", "readme.txt"), "l0");
+      yield* commitAll(mono);
+      // A nested repo the parent ignores, an ignored folder, and an untracked one.
+      yield* write(path.join(mono, "libs", "child", "x.txt"), "x0");
+      yield* commitAll(path.join(mono, "libs", "child"));
+      yield* write(path.join(mono, ".scratch", "s.txt"), "s0");
+      yield* write(path.join(mono, "gone", "g.txt"), "g0");
+      const realMono = yield* fileSystem.realPath(mono);
+      const realChild = yield* fileSystem.realPath(path.join(mono, "libs", "child"));
+      const folder = (name: string, prefix: string) =>
+        snapshotFolder(path.join(mono, ...prefix.split("/")), name, realMono, prefix);
+
+      const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+      const scope = yield* checkpoints.prepareRootRunScope({
+        threadId,
+        runId,
+        rootNodeId: nodeId,
+        providerThreadId,
+        cwd: path.join(mono, "a"),
+        thread: {
+          worktreePath: null,
+          workspaceFolders: [
+            folder("a", "a"),
+            folder("libs", "libs"),
+            folder("scratch", ".scratch"),
+            folder("gone", "gone"),
+            snapshotFolder(path.join(mono, "libs", "child"), "child", realChild),
+          ],
+        },
+        createdAt,
+      });
+      assert.deepStrictEqual(scope.parts?.[0]?.pathspecs, [
+        ":(literal)a",
+        ":(literal)libs",
+        ":(literal).scratch",
+        ":(literal)gone",
+        ":(exclude,literal)libs/child",
+      ]);
+      yield* write(path.join(mono, "a", "keep.txt"), "a1");
+      yield* write(path.join(mono, "libs", "readme.txt"), "l1");
+      yield* fileSystem.remove(path.join(mono, "gone"), { recursive: true });
+
+      const checkpoint = yield* checkpoints.capture({
+        scope,
+        runId,
+        nodeId,
+        ordinalWithinScope: 1,
+        appRunOrdinal: 1,
+        capturedAt: createdAt,
+      });
+
+      assert.equal(checkpoint.status, "ready");
+      assert.equal(yield* git(realMono, ["show", `${checkpoint.ref}:a/keep.txt`]), "a1");
+      assert.equal(yield* git(realMono, ["show", `${checkpoint.ref}:libs/readme.txt`]), "l1");
+      assert.equal(
+        yield* git(realMono, [
+          "ls-tree",
+          "-r",
+          "--name-only",
+          checkpoint.ref,
+          "--",
+          ".scratch",
+          "gone",
+          "libs/child",
+        ]),
+        "",
+      );
+    }),
   );
 });

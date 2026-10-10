@@ -905,17 +905,19 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         });
 
         const plannedScopes: Array<OrchestrationV2CheckpointScope> = [];
+        const secondRunId = RunId.make("run:checkpoint-capture-parts-2");
         const checkpointOf = (scope: OrchestrationV2CheckpointScope, ordinal: number) => ({
           id: CheckpointId.make(`checkpoint:capture-parts-${ordinal}`),
           threadId: partsThreadId,
           scopeId: partsScopeId,
-          runId: ordinal === 0 ? null : partsRunId,
+          runId: ordinal === 0 ? null : ordinal === 1 ? partsRunId : secondRunId,
           nodeId: partsRootNodeId,
           parentCheckpointId: null,
           ordinalWithinScope: ordinal,
           appRunOrdinal: ordinal === 0 ? null : ordinal,
           ref: CheckpointRef.make(`checkpoint-ref:capture-parts-${ordinal}`),
-          status: "ready" as const,
+          // Turn 1's barrier fails, though its primary part is healthy.
+          status: ordinal === 1 ? ("error" as const) : ("ready" as const),
           files: [],
           parts: (scope.parts ?? []).map((planned) => ({
             ...planned,
@@ -951,12 +953,18 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           ),
         );
 
-        yield* CheckpointCaptureService.CheckpointCaptureServiceV2.pipe(
-          Effect.flatMap((service) =>
-            service.execute({ threadId: partsThreadId, runId: partsRunId, scopeId: partsScopeId }),
-          ),
-          Effect.provide(captureLayer),
-        );
+        const execute = (runToCapture: RunId) =>
+          CheckpointCaptureService.CheckpointCaptureServiceV2.pipe(
+            Effect.flatMap((service) =>
+              service.execute({
+                threadId: partsThreadId,
+                runId: runToCapture,
+                scopeId: partsScopeId,
+              }),
+            ),
+            Effect.provide(captureLayer),
+          );
+        yield* execute(partsRunId);
 
         assert.deepEqual(
           plannedScopes.map((scope) => scope.parts?.map((planned) => planned.cwd)),
@@ -975,6 +983,70 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
             [1, [["primary", "checkpoint-ref:capture-parts-primary-1", "app"]]],
           ],
         );
+
+        // Turn 2 reaches lib again. It must not replace turn 1's checkpoint with
+        // a baseline: that checkpoint's healthy parts still diff.
+        const secondNodeId = NodeId.make("node:checkpoint-capture-parts-root-2");
+        const firstRun = (yield* projectionStore.getCheckpointCaptureContext(partsThreadId, {
+          runId: partsRunId,
+          scopeId: partsScopeId,
+        })).run!;
+        yield* projectionStore.apply({
+          id: EventId.make("event:checkpoint-capture-parts:run-2"),
+          type: "run.updated",
+          threadId: partsThreadId,
+          runId: secondRunId,
+          nodeId: secondNodeId,
+          providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...firstRun,
+            id: secondRunId,
+            ordinal: 2,
+            userMessageId: MessageId.make("message:checkpoint-capture-parts-2"),
+            rootNodeId: secondNodeId,
+            status: "waiting",
+            unavailableFolderPaths: [],
+            completedAt: null,
+            checkpointId: null,
+          },
+        });
+        yield* projectionStore.apply({
+          id: EventId.make("event:checkpoint-capture-parts:node-2"),
+          type: "node.updated",
+          threadId: partsThreadId,
+          runId: secondRunId,
+          nodeId: secondNodeId,
+          providerInstanceId,
+          occurredAt: now,
+          payload: {
+            id: secondNodeId,
+            threadId: partsThreadId,
+            runId: secondRunId,
+            parentNodeId: null,
+            rootNodeId: secondNodeId,
+            kind: "root_turn",
+            status: "waiting",
+            countsForRun: true,
+            providerThreadId: partsProviderThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            runtimeRequestId: null,
+            checkpointScopeId: partsScopeId,
+            startedAt: now,
+            completedAt: null,
+          },
+        });
+        yield* execute(secondRunId);
+
+        assert.deepEqual(
+          plannedScopes.slice(2).map((scope) => scope.parts?.map((planned) => planned.cwd)),
+          [["/srv/app", "/srv/lib"]],
+        );
+        const kept = (yield* projectionStore.getThreadRecords(partsThreadId, [
+          "checkpoints",
+        ])).checkpoints.find((checkpoint) => checkpoint.ordinalWithinScope === 1);
+        assert.deepEqual([kept?.status, kept?.runId], ["error", partsRunId]);
       }),
   );
 });

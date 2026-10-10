@@ -224,6 +224,8 @@ export interface ProjectionCheckpointCaptureContext {
   readonly scope: OrchestrationV2CheckpointScope | undefined;
   readonly providerThread: OrchestrationV2ProviderThread | undefined;
   readonly readyCheckpointOrdinals: ReadonlyArray<number>;
+  /** Turns whose checkpoint a run captured with parts. Its part table is history to keep. */
+  readonly partTurnCheckpointOrdinals: ReadonlyArray<number>;
 }
 
 /** Exact durable targets used by interrupt, restart, and steering effects. */
@@ -4426,7 +4428,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               runRows[0] === undefined
                 ? undefined
                 : yield* decodeRunPayload(runRows[0].payload_json);
-            const [nodeRows, scopeRows, providerRows, readyRows] = yield* Effect.all([
+            const [nodeRows, scopeRows, providerRows, readyRows, partTurnRows] = yield* Effect.all([
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_nodes
             WHERE thread_id = ${threadId} AND node_id = ${run?.rootNodeId ?? null}`,
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_checkpoint_scopes
@@ -4439,6 +4441,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               sql<{ readonly ordinal: number }>`SELECT ordinal_within_scope AS ordinal
             FROM orchestration_v2_projection_checkpoints
             WHERE thread_id = ${threadId} AND scope_id = ${target.scopeId} AND status = 'ready'`,
+              sql<{ readonly ordinal: number }>`SELECT ordinal_within_scope AS ordinal
+            FROM orchestration_v2_projection_checkpoints
+            WHERE thread_id = ${threadId} AND scope_id = ${target.scopeId}
+              AND run_id IS NOT NULL AND status <> 'stale'
+              AND json_type(payload_json, '$.parts') IS NOT NULL`,
             ]);
             return {
               run,
@@ -4455,6 +4462,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ? undefined
                   : yield* decodeProviderThreadPayload(providerRows[0].payload_json),
               readyCheckpointOrdinals: readyRows.map(({ ordinal }) => ordinal),
+              partTurnCheckpointOrdinals: partTurnRows.map(({ ordinal }) => ordinal),
             };
           }),
         )
@@ -5952,6 +5960,15 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             readyCheckpointOrdinals: projection.checkpoints
               .filter(
                 (candidate) => candidate.scopeId === target.scopeId && candidate.status === "ready",
+              )
+              .map((candidate) => candidate.ordinalWithinScope),
+            partTurnCheckpointOrdinals: projection.checkpoints
+              .filter(
+                (candidate) =>
+                  candidate.scopeId === target.scopeId &&
+                  candidate.runId !== null &&
+                  candidate.status !== "stale" &&
+                  candidate.parts !== undefined,
               )
               .map((candidate) => candidate.ordinalWithinScope),
           };

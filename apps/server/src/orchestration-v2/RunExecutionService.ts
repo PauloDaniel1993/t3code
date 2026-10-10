@@ -36,6 +36,7 @@ import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { checkpointScopeForRun } from "./CheckpointScopeParts.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
@@ -835,7 +836,11 @@ export const layer: Layer.Layer<
             );
             yield* checkpointService
               .captureBaseline({
-                scope: input.checkpointScope,
+                scope: checkpointScopeForRun({
+                  scope: input.checkpointScope,
+                  thread: input.appThread,
+                  run: input.run,
+                }),
                 ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
               })
               .pipe(
