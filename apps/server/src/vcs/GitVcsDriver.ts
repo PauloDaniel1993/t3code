@@ -803,6 +803,8 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "-c",
         "sparse.expectFilesOutsideOfPatterns=false",
       ];
+      const pathspecs =
+        input.pathspecs === undefined || input.pathspecs.length === 0 ? ["."] : input.pathspecs;
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
       const tempIndexPath = path.join(
         gitCommonDir,
@@ -962,7 +964,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
               ...(sparseCheckout ? ["--sparse"] : []),
               "-A",
               "--",
-              ".",
+              ...pathspecs,
               ...exclusions,
             ],
             env: commitEnv,
@@ -976,7 +978,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                 const untracked = yield* execute({
                   operation,
                   cwd: input.cwd,
-                  args: ["ls-files", "--others", "--exclude-standard", "-z", "--", "."],
+                  args: ["ls-files", "--others", "--exclude-standard", "-z", "--", ...pathspecs],
                   env: commitEnv,
                   maxOutputBytes: WORKSPACE_FILES_MAX_OUTPUT_BYTES,
                 });

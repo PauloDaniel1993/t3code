@@ -137,6 +137,31 @@ it.layer(testLayer)("run workspace admission", (it) => {
     }),
   );
 
+  it.effect("plans each run's checkpoint parts from the folders that run can reach", () =>
+    Effect.gen(function* () {
+      const { at, snapshot, remove } = yield* folders;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:admission-parts");
+      const plannedParts = Effect.map(
+        projections.getThreadRecords(threadId, ["checkpointScopes"]),
+        ({ checkpointScopes }) =>
+          checkpointScopes[0]?.parts?.map((part) => [part.key === "primary", part.cwd, part.vcs]),
+      );
+      yield* createThread(threadId, { workspaceFolders: snapshot });
+
+      // Outside git, so recorded without being checkpointed; gone and the URI have no part.
+      yield* send(threadId, "first", { type: "start_immediately" });
+      assert.deepEqual(yield* plannedParts, [
+        [true, at.app, null],
+        [false, at.lib, null],
+      ]);
+
+      yield* remove("lib");
+      yield* send(threadId, "second", { type: "queue_after_active" });
+      assert.deepEqual(yield* plannedParts, [[true, at.app, null]]);
+    }),
+  );
+
   it.effect("records it when a prepared launch run is released", () =>
     Effect.gen(function* () {
       const { at, snapshot } = yield* folders;

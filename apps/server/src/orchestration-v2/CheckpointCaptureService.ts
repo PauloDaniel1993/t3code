@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import { checkpointScopeParts } from "./CheckpointScopeParts.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
@@ -103,6 +104,23 @@ export const layer: Layer.Layer<
         });
       }
 
+      // A queued run's dispatch rewrites the thread's root scope, so the row can
+      // hold a later run's plan. Parts come from this run's own folder facts,
+      // so one run never sees two folder sets.
+      const runScope =
+        scope.parts === undefined
+          ? scope
+          : yield* projections.getThread(input.threadId).pipe(
+              Effect.map((thread) => {
+                const parts = checkpointScopeParts({
+                  thread,
+                  unavailableFolderPaths: run.unavailableFolderPaths,
+                });
+                return parts === undefined
+                  ? scope
+                  : { ...scope, cwd: parts[0]?.cwd ?? scope.cwd, parts };
+              }),
+            );
       const capturedAt = yield* DateTime.now;
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
       const hasReadyCheckpoint = (ordinalWithinScope: number) =>
@@ -111,17 +129,17 @@ export const layer: Layer.Layer<
         baselineOrdinalWithinScope === 0 || hasReadyCheckpoint(0)
           ? null
           : yield* checkpoints.materializeBaselineCheckpoint({
-              scope,
+              scope: runScope,
               ordinalWithinScope: 0,
             });
       const baselineCheckpoint = hasReadyCheckpoint(baselineOrdinalWithinScope)
         ? null
         : yield* checkpoints.materializeBaselineCheckpoint({
-            scope,
+            scope: runScope,
             ordinalWithinScope: baselineOrdinalWithinScope,
           });
       const checkpoint = yield* checkpoints.capture({
-        scope,
+        scope: runScope,
         runId: run.id,
         nodeId: rootNode.id,
         ordinalWithinScope: run.ordinal,

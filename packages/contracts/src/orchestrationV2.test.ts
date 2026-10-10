@@ -24,7 +24,9 @@ import {
 import {
   OrchestrationV2AppThreadJson,
   OrchestrationV2Checkpoint,
+  OrchestrationV2CheckpointJson,
   OrchestrationV2CheckpointScope,
+  OrchestrationV2CheckpointScopeJson,
   OrchestrationV2Command,
   OrchestrationV2LimitRecoveryUpdate,
   OrchestrationV2DomainEvent,
@@ -370,6 +372,77 @@ describe("orchestration V2 contracts", () => {
     expect(checkpoint.appRunOrdinal).toBeNull();
     expect(checkpoint.scopeId).toBe(CheckpointScopeId.make("scope-child-1"));
     expect(checkpoint.parentCheckpointId).toBe(CheckpointId.make("checkpoint-root-1"));
+  });
+
+  it("keeps checkpoint parts optional and stores each checkpoint's own part table", () => {
+    const scopeJson = Schema.fromJsonString(OrchestrationV2CheckpointScopeJson);
+    const checkpointJson = Schema.fromJsonString(OrchestrationV2CheckpointJson);
+    const scope = {
+      id: "scope-root-1",
+      threadId: "thread-1",
+      runId: "run-1",
+      nodeId: "node-root-1",
+      parentScopeId: null,
+      providerThreadId: "provider-thread-1",
+      kind: "root_run",
+      ordinalWithinParent: 0,
+      advancesAppRunCount: true,
+      cwd: "/srv/mono",
+      createdAt: "2026-04-20T00:00:00.000Z",
+    };
+    const checkpoint = {
+      id: "checkpoint-1",
+      threadId: "thread-1",
+      scopeId: "scope-root-1",
+      runId: "run-1",
+      nodeId: "node-root-1",
+      parentCheckpointId: null,
+      ordinalWithinScope: 1,
+      appRunOrdinal: 1,
+      ref: "refs/t3/orchestration-v2/checkpoints/a/ordinal/1",
+      status: "error",
+      files: [],
+      capturedAt: "2026-04-20T00:00:00.000Z",
+    };
+    expect(Schema.decodeUnknownSync(scopeJson)(JSON.stringify(scope))).not.toHaveProperty("parts");
+    expect(Schema.decodeUnknownSync(checkpointJson)(JSON.stringify(checkpoint))).not.toHaveProperty(
+      "parts",
+    );
+
+    const primary = {
+      key: "primary",
+      cwd: "/srv/mono",
+      vcs: "git",
+      pathspecs: [":(literal)api", ":(exclude,literal)api/vendor"],
+      folders: [{ folderPath: "/srv/mono/api", label: "api", relativePath: "api" }],
+    } as const;
+    const notes = {
+      key: "0123456789abcdef",
+      cwd: "/srv/notes",
+      vcs: null,
+      pathspecs: ["."],
+      folders: [{ folderPath: "/srv/notes", label: "notes", relativePath: "" }],
+    } as const;
+    const withParts = Schema.decodeUnknownSync(checkpointJson)(
+      JSON.stringify({
+        ...checkpoint,
+        parts: [
+          { ...primary, ref: checkpoint.ref, status: "error" },
+          { ...notes, ref: null, status: "missing" },
+        ],
+      }),
+    );
+    expect(withParts.parts?.map((part) => [part.key, part.ref, part.status])).toEqual([
+      ["primary", checkpoint.ref, "error"],
+      ["0123456789abcdef", null, "missing"],
+    ]);
+    expect(
+      Schema.decodeUnknownSync(checkpointJson)(Schema.encodeSync(checkpointJson)(withParts)),
+    ).toEqual(withParts);
+    expect(
+      Schema.decodeUnknownSync(scopeJson)(JSON.stringify({ ...scope, parts: [primary, notes] }))
+        .parts,
+    ).toEqual([primary, notes]);
   });
 
   it("decodes command and domain event shapes for command-to-projection tests", () => {

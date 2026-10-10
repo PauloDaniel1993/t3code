@@ -25,6 +25,8 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 export interface CaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
+  /** What to capture below `cwd`; everything else keeps its `HEAD` content. Defaults to `["."]`. */
+  readonly pathspecs?: ReadonlyArray<string>;
 }
 
 export interface RestoreCheckpointInput {
