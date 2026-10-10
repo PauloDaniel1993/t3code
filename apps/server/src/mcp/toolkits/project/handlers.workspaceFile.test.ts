@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type OrchestrationV2ThreadShell,
+  type Project as ProjectRecord,
   type WorkspaceFolderEntry,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -125,6 +126,9 @@ it.layer(testLayer(true))("workspace-file project MCP tools", (it) => {
     Effect.gen(function* () {
       const tools = yield* toolkit;
       const dir = yield* fixture;
+      const initial = yield* (yield* Project.ProjectService).snapshot;
+      const expectedCount =
+        initial.projects.filter((project) => project.deletedAt === null).length + 2;
       const file = yield* dir.write("team.code-workspace", [
         { path: "app", name: "App" },
         { path: "lib", name: "Library" },
@@ -162,14 +166,21 @@ it.layer(testLayer(true))("workspace-file project MCP tools", (it) => {
         workspaceFile: null,
         folders: [{ path: dir.at("app"), name: "app", label: "app" }],
       });
-      const list = yield* tools
-        .handle("t3_project_list", { limit: 1 })
-        .pipe(Stream.unwrap, Stream.runCollect);
-      expect(list.at(-1)?.result).toEqual({ projects: [project], nextCursor: 1 });
-      const next = yield* tools
-        .handle("t3_project_list", { cursor: 1, limit: 1 })
-        .pipe(Stream.unwrap, Stream.runCollect);
-      expect(next.at(-1)?.result).toEqual({ projects: [plain.at(-1)?.result], nextCursor: null });
+      const listed: Array<ProjectRecord> = [];
+      for (let cursor = 0; cursor < expectedCount; cursor += 1) {
+        const result = yield* tools
+          .handle("t3_project_list", { cursor, limit: 1 })
+          .pipe(Stream.unwrap, Stream.runCollect);
+        const page = result.at(-1)?.result;
+        if (page === undefined || !("projects" in page)) throw new Error("List failed");
+        expect(page.projects).toHaveLength(1);
+        expect(page.nextCursor).toBe(cursor + 1 < expectedCount ? cursor + 1 : null);
+        listed.push(...page.projects);
+      }
+      expect(listed.filter((row) => row.id === project.id)).toEqual([project]);
+      expect(
+        listed.filter((row) => row.workspaceFile === null && row.workspaceRoot === dir.at("app")),
+      ).toEqual([plain.at(-1)?.result]);
     }),
   );
 
@@ -182,6 +193,9 @@ it.layer(testLayer(true))("workspace-file project MCP tools", (it) => {
         .pipe(Stream.unwrap, Stream.runCollect);
       const plain = created.at(-1)?.result;
       if (plain === undefined || !("id" in plain)) throw new Error("Create failed");
+      yield* tools
+        .handle("t3_project_update", { projectId: plain.id, autoPull: true })
+        .pipe(Stream.unwrap, Stream.runCollect);
       const update = (workspaceFilePath: string | null) =>
         tools
           .handle("t3_project_update", { projectId: plain.id, workspaceFilePath })
@@ -194,6 +208,7 @@ it.layer(testLayer(true))("workspace-file project MCP tools", (it) => {
       expect(linked.at(-1)?.result).toMatchObject({
         id: plain.id,
         title: "Existing",
+        autoPull: true,
         workspaceFile: file,
         folders: [{ name: "App" }, { name: "Lib" }],
       });
@@ -227,6 +242,7 @@ it.layer(testLayer(true))("workspace-file project MCP tools", (it) => {
       expect((yield* update(null)).at(-1)?.result).toMatchObject({
         id: plain.id,
         title: "Existing",
+        autoPull: true,
         workspaceRoot: dir.at("other"),
         workspaceFile: null,
         folders: [{ name: "other" }],

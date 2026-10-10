@@ -8,7 +8,7 @@ import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.t
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import { expectedProjectMutationFailure } from "../../../project/ProjectMutation.ts";
 import { projectFolders } from "@t3tools/shared/workspaceFolders";
-import type { Project as ProjectResult } from "@t3tools/contracts";
+import type { Project as ProjectRecord } from "@t3tools/contracts";
 import { newCommandId, readCaller, readMutationCaller, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
@@ -27,7 +27,7 @@ function projectFailure(error: Project.ProjectServiceError) {
 }
 
 /** MCP inventories include a plain project's derived folder without enlarging client shells. */
-function projectResult(project: ProjectResult) {
+function projectResult(project: ProjectRecord) {
   return {
     ...project,
     workspaceFile: project.workspaceFile ?? null,

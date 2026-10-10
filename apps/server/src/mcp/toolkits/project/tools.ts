@@ -87,7 +87,7 @@ const ProjectCreateTool = Tool.make("t3_project_create", {
 const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
   description:
-    "Update a registered project's settings. Omitted fields are preserved. Send workspaceFilePath on its own to link a plain project (the file's first folder must match workspaceRoot), relink to a different file, refresh the current file, or unlink with null. Linking and relinking require workspace-file projects to be enabled. Unlink keeps the stored primary folder, history and thread bindings, and may conflict with a plain project at that folder. A linked project's workspaceRoot cannot be edited directly. Results include workspaceFile and ordered folders; workspaceRoot is the primary folder. Uses the same project service as the app.",
+    "Update a registered project's settings. Omitted fields are preserved. Send workspaceFilePath on its own to link a plain project (the file's first folder must match workspaceRoot), relink to a different file, refresh the current file, or unlink with null. Linking, relinking and refreshing require workspace-file projects to be enabled. Unlink keeps the stored primary folder, history and thread bindings, and may conflict with a plain project at that folder. A linked project's workspaceRoot cannot be edited directly. Results include workspaceFile and ordered folders; workspaceRoot is the primary folder. Uses the same project service as the app.",
   parameters: Schema.Struct({ projectId: ProjectId, ...ProjectUpdatePayload.fields }),
 }).annotate(Tool.Destructive, true);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {
