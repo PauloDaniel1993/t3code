@@ -8,6 +8,7 @@ import {
   type ProjectScript,
   SCRIPT_RUN_COMMAND_PATTERN,
   type ThreadEnvMode,
+  type WorkspaceFolderEntry,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Result from "effect/Result";
@@ -22,6 +23,9 @@ export interface ProjectCreateCommand {
   readonly projectId: ProjectId;
   readonly title: string;
   readonly workspaceRoot: string;
+  /** Creates the project linked to this workspace file, with its `folders`. */
+  readonly workspaceFile?: string;
+  readonly folders?: ReadonlyArray<WorkspaceFolderEntry>;
   readonly scripts?: ReadonlyArray<ProjectScript>;
 }
 
@@ -31,6 +35,9 @@ export interface ProjectMetaUpdateCommand {
   readonly projectId: ProjectId;
   readonly title?: string;
   readonly workspaceRoot?: string;
+  /** Absent leaves the link unchanged; null unlinks, together with `folders: null`. */
+  readonly workspaceFile?: string | null;
+  readonly folders?: ReadonlyArray<WorkspaceFolderEntry> | null;
   readonly defaultModelSelection?: ModelSelection | null;
   readonly defaultThreadEnvMode?: ThreadEnvMode | null;
   readonly autoPull?: boolean;
@@ -113,6 +120,30 @@ const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
 /**
+ * A linked project's first folder is its primary folder, at `workspaceRoot`,
+ * and each folder has exactly one of a path or a URI. A plain project stores
+ * no folders.
+ */
+function workspaceLinkViolation(project: {
+  readonly workspaceRoot: string;
+  readonly workspaceFile: string | null;
+  readonly folders: ReadonlyArray<WorkspaceFolderEntry> | null;
+}): string | undefined {
+  if (project.workspaceFile === null) {
+    return project.folders === null ? undefined : "A plain project cannot store workspace folders.";
+  }
+  if (project.folders?.[0]?.path !== project.workspaceRoot) {
+    return "A linked project's first workspace folder must be its workspace root.";
+  }
+  if (
+    project.folders.some((folder) => (folder.path === undefined) === (folder.uri === undefined))
+  ) {
+    return "Each workspace folder needs exactly one of a path or a URI.";
+  }
+  return undefined;
+}
+
+/**
  * Decide one project command against the rows it touches. The caller reads
  * `state` under the project's lock and commits the planned event.
  */
@@ -159,6 +190,12 @@ export function planProjectCommand(input: {
           `Project '${command.projectId}' already exists and cannot be created twice.`,
         );
       }
+      const linkViolation = workspaceLinkViolation({
+        workspaceRoot: command.workspaceRoot,
+        workspaceFile: command.workspaceFile ?? null,
+        folders: command.folders ?? null,
+      });
+      if (linkViolation !== undefined) return invariant(linkViolation);
       const conflict = requireWorkspaceAvailable(command.workspaceRoot);
       if (conflict !== undefined) return Result.fail(conflict);
       return Result.succeed({
@@ -168,6 +205,8 @@ export function planProjectCommand(input: {
           projectId: command.projectId,
           title: command.title,
           workspaceRoot: command.workspaceRoot,
+          ...(command.workspaceFile === undefined ? {} : { workspaceFile: command.workspaceFile }),
+          ...(command.folders === undefined ? {} : { folders: command.folders }),
           // Project creation has no user model choice. Older clients sent an
           // automatic seed, but only a metadata update records an explicit default.
           defaultModelSelection: null,
@@ -202,6 +241,19 @@ export function planProjectCommand(input: {
           }
         }
       }
+      if (
+        command.workspaceRoot !== undefined ||
+        command.workspaceFile !== undefined ||
+        command.folders !== undefined
+      ) {
+        const linkViolation = workspaceLinkViolation({
+          workspaceRoot: command.workspaceRoot ?? project.workspaceRoot,
+          workspaceFile:
+            command.workspaceFile === undefined ? project.workspaceFile : command.workspaceFile,
+          folders: command.folders === undefined ? project.folders : command.folders,
+        });
+        if (linkViolation !== undefined) return invariant(linkViolation);
+      }
       if (command.workspaceRoot !== undefined) {
         const conflict = requireWorkspaceAvailable(command.workspaceRoot);
         if (conflict !== undefined) return Result.fail(conflict);
@@ -213,6 +265,8 @@ export function planProjectCommand(input: {
           projectId: command.projectId,
           ...(command.title === undefined ? {} : { title: command.title }),
           ...(command.workspaceRoot === undefined ? {} : { workspaceRoot: command.workspaceRoot }),
+          ...(command.workspaceFile === undefined ? {} : { workspaceFile: command.workspaceFile }),
+          ...(command.folders === undefined ? {} : { folders: command.folders }),
           ...(command.defaultModelSelection === undefined
             ? {}
             : { defaultModelSelection: command.defaultModelSelection }),

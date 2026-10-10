@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { reconcileBaseMigrationLedger, runForkMigrations } from "./ForkMigrations.ts";
+import ProjectionProjectsWorkspaceFile from "./ForkMigrations/012_ProjectionProjectsWorkspaceFile.ts";
 import { runMigrations } from "./Migrations.ts";
 
 const Database = NodeSqliteClient.layer({ filename: ":memory:" });
@@ -20,7 +21,7 @@ it.effect("keeps upstream and fork histories separate on fresh startup and resta
     const base = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     const fork = yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`;
     assert.lengthOf(base, 56);
-    assert.lengthOf(fork, 11);
+    assert.lengthOf(fork, 12);
     yield* migrate;
     assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, base);
     assert.deepEqual(yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`, fork);
@@ -83,6 +84,27 @@ it.effect(
         { native_agents_json: '[{"legacy":"evidence"}]' },
       ]);
     }).pipe(Effect.provide(Database)),
+);
+
+it.effect("adds workspace-file columns that leave existing projects plain", () =>
+  Effect.gen(function* () {
+    yield* runMigrations();
+    yield* runForkMigrations({ toMigrationInclusive: 11 });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+      VALUES ('p', 'Project', '/fixture', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`;
+    yield* runForkMigrations();
+    yield* ProjectionProjectsWorkspaceFile;
+    assert.deepEqual(
+      yield* sql`SELECT workspace_file, workspace_folders_json FROM projection_projects`,
+      [{ workspace_file: null, workspace_folders_json: null }],
+    );
+    assert.lengthOf(
+      yield* sql`SELECT 1 FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_projection_projects_active_workspace_file'`,
+      1,
+    );
+  }).pipe(Effect.provide(Database)),
 );
 
 it.effect.each([53, 54])(

@@ -14,7 +14,7 @@ import {
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import type { OrchestrationV2StoredEvent } from "./orchestrationV2.ts";
-import { ProjectIconOverride, ProjectScript } from "./project.ts";
+import { ProjectIconOverride, ProjectScript, WorkspaceFolderEntry } from "./project.ts";
 
 /**
  * Which client dispatched the command that produced this event (#7774).
@@ -44,6 +44,9 @@ export const ApplicationProjectCreatedPayload = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  // Present only when the project is created linked to a workspace file.
+  workspaceFile: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  folders: Schema.optional(Schema.Array(WorkspaceFolderEntry)),
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   // Per-project override for where new threads start; optional so persisted
@@ -62,6 +65,9 @@ export const ApplicationProjectMetaUpdatedPayload = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  // Absent = leave unchanged; null = cleared by unlinking the workspace file.
+  workspaceFile: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  folders: Schema.optional(Schema.NullOr(Schema.Array(WorkspaceFolderEntry))),
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   // Absent = leave unchanged; null = clear the override.

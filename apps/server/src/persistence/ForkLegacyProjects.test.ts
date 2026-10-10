@@ -5,11 +5,15 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "./Migrations.ts";
-import { reconcileBaseMigrationLedger } from "./ForkMigrations.ts";
+import { reconcileBaseMigrationLedger, runForkMigrations } from "./ForkMigrations.ts";
 import { ProjectStoreV2, layer as projectLayer } from "../orchestration-v2/ProjectStore.ts";
 
-// The production order in Layers/Sqlite.ts: the fork's preparation, then upstream's migrations.
-const migrate = reconcileBaseMigrationLedger().pipe(Effect.andThen(runMigrations()));
+// The production order in Layers/Sqlite.ts: the fork's preparation, upstream's
+// migrations, then the fork's own, which ProjectStore's columns depend on.
+const migrate = reconcileBaseMigrationLedger().pipe(
+  Effect.andThen(runMigrations()),
+  Effect.andThen(runForkMigrations()),
+);
 
 it.effect.each(['{"not":"an-array"}', "{broken", '[{"wrong":"script"}]'])(
   "imports invalid project JSON %s with defaults and retained evidence",

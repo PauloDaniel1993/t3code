@@ -101,6 +101,8 @@ export class ServerConfig extends Context.Service<
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
+    /** Accept projects linked to VS Code workspace files. Absent means off. */
+    readonly workspaceFileProjects?: boolean;
   }
 >()("t3/config/ServerConfig") {
   /** @deprecated Import and use `layerTest` from this module. */

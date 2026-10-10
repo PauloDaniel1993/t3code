@@ -1,8 +1,13 @@
 import { assert, it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { describe, expect, it } from "vite-plus/test";
 
+import {
+  ApplicationProjectCreatedPayload,
+  ApplicationProjectMetaUpdatedPayload,
+} from "./applicationEvent.ts";
 import { ProjectId } from "./baseSchemas.ts";
 import { OrchestrationProjectShell } from "./orchestrationProject.ts";
 
@@ -286,3 +291,122 @@ effectIt.effect("encodes compatible icons inside snapshots and project updates",
     assert.deepEqual(yield* decodeNightlyIcon(update.projectIcon), fallback);
   }),
 );
+
+const decodeShell = Schema.decodeUnknownSync(OrchestrationProjectShell);
+const encodeShell = Schema.encodeSync(OrchestrationProjectShell);
+const decodeProjectCreated = Schema.decodeUnknownSync(ApplicationProjectCreatedPayload);
+const decodeProjectMetaUpdated = Schema.decodeUnknownSync(ApplicationProjectMetaUpdatedPayload);
+const encodeProjectMetaUpdated = Schema.encodeSync(ApplicationProjectMetaUpdatedPayload);
+// The shell as clients knew it before workspace files.
+const decodeShellWithoutWorkspaceFiles = Schema.decodeUnknownSync(
+  OrchestrationProjectShell.mapFields(
+    Struct.omit(["workspaceFile", "folders", "workspaceFileStatus"]),
+  ),
+);
+
+describe("workspace-file projects", () => {
+  const plainShell = {
+    id: "project",
+    title: "Project",
+    workspaceRoot: "/work/app",
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("decodes shells and events from before workspace files as plain projects", () => {
+    const shell = decodeShell(plainShell);
+    for (const field of ["workspaceFile", "folders", "workspaceFileStatus"]) {
+      expect(Object.hasOwn(shell, field)).toBe(false);
+    }
+    const created = decodeProjectCreated({
+      projectId: "project",
+      title: "Project",
+      workspaceRoot: "/work/app",
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(Object.hasOwn(created, "folders")).toBe(false);
+  });
+
+  const linkedShell = {
+    ...plainShell,
+    workspaceFile: "/work/app.code-workspace",
+    folders: [
+      {
+        path: "/work/app",
+        name: "app",
+        label: "app",
+        availability: "available",
+        vcs: { checkoutRoot: "/work/app" },
+      },
+      {
+        uri: "vscode-remote://wsl+Ubuntu/srv/api",
+        name: "api",
+        label: "api",
+        availability: "unavailable",
+        unavailableReason: "wsl",
+      },
+    ],
+    workspaceFileStatus: {
+      state: "invalid",
+      diagnostics: [
+        { code: "too-many-folders", message: "Too many folders." },
+        { code: "malformed-jsonc", message: "Expected a comma.", line: 3, column: 5 },
+      ],
+      liveDetection: true,
+    },
+  };
+
+  it("keeps decoding a shell when a newer server adds reasons, codes or states", () => {
+    const shell = decodeShell(linkedShell);
+    expect(decodeShell(encodeShell(shell))).toEqual(shell);
+    expect(shell.folders?.map((folder) => folder.label)).toEqual(["app", "api"]);
+    expect(shell.folders?.[1]?.availability).toBe("unavailable");
+    expect(shell.folders?.[1]?.unavailableReason).toBeUndefined();
+    expect(shell.workspaceFileStatus?.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "malformed-jsonc",
+    ]);
+    const unknownState = decodeShell({
+      ...linkedShell,
+      workspaceFileStatus: { ...linkedShell.workspaceFileStatus, state: "stale" },
+    });
+    expect(unknownState.workspaceFileStatus).toBeUndefined();
+    expect(unknownState.folders).toHaveLength(2);
+  });
+
+  it("lets clients from before workspace files decode a linked project", () => {
+    const shell = decodeShellWithoutWorkspaceFiles(linkedShell);
+    expect(shell.workspaceRoot).toBe("/work/app");
+    expect(Object.hasOwn(shell, "folders")).toBe(false);
+  });
+
+  it("keeps an unlink's nulls distinct from unchanged fields", () => {
+    const unlink = decodeProjectMetaUpdated({
+      projectId: "project",
+      workspaceFile: null,
+      folders: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const roundTripped = decodeProjectMetaUpdated(encodeProjectMetaUpdated(unlink));
+    expect(roundTripped).toEqual(unlink);
+    expect(roundTripped).toHaveProperty("folders", null);
+    expect(roundTripped).toHaveProperty("workspaceFile", null);
+    // Only an update can clear folders; a created project has them or omits them.
+    expect(() =>
+      decodeProjectCreated({
+        projectId: "project",
+        title: "Project",
+        workspaceRoot: "/work/app",
+        folders: null,
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ).toThrow();
+  });
+});

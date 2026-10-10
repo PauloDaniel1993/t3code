@@ -649,6 +649,11 @@ export const ServerConfig = Schema.Struct({
    */
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
+   * Whether projects can be linked to VS Code workspace files. Clients hide
+   * workspace-file import, link and folder-scoped file inputs unless true.
+   */
+  workspaceFileProjects: Schema.optionalKey(Schema.Boolean),
+  /**
    * Palettes published by this environment's machine. Never sent in a config
    * snapshot: the theme stream emits the current set before any change, so a
    * snapshot carrying it too would hand every subscriber the same array twice

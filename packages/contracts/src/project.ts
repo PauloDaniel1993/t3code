@@ -4,6 +4,8 @@ import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import {
   CommandId,
+  ForwardCompatibleArray,
+  ForwardCompatibleOptional,
   IsoDateTime,
   NonNegativeInt,
   PositiveInt,
@@ -134,10 +136,114 @@ export const ProjectIconOverride = Schema.Union([
 );
 export type ProjectIconOverride = typeof ProjectIconOverride.Type;
 
+/**
+ * One folder named by a linked project's workspace file, as stored: in file
+ * order, deduplicated. Exactly one of `path` and `uri` is set.
+ */
+export const WorkspaceFolderEntry = Schema.Struct({
+  /** Normalized absolute server path, from a plain path or a converted `file:` URI. */
+  path: Schema.optional(TrimmedNonEmptyString),
+  /** A kept non-file URI, such as `vscode-remote://ssh-remote+devbox/srv/api`. */
+  uri: Schema.optional(TrimmedNonEmptyString),
+  /** The file's `name`, else the basename or last URI segment. */
+  name: TrimmedNonEmptyString,
+});
+export type WorkspaceFolderEntry = typeof WorkspaceFolderEntry.Type;
+
+export const WorkspaceFolderUnavailableReason = Schema.Literals([
+  "missing",
+  "not-directory",
+  "inaccessible",
+  "remote",
+]);
+export type WorkspaceFolderUnavailableReason = typeof WorkspaceFolderUnavailableReason.Type;
+
+/**
+ * A linked project's folder as served: the stored entry plus derived and probed
+ * facts. Values a newer server adds decode as absent instead of failing the shell.
+ */
+export const ProjectWorkspaceFolder = Schema.Struct({
+  ...WorkspaceFolderEntry.fields,
+  /** The folder's unique canonical path label. Derived from the entries, never stored. */
+  label: TrimmedNonEmptyString,
+  /** Absent until probed. "unavailable" carries `unavailableReason`. */
+  availability: ForwardCompatibleOptional(Schema.Literals(["available", "unavailable"])),
+  unavailableReason: ForwardCompatibleOptional(WorkspaceFolderUnavailableReason),
+  /** Where a remote URI folder lives, e.g. "SSH: devbox". */
+  remoteDescription: Schema.optional(TrimmedNonEmptyString),
+  /** Absent until enriched; null when the folder is not inside a git repository. */
+  vcs: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        /** Realpath of `git rev-parse --show-toplevel`. */
+        checkoutRoot: TrimmedNonEmptyString,
+        /** Omitted on `folders[0]`, whose identity is the project's `repositoryIdentity`. */
+        repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
+      }),
+    ),
+  ),
+});
+export type ProjectWorkspaceFolder = typeof ProjectWorkspaceFolder.Type;
+
+export const WorkspaceFileDiagnosticCode = Schema.Literals([
+  "file-not-found",
+  "not-a-file",
+  "unreadable",
+  "malformed-jsonc",
+  "invalid-shape",
+  "empty-folders",
+  "primary-unusable",
+  "primary-remote",
+  "conflict",
+]);
+export type WorkspaceFileDiagnosticCode = typeof WorkspaceFileDiagnosticCode.Type;
+
+/** Why a workspace file or one of its entries can't be used. */
+export const WorkspaceFileDiagnostic = Schema.Struct({
+  code: WorkspaceFileDiagnosticCode,
+  message: TrimmedNonEmptyString,
+  /** Index of the offending entry in the file's `folders`. */
+  entryIndex: Schema.optional(NonNegativeInt),
+  /** The server path concerned: the workspace file or a resolved folder. */
+  path: Schema.optional(TrimmedNonEmptyString),
+  /** 1-based position in the file, for syntax errors. */
+  line: Schema.optional(PositiveInt),
+  column: Schema.optional(PositiveInt),
+});
+export type WorkspaceFileDiagnostic = typeof WorkspaceFileDiagnostic.Type;
+
+/** Server-owned sync health of a linked project's workspace file. Never an event. */
+export const WorkspaceFileStatus = Schema.Struct({
+  state: Schema.Literals(["ok", "missing", "unreadable", "invalid"]),
+  // Diagnostics with codes this build doesn't know are dropped.
+  diagnostics: ForwardCompatibleArray(WorkspaceFileDiagnostic),
+  /** False when the file can't be watched; changes then apply only on load or Refresh. */
+  liveDetection: Schema.Boolean,
+});
+export type WorkspaceFileStatus = typeof WorkspaceFileStatus.Type;
+
+/**
+ * Fields only a project linked to a workspace file carries. Plain projects
+ * omit them on the wire, and clients derive their one folder from
+ * `workspaceRoot`.
+ */
+export const ProjectWorkspaceFileFields = {
+  /** Normalized server path of the linked workspace file. */
+  workspaceFile: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  /**
+   * In file order. `folders[0]` is the primary folder, and its `path` is
+   * `workspaceRoot`. Strict, because dropping a folder would shift the primary.
+   */
+  folders: Schema.optional(Schema.Array(ProjectWorkspaceFolder)),
+  /** A `state` this build doesn't know decodes as absent. */
+  workspaceFileStatus: ForwardCompatibleOptional(WorkspaceFileStatus),
+};
+
 export const Project = Schema.Struct({
   id: ProjectId,
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  ...ProjectWorkspaceFileFields,
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
