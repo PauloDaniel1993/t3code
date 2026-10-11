@@ -74,4 +74,5 @@ export const {
   Cursor,
   CursorSdkError,
   InMemoryCredentialStore,
+  JsonlLocalAgentStore,
 } = requireCursorSdk("@cursor/sdk") as typeof import("@cursor/sdk");

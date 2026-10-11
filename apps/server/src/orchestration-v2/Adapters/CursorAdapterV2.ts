@@ -2075,7 +2075,7 @@ export function makeCursorAdapterV2(
             if ((yield* Ref.get(activeTurn)) !== null) {
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CursorAgentSdk.CURSOR_PROVIDER,
-                detail: "Cursor workspace folders cannot change while a provider turn is active.",
+                detail: "Cursor cannot replace its agent while a provider turn is active.",
               });
             }
             yield* existing.session.close.pipe(Effect.ignore);
@@ -2425,14 +2425,23 @@ export function makeCursorAdapterV2(
               ),
           ),
           resumeThread: Effect.fn("CursorAdapterV2.resumeThread")(
-            function* (threadInput: { readonly providerThread: OrchestrationV2ProviderThread }) {
+            function* (
+              threadInput: Parameters<
+                ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]
+              >[0],
+            ) {
               const agentId = nativeThreadId(threadInput.providerThread);
               yield* openAgent({
                 operation: "resume",
                 agentId,
                 threadId: threadInput.providerThread.appThreadId ?? input.threadId,
-                modelSelection: input.modelSelection,
-                runtimePolicy: (yield* Ref.get(liveAgent))?.runtimePolicy ?? input.runtimePolicy,
+                modelSelection: threadInput.modelSelection ?? input.modelSelection,
+                // Apply scope changes during load so a cwd-scoped native resume
+                // failure reaches T3's existing portable-context fallback.
+                runtimePolicy:
+                  threadInput.runtimePolicy ??
+                  (yield* Ref.get(liveAgent))?.runtimePolicy ??
+                  input.runtimePolicy,
               });
               const now = yield* DateTime.now;
               return {

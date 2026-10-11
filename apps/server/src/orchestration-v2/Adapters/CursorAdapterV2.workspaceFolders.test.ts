@@ -5,13 +5,16 @@ import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contra
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as IdAllocator from "../IdAllocator.ts";
+import { createAgentPlatform, JsonlLocalAgentStore } from "../../provider/cursorSdk.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
 import { CursorProviderCapabilitiesV2, makeCursorAgentOptions } from "./CursorAdapterV2.ts";
-import type * as CursorAgentSdk from "./CursorAgentSdk.ts";
+import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import {
   cursorWorkspaceTurnEvents,
   cursorWorkspaceTurnInput,
@@ -23,6 +26,44 @@ const quote = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const modelSelection = { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2.5" };
 
 describe("Cursor workspace folders", () => {
+  it.effect("the installed SDK's native store scopes agent lookup to cwd", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "cursor-store-scope-",
+      });
+      const cwd = path.join(directory, "primary");
+      const moved = path.join(directory, "moved");
+      yield* Effect.forEach([cwd, moved], (folder) => fileSystem.makeDirectory(folder));
+      const store = new JsonlLocalAgentStore(path.join(directory, "state"));
+      const platform = (workspaceRef: string) =>
+        Effect.promise(() =>
+          createAgentPlatform({
+            localStore: store,
+            workspaceRef,
+            scopedWorkspaceRef: workspaceRef,
+          }),
+        );
+      const source = yield* platform(cwd);
+      const { agent } = yield* Effect.promise(() =>
+        source.store.createAgent({ workspaceRef: cwd, agentId: "cursor-store-scope" }),
+      );
+      assert.equal(
+        (yield* Effect.promise(() => source.getAgent(agent.agentId))).agentId,
+        agent.agentId,
+      );
+      const target = yield* platform(moved);
+      const resumed = yield* Effect.tryPromise({
+        try: () => target.resumeAgent(agent.agentId, { local: { cwd: moved, dirs: [] } }),
+        catch: (cause) =>
+          new CursorAgentSdk.CursorAgentSdkRunnerError({ method: "agent.resume", cause }),
+      }).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(resumed));
+      assert.isNull(yield* Effect.promise(() => target.store.getAgent(agent.agentId)));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it("maps directories without loosening sandbox, approval or plan controls", () => {
     for (const runtimeMode of ["full-access", "auto-accept-edits", "approval-required"] as const) {
       for (const interactionMode of ["default", "plan"] as const) {
@@ -55,12 +96,20 @@ describe("Cursor workspace folders", () => {
       const opens: Array<CursorAgentSdk.CursorAgentSdkOpenInput> = [];
       const messages: string[] = [];
       let closes = 0;
+      let nativeCwd: string | undefined;
       const firstRun = yield* Deferred.make<RunResult>();
       const runner: CursorAgentSdk.CursorAgentSdkRunnerShape = {
         assertComplete: Effect.void,
         open: (input) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             opens.push(input);
+            if (input.operation === "resume" && input.options.local?.cwd !== nativeCwd) {
+              return yield* new CursorAgentSdk.CursorAgentSdkRunnerError({
+                method: "agent.resume",
+                cause: "Native agent not found in this cwd's store.",
+              });
+            }
+            nativeCwd = input.options.local?.cwd;
             return {
               agentId: input.agentId ?? "cursor-workspace-native",
               listMessages: Effect.succeed([]),
@@ -163,10 +212,22 @@ describe("Cursor workspace folders", () => {
       );
 
       const moved = { ...cleared, cwd: fixture.additionalDirectories[0]! };
-      yield* runtime.startTurn(yield* turn(6, moved));
+      const movedResume = yield* runtime
+        .resumeThread({ providerThread, runtimePolicy: moved })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(movedResume));
+      assert.equal(runtime.providerSession.cwd, fixture.cwd);
+      // ProviderTurnStartService responds to this load failure with a fresh
+      // native agent and portable history, rather than losing the run at send.
+      const replacement = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy: moved,
+      });
+      yield* runtime.startTurn({ ...(yield* turn(6, moved)), providerThread: replacement });
       yield* cursorWorkspaceTurnEvents(runtime);
       yield* runtime.readThreadSnapshot({ providerThread });
-      assert.equal(opens.length, 4);
+      assert.equal(opens.length, 5);
       assert.equal(closes, 3);
       assert.deepEqual(
         opens.map((open) => [open.operation, open.agentId, open.options.local?.dirs]),
@@ -175,6 +236,7 @@ describe("Cursor workspace folders", () => {
           ["resume", "cursor-workspace-native", reduced.additionalDirectories],
           ["resume", "cursor-workspace-native", []],
           ["resume", "cursor-workspace-native", []],
+          ["create", undefined, []],
         ],
       );
       assert.equal(opens.at(-1)?.options.local?.cwd, moved.cwd);
