@@ -124,9 +124,11 @@ const withCoordinator = <A, E, R>(
     readonly projects?: ReadonlyArray<{
       readonly title: string;
       readonly workspaceRoot: string;
+      readonly workspaceFile?: string;
       readonly folders?: ReadonlyArray<{ readonly path: string; readonly name: string }>;
     }>;
     readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+    readonly probe?: WorkspaceFolderResolver.WorkspaceFolderResolver["Service"]["probe"];
     readonly dispatched?: Array<MetadataUpdate>;
   } = {},
 ) =>
@@ -135,6 +137,14 @@ const withCoordinator = <A, E, R>(
       WorktreeSet.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            Layer.unwrap(
+              Effect.gen(function* () {
+                const resolver = yield* WorkspaceFolderResolver.WorkspaceFolderResolver;
+                return Layer.succeed(WorkspaceFolderResolver.WorkspaceFolderResolver, {
+                  probe: input.probe ?? resolver.probe,
+                });
+              }),
+            ),
             Layer.unwrap(
               Effect.gen(function* () {
                 const driver = yield* GitVcsDriver.GitVcsDriver;
@@ -1467,6 +1477,55 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
+it.effect(
+  "uses the physical worktree root when a subfolder alias has a different lexical depth",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const resolver = yield* WorkspaceFolderResolver.WorkspaceFolderResolver;
+      const repo = yield* makeRepo("aliased-subfolder", ["apps/web/index.ts"]);
+      const snapshot = yield* snapshotOf([path.join(repo.root, "apps", "web")]);
+      const set = yield* withCoordinator(
+        createSet({ projectRoot: repo.root, baseRef: repo.branch, branch: "alias" }),
+      );
+      const root = yield* fileSystem.realPath(set.members[0]!.path);
+      const aliases = yield* fileSystem.makeTempDirectoryScoped({ prefix: "subfolder-alias-" });
+      const alias = path.join(aliases, "web");
+      // Model an OS subfolder symlink's resolver result without requiring
+      // Windows symlink privileges; git still resolves the real worktree.
+      const input = {
+        projectRoot: repo.root,
+        thread: {
+          id: threadId,
+          title: "Alias",
+          branch: "alias",
+          worktreePath: alias,
+          workspaceFolders: snapshot,
+        },
+        probe: (cwd: string, options: { readonly vcs?: boolean }) =>
+          resolver.probe(cwd === alias ? path.join(root, "apps", "web") : cwd, options),
+      };
+      const target = yield* withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+          coordinator.editorWorkspaceFile(threadId),
+        ),
+        input,
+      );
+      assert.equal(target, `${root}.code-workspace`);
+      assert.isTrue(yield* fileSystem.exists(target));
+      assert.equal(yield* git(root, ["status", "--porcelain"]), "");
+      yield* withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+          coordinator.remove({ threadId }),
+        ),
+        input,
+      );
+      assert.isFalse(yield* fileSystem.exists(root));
+      assert.isFalse(yield* fileSystem.exists(target));
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
 it.effect("puts a nested set's workspace beside its parent member, outside both repositories", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1537,6 +1596,53 @@ it.effect("never overwrites the linked source file when a reused worktree collid
     }
     assert.equal(yield* fileSystem.readFileString(source), original);
     assert.equal(yield* git(worktreePath, ["status", "--porcelain"]), "");
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("protects another linked project's source file at the generated target", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const repo = yield* makeRepo("other-project-source");
+    const snapshot = yield* snapshotOf([repo.root]);
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders: snapshot, baseRef: repo.branch, branch: "other-source" }),
+    );
+    const source = `${set.members[0]!.path}.code-workspace`;
+    const original = '{"folders":[{"path":"./other"}],"tasks":{"version":"2.0.0"}}\n';
+    yield* fileSystem.writeFileString(source, original);
+    const result = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.editorWorkspaceFile(threadId),
+      ),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          ...WorktreeSet.worktreeSetBinding(set),
+          workspaceFolders: snapshot,
+        },
+        projects: [{ title: "Other project", workspaceRoot: repo.root, workspaceFile: source }],
+      },
+    ).pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") assert.equal(result.failure._tag, "VcsThreadWorktreesError");
+    assert.equal(yield* fileSystem.readFileString(source), original);
+    yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.remove({ threadId }),
+      ),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          ...WorktreeSet.worktreeSetBinding(set),
+          workspaceFolders: snapshot,
+        },
+        projects: [{ title: "Other project", workspaceRoot: repo.root, workspaceFile: source }],
+      },
+    );
+    assert.equal(yield* fileSystem.readFileString(source), original);
+    assert.isFalse(yield* fileSystem.exists(set.members[0]!.path));
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 

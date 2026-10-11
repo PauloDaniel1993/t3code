@@ -1004,12 +1004,30 @@ const make = Effect.gen(function* () {
   ) {
     const probe = yield* folderResolver.probe(cwd, { vcs: true });
     if (probe.vcs == null) return undefined;
-    // Keep the binding's lexical path, including symlink aliases, in both
-    // generation and removal; the resolver's checkoutRoot is a real path.
-    return probe.vcs.checkoutPrefix
+    // Git's prefix measures physical depth. Preserve a lexical root only
+    // when it resolves to the same checkout; subfolder aliases need the real root.
+    const root = probe.vcs.checkoutPrefix
       .split("/")
       .filter(Boolean)
       .reduce((root) => path.dirname(root), path.resolve(cwd));
+    const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => undefined));
+    return realRoot !== undefined && isSamePath(realRoot, probe.vcs.checkoutRoot)
+      ? root
+      : probe.vcs.checkoutRoot;
+  });
+
+  const isLinkedWorkspaceFile = Effect.fn("WorktreeSetService.isLinkedWorkspaceFile")(function* (
+    target: string,
+    sources: Iterable<string>,
+  ) {
+    const targetPath = yield* fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => target));
+    for (const source of sources) {
+      const sourcePath = yield* fileSystem
+        .realPath(source)
+        .pipe(Effect.orElseSucceed(() => source));
+      if (isSamePath(target, source) || isSamePath(targetPath, sourcePath)) return true;
+    }
+    return false;
   });
 
   const editorWorkspaceFile: WorktreeSetService["Service"]["editorWorkspaceFile"] = Effect.fn(
@@ -1052,17 +1070,19 @@ const make = Effect.gen(function* () {
     const project = yield* projects
       .getById(thread.projectId, { includeDeleted: true })
       .pipe(Effect.mapError((cause) => fail("Could not read the thread's project.", cause)));
-    if (Option.isSome(project) && project.value.workspaceFile != null) {
-      const source = project.value.workspaceFile;
-      const [targetPath, sourcePath] = yield* Effect.all([
-        fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => target)),
-        fileSystem.realPath(source).pipe(Effect.orElseSucceed(() => source)),
-      ]);
-      if (isSamePath(target, source) || isSamePath(targetPath, sourcePath)) {
-        return yield* fail(
-          "The generated editor workspace would overwrite the linked source file.",
-        );
-      }
+    const projectShells = yield* projects
+      .listShells()
+      .pipe(Effect.mapError((cause) => fail("Could not read the linked projects.", cause)));
+    const sources = new Set([
+      ...(Option.isSome(project) && project.value.workspaceFile != null
+        ? [project.value.workspaceFile]
+        : []),
+      ...projectShells.flatMap((project) =>
+        project.workspaceFile == null ? [] : [project.workspaceFile],
+      ),
+    ]);
+    if (yield* isLinkedWorkspaceFile(target, sources)) {
+      return yield* fail("The generated editor workspace would overwrite the linked source file.");
     }
     const primaryPath = thread.worktreePath;
     const folders = thread.workspaceFolders.map((folder, index) => ({
@@ -1088,6 +1108,7 @@ const make = Effect.gen(function* () {
    */
   const removeSessionLeftovers = Effect.fn("WorktreeSetService.removeSessionLeftovers")(function* (
     members: ReadonlyArray<WorktreeLocation>,
+    sourceFiles: ReadonlyArray<string>,
   ) {
     const session =
       members.length === 1 ? members[0]!.path : commonAncestor(members.map(({ path }) => path));
@@ -1098,9 +1119,10 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
-    yield* fileSystem
-      .remove(editorWorkspaceFilePath(session, members), { force: true })
-      .pipe(Effect.ignore);
+    const target = editorWorkspaceFilePath(session, members);
+    if (!(yield* isLinkedWorkspaceFile(target, sourceFiles))) {
+      yield* fileSystem.remove(target, { force: true }).pipe(Effect.ignore);
+    }
     const directories = new Set<string>();
     for (const member of members) {
       let directory = path.dirname(member.path);
@@ -1203,7 +1225,12 @@ const make = Effect.gen(function* () {
           ...(input.force === undefined ? {} : { force: input.force }),
         });
       }
-      yield* removeSessionLeftovers(members);
+      yield* removeSessionLeftovers(
+        members,
+        projectShells.flatMap((project) =>
+          project.workspaceFile == null ? [] : [project.workspaceFile],
+        ),
+      );
       return ordered;
     },
   );
