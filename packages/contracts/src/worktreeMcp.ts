@@ -1,6 +1,8 @@
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { VcsListRefsInput, VcsListRefsResult } from "./git.ts";
+import { WorkspaceMcpBinding } from "./workspaceMcp.ts";
 
 /**
  * Input for the `t3_worktree_handoff` MCP tool.
@@ -17,7 +19,7 @@ export const WorktreeMcpHandoffInput = Schema.Struct({
   baseRef: Schema.optional(
     TrimmedNonEmptyString.annotate({
       description:
-        "Branch or ref the worktree branch starts from. Defaults to the branch currently checked out in the project workspace.",
+        "Branch or ref the primary repository's worktree starts from. Defaults to the primary folder's current branch. Other repositories start from their own current branch or commit.",
     }),
   ),
   startFromOrigin: Schema.optional(
@@ -85,6 +87,7 @@ export const WorktreeMcpContinuationStatus = Schema.Union([
 export type WorktreeMcpContinuationStatus = typeof WorktreeMcpContinuationStatus.Type;
 
 export const WorktreeMcpHandoffResult = Schema.Struct({
+  ...WorkspaceMcpBinding.fields,
   worktreePath: TrimmedNonEmptyString,
   branch: TrimmedNonEmptyString,
   baseRef: TrimmedNonEmptyString,
@@ -96,19 +99,43 @@ export const WorktreeMcpHandoffResult = Schema.Struct({
 export type WorktreeMcpHandoffResult = typeof WorktreeMcpHandoffResult.Type;
 
 export const WorktreeMcpStatusResult = Schema.Struct({
+  ...WorkspaceMcpBinding.fields,
   attached: Schema.Boolean.annotate({
     description: "True when this thread is already attached to a git worktree.",
   }),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   projectWorkspaceRoot: TrimmedNonEmptyString.annotate({
-    description: "Root of the project's main workspace checkout.",
+    description: "The project's current primary folder. The thread keeps its own folder snapshot.",
   }),
   defaultStartFromOrigin: Schema.Boolean.annotate({
     description: "Server default used by t3_worktree_handoff when startFromOrigin is omitted.",
   }),
 });
 export type WorktreeMcpStatusResult = typeof WorktreeMcpStatusResult.Type;
+
+export const WorktreeMcpListInput = Schema.Struct({
+  folderPath: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description:
+        "Original folder path from this thread's folders table. Omit for the primary folder.",
+    }),
+  ),
+  query: VcsListRefsInput.fields.query,
+  cursor: VcsListRefsInput.fields.cursor,
+  limit: VcsListRefsInput.fields.limit,
+  refKind: VcsListRefsInput.fields.refKind,
+  includeMatchingRemoteRefs: VcsListRefsInput.fields.includeMatchingRemoteRefs,
+});
+export type WorktreeMcpListInput = typeof WorktreeMcpListInput.Type;
+
+export const WorktreeMcpListResult = Schema.Struct({
+  ...VcsListRefsResult.fields,
+  folderPath: TrimmedNonEmptyString,
+  cwd: TrimmedNonEmptyString,
+  repositoryRoot: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type WorktreeMcpListResult = typeof WorktreeMcpListResult.Type;
 
 export class WorktreeMcpFailure extends Schema.TaggedError<WorktreeMcpFailure>()(
   "WorktreeMcpFailure",
@@ -117,6 +144,8 @@ export class WorktreeMcpFailure extends Schema.TaggedError<WorktreeMcpFailure>()
       "capability_denied",
       "thread_not_found",
       "project_not_found",
+      "folder_not_found",
+      "folder_unavailable",
       "already_in_worktree",
       "handoff_in_progress",
       "invalid_request",

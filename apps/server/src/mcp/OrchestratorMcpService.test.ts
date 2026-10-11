@@ -22,6 +22,8 @@ import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 
 describe("OrchestratorMcpService", () => {
@@ -60,6 +62,8 @@ describe("OrchestratorMcpService", () => {
       } as unknown as OrchestrationV2ThreadProjection;
       let hasNestedWork = true;
       const dependencies = Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -165,6 +169,8 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const dependencies = Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -233,6 +239,8 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const dependencies = Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -304,6 +312,8 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const dependencies = Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -498,6 +508,8 @@ describe("OrchestratorMcpService provider resolution", () => {
           forkShadow,
         ];
         const dependencies = Layer.mergeAll(
+          Layer.mock(ProjectStore.ProjectStoreV2)({}),
+          Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
           NodeServices.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -614,6 +626,8 @@ describe("OrchestratorMcpService provider resolution", () => {
         };
         const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
         const dependencies = Layer.mergeAll(
+          Layer.mock(ProjectStore.ProjectStoreV2)({}),
+          Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
           NodeServices.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: (threadId) =>
@@ -707,6 +721,8 @@ describe("OrchestratorMcpService provider resolution", () => {
       };
       let delegated = false;
       const dependencies = Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -782,6 +798,8 @@ describe("OrchestratorMcpService provider resolution", () => {
         checkedAt: "2026-09-13T00:00:00.000Z",
       });
       const dependencies = Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -916,6 +934,8 @@ describe("OrchestratorMcpService provider resolution", () => {
           const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
           let delegated = false;
           const dependencies = Layer.mergeAll(
+            Layer.mock(ProjectStore.ProjectStoreV2)({}),
+            Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadRecords: (threadId) =>

@@ -52,6 +52,12 @@ import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexA
 import { CodexOrchestratorReplayHarness } from "../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
+import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
+import * as WorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import {
   type ProviderAdapterV2Event,
@@ -75,6 +81,46 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
+
+// File access is unused here; keep the real scope resolver over the replay thread store.
+const workspaceReadLayer = (cwd: string) => {
+  const projects = Layer.mock(ProjectStore.ProjectStoreV2)({
+    get: (id) =>
+      Effect.succeed(
+        Option.some({
+          projectId: id,
+          workspaceRoot: cwd,
+          workspaceFile: null,
+        } as ProjectStore.ProjectRow),
+      ),
+  });
+  const projections = Layer.effect(
+    ProjectionStore.ProjectionStoreV2,
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      return ProjectionStore.ProjectionStoreV2.of({
+        getThread: (id) =>
+          orchestrator.getThreadProjection(id).pipe(
+            Effect.map((projection) => projection.thread),
+            Effect.mapError(
+              () => new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
+            ),
+          ),
+      } as ProjectionStore.ProjectionStoreV2["Service"]);
+    }),
+  );
+  return WorkspaceFolderFiles.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        projections,
+        Layer.mock(WorkspaceEntries.WorkspaceEntries)({}),
+        Layer.mock(WorkspaceFileSystem.WorkspaceFileSystem)({}),
+        Layer.mock(WorkspacePaths.WorkspacePaths)({}),
+      ),
+    ),
+    Layer.provideMerge(projects),
+  );
+};
 
 const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
 const parentWorkspaceFolders = (cwd: string) => [
@@ -631,6 +677,7 @@ describe("orchestrator MCP toolkit", () => {
             McpHttpServer.ThreadToolkitRegistrationLive,
           ).pipe(
             Layer.provideMerge(McpServer.McpServer.layer),
+            Layer.provide(workspaceReadLayer(cwd)),
             Layer.provideMerge(orchestrationLayer),
             Layer.provide(registryLayer),
             Layer.provide(providerRegistryLayer),
@@ -3543,6 +3590,7 @@ describe("orchestrator MCP toolkit", () => {
         ]);
         const testLayer = McpHttpServer.OrchestratorToolkitRegistrationLive.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(workspaceReadLayer(cwd)),
           Layer.provideMerge(orchestrationLayer),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript),

@@ -26,6 +26,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import { compileClaudeModelSelection } from "../claudeModelOptions.ts";
 import { SYNTHETIC_CLAUDE_MODEL_CATALOG } from "../provider/ClaudeModelCatalog.testFixtures.ts";
@@ -205,6 +207,8 @@ function makeLayer(
   return serviceLayer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService)({
           getThreadRecords: (id) =>

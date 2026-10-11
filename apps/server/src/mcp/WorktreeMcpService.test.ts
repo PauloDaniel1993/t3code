@@ -5,12 +5,15 @@ import {
   EnvironmentId,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadWorkspaceFolder,
+  type OrchestrationV2ThreadWorktree,
   type Project,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   WorktreeMcpHandoffInput,
+  WorkspaceScopeError,
 } from "@t3tools/contracts";
+import { isSamePath, resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -31,6 +34,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as WorktreeSet from "../orchestration-v2/WorktreeSetService.ts";
 import * as ServerConfig from "../config.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
+import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -60,6 +64,7 @@ interface ThreadFixture {
   readonly archivedAt?: string | null;
   readonly deletedAt?: string | null;
   readonly workspaceFolders?: ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder>;
+  readonly worktrees?: ReadonlyArray<OrchestrationV2ThreadWorktree>;
 }
 
 const makeProjection = (overrides: ThreadFixture = {}): OrchestrationV2ThreadProjection =>
@@ -114,23 +119,49 @@ interface HarnessOptions {
   readonly removeWorktreeFails?: boolean;
   readonly deleteLocalBranchFails?: boolean;
   readonly createWorktreeGate?: Effect.Effect<void>;
+  readonly unavailableFolders?: ReadonlyArray<string>;
+  readonly folderCheckouts?: Readonly<Record<string, string>>;
+  readonly folderReadFails?: boolean;
 }
 
 const makeHarness = (options: HarnessOptions = {}) => {
   const thread = options.thread === undefined ? {} : options.thread;
+  let boundThread = thread;
   const scope = makeScope(options.capabilities ?? new Set(["preview", "worktree"]));
-  const dispatch = vi.fn((_: unknown) =>
-    (options.dispatchGate ?? Effect.void).pipe(
-      Effect.andThen(
-        options.dispatchInterrupts
-          ? (Effect.failCause(Cause.interrupt()) as never)
-          : options.dispatchDies
-            ? Effect.die(new Error("dispatch defect"))
-            : options.dispatchFails
-              ? (Effect.fail("simulated dispatch failure") as never)
-              : Effect.succeed({ sequence: 1, storedEvents: [] }),
+  const dispatch = vi.fn(
+    (
+      command: Parameters<
+        ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+      >[0],
+    ) =>
+      (options.dispatchGate ?? Effect.void).pipe(
+        Effect.andThen(
+          options.dispatchInterrupts
+            ? (Effect.failCause(Cause.interrupt()) as never)
+            : options.dispatchDies
+              ? Effect.die(new Error("dispatch defect"))
+              : options.dispatchFails
+                ? (Effect.fail("simulated dispatch failure") as never)
+                : Effect.succeed({ sequence: 1, storedEvents: [] }),
+        ),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (command.type === "thread.metadata.update" && boundThread !== null) {
+              boundThread = {
+                ...boundThread,
+                ...(command.branch === undefined ? {} : { branch: command.branch }),
+                ...(command.worktreePath === undefined
+                  ? {}
+                  : { worktreePath: command.worktreePath }),
+                ...(command.workspaceFolders === undefined
+                  ? {}
+                  : { workspaceFolders: command.workspaceFolders }),
+                ...(command.worktrees == null ? {} : { worktrees: command.worktrees }),
+              };
+            }
+          }),
+        ),
       ),
-    ),
   );
   const listLocalBranchNames = vi.fn((_: string) =>
     Effect.succeed(
@@ -173,7 +204,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
       return Effect.succeed(makeProjection({ ...thread, archivedAt: "2026-01-02T00:00:00.000Z" }));
     }
     return id === threadId && thread !== null
-      ? Effect.succeed(makeProjection(thread))
+      ? Effect.succeed(makeProjection(boundThread ?? thread))
       : Effect.fail(new OrchestratorProjectionError({ threadId: id }));
   });
   const sendToThread = vi.fn((_: unknown) => {
@@ -312,6 +343,51 @@ const makeHarness = (options: HarnessOptions = {}) => {
           ),
         );
   const services = Layer.mergeAll(
+    Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
+      resolveScope: (scope) => {
+        if (options.folderReadFails)
+          return Effect.fail(new WorkspaceScopeError({ ...scope, failure: "read-failed" }));
+        const folders = resolveThreadWorkspace({
+          thread: makeProjection(boundThread ?? {}).thread,
+          project,
+        }).folders.map((folder) =>
+          options.unavailableFolders?.includes(folder.folder.path ?? folder.folder.uri ?? "")
+            ? { ...folder, effectivePath: null }
+            : folder,
+        );
+        const selected =
+          scope.folderPath === undefined
+            ? folders
+            : folders.filter((folder) =>
+                folder.folder.path === undefined
+                  ? folder.folder.uri === scope.folderPath
+                  : isSamePath(folder.folder.path, scope.folderPath!),
+              );
+        return selected.length === 0
+          ? Effect.fail(
+              new WorkspaceScopeError({
+                ...scope,
+                failure: "folder-not-found",
+                folder: scope.folderPath,
+              }),
+            )
+          : Effect.succeed({ folders, selected });
+      },
+    }),
+    Layer.mock(WorkspaceFolderResolver.WorkspaceFolderResolver)({
+      probe: (folderPath) =>
+        Effect.succeed({
+          path: folderPath,
+          availability: "available",
+          vcs: options.notARepo
+            ? null
+            : {
+                checkoutRoot: options.folderCheckouts?.[folderPath] ?? folderPath,
+                checkoutPrefix: "",
+                commonDir: folderPath + "/.git",
+              },
+        }),
+    }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       dispatch,
       getThreadRecords,
@@ -381,6 +457,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
     removeWorktree,
     deleteLocalBranch,
     localStatus,
+    listRefs,
     runForThread,
   };
 };
@@ -419,7 +496,195 @@ const runStatus = (harness: ReturnType<typeof makeHarness>) =>
     return yield* service.status(harness.scope);
   }).pipe(Effect.provide(harness.layer));
 
+const runList = (
+  harness: ReturnType<typeof makeHarness>,
+  input: Parameters<WorktreeMcpService.WorktreeMcpService["Service"]["list"]>[1] = {},
+) =>
+  Effect.gen(function* () {
+    const service = yield* WorktreeMcpService.WorktreeMcpService;
+    return yield* service.list(harness.scope, input);
+  }).pipe(Effect.provide(harness.layer));
+
+describe("t3_worktree_list", () => {
+  const folders = [
+    {
+      path: "/repo/primary/src",
+      name: "Primary",
+      label: "primary",
+      checkoutRoot: "/repo/primary",
+      checkoutPrefix: "src",
+    },
+    {
+      path: "/repo/secondary",
+      name: "Secondary",
+      label: "secondary",
+      checkoutRoot: "/repo/secondary",
+    },
+    {
+      path: "/repo/primary/docs",
+      name: "Docs",
+      label: "docs",
+      checkoutRoot: "/repo/primary",
+      checkoutPrefix: "docs",
+    },
+    { uri: "vscode-remote://host/folder", name: "Remote", label: "remote" },
+  ];
+  const worktrees = [
+    { repositoryRoot: "/repo/primary", path: "/worktrees/primary", branch: "feature/set" },
+    { repositoryRoot: "/repo/secondary", path: "/worktrees/secondary", branch: "feature/set" },
+  ];
+
+  it.effect("defaults to the frozen primary and preserves ref pagination", () => {
+    const harness = makeHarness({
+      projectLinked: true,
+      thread: { workspaceFolders: folders, worktrees, worktreePath: "/worktrees/primary/src" },
+      folderCheckouts: { "/worktrees/primary/src": "/worktrees/primary" },
+    });
+    return Effect.gen(function* () {
+      const input = {
+        query: "feature",
+        cursor: 3,
+        limit: 2,
+        refKind: "local" as const,
+        includeMatchingRemoteRefs: false,
+      };
+      const result = yield* runList(harness, input);
+      expect(result).toMatchObject({
+        folderPath: "/repo/primary/src",
+        cwd: "/worktrees/primary/src",
+        repositoryRoot: "/worktrees/primary",
+        isRepo: true,
+        nextCursor: null,
+      });
+      expect(harness.listRefs).toHaveBeenCalledWith({ ...input, cwd: "/worktrees/primary/src" });
+    });
+  });
+
+  it.effect("selects original secondary paths and folders in the same checkout share refs", () => {
+    const harness = makeHarness({
+      thread: { workspaceFolders: folders, worktrees, worktreePath: "/worktrees/primary/src" },
+      folderCheckouts: {
+        "/worktrees/primary/src": "/worktrees/primary",
+        "/worktrees/primary/docs": "/worktrees/primary",
+        "/worktrees/secondary": "/worktrees/secondary",
+      },
+    });
+    return Effect.gen(function* () {
+      const primary = yield* runList(harness);
+      const docs = yield* runList(harness, { folderPath: "/repo/primary/docs" });
+      const secondary = yield* runList(harness, { folderPath: "/repo/secondary" });
+      expect(docs.repositoryRoot).toBe(primary.repositoryRoot);
+      expect(docs.refs).toEqual(primary.refs);
+      expect(secondary.cwd).toBe("/worktrees/secondary");
+      expect(secondary.repositoryRoot).toBe("/worktrees/secondary");
+      expect(harness.listRefs).toHaveBeenLastCalledWith({ cwd: "/worktrees/secondary" });
+    });
+  });
+
+  it.effect("returns an empty ref inventory for an available non-git folder", () => {
+    const harness = makeHarness({ notARepo: true });
+    return Effect.gen(function* () {
+      expect(yield* runList(harness)).toEqual({
+        folderPath: workspaceRoot,
+        cwd: workspaceRoot,
+        repositoryRoot: null,
+        refs: [],
+        isRepo: false,
+        hasPrimaryRemote: false,
+        nextCursor: null,
+        totalCount: 0,
+      });
+      expect(harness.listRefs).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("rejects unknown, mapped, missing and remote selectors before listing refs", () => {
+    const harness = makeHarness({
+      thread: { workspaceFolders: folders, worktrees, worktreePath: "/worktrees/primary/src" },
+      unavailableFolders: ["/repo/secondary"],
+    });
+    return Effect.gen(function* () {
+      for (const [folderPath, code] of [
+        ["/unknown", "folder_not_found"],
+        ["/worktrees/secondary", "folder_not_found"],
+        ["/repo/secondary", "folder_unavailable"],
+        ["vscode-remote://host/folder", "folder_unavailable"],
+      ]) {
+        expectTypedFailure(yield* Effect.exit(runList(harness, { folderPath })), {
+          _tag: "OrchestratorMcpFailure",
+          code,
+        });
+      }
+      expect(harness.listRefs).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("enforces the worktree capability and caller lifecycle", () =>
+    Effect.gen(function* () {
+      for (const [options, code] of [
+        [
+          { capabilities: new Set<McpInvocationContext.McpCapability>(["preview"]) },
+          "capability_denied",
+        ],
+        [{ thread: null }, "thread_not_found"],
+        [{ thread: { deletedAt: "2026-01-02T00:00:00.000Z" } }, "thread_not_found"],
+      ] as const) {
+        const harness = makeHarness(options);
+        expectTypedFailure(yield* Effect.exit(runList(harness)), {
+          _tag: "OrchestratorMcpFailure",
+          code,
+        });
+        expect(harness.listRefs).not.toHaveBeenCalled();
+      }
+    }),
+  );
+});
+
 describe("t3_worktree_handoff", () => {
+  it.effect("reports the complete set after a multi-repository handoff", () => {
+    const harness = makeHarness({
+      projectLinked: true,
+      thread: {
+        workspaceFolders: [
+          { path: workspaceRoot, name: "Primary", label: "primary", checkoutRoot: workspaceRoot },
+          {
+            path: "/repo/secondary",
+            name: "Secondary",
+            label: "secondary",
+            checkoutRoot: "/repo/secondary",
+          },
+        ],
+      },
+    });
+    return Effect.gen(function* () {
+      const result = yield* runHandoff(harness, { branch: "feature/multi" });
+      expect(result.worktrees).toHaveLength(2);
+      expect(result.cwd).toBe(result.worktreePath);
+      expect(result.folders.map((folder) => folder.effectivePath)).toEqual(
+        result.worktrees!.map((member) => member.path),
+      );
+      expect(result.folders.map((folder) => folder.path)).toEqual([
+        workspaceRoot,
+        "/repo/secondary",
+      ]);
+      expect(result.folders.every((folder) => folder.availability === "available")).toBe(true);
+    });
+  });
+
+  it.effect("never rolls back a committed handoff when its binding inspection fails", () => {
+    const harness = makeHarness({ folderReadFails: true });
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/inspection" }));
+      expectTypedFailure(exit, {
+        code: "operation_failed",
+        message: expect.stringContaining("Handoff recorded"),
+      });
+      expect(harness.dispatch).toHaveBeenCalled();
+      expect(harness.removeWorktree).not.toHaveBeenCalled();
+      expect(harness.deleteLocalBranch).not.toHaveBeenCalled();
+    });
+  });
+
   it.effect("creates a worktree from the current branch and re-points the thread", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -429,6 +694,12 @@ describe("t3_worktree_handoff", () => {
       expect(result.baseRef).toBe("dev");
       expect(result.startedFromOrigin).toBe(false);
       expect(result.worktreePath).toBe("/worktrees/project/feature/handoff");
+      expect(result.cwd).toBe(result.worktreePath);
+      expect(result.workspaceFile).toBeNull();
+      expect(result.folders).toMatchObject([
+        { path: workspaceRoot, effectivePath: result.worktreePath, availability: "available" },
+      ]);
+      expect(result.worktrees).toBeUndefined();
       expect(result.setupScript).toMatchObject({
         status: "started",
         scriptName: "Setup",
@@ -662,6 +933,17 @@ describe("t3_worktree_handoff", () => {
         branch: "feature/linked",
       };
       expect(result.worktreePath).toMatch(/feature-linked$/);
+      expect(result.cwd).toBe(result.worktreePath);
+      expect(result.workspaceFile).toBe("/workspace/project.code-workspace");
+      expect(result.worktrees).toEqual([member]);
+      expect(result.folders).toMatchObject([
+        {
+          path: workspaceRoot,
+          label: "project",
+          effectivePath: result.worktreePath,
+          availability: "available",
+        },
+      ]);
       expect(harness.dispatch).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "thread.metadata.update",
@@ -1058,11 +1340,66 @@ describe("t3_worktree_handoff", () => {
 });
 
 describe("t3_worktree_status", () => {
+  it.effect("reports mapped, shared and unavailable snapshot folders", () => {
+    const harness = makeHarness({
+      projectLinked: true,
+      thread: {
+        branch: "feature/set",
+        worktreePath: "/worktrees/primary",
+        workspaceFolders: [
+          { path: workspaceRoot, name: "Primary", label: "primary", checkoutRoot: workspaceRoot },
+          {
+            path: "/repo/secondary",
+            name: "Secondary",
+            label: "secondary",
+            checkoutRoot: "/repo/secondary",
+          },
+          { path: "/shared", name: "Shared", label: "shared", checkoutRoot: null },
+          { path: "/missing", name: "Missing", label: "missing" },
+        ],
+        worktrees: [
+          { repositoryRoot: workspaceRoot, path: "/worktrees/primary", branch: "feature/set" },
+          {
+            repositoryRoot: "/repo/secondary",
+            path: "/worktrees/secondary",
+            branch: "feature/set-secondary",
+          },
+        ],
+      },
+      unavailableFolders: ["/missing"],
+    });
+    return Effect.gen(function* () {
+      const result = yield* runStatus(harness);
+      expect(result.cwd).toBe("/worktrees/primary");
+      expect(result.workspaceFile).toBe("/workspace/project.code-workspace");
+      expect(
+        result.folders.map((folder) => [folder.label, folder.effectivePath, folder.availability]),
+      ).toEqual([
+        ["primary", "/worktrees/primary", "available"],
+        ["secondary", "/worktrees/secondary", "available"],
+        ["shared", "/shared", "available"],
+        ["missing", null, "unavailable"],
+      ]);
+      expect(result.worktrees).toHaveLength(2);
+      expect(result.branch).toBe("feature/set");
+    });
+  });
   it.effect("reports an unattached thread", () => {
     const harness = makeHarness({ newWorktreesStartFromOrigin: true });
     return Effect.gen(function* () {
       const result = yield* runStatus(harness);
       expect(result).toEqual({
+        cwd: workspaceRoot,
+        workspaceFile: null,
+        folders: [
+          {
+            path: workspaceRoot,
+            name: "project",
+            label: "project",
+            availability: "available",
+            effectivePath: workspaceRoot,
+          },
+        ],
         attached: false,
         worktreePath: null,
         branch: null,

@@ -59,6 +59,7 @@ export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
 export * from "./scheduledTask.ts";
 export * from "./worktreeMcp.ts";
+export * from "./workspaceMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";

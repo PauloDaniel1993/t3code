@@ -69,10 +69,13 @@ import {
   delegatedTaskProgress,
 } from "../orchestration-v2/SubagentProjection.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { listOwnedTasks, type TaskParentProjection } from "./OrchestratorTaskList.ts";
+import { workspaceBinding } from "./workspaceBinding.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -597,7 +600,7 @@ function listItemFromShell(shell: OrchestrationV2ThreadShell): OrchestratorMcpTh
 function threadDetail(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests">,
   itemCount: number,
-): OrchestratorMcpThreadDetail {
+): Omit<OrchestratorMcpThreadDetail, "cwd" | "workspaceFile" | "folders" | "worktrees"> {
   const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
   return {
@@ -763,6 +766,8 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+  const projects = yield* ProjectStore.ProjectStoreV2;
+  const folderFiles = yield* WorkspaceFolderFiles.WorkspaceFolderFiles;
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("orchestration")
@@ -1775,6 +1780,22 @@ const make = Effect.gen(function* () {
     readThread: (scope, input) =>
       Effect.gen(function* () {
         const { parent, target } = yield* loadReadableThread(scope, input.threadId);
+        const project = yield* projects.get(target.thread.projectId).pipe(
+          Effect.mapError((error) => failure("orchestration_error", error.message)),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(failure("invalid_request", "The thread's project was not found.")),
+              onSome: Effect.succeed,
+            }),
+          ),
+        );
+        const resolved = yield* folderFiles
+          .resolveScope({
+            projectId: target.thread.projectId,
+            threadId: target.thread.id,
+          })
+          .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
         const view = input.view ?? "messages";
         const afterPosition = input.afterPosition ?? -1;
         const limit = input.limit ?? DEFAULT_THREAD_READ_LIMIT;
@@ -1836,7 +1857,10 @@ const make = Effect.gen(function* () {
           }
         }
         return {
-          thread: threadDetail(target, timeline.totalItems),
+          thread: {
+            ...threadDetail(target, timeline.totalItems),
+            ...workspaceBinding(target.thread, project, resolved.folders),
+          } satisfies OrchestratorMcpThreadDetail,
           recentRuns: target.runs
             .toSorted((left, right) => right.ordinal - left.ordinal)
             .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
@@ -1972,4 +1996,6 @@ export const layer: Layer.Layer<
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService
+  | ProjectStore.ProjectStoreV2
+  | WorkspaceFolderFiles.WorkspaceFolderFiles
 > = Layer.effect(OrchestratorMcpService, make);
