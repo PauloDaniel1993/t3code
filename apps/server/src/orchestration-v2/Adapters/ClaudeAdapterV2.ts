@@ -112,6 +112,7 @@ import type { ServerProviderShape } from "../../provider/Services/ServerProvider
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
+import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { makeProviderFailure, makeProviderRetryTurnItem } from "../ProviderFailure.ts";
@@ -348,7 +349,7 @@ export class ClaudeBackgroundWorkBlocksQueryReplacementError extends Schema.Tagg
   {},
 ) {
   override get message(): string {
-    return "Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish, or press Stop, then send the message again.";
+    return "Claude is still running background agents or commands, and this model, setting or workspace-folder change would end them. Wait for them to finish, or press Stop, then send the message again.";
   }
 }
 
@@ -777,6 +778,7 @@ export function makeClaudeQueryOptions(input: {
   readonly resume: boolean;
   readonly resumeSessionAt?: string;
   readonly cwd: string | null;
+  readonly additionalDirectories?: ReadonlyArray<string>;
   /**
    * The attachments dir grant lets the agent Read/copy pasted images at the
    * paths appended to the turn text, without an approval prompt. It is a leaf
@@ -798,6 +800,10 @@ export function makeClaudeQueryOptions(input: {
   readonly allowDangerouslySkipPermissions?: boolean;
 }): ClaudeAgentSdkQueryOptions {
   const compiledSelection = compileClaudeModelSelection(input.modelSelection);
+  const workspaceInventory = buildWorkspaceFolderInventory({
+    cwd: input.cwd,
+    additionalDirectories: input.additionalDirectories ?? [],
+  });
   const {
     "permission-mode": launchArgPermissionMode,
     "dangerously-skip-permissions": launchArgSkipPermissions,
@@ -878,15 +884,22 @@ export function makeClaudeQueryOptions(input: {
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
+      // Every session can gain or lose folders later, even if it starts with one.
+      // Render the current inventory on resume instead of keeping the first prompt.
+      snapshot: false,
       append:
         buildRuntimeInstructions({ harness: "Claude Code" }) +
-        (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
+        (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS) +
+        (workspaceInventory === undefined ? "" : `\n\n${workspaceInventory}`),
     },
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
   const additionalDirectories = [
-    ...(input.cwd === null ? [] : [input.cwd]),
-    ...(input.attachmentsDir === undefined ? [] : [input.attachmentsDir]),
+    ...new Set([
+      ...(input.cwd === null ? [] : [input.cwd]),
+      ...(input.additionalDirectories ?? []),
+      ...(input.attachmentsDir === undefined ? [] : [input.attachmentsDir]),
+    ]),
   ];
   const withDirectories =
     additionalDirectories.length === 0 ? options : { ...options, additionalDirectories };
@@ -975,6 +988,7 @@ function providerSession(input: {
     providerInstanceId: input.providerInstanceId,
     status: "ready",
     cwd: input.cwd ?? process.cwd(),
+    additionalDirectories: [],
     model: input.model,
     capabilities: ClaudeProviderCapabilitiesV2,
     createdAt: input.now,
@@ -2669,11 +2683,21 @@ interface ActiveClaudeSubagent {
   lastAssistantMessageId: string | null;
 }
 
+const encodeClaudeWorkspaceKey = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      cwd: Schema.NullOr(Schema.String),
+      additionalDirectories: Schema.Array(Schema.String),
+    }),
+  ),
+);
+
 interface ClaudeLiveQueryContext {
   readonly nativeThreadId: string;
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
   readonly selectionKey: string;
+  readonly workspaceKey: string;
   readonly closed: Deferred.Deferred<void, never>;
   // Whether this CLI process echoes a prompt's uuid on the first frame of
   // the turn answering it ("early") or only on its result. Learned from the
@@ -6819,6 +6843,10 @@ export function makeClaudeAdapterV2(
           });
           const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
+          const workspaceKey = encodeClaudeWorkspaceKey({
+            cwd: turnInput.runtimePolicy.cwd,
+            additionalDirectories: turnInput.runtimePolicy.additionalDirectories,
+          });
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
           // A continuation prompts nothing: it drains output the live process
@@ -6828,13 +6856,14 @@ export function makeClaudeAdapterV2(
             existing.nativeThreadId === nativeThreadId &&
             (isClaudeProviderContinuationTurn(turnInput) ||
               (existing.queryPolicyKey === queryPolicyKey &&
-                existing.selectionKey === compiledSelection.queryIdentity))
+                existing.selectionKey === compiledSelection.queryIdentity &&
+                existing.workspaceKey === workspaceKey))
           ) {
             return existing;
           }
 
           // Background agents and shells run inside the CLI process, so a
-          // new selection would kill them and lose their results. Refuse until
+          // new selection or folder scope would kill them and lose their results. Refuse until
           // they finish or the user presses Stop, which closes the process.
           // Another native thread on this session is one the app thread has
           // left (Claude sessions serve one app thread), so it is replaced.
@@ -6888,6 +6917,7 @@ export function makeClaudeAdapterV2(
                 resume: shouldResume,
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
                 cwd: turnInput.runtimePolicy.cwd,
+                additionalDirectories: turnInput.runtimePolicy.additionalDirectories,
                 attachmentsDir,
                 settings: { ...adapterOptions.settings, binaryPath: executablePath },
                 environment: adapterOptions.environment,
@@ -6947,6 +6977,7 @@ export function makeClaudeAdapterV2(
             query: querySession,
             queryPolicyKey,
             selectionKey: compiledSelection.queryIdentity,
+            workspaceKey,
             closed,
             promptEchoMode: "unknown",
             stopping: false,
@@ -6957,6 +6988,19 @@ export function makeClaudeAdapterV2(
             ),
           };
           yield* Ref.set(queryContext, context);
+          // Runtime wrappers share this session object. Update it in place and
+          // emit a snapshot so queued updates retain their installed scope.
+          Object.assign(session, {
+            cwd: turnInput.runtimePolicy.cwd ?? process.cwd(),
+            additionalDirectories: [...turnInput.runtimePolicy.additionalDirectories],
+            model: turnInput.modelSelection.model,
+            updatedAt: yield* DateTime.now,
+          });
+          yield* emitProviderEvent({
+            type: "provider_session.updated",
+            driver: CLAUDE_PROVIDER,
+            providerSession: { ...session },
+          });
           yield* querySession.messages.pipe(
             Stream.runForEach((message) => handleSdkMessage({ query: querySession, message })),
             Effect.exit,
