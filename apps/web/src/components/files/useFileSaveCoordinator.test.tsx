@@ -64,6 +64,31 @@ afterEach(async () => {
 });
 
 describe("file-save React lifecycle", () => {
+  it("keeps the active edit session when an equal scope arrives in a new projection object", async () => {
+    const scope = {
+      projectId: ProjectId.make("project"),
+      threadId: ThreadId.make("thread"),
+      folderPath: "/ui",
+    };
+    const props = { ...defaultProps, relativePath: "ui/file.txt", scope };
+    mount(props);
+    const originalChange = changeHandler();
+    originalChange("first edit");
+    act(() =>
+      renderer!.update(
+        <StrictMode>
+          <FileSurface {...props} scope={{ ...scope }} />
+        </StrictMode>,
+      ),
+    );
+    expect(writeFile).not.toHaveBeenCalled();
+    originalChange("second edit");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writeFile).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { scope, path: "ui/file.txt", contents: "second edit" },
+    });
+  });
   it("saves a secondary file with its original folder pin and confirms the same cache", async () => {
     const scope = {
       projectId: ProjectId.make("project"),

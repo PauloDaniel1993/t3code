@@ -1,4 +1,4 @@
-import { workspaceFileContext } from "./files/workspaceFiles";
+import { useWorkspaceFileContext } from "./files/workspaceFiles";
 import { ChatCanvas } from "./chat/ChatCanvas";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import { StarMapSurface } from "./map/StarMapSurface";
@@ -4021,32 +4021,15 @@ export default function ChatView(props: ChatViewProps) {
     : null;
   const hasTimelineTopBanner = Boolean(timelineThreadError) || visibleProviderStatus !== null;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
-  const fileWorkspace = useMemo(
-    () =>
-      activeProject
-        ? workspaceFileContext(
-            activeProject,
-            {
-              worktreePath:
-                serverProjection?.thread.worktreePath ?? activeThread?.worktreePath ?? null,
-              workspaceFolders: serverProjection?.thread.workspaceFolders,
-              worktrees: serverProjection?.thread.worktrees ?? activeThread?.worktrees,
-            },
-            isServerThread ? activeThread?.id : undefined,
-            serverConfig?.workspaceFileProjects === true,
-          )
-        : undefined,
-    [
-      activeProject,
-      activeThread?.worktreePath,
-      serverProjection?.thread.workspaceFolders,
-      serverProjection?.thread.worktreePath,
-      serverProjection?.thread.worktrees,
-      activeThread?.worktrees,
-      activeThread?.id,
-      isServerThread,
-      serverConfig?.workspaceFileProjects,
-    ],
+  const fileWorkspace = useWorkspaceFileContext(
+    activeProject,
+    {
+      worktreePath: serverProjection?.thread.worktreePath ?? activeThread?.worktreePath ?? null,
+      workspaceFolders: serverProjection?.thread.workspaceFolders,
+      worktrees: serverProjection?.thread.worktrees ?? activeThread?.worktrees,
+    },
+    isServerThread ? activeThread?.id : undefined,
+    serverConfig?.workspaceFileProjects === true,
   );
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = gitStatusCwd ?? undefined;

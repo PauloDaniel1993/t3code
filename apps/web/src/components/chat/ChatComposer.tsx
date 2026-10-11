@@ -2601,6 +2601,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           type: "path" as const,
           path: entry.path,
           pathKind: entry.kind,
+          folderPath: entry.folderPath,
           label: basenameOfPath(entry.path),
           description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
         })),
@@ -3888,7 +3889,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const { snapshot, trigger } = resolveActiveComposerTrigger();
       if (!trigger) return;
       if (item.type === "path") {
-        const mention = workspaceFileMention(props.fileWorkspace, item.path);
+        const mention = workspaceFileMention(props.fileWorkspace, item.path, item.folderPath);
         if (mention === null) return;
         const replacement = `${mention} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
@@ -6878,7 +6879,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerCommandMenuLayer anchor={composerMenuAnchor}>
                   <ComposerCommandMenu
                     header={
-                      isPathTrigger ? (
+                      isPathTrigger && (props.fileWorkspace?.folders.length ?? 0) > 1 ? (
                         <div className="px-3 pt-1">
                           <WorkspaceFolderPicker
                             workspace={props.fileWorkspace}

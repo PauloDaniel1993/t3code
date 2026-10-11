@@ -1,7 +1,8 @@
 import {
-  workspaceFileReference,
+  workspaceFileOpenReference,
   workspaceFileScopeKey,
   workspaceFileAsset,
+  useWorkspaceFileScope,
   type WorkspaceFileContext,
 } from "./workspaceFiles";
 import { Spinner } from "~/components/ui/spinner";
@@ -961,30 +962,21 @@ export default function FilePreviewPanel({
   const reference = useMemo(
     () =>
       attachment === undefined && requestedPath !== null
-        ? workspaceFileReference(workspace, requestedPath, folderPath)
+        ? workspaceFileOpenReference(workspace, requestedPath, cwd, folderPath)
         : null,
-    [workspace, requestedPath, folderPath, attachment],
+    [workspace, requestedPath, cwd, folderPath, attachment],
   );
   const relativePath =
     attachment === undefined
       ? (reference?.canonicalPath ?? resolveFilePreviewPath(requestedPath, cwd))
       : requestedPath;
-  const scope = useMemo(
-    () =>
-      workspace &&
-      attachment === undefined &&
-      relativePath !== null &&
-      !isAbsolutePath(relativePath)
-        ? {
-            ...workspace.scope,
-            ...(folderPath
-              ? { folderPath }
-              : reference
-                ? { folderPath: reference.folderPath }
-                : {}),
-          }
-        : undefined,
-    [workspace, attachment, relativePath, folderPath, reference],
+  const scope = useWorkspaceFileScope(
+    workspace && attachment === undefined && relativePath !== null && !isAbsolutePath(relativePath)
+      ? {
+          ...workspace.scope,
+          ...(folderPath ? { folderPath } : reference ? { folderPath: reference.folderPath } : {}),
+        }
+      : undefined,
   );
   const effectiveCwd = reference?.folder.effectivePath ?? cwd;
   const handlePendingChange = useCallback(

@@ -1,12 +1,13 @@
-import { useMemo } from "react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 
-import { workspaceFileContext, type WorkspaceFileContext } from "~/components/files/workspaceFiles";
+import {
+  useWorkspaceFileContext,
+  type WorkspaceFileContext,
+} from "~/components/files/workspaceFiles";
 import { useEnvironment } from "~/state/environments";
-import { useThreadProjection } from "~/state/entities";
-import { useProjects } from "~/state/entities";
+import { useThreadProjection, useProjects } from "~/state/entities";
 
 import { useHandleNewThread } from "./useHandleNewThread";
 
@@ -41,30 +42,24 @@ export function useActiveProjectTarget(): ActiveProjectTarget | null {
   const cwd = threadPrimaryPath(detail ?? thread, project);
   const binding = detail ?? activeDraftThread;
 
-  const workspace = useMemo(
-    () =>
-      project
-        ? workspaceFileContext(
-            project,
-            {
-              worktreePath: binding?.worktreePath ?? null,
-              workspaceFolders: detail?.workspaceFolders,
-              worktrees: detail?.worktrees,
-            },
-            activeThread?.id,
-            environment?.serverConfig?.workspaceFileProjects === true,
-          )
-        : undefined,
-    [
-      project,
-      binding?.worktreePath,
-      detail?.workspaceFolders,
-      detail?.worktrees,
-      activeThread?.id,
-      environment?.serverConfig?.workspaceFileProjects,
-    ],
+  const workspace = useWorkspaceFileContext(
+    project,
+    {
+      worktreePath: binding?.worktreePath ?? null,
+      workspaceFolders: detail?.workspaceFolders,
+      worktrees: detail?.worktrees,
+    },
+    activeThread?.id,
+    environment?.serverConfig?.workspaceFileProjects === true,
   );
-  if (!thread || !threadId || !project || !cwd || (activeThread && !detail)) return null;
+  if (
+    !thread ||
+    !threadId ||
+    !project ||
+    !cwd ||
+    (activeThread && activeThread.workspaceFolderCount !== undefined && !detail)
+  )
+    return null;
 
   return {
     environmentId: project.environmentId,

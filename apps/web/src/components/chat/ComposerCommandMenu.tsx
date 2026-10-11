@@ -36,6 +36,7 @@ export type ComposerCommandItem =
       type: "path";
       path: string;
       pathKind: ProjectEntry["kind"];
+      folderPath?: string | undefined;
       label: string;
       description: string;
     }

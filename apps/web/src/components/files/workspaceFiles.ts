@@ -14,12 +14,14 @@ import {
   toCanonicalPath,
   type WorkspaceProject,
   type WorkspaceThread,
+  type ThreadWorkspace,
 } from "@t3tools/shared/workspaceFolders";
 import { isAbsolutePath, resolvePathLinkTarget } from "~/terminal-links";
+import { useMemo } from "react";
 
 export interface WorkspaceFileContext {
   readonly scope: WorkspaceScope;
-  readonly folders: ReturnType<typeof resolveThreadWorkspace>["folders"];
+  readonly folders: ThreadWorkspace["folders"];
 }
 
 /** Drafts use current membership; bound threads always use their frozen snapshot. */
@@ -32,7 +34,12 @@ export function workspaceFileContext(
   threadId: ThreadId | undefined,
   enabled: boolean,
 ): WorkspaceFileContext | undefined {
-  if (!enabled || (!thread?.workspaceFolders && !project.workspaceFile)) return undefined;
+  if (
+    !enabled ||
+    (threadId !== undefined && !thread?.workspaceFolders) ||
+    (!thread?.workspaceFolders && !project.workspaceFile)
+  )
+    return undefined;
   return {
     scope: { projectId: project.id, ...(threadId ? { threadId } : {}) },
     folders: resolveThreadWorkspace({
@@ -46,10 +53,69 @@ export function workspaceFileContext(
   };
 }
 
+/** Projection events can replace the snapshot object without changing its addresses. */
+export function useWorkspaceFileContext(
+  project: Parameters<typeof workspaceFileContext>[0] | null | undefined,
+  ...input: [
+    thread: WorkspaceThread | null | undefined,
+    threadId: ThreadId | undefined,
+    enabled: boolean,
+  ]
+) {
+  const serialized = JSON.stringify(project ? workspaceFileContext(project, ...input) : undefined);
+  return useMemo(
+    () => (serialized === undefined ? undefined : (JSON.parse(serialized) as WorkspaceFileContext)),
+    [serialized],
+  );
+}
+
+/** Unpinned opens come from existing primary-relative links; canonical selections carry a pin. */
+export function workspaceFileOpenReference(
+  context: WorkspaceFileContext | undefined,
+  path: string,
+  cwd: string,
+  folderPath?: string,
+) {
+  return workspaceFileReference(
+    context,
+    context && folderPath === undefined && !isAbsolutePath(path)
+      ? workspaceMentionPreviewPath(path, cwd)
+      : path,
+    folderPath,
+  );
+}
+
 export function workspaceFileScopeKey(cwd: string, scope?: WorkspaceScope): string {
   return scope
     ? JSON.stringify([scope.projectId, scope.threadId ?? null, scope.folderPath ?? null])
     : cwd;
+}
+
+export function workspaceFileContextKey(cwd: string, workspace?: WorkspaceFileContext) {
+  return workspace
+    ? JSON.stringify([
+        workspaceFileScopeKey(cwd, workspace.scope),
+        workspace.folders.map((folder) => [
+          folder.folder.path ?? folder.folder.uri,
+          folder.label,
+          folder.effectivePath,
+        ]),
+      ])
+    : cwd;
+}
+
+/** Keep editor and save sessions stable across unrelated projection updates. */
+export function useWorkspaceFileScope(input: WorkspaceScope | undefined) {
+  const projectId = input?.projectId;
+  const threadId = input?.threadId;
+  const folderPath = input?.folderPath;
+  return useMemo(
+    () =>
+      projectId === undefined
+        ? undefined
+        : { projectId, ...(threadId ? { threadId } : {}), ...(folderPath ? { folderPath } : {}) },
+    [projectId, threadId, folderPath],
+  );
 }
 
 /** Pin the owner in the response table, including nested-folder search results. */
@@ -97,20 +163,23 @@ export function workspaceFileReference(
 }
 
 /** Primary links retain their relative destination; other folders use the mapped server path. */
-export function workspaceFileMention(context: WorkspaceFileContext | undefined, path: string) {
-  const reference = workspaceFileReference(context, path);
+export function workspaceFileMention(
+  context: WorkspaceFileContext | undefined,
+  path: string,
+  folderPath?: string,
+) {
+  const reference = workspaceFileReference(context, path, folderPath);
   if (!context) return serializeComposerFileLink(path);
   if (!reference || reference.absolutePath === null) return null;
   const destination = reference.folder.isPrimary
     ? reference.relativePath || "."
     : reference.absolutePath;
-  const link = serializeComposerFileLink(destination);
-  if (reference.folder.isPrimary) return link;
-  const label = reference.canonicalPath
-    .replaceAll("\\", "\\\\")
-    .replaceAll("[", "\\[")
-    .replaceAll("]", "\\]");
-  return `[${label}${link.slice(link.indexOf("]("))}`;
+  return serializeComposerFileLink(destination);
+}
+
+/** Mention destinations are primary-relative or absolute, never canonical selections. */
+export function workspaceMentionPreviewPath(path: string, cwd: string | null | undefined) {
+  return cwd ? resolvePathLinkTarget(path, cwd) : path;
 }
 
 export function workspaceFileAsset(

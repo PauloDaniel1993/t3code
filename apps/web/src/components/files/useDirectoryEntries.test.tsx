@@ -32,8 +32,8 @@ const folders = [
 ] as const;
 let renderer: ReactTestRenderer | null;
 let state: ReturnType<typeof useDirectoryEntries>;
-function Explorer() {
-  const entries = useDirectoryEntries(environmentId, "/api", workspace);
+function Explorer({ context = workspace }: { context?: typeof workspace }) {
+  const entries = useDirectoryEntries(environmentId, "/api", context);
   useLayoutEffect(() => {
     state = entries;
   }, [entries]);
@@ -59,6 +59,27 @@ afterEach(async () => {
 });
 
 describe("workspace explorer loading", () => {
+  it("keeps loaded directories across unrelated projection object changes", async () => {
+    await act(async () => {
+      renderer = create(<Explorer />);
+    });
+    await act(async () => {
+      await state.load("api");
+    });
+    await act(async () => {
+      renderer!.update(
+        <Explorer
+          context={{
+            ...workspace,
+            scope: { ...workspace.scope },
+            folders: workspace.folders.map((folder) => ({ ...folder })),
+          }}
+        />,
+      );
+    });
+    expect(mocks.execute).toHaveBeenCalledTimes(2);
+    expect(state.entries).toContainEqual({ path: "api/readme.md", kind: "file" });
+  });
   it("loads only the folder table, then pins an explicitly expanded root and caches it", async () => {
     await act(async () => {
       renderer = create(<Explorer />);
@@ -118,5 +139,54 @@ describe("workspace explorer loading", () => {
       await Promise.all(requests);
     });
     expect(releases).toHaveLength(4);
+  });
+
+  it("reloads membership and ignores old in-flight entries when a draft relinks", async () => {
+    const draft = workspaceFileContext(project, null, undefined, true)!;
+    await act(async () => {
+      renderer = create(<Explorer context={draft} />);
+    });
+    let release!: () => void;
+    mocks.execute.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve(
+              AsyncResult.success({
+                entries: [{ path: "ui/old.ts", kind: "file" }],
+                folders,
+                truncated: false,
+              }),
+            );
+        }),
+    );
+    let oldRequest!: Promise<void>;
+    await act(async () => {
+      oldRequest = state.load("ui");
+    });
+    const nextProject = {
+      ...project,
+      folders: [project.folders[0]!, { path: "/docs", name: "docs", label: "docs" }],
+    };
+    const nextFolders = [folders[0], { folderPath: "/docs", label: "docs", status: "ok" as const }];
+    mocks.execute.mockResolvedValue(
+      AsyncResult.success({ entries: [], folders: nextFolders, truncated: false }),
+    );
+    await act(async () => {
+      renderer!.update(
+        <Explorer context={workspaceFileContext(nextProject, null, undefined, true)!} />,
+      );
+    });
+    await act(async () => {
+      release();
+      await oldRequest;
+    });
+    expect(state.entries).toEqual([
+      { path: "api", kind: "directory" },
+      { path: "docs", kind: "directory" },
+    ]);
+    expect(state.folders).toEqual(nextFolders);
+    expect(mocks.execute).toHaveBeenCalledTimes(3);
+    expect(state.isPending).toBe(false);
   });
 });

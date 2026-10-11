@@ -1,10 +1,13 @@
 import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
 import { describe, expect, it } from "vite-plus/test";
 import {
   workspaceFileAsset,
   workspaceFileContext,
   workspaceFileMention,
+  workspaceMentionPreviewPath,
   workspaceFileReference,
+  workspaceFileOpenReference,
   workspaceFileScopeKey,
   workspaceFolderProblems,
   workspaceResultFolderPath,
@@ -64,9 +67,27 @@ describe("workspace file addresses", () => {
     });
     expect(workspaceFileContext(project, null, undefined, true)?.folders).toHaveLength(3);
     expect(workspaceFileContext(project, thread, threadId, false)).toBeUndefined();
+    expect(workspaceFileContext(project, null, threadId, true)).toBeUndefined();
+    expect(
+      workspaceFileContext(project, { worktreePath: "/session/api" }, threadId, true),
+    ).toBeUndefined();
     expect(
       workspaceFileContext({ ...project, workspaceFile: null, folders: [] }, null, undefined, true),
     ).toBeUndefined();
+  });
+
+  it("keeps all unpinned primary-relative open actions separate from pinned canonical selections", () => {
+    expect(
+      workspaceFileOpenReference(workspace, "src/main.ts", "/session/api")?.canonicalPath,
+    ).toBe("api/src/main.ts");
+    expect(workspaceFileOpenReference(workspace, "ui/main.ts", "/session/api")?.canonicalPath).toBe(
+      "api/ui/main.ts",
+    );
+    expect(
+      workspaceFileOpenReference(workspace, "ui/main.ts", "/session/api", "/source/ui")
+        ?.canonicalPath,
+    ).toBe("ui/main.ts");
+    expect(workspaceFileOpenReference(undefined, "ui/main.ts", "/session/api")).toBeNull();
   });
 
   it("maps a canonical selection and pins its owning folder", () => {
@@ -119,10 +140,49 @@ describe("workspace file addresses", () => {
   it("keeps primary mentions relative and secondary mentions concrete, including escaping", () => {
     expect(workspaceFileMention(workspace, "api/src/main.ts")).toBe("[main.ts](src/main.ts)");
     expect(workspaceFileMention(workspace, "ui/src/a [b]#.ts")).toBe(
-      "[ui/src/a \\[b\\]#.ts](/session/ui/src/a%20%5Bb%5D%23.ts)",
+      "[a \\[b\\]#.ts](/session/ui/src/a%20%5Bb%5D%23.ts)",
     );
     expect(workspaceFileMention(workspace, "remote/main.ts")).toBeNull();
     expect(workspaceFileMention(undefined, "src/main.ts")).toBe("[main.ts](src/main.ts)");
+  });
+
+  it("round trips primary and secondary mention chips without interpreting primary paths as labels", () => {
+    const primary = workspaceFileMention(workspace, "api/ui/main.ts")!;
+    const secondary = workspaceFileMention(workspace, "ui/main.ts")!;
+    const tokens = collectComposerInlineTokens(`${primary} ${secondary} `);
+    expect(tokens.map((token) => token.value)).toEqual(["ui/main.ts", "/session/ui/main.ts"]);
+    expect(
+      workspaceFileReference(
+        workspace,
+        workspaceMentionPreviewPath(tokens[0]!.value, "/session/api"),
+      )?.canonicalPath,
+    ).toBe("api/ui/main.ts");
+    expect(
+      workspaceFileReference(
+        workspace,
+        workspaceMentionPreviewPath(tokens[1]!.value, "/session/api"),
+      )?.canonicalPath,
+    ).toBe("ui/main.ts");
+    expect(workspaceMentionPreviewPath("src/main.ts", "C:\\api")).toBe("C:\\api\\src\\main.ts");
+  });
+
+  it("rejects a stale suggestion pin after an unbound project relinks", () => {
+    const draft = workspaceFileContext(project, null, undefined, true)!;
+    const pin = workspaceResultFolderPath("ui/main.ts", [
+      { folderPath: "/source/api", label: "api", status: "ok" },
+      { folderPath: "/source/ui", label: "ui", status: "ok" },
+    ]);
+    const relinked = workspaceFileContext(
+      {
+        ...project,
+        folders: [project.folders[0]!, { path: "/replacement", name: "ui", label: "ui" }],
+      },
+      null,
+      undefined,
+      true,
+    )!;
+    expect(workspaceFileMention(draft, "ui/main.ts", pin)).toBe("[main.ts](/source/ui/main.ts)");
+    expect(workspaceFileMention(relinked, "ui/main.ts", pin)).toBeNull();
   });
 
   it("pins using the response owner rather than the narrowed search folder", () => {

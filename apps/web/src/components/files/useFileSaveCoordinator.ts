@@ -6,6 +6,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 
 import { FileSaveCoordinator } from "./fileSaveCoordinator";
 import { confirmProjectFileQueryData } from "./projectFilesQueryState";
+import { useWorkspaceFileScope } from "./workspaceFiles";
 
 const FILE_SAVE_DEBOUNCE_MS = 500;
 
@@ -20,11 +21,12 @@ interface FileSaveOptions {
 export function useFileSaveCoordinator({
   environmentId,
   cwd,
-  scope,
+  scope: inputScope,
   relativePath,
   onPendingChange,
 }: FileSaveOptions): Pick<FileSaveCoordinator, "change"> {
   const writeFile = useAtomCommand(projectEnvironment.writeFile);
+  const scope = useWorkspaceFileScope(inputScope);
   const session = useMemo(() => {
     const coordinatorRef = createRef<FileSaveCoordinator>();
     return {

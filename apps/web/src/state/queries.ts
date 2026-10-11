@@ -23,6 +23,7 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { useWorkspaceFileScope } from "../components/files/workspaceFiles";
 import { orchestrationEnvironment } from "./orchestration";
 import { isPaginatedBranchesNextPagePending } from "./paginatedBranches";
 import { projectContentSearch, projectEnvironment } from "./projects";
@@ -218,26 +219,13 @@ export function areProjectPathSearchTargetsEqual(
   );
 }
 
-function useProjectSearchScope(input: WorkspaceScope | undefined) {
-  const projectId = input?.projectId;
-  const threadId = input?.threadId;
-  const folderPath = input?.folderPath;
-  return useMemo(
-    () =>
-      projectId === undefined
-        ? undefined
-        : { projectId, ...(threadId ? { threadId } : {}), ...(folderPath ? { folderPath } : {}) },
-    [projectId, threadId, folderPath],
-  );
-}
-
 export function useProjectPathSearch(
   target: ProjectPathSearchTarget,
   limit: number,
   options?: { readonly allowEmptyQuery?: boolean },
 ) {
   const allowEmptyQuery = options?.allowEmptyQuery === true;
-  const scope = useProjectSearchScope(target.scope);
+  const scope = useWorkspaceFileScope(target.scope);
   const normalizedTarget = useMemo(
     () => ({
       environmentId: target.environmentId,
@@ -301,7 +289,7 @@ export function useProjectContentSearch(target: ProjectContentSearchTarget) {
   // decide whether the input is blank.
   const query = target.query;
   const hasQuery = query.trim().length > 0;
-  const scope = useProjectSearchScope(target.scope);
+  const scope = useWorkspaceFileScope(target.scope);
   const normalizedTarget = useMemo(
     () => ({
       environmentId: target.environmentId,
