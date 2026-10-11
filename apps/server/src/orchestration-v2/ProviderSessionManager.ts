@@ -1288,6 +1288,9 @@ export const layerWithOptions = (
         const subscribeEvents = makeEventSubscription(eventSubscribers);
         return {
           ...runtime,
+          get providerSession() {
+            return runtime.providerSession;
+          },
           subscribeEvents,
           events: Stream.unwrap(
             subscribeEvents.pipe(Effect.map((subscription) => subscription.events)),

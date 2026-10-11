@@ -1119,8 +1119,10 @@ export interface AcpSessionRuntimeStartResult {
 }
 
 export interface AcpSessionActivationOptions {
+  readonly cwd?: string;
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly acpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly additionalDirectories?: ReadonlyArray<string>;
 }
 
 export class AcpSessionRuntime extends Context.Service<
@@ -2218,6 +2220,22 @@ export const make = (
       return activationOptions?.mcpServers ?? options.mcpServers ?? [];
     };
 
+    const sessionAdditionalDirectories = Effect.fnUntraced(function* (
+      initialized: EffectAcpSchema.InitializeResponse,
+      activationOptions?: AcpSessionActivationOptions,
+    ) {
+      const directories = activationOptions?.additionalDirectories ?? options.additionalDirectories;
+      if (initialized.agentCapabilities?.sessionCapabilities?.additionalDirectories == null) {
+        if (directories !== undefined && directories.length > 0) {
+          return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+            "ACP agent does not advertise additional workspace directory access.",
+          );
+        }
+        return {};
+      }
+      return directories === undefined ? {} : { additionalDirectories: directories };
+    });
+
     const startOnce = Effect.gen(function* () {
       const initializeResult = yield* initialize;
 
@@ -2272,9 +2290,7 @@ export const make = (
           | EffectAcpSchema.LoadSessionResponse
           | EffectAcpSchema.NewSessionResponse
           | EffectAcpSchema.ResumeSessionResponse;
-        const additionalDirectories = options.additionalDirectories?.length
-          ? { additionalDirectories: options.additionalDirectories }
-          : {};
+        const additionalDirectories = yield* sessionAdditionalDirectories(initializeResult);
         if (options.resumeSessionId) {
           sessionId = options.resumeSessionId;
           if (
@@ -2517,46 +2533,64 @@ export const make = (
       getConfigOptions: Ref.get(configOptionsRef),
       loadSession: (sessionId, activationOptions) =>
         start.pipe(
-          Effect.flatMap((started) => {
-            const requestPayload = {
-              sessionId,
-              cwd: options.cwd,
-              mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
-            } satisfies EffectAcpSchema.LoadSessionRequest;
-            return runLoadSessionWithReplayIdle(requestPayload, started.initializeResult);
-          }),
+          Effect.flatMap(
+            Effect.fnUntraced(function* (started) {
+              const requestPayload = {
+                sessionId,
+                cwd: activationOptions?.cwd ?? options.cwd,
+                ...(yield* sessionAdditionalDirectories(
+                  started.initializeResult,
+                  activationOptions,
+                )),
+                mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
+              } satisfies EffectAcpSchema.LoadSessionRequest;
+              return yield* runLoadSessionWithReplayIdle(requestPayload, started.initializeResult);
+            }),
+          ),
           Effect.flatMap((response) => adoptSession(sessionId, response)),
         ),
       resumeSession: (sessionId, activationOptions) =>
         start.pipe(
-          Effect.flatMap((started) => {
-            const requestPayload = {
-              sessionId,
-              cwd: options.cwd,
-              mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
-            } satisfies EffectAcpSchema.ResumeSessionRequest;
-            return runLoggedRequest(
-              "session/resume",
-              requestPayload,
-              acp.agent.resumeSession(requestPayload),
-            );
-          }),
+          Effect.flatMap(
+            Effect.fnUntraced(function* (started) {
+              const requestPayload = {
+                sessionId,
+                cwd: activationOptions?.cwd ?? options.cwd,
+                ...(yield* sessionAdditionalDirectories(
+                  started.initializeResult,
+                  activationOptions,
+                )),
+                mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
+              } satisfies EffectAcpSchema.ResumeSessionRequest;
+              return yield* runLoggedRequest(
+                "session/resume",
+                requestPayload,
+                acp.agent.resumeSession(requestPayload),
+              );
+            }),
+          ),
           Effect.flatMap((response) => adoptSession(sessionId, response)),
         ),
       forkSession: (sessionId, activationOptions) =>
         start.pipe(
-          Effect.flatMap((started) => {
-            const requestPayload = {
-              sessionId,
-              cwd: options.cwd,
-              mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
-            } satisfies EffectAcpSchema.ForkSessionRequest;
-            return runLoggedRequest(
-              "session/fork",
-              requestPayload,
-              acp.agent.forkSession(requestPayload),
-            );
-          }),
+          Effect.flatMap(
+            Effect.fnUntraced(function* (started) {
+              const requestPayload = {
+                sessionId,
+                cwd: activationOptions?.cwd ?? options.cwd,
+                ...(yield* sessionAdditionalDirectories(
+                  started.initializeResult,
+                  activationOptions,
+                )),
+                mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
+              } satisfies EffectAcpSchema.ForkSessionRequest;
+              return yield* runLoggedRequest(
+                "session/fork",
+                requestPayload,
+                acp.agent.forkSession(requestPayload),
+              );
+            }),
+          ),
           Effect.flatMap((response) => adoptSession(response.sessionId, response)),
         ),
       listSessions: (cursor) => {

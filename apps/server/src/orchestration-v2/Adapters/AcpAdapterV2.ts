@@ -97,6 +97,7 @@ import {
   type T3AcpInstructionState,
 } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
+import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { type ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import {
@@ -131,10 +132,10 @@ const ACP_DEFERRED_FINALIZE_DEBOUNCE: Duration.Input = "3000 millis";
 export interface AcpAdapterV2RuntimeInput {
   readonly cwd: string;
   /**
-   * Policy the session opened with. A runtime-mode change reopens the session,
-   * so flavors that encode permissions in the launch command (Grok) read it here.
+   * Incoming policy for this runtime, including replacements after a scope change.
    */
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  readonly additionalDirectories: ReadonlyArray<string>;
   readonly mcpServers: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly acpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   /** Scoped credentials for terminal fallback when an ACP agent drops `mcpServers`. */
@@ -212,6 +213,8 @@ export interface AcpAdapterV2ExtensionContext {
 }
 
 export interface AcpAdapterV2Flavor {
+  /** Kimi installs workspace roots only on session/new, so changed scopes need T3 history handoff. */
+  readonly workspaceDirectoriesOnNewSessionOnly?: boolean;
   /** Interprets provider-specific prompt errors before they cross into orchestration. */
   readonly promptFailure?: (cause: unknown) => OrchestrationV2ProviderFailure;
   readonly driver: ProviderDriverKind;
@@ -1595,6 +1598,17 @@ export function makeAcpAdapterV2(
         const clientPolicyGrants = makeAcpClientPolicyGrants();
         let latestRuntimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy =
           input.runtimePolicy;
+        let installedRuntimePolicy = input.runtimePolicy;
+        const workspaceScopeChanged = (
+          previous: {
+            readonly cwd: string | null;
+            readonly additionalDirectories?: ReadonlyArray<string> | undefined;
+          },
+          next: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+        ) =>
+          previous.cwd !== next.cwd ||
+          JSON.stringify(previous.additionalDirectories ?? []) !==
+            JSON.stringify(next.additionalDirectories);
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const activeTurn = yield* Ref.make<ActiveAcpTurn | null>(null);
         const activeSessionId = yield* Ref.make<string | null>(null);
@@ -2023,8 +2037,9 @@ export function makeAcpAdapterV2(
         ): AcpAdapterV2RuntimeInput => {
           const mcpContext = acpMcpContext(threadId, self);
           return {
-            cwd: input.runtimePolicy.cwd ?? process.cwd(),
-            runtimePolicy: input.runtimePolicy,
+            cwd: latestRuntimePolicy.cwd ?? process.cwd(),
+            runtimePolicy: latestRuntimePolicy,
+            additionalDirectories: latestRuntimePolicy.additionalDirectories,
             mcpServers: mcpContext.servers,
             acpMcpServers: mcpContext.acpServers,
             ...(mcpContext.processEnvironment === undefined
@@ -6078,8 +6093,27 @@ export function makeAcpAdapterV2(
           return replacementExit.value.started;
         });
 
+        const initialScopeChanged =
+          flavor.workspaceDirectoriesOnNewSessionOnly === true &&
+          input.initialNativeThreadId !== undefined &&
+          workspaceScopeChanged(
+            input.resumeFromSession ?? { cwd: input.runtimePolicy.cwd },
+            input.runtimePolicy,
+          );
+        if (initialScopeChanged) {
+          yield* Ref.set(initialSessionActivationFailure, {
+            sessionId: input.initialNativeThreadId!,
+            error: EffectAcpErrors.AcpRequestError.invalidParams(
+              "Kimi workspace scope changed; resume requires a fresh session with T3 history handoff.",
+            ),
+          });
+          prepareClaimableTerminalEnvironment(input.threadId);
+        }
         const initialStart = yield* Effect.result(
-          startAcpRuntime(input.threadId, input.initialNativeThreadId),
+          startAcpRuntime(
+            input.threadId,
+            initialScopeChanged ? undefined : input.initialNativeThreadId,
+          ),
         );
         const started = Result.isSuccess(initialStart)
           ? initialStart.success
@@ -6104,7 +6138,12 @@ export function makeAcpAdapterV2(
         yield* Ref.set(activeSessionId, started.sessionId);
         yield* Ref.set(activeSessionSetup, started);
         rememberTerminalEnvironment(started.sessionId, input.threadId);
-        const capabilities = negotiatedCapabilities(flavor.capabilities, started);
+        const negotiated = negotiatedCapabilities(flavor.capabilities, started);
+        // Kimi forks use T3's portable history transfer rather than inheriting native roots.
+        const capabilities =
+          flavor.workspaceDirectoriesOnNewSessionOnly === true
+            ? { ...negotiated, threads: { ...negotiated.threads, canForkThread: false } }
+            : negotiated;
         const canLoadSession = started.initializeResult.agentCapabilities?.loadSession === true;
         const canResumeSession =
           started.initializeResult.agentCapabilities?.sessionCapabilities?.resume != null;
@@ -6124,7 +6163,11 @@ export function makeAcpAdapterV2(
           if (initialFailure !== undefined) {
             return yield* initialFailure;
           }
-          const activationOptions = acpMcpActivation(threadId, self);
+          const activationOptions = {
+            ...acpMcpActivation(threadId, self),
+            cwd: latestRuntimePolicy.cwd ?? process.cwd(),
+            additionalDirectories: latestRuntimePolicy.additionalDirectories,
+          };
           prepareTerminalEnvironment(threadId, sessionId);
           const activated = canLoadSession
             ? yield* runtime.loadSession(sessionId, activationOptions)
@@ -6345,18 +6388,70 @@ export function makeAcpAdapterV2(
         yield* Ref.set(activeSelection, input.modelSelection);
         yield* Ref.set(activeInteractionMode, input.runtimePolicy.interactionMode);
         const createdAt = yield* DateTime.now;
-        const providerSession: OrchestrationV2ProviderSession = {
+        let providerSession: OrchestrationV2ProviderSession = {
           id: input.providerSessionId,
           driver,
           providerInstanceId: options.instanceId,
           status: "ready",
           cwd: input.runtimePolicy.cwd ?? process.cwd(),
+          additionalDirectories: [...input.runtimePolicy.additionalDirectories],
           model: input.modelSelection.model,
           capabilities,
           createdAt,
           updatedAt: createdAt,
           lastError: null,
         };
+
+        const recordWorkspaceScope = () => {
+          installedRuntimePolicy = latestRuntimePolicy;
+          providerSession = {
+            ...providerSession,
+            cwd: latestRuntimePolicy.cwd ?? process.cwd(),
+            additionalDirectories: [...latestRuntimePolicy.additionalDirectories],
+          };
+        };
+
+        const requireWorkspaceScopeBoundary = Effect.fnUntraced(function* (
+          nextPolicy = latestRuntimePolicy,
+        ) {
+          if (!workspaceScopeChanged(installedRuntimePolicy, nextPolicy)) return;
+          if (
+            (yield* Ref.get(activeTurn)) !== null ||
+            (yield* Ref.get(runningBackgroundTaskIds)).size > 0 ||
+            (yield* Ref.get(wakeBuffer)).length > 0 ||
+            (yield* Ref.get(continuationRequested)) ||
+            (yield* Ref.get(carryoverSubagents))?.subagents.some(
+              acpSubagentHasPendingBackgroundWork,
+            )
+          ) {
+            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+              driver,
+              detail: "ACP workspace scope cannot change while provider work is pending.",
+            });
+          }
+        });
+
+        const replaceWorkspaceSession = Effect.fnUntraced(function* (threadId: ThreadId) {
+          yield* requireWorkspaceScopeBoundary();
+          itemIdentityVersion = 2;
+          return yield* startReplacementAcpRuntime(threadId, (candidate) =>
+            Effect.gen(function* () {
+              rememberTerminalEnvironment(candidate.sessionId, threadId);
+              yield* Ref.set(activeSessionId, candidate.sessionId);
+              yield* Ref.set(activeSessionSetup, candidate);
+              yield* Ref.set(activeSelection, null);
+              yield* Ref.set(activeInteractionMode, null);
+              yield* Ref.set(snapshot, {
+                order: [],
+                messages: new Map(),
+                loadingRole: null,
+                loadingMessageId: null,
+                loadingIndex: 0,
+              });
+              recordWorkspaceScope();
+            }),
+          );
+        });
 
         const providerTurnPayload = (
           context: ActiveAcpTurn,
@@ -6713,6 +6808,10 @@ export function makeAcpAdapterV2(
               model: turnInput.modelSelection.model,
             }),
           });
+          const folderInventory = buildWorkspaceFolderInventory(turnInput.runtimePolicy);
+          if (folderInventory !== undefined) {
+            prompt.push({ type: "text", text: folderInventory });
+          }
           return { prompt, instructionState: text === messageText ? undefined : instructionState };
         });
 
@@ -6751,13 +6850,24 @@ export function makeAcpAdapterV2(
             // Session activation can itself invoke client fs/terminal methods.
             // Install the incoming thread policy before load/resume so those
             // requests can never inherit the previously active thread's policy.
+            yield* requireWorkspaceScopeBoundary(turnInput.runtimePolicy);
             latestRuntimePolicy = turnInput.runtimePolicy;
+            const scopeChanged = workspaceScopeChanged(installedRuntimePolicy, latestRuntimePolicy);
+            if (scopeChanged && flavor.workspaceDirectoriesOnNewSessionOnly === true) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver,
+                detail:
+                  "Kimi workspace scope changed; resume requires T3 history handoff before prompting.",
+              });
+            }
             const requestedSessionId = yield* nativeThreadId(driver, turnInput.providerThread);
             const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
               turnInput.threadId,
             );
             const needsSessionActivation =
-              (yield* Ref.get(activeSessionId)) !== requestedSessionId || restartAfterInterrupt;
+              (yield* Ref.get(activeSessionId)) !== requestedSessionId ||
+              restartAfterInterrupt ||
+              scopeChanged;
             if (needsSessionActivation) {
               const activated = yield* activateSession(requestedSessionId, turnInput.threadId);
               yield* Ref.set(activeSessionId, activated.sessionId);
@@ -6765,6 +6875,7 @@ export function makeAcpAdapterV2(
               yield* configureSession(activated, turnInput.modelSelection, turnInput.runtimePolicy);
               yield* Ref.set(activeSelection, turnInput.modelSelection);
               yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
+              recordWorkspaceScope();
             } else {
               const configuredSelection = yield* Ref.get(activeSelection);
               const configuredInteractionMode = yield* Ref.get(activeInteractionMode);
@@ -7179,7 +7290,9 @@ export function makeAcpAdapterV2(
           instanceId: options.instanceId,
           driver,
           providerSessionId: input.providerSessionId,
-          providerSession,
+          get providerSession() {
+            return providerSession;
+          },
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ...(postSettleContinuationEnabled
             ? {
@@ -7214,28 +7327,50 @@ export function makeAcpAdapterV2(
             : {}),
           ensureThread: Effect.fn("AcpAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
-              const now = yield* DateTime.now;
-              const sessionId = yield* Ref.get(activeSessionId);
-              if (sessionId === null) {
-                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver,
-                  detail: "ACP runtime did not produce a session id",
-                });
-              }
-              const providerThread = makeProviderThread({
-                driver,
-                providerInstanceId: options.instanceId,
-                idAllocator,
-                appThreadId: threadInput.threadId,
-                providerSessionId: input.providerSessionId,
-                nativeThreadId: sessionId,
-                ...(itemIdentityVersion === undefined ? {} : { itemIdentityVersion }),
-                now,
-              });
-              yield* Ref.update(providerThreadByNativeSessionId, (current) =>
-                new Map(current).set(sessionId, providerThread),
+              return yield* runtimeTransitionPermit.withPermit(
+                Effect.gen(function* () {
+                  yield* awaitRuntimeTeardown();
+                  const now = yield* DateTime.now;
+                  yield* requireWorkspaceScopeBoundary(threadInput.runtimePolicy);
+                  latestRuntimePolicy = threadInput.runtimePolicy;
+                  if (workspaceScopeChanged(installedRuntimePolicy, latestRuntimePolicy)) {
+                    yield* replaceWorkspaceSession(threadInput.threadId);
+                  }
+                  const sessionId = yield* Ref.get(activeSessionId);
+                  if (sessionId === null) {
+                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver,
+                      detail: "ACP runtime did not produce a session id",
+                    });
+                  }
+                  let providerThread = makeProviderThread({
+                    driver,
+                    providerInstanceId: options.instanceId,
+                    idAllocator,
+                    appThreadId: threadInput.threadId,
+                    providerSessionId: input.providerSessionId,
+                    nativeThreadId: sessionId,
+                    ...(itemIdentityVersion === undefined ? {} : { itemIdentityVersion }),
+                    now,
+                  });
+                  const existing = threadInput.existingProviderThread;
+                  if (existing !== undefined) {
+                    providerThread = {
+                      ...providerThread,
+                      id: existing.id,
+                      firstRunOrdinal: existing.firstRunOrdinal,
+                      lastRunOrdinal: existing.lastRunOrdinal,
+                      handoffIds: existing.handoffIds,
+                      forkedFrom: existing.forkedFrom,
+                      createdAt: existing.createdAt,
+                    };
+                  }
+                  yield* Ref.update(providerThreadByNativeSessionId, (current) =>
+                    new Map(current).set(sessionId, providerThread),
+                  );
+                  return providerThread;
+                }),
               );
-              return providerThread;
             },
             (effect, threadInput) =>
               effect.pipe(
@@ -7258,6 +7393,19 @@ export function makeAcpAdapterV2(
               return yield* runtimeTransitionPermit.withPermit(
                 Effect.gen(function* () {
                   yield* awaitRuntimeTeardown();
+                  yield* requireWorkspaceScopeBoundary(
+                    threadInput.runtimePolicy ?? latestRuntimePolicy,
+                  );
+                  latestRuntimePolicy = threadInput.runtimePolicy ?? latestRuntimePolicy;
+                  const scopeChanged = workspaceScopeChanged(
+                    installedRuntimePolicy,
+                    latestRuntimePolicy,
+                  );
+                  if (scopeChanged && flavor.workspaceDirectoriesOnNewSessionOnly === true) {
+                    return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+                      "Kimi workspace scope changed; resume requires a fresh session with T3 history handoff.",
+                    );
+                  }
                   const sessionId = yield* nativeThreadId(driver, threadInput.providerThread);
                   const previousItemIdentityVersion = itemIdentityVersion;
                   useProviderThreadIdentity(threadInput.providerThread);
@@ -7267,7 +7415,11 @@ export function makeAcpAdapterV2(
                   const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
                     threadInput.providerThread.appThreadId,
                   ).pipe(Effect.tapError(() => restorePreviousItemIdentity));
-                  if ((yield* Ref.get(activeSessionId)) !== sessionId || restartAfterInterrupt) {
+                  if (
+                    (yield* Ref.get(activeSessionId)) !== sessionId ||
+                    restartAfterInterrupt ||
+                    scopeChanged
+                  ) {
                     yield* Ref.set(snapshot, {
                       order: [],
                       messages: new Map(),
@@ -7282,10 +7434,11 @@ export function makeAcpAdapterV2(
                     yield* Ref.set(activeSessionId, activated.sessionId);
                     yield* Ref.set(activeSessionSetup, activated);
                     const nextSelection = threadInput.modelSelection ?? input.modelSelection;
-                    const nextRuntimePolicy = threadInput.runtimePolicy ?? input.runtimePolicy;
+                    const nextRuntimePolicy = latestRuntimePolicy;
                     yield* configureSession(activated, nextSelection, nextRuntimePolicy);
                     yield* Ref.set(activeSelection, nextSelection);
                     yield* Ref.set(activeInteractionMode, nextRuntimePolicy.interactionMode);
+                    recordWorkspaceScope();
                   }
                   const now = yield* DateTime.now;
                   return {
@@ -7698,10 +7851,11 @@ export function makeAcpAdapterV2(
                       loadingIndex: 0,
                     });
                     prepareTerminalEnvironment(snapshotInput.providerThread.appThreadId, sessionId);
-                    const activated = yield* runtime.loadSession(
-                      sessionId,
-                      acpMcpActivation(snapshotInput.providerThread.appThreadId, self),
-                    );
+                    const activated = yield* runtime.loadSession(sessionId, {
+                      ...acpMcpActivation(snapshotInput.providerThread.appThreadId, self),
+                      cwd: latestRuntimePolicy.cwd ?? process.cwd(),
+                      additionalDirectories: latestRuntimePolicy.additionalDirectories,
+                    });
                     rememberTerminalEnvironment(
                       activated.sessionId,
                       snapshotInput.providerThread.appThreadId,
@@ -7840,6 +7994,10 @@ export function makeAcpAdapterV2(
               return yield* runtimeTransitionPermit.withPermit(
                 Effect.gen(function* () {
                   yield* awaitRuntimeTeardown();
+                  yield* requireWorkspaceScopeBoundary(
+                    forkInput.runtimePolicy ?? latestRuntimePolicy,
+                  );
+                  latestRuntimePolicy = forkInput.runtimePolicy ?? latestRuntimePolicy;
                   useProviderThreadIdentity(forkInput.sourceProviderThread);
                   yield* restartRuntimeAfterTeardownIfRequired(
                     forkInput.sourceProviderThread.appThreadId,
@@ -7861,15 +8019,17 @@ export function makeAcpAdapterV2(
                     forkInput.sourceProviderThread,
                   );
                   prepareTerminalEnvironment(forkInput.targetThreadId);
-                  const forked = yield* runtime.forkSession(
-                    sourceSessionId,
-                    acpMcpActivation(forkInput.targetThreadId, self),
-                  );
+                  const forked = yield* runtime.forkSession(sourceSessionId, {
+                    ...acpMcpActivation(forkInput.targetThreadId, self),
+                    cwd: latestRuntimePolicy.cwd ?? process.cwd(),
+                    additionalDirectories: latestRuntimePolicy.additionalDirectories,
+                  });
                   rememberTerminalEnvironment(forked.sessionId, forkInput.targetThreadId);
                   yield* Ref.set(activeSessionId, forked.sessionId);
                   yield* Ref.set(activeSessionSetup, forked);
                   yield* Ref.set(activeSelection, null);
                   yield* Ref.set(activeInteractionMode, null);
+                  recordWorkspaceScope();
                   itemIdentityVersion = 2;
                   const now = yield* DateTime.now;
                   const providerThread = makeProviderThread({
