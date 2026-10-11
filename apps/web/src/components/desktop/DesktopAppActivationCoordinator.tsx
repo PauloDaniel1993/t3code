@@ -4,7 +4,11 @@ import { useEffect, useEffectEvent, useRef } from "react";
 
 import { handleDesktopAppActivationRequest } from "../../desktopAppActivation";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
-import { findProjectByPath, inferProjectTitleFromPath } from "../../lib/projectPaths";
+import {
+  findProjectByPath,
+  findProjectByWorkspaceFile,
+  inferProjectTitleFromPath,
+} from "../../lib/projectPaths";
 import { newProjectId } from "../../lib/utils";
 import { readProjects, waitForProject } from "../../state/entities";
 import { usePrimaryEnvironment } from "../../state/environments";
@@ -16,6 +20,9 @@ import { useAtomCommand } from "../../state/use-atom-command";
 export function DesktopAppActivationCoordinator() {
   const primaryEnvironment = usePrimaryEnvironment();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  const importWorkspaceFile = useAtomCommand(projectEnvironment.importWorkspaceFile, {
+    reportFailure: false,
+  });
   const openThread = useNewThreadHandler();
   const queueRef = useRef(Promise.resolve());
   const activation = window.desktopBridge?.appActivation;
@@ -42,6 +49,7 @@ export function DesktopAppActivationCoordinator() {
         return {
           environmentId: primaryEnvironment.environmentId,
           platform: primaryEnvironment.serverConfig.environment.platform.os,
+          workspaceFileProjects: primaryEnvironment.serverConfig.workspaceFileProjects === true,
         };
       },
       findProject: (environmentId, workspaceRoot) =>
@@ -64,6 +72,22 @@ export function DesktopAppActivationCoordinator() {
         if (result._tag === "Failure") {
           const error = squashAtomCommandFailure(result);
           throw error instanceof Error ? error : new Error("T3 Code could not add the project.");
+        }
+        return projectId;
+      },
+      findWorkspaceFileProject: (environmentId, workspaceFilePath) =>
+        findProjectByWorkspaceFile(
+          readProjects().filter((project) => project.environmentId === environmentId),
+          workspaceFilePath,
+        ) ?? null,
+      importWorkspaceFile: async (environmentId, workspaceFilePath) => {
+        const projectId = newProjectId();
+        const result = await importWorkspaceFile({
+          environmentId,
+          input: { projectId, workspaceFilePath },
+        });
+        if (result._tag === "Failure") {
+          throw squashAtomCommandFailure(result);
         }
         return projectId;
       },

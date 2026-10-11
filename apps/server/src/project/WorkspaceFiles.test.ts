@@ -12,6 +12,26 @@ import * as WorkspaceFiles from "./WorkspaceFiles.ts";
 const TestLayer = WorkspaceFiles.layer.pipe(Layer.provideMerge(NodeServices.layer));
 
 it.layer(TestLayer)("WorkspaceFiles", (it) => {
+  it.effect("selects file mode case-insensitively without mistaking directories for files", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const files = yield* WorkspaceFiles.WorkspaceFiles;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-classify-" });
+      const directory = path.join(root, "folder.CODE-WORKSPACE");
+      yield* fs.makeDirectory(directory);
+      expect(yield* files.resolveProjectPath(directory)).toEqual({
+        path: directory,
+        kind: "directory",
+      });
+      const missing = path.join(root, "Team Space.CODE-WORKSPACE");
+      expect(yield* files.resolveProjectPath(missing)).toEqual({
+        path: missing,
+        kind: "workspace-file",
+      });
+      expect(yield* fs.exists(missing)).toBe(false);
+    }),
+  );
   it.effect("reads a workspace file's folders relative to its directory", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

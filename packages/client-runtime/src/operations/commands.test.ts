@@ -40,6 +40,7 @@ import {
   archiveThread,
   cancelQueuedRun,
   createProject,
+  importWorkspaceFileProject,
   dismissThreadUserInput,
   editQueuedRun,
   forkThreadFromRun,
@@ -168,6 +169,25 @@ describe("V2 environment commands", () => {
           title: "Project",
           workspaceRoot: "/workspace/project",
           createWorkspaceRootIfMissing: true,
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("imports a workspace file without converting it to a folder create", () =>
+    Effect.gen(function* () {
+      const projects: ProjectMutation[] = [];
+      const supervisor = yield* makeSupervisor({ commands: [], projects });
+      yield* importWorkspaceFileProject({
+        projectId: ProjectId.make("linked"),
+        workspaceFilePath: "C:/Team Space/team.code-workspace",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(projects).toEqual([
+        {
+          type: "project.import-workspace-file",
+          commandId: "00000000-0000-4000-8000-000000000000",
+          projectId: "linked",
+          workspaceFilePath: "C:/Team Space/team.code-workspace",
         },
       ]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),

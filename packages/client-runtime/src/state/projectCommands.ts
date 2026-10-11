@@ -10,9 +10,11 @@ import {
 } from "./runtime.ts";
 import {
   type CreateProjectInput,
+  type ImportWorkspaceFileProjectInput,
   type DeleteProjectInput,
   type UpdateProjectInput,
   createProject,
+  importWorkspaceFileProject,
   deleteProject,
   updateProject,
 } from "../operations/commands.ts";
@@ -20,6 +22,7 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 
 export type {
   CreateProjectInput,
+  ImportWorkspaceFileProjectInput,
   DeleteProjectInput,
   UpdateProjectInput,
 } from "../operations/commands.ts";
@@ -77,6 +80,12 @@ export function createProjectEnvironmentAtoms<R, E>(
     create: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:project:create",
       execute: (input: CreateProjectInput) => createProject(input),
+      scheduler: projectScheduler,
+      concurrency: projectConcurrency,
+    }),
+    importWorkspaceFile: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:project:import-workspace-file",
+      execute: (input: ImportWorkspaceFileProjectInput) => importWorkspaceFileProject(input),
       scheduler: projectScheduler,
       concurrency: projectConcurrency,
     }),

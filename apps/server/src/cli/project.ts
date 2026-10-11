@@ -6,7 +6,9 @@ import {
   type ProjectMutation,
   type ProjectSnapshot,
   ProjectId,
+  WorkspaceFileDiagnostic,
 } from "@t3tools/contracts";
+import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Console from "effect/Console";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
@@ -30,6 +32,7 @@ import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.t
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
+import * as WorkspaceFiles from "../project/WorkspaceFiles.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { projectMutationOperation } from "../project/ProjectMutation.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
@@ -48,6 +51,13 @@ type ProjectMutationTarget = {
 
 type ProjectCommandExecutionMode = "live" | "offline";
 type ProjectCliDispatchCommand = ProjectMutation;
+
+type ProjectMutationRunnerInput = {
+  readonly snapshot: ProjectSnapshot;
+  readonly dispatch: (
+    command: ProjectCliDispatchCommand,
+  ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
+};
 
 const isEnvironmentHttpCommonError = Schema.is(EnvironmentHttpCommonError);
 
@@ -69,11 +79,14 @@ export class ProjectLiveServerDeclaredResponseError extends Schema.TaggedError<P
     operation: Schema.Literal("callLiveServer"),
     code: Schema.String,
     traceId: Schema.String,
+    detail: Schema.optionalKey(Schema.String),
+    diagnostic: Schema.optionalKey(WorkspaceFileDiagnostic),
+    conflictingProjectId: Schema.optionalKey(ProjectId),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Server request failed (${this.code}, trace ${this.traceId}).`;
+    return this.detail ?? `Server request failed (${this.code}, trace ${this.traceId}).`;
   }
 }
 
@@ -141,6 +154,19 @@ export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundErro
   }
 }
 
+export class ProjectIdentifierAmbiguousError extends Schema.TaggedError<ProjectIdentifierAmbiguousError>()(
+  "ProjectIdentifierAmbiguousError",
+  {
+    identifier: Schema.String,
+    directoryProjectId: ProjectId,
+    fileProjectId: ProjectId,
+  },
+) {
+  override get message(): string {
+    return `Both a folder project and a linked project use '${this.identifier}', and its path is unavailable. Use a project id.`;
+  }
+}
+
 export class ProjectAlreadyExistsError extends Schema.TaggedError<ProjectAlreadyExistsError>()(
   "ProjectAlreadyExistsError",
   {
@@ -162,6 +188,7 @@ export const ProjectCommandError = Schema.Union([
   ProjectTitleEmptyError,
   ProjectIdentifierEmptyError,
   ProjectNotFoundError,
+  ProjectIdentifierAmbiguousError,
   ProjectAlreadyExistsError,
 ]);
 export type ProjectCommandError = typeof ProjectCommandError.Type;
@@ -172,6 +199,15 @@ export function projectCommandErrorFromLiveServerRequest(cause: unknown): Projec
       operation: "callLiveServer",
       code: cause.code,
       traceId: cause.traceId,
+      ...(cause._tag === "EnvironmentRequestInvalidError"
+        ? {
+            ...(cause.detail === undefined ? {} : { detail: cause.detail }),
+            ...(cause.diagnostic === undefined ? {} : { diagnostic: cause.diagnostic }),
+            ...(cause.conflictingProjectId === undefined
+              ? {}
+              : { conflictingProjectId: cause.conflictingProjectId }),
+          }
+        : {}),
       cause,
     });
   }
@@ -211,7 +247,7 @@ const ProjectCliRuntimeLive = ProjectServiceLayerLive.pipe(
   Layer.provideMerge(SqlitePersistence.layerConfig),
 );
 
-const PROJECT_CLI_LIVE_SERVER_TIMEOUT = Duration.seconds(1);
+const PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT = Duration.seconds(1);
 const withProjectCliSessionToken = <A, E, R>(
   environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"],
   run: (token: string) => Effect.Effect<A, E, R>,
@@ -225,8 +261,8 @@ const withProjectCliSessionToken = <A, E, R>(
     (issued) => environmentAuth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
   );
 
-const withProjectCliLiveServerTimeout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.timeout(PROJECT_CLI_LIVE_SERVER_TIMEOUT));
+const withProjectCliLiveServerProbeTimeout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.timeout(PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT));
 
 const makeLiveServerClient = (origin: string) =>
   HttpApiClient.make(EnvironmentHttpApi, {
@@ -288,12 +324,35 @@ const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (
   const normalizedWorkspaceRoot =
     normalizedWorkspaceRootResult._tag === "Success" ? normalizedWorkspaceRootResult.success : null;
 
-  // A stored workspace path still identifies its project after the directory is gone.
-  const exactWorkspaceMatch = activeProjects.find(
-    (project) => project.workspaceRoot === (normalizedWorkspaceRoot ?? trimmedIdentifier),
+  const workspaceFiles = yield* WorkspaceFiles.WorkspaceFiles;
+  const projectPath = yield* workspaceFiles.resolveProjectPath(trimmedIdentifier);
+  const matchesPath = (storedPath: string) =>
+    normalizeProjectPathForComparison(storedPath) ===
+    normalizeProjectPathForComparison(projectPath.path);
+  // File mode can recover a stored plain directory after it disappears, but a
+  // directory identifier never selects a linked project's file identity.
+  const fileMatch =
+    projectPath.kind === "workspace-file"
+      ? activeProjects.find(
+          (project) => project.workspaceFile != null && matchesPath(project.workspaceFile),
+        )
+      : undefined;
+  const directoryMatch = activeProjects.find(
+    (project) => project.workspaceFile == null && matchesPath(project.workspaceRoot),
   );
+  if (fileMatch && directoryMatch) {
+    const fs = yield* FileSystem.FileSystem;
+    const stat = yield* Effect.result(fs.stat(projectPath.path));
+    if (stat._tag === "Failure" || stat.success.type !== "File") {
+      return yield* new ProjectIdentifierAmbiguousError({
+        identifier: trimmedIdentifier,
+        directoryProjectId: directoryMatch.id,
+        fileProjectId: fileMatch.id,
+      });
+    }
+  }
 
-  const resolved = exactWorkspaceMatch;
+  const resolved = fileMatch ?? directoryMatch;
   if (!resolved) {
     return yield* new ProjectNotFoundError({
       operation: "resolveProjectTarget",
@@ -320,10 +379,12 @@ const fetchLiveOrchestrationSnapshot = (origin: string, bearerToken: string) =>
       headers: { authorization: `Bearer ${bearerToken}` },
     });
   }).pipe(
-    withProjectCliLiveServerTimeout,
+    withProjectCliLiveServerProbeTimeout,
     Effect.mapError(projectCommandErrorFromLiveServerRequest),
   );
 
+// Folder probes are bounded by the service and can outlive discovery's short
+// deadline. Await the mutation response so live and offline results agree.
 const dispatchLiveOrchestrationCommand = (
   origin: string,
   bearerToken: string,
@@ -335,10 +396,7 @@ const dispatchLiveOrchestrationCommand = (
       headers: { authorization: `Bearer ${bearerToken}` },
       payload: command,
     } as Parameters<typeof client.projects.mutate>[0]);
-  }).pipe(
-    withProjectCliLiveServerTimeout,
-    Effect.mapError(projectCommandErrorFromLiveServerRequest),
-  );
+  }).pipe(Effect.mapError(projectCommandErrorFromLiveServerRequest));
 
 const getOfflineSnapshot = Effect.fn("getOfflineSnapshot")(function* () {
   const projects = yield* ProjectService.ProjectService;
@@ -393,6 +451,7 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
     | HttpClient.HttpClient
     | Path.Path
     | WorkspacePaths.WorkspacePaths
+    | WorkspaceFiles.WorkspaceFiles
   >,
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
@@ -435,7 +494,7 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
     }).pipe(Effect.provide(offlineRuntimeLayer));
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(EnvironmentAuth.runtimeLayer, WorkspacePaths.layer).pipe(
+      Layer.mergeAll(EnvironmentAuth.runtimeLayer, WorkspacePaths.layer, WorkspaceFiles.layer).pipe(
         Layer.provideMerge(FetchHttpClient.layer),
         Layer.provide(ServerConfig.layer(config)),
         Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
@@ -447,7 +506,7 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
 const projectAddCommand = Command.make("add", {
   ...projectLocationFlags,
   workspaceRoot: Argument.String("path").pipe(
-    Argument.withDescription("Workspace root to add as a project."),
+    Argument.withDescription("Workspace root or .code-workspace file to add as a project."),
   ),
   title: Flag.String("title").pipe(Flag.withDescription("Optional project title."), Flag.optional),
 }).pipe(
@@ -464,9 +523,30 @@ const projectAddCommand = Command.make("add", {
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
       }) {
+        const workspaceFiles = yield* WorkspaceFiles.WorkspaceFiles;
+        const projectPath = yield* workspaceFiles.resolveProjectPath(flags.workspaceRoot);
+        if (projectPath.kind === "workspace-file") {
+          const explicitTitle = Option.getOrUndefined(flags.title);
+          const title =
+            explicitTitle === undefined
+              ? undefined
+              : yield* resolveProjectTitle(projectPath.path, explicitTitle);
+          const projectId = ProjectId.make(yield* projectCommandUuid);
+          yield* dispatch({
+            type: "project.import-workspace-file",
+            commandId: CommandId.make(yield* projectCommandUuid),
+            projectId,
+            workspaceFilePath: projectPath.path,
+            ...(title === undefined ? {} : { title }),
+          });
+          return `Added project ${projectId} from ${projectPath.path}.`;
+        }
         const workspaceRoot = yield* normalizeWorkspaceRootForProjectCommand(flags.workspaceRoot);
         const existingProject = snapshot.projects.find(
-          (project) => project.deletedAt === null && project.workspaceRoot === workspaceRoot,
+          (project) =>
+            project.deletedAt === null &&
+            project.workspaceFile == null &&
+            project.workspaceRoot === workspaceRoot,
         );
         if (existingProject) {
           return yield* new ProjectAlreadyExistsError({
@@ -571,7 +651,72 @@ const projectRenameCommand = Command.make("rename", {
   ),
 );
 
+const projectLinkCommand = Command.make("link", {
+  ...projectLocationFlags,
+  project: Argument.String("project").pipe(Argument.withDescription("Project id or path to link.")),
+  workspaceFilePath: Argument.String("file").pipe(
+    Argument.withDescription("Workspace file to link."),
+  ),
+}).pipe(
+  Command.withDescription("Link or relink a project to a workspace file."),
+  Command.withHandler((flags) =>
+    runProjectMutation(
+      flags,
+      Effect.fn("projectLinkMutation")(function* ({
+        snapshot,
+        dispatch,
+      }: ProjectMutationRunnerInput) {
+        const project = yield* findActiveProjectTarget({ snapshot, identifier: flags.project });
+        const workspaceFiles = yield* WorkspaceFiles.WorkspaceFiles;
+        const projectPath = yield* workspaceFiles.resolveProjectPath(flags.workspaceFilePath);
+        yield* dispatch({
+          type: "project.update",
+          commandId: CommandId.make(yield* projectCommandUuid),
+          projectId: project.id,
+          workspaceFilePath: projectPath.path,
+        });
+        return `Linked project ${project.id} to ${projectPath.path}.`;
+      }),
+    ),
+  ),
+);
+
+const projectUnlinkCommand = Command.make("unlink", {
+  ...projectLocationFlags,
+  project: Argument.String("project").pipe(
+    Argument.withDescription("Project id or path to unlink."),
+  ),
+}).pipe(
+  Command.withDescription(
+    "Unlink a workspace file, keeping the primary folder and thread history.",
+  ),
+  Command.withHandler((flags) =>
+    runProjectMutation(
+      flags,
+      Effect.fn("projectUnlinkMutation")(function* ({
+        snapshot,
+        dispatch,
+      }: ProjectMutationRunnerInput) {
+        const project = yield* findActiveProjectTarget({ snapshot, identifier: flags.project });
+        yield* dispatch({
+          type: "project.update",
+          commandId: CommandId.make(yield* projectCommandUuid),
+          projectId: project.id,
+          workspaceFilePath: null,
+        });
+        return `Unlinked workspace file from project ${project.id}.`;
+      }),
+    ),
+  ),
+);
+
 export const projectCommand = Command.make("project").pipe(
   Command.withDescription("Manage projects."),
-  Command.withSubcommands([projectAddCommand, projectRemoveCommand, projectRenameCommand]),
+  Command.withSubcommands([
+    projectAddCommand,
+    projectRemoveCommand,
+    projectRenameCommand,
+    projectLinkCommand,
+    projectUnlinkCommand,
+  ]),
 );

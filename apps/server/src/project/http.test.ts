@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
+  EnvironmentRequestInvalidError,
   WorkspaceFileProjectsDisabledError,
   WorkspaceFileUnavailableError,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import {
 } from "./ProjectService.ts";
 import { ServerRuntimeStartupError } from "../serverRuntimeStartup.ts";
 import { failProjectMutation } from "./http.ts";
+import { expectedProjectMutationFailure } from "./ProjectMutation.ts";
 
 const projectId = ProjectId.make("project:http-mutation");
 
@@ -40,9 +42,13 @@ it.effect.each([
   Effect.gen(function* () {
     const error = yield* failProjectMutation(cause).pipe(Effect.flip);
 
-    assert.equal(error._tag, "EnvironmentRequestInvalidError");
+    assert.instanceOf(error, EnvironmentRequestInvalidError);
     assert.equal(error.code, "invalid_request");
     assert.equal(error.reason, "invalid_command");
+    const expected = expectedProjectMutationFailure(cause)!;
+    assert.equal(error.message, expected.message);
+    assert.deepEqual(error.diagnostic, expected.diagnostic);
+    assert.equal(error.conflictingProjectId, expected.conflictingProjectId);
   }),
 );
 

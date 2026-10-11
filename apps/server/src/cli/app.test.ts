@@ -131,6 +131,100 @@ const withTempDirectory = <A, E, R>(
   );
 
 describe("t3 app", () => {
+  it.effect(
+    "sends workspace file activation while suffix-named directories stay folder activations",
+    () =>
+      withTempDirectory("t3-app-files-", (root) =>
+        Effect.gen(function* () {
+          const baseDir = NodePath.join(root, "state");
+          const filePath = NodePath.join(root, "Team Space.CODE-WORKSPACE");
+          const directory = NodePath.join(root, "folder.code-workspace");
+          yield* Effect.promise(() => NodeFSP.writeFile(filePath, '{"folders":[{"path":"app"}]}'));
+          yield* Effect.promise(() => NodeFSP.mkdir(directory));
+          const desktop = yield* fakeDesktop({ baseDir });
+          yield* runCli(["app", filePath, "--base-dir", baseDir]);
+          yield* runCli(["app", directory, "--base-dir", baseDir]);
+          expect(desktop.received[0]).toMatchObject({
+            type: "open-workspace-file",
+            workspaceFilePath: filePath,
+          });
+          expect(desktop.received[1]).toMatchObject({
+            type: "open-workspace",
+            workspaceRoot: directory,
+          });
+          expect(yield* pathExists(NodePath.join(baseDir, "userdata", "state.sqlite"))).toBe(false);
+        }).pipe(Effect.scoped),
+      ),
+  );
+
+  it.effect("explains how to update an older desktop that rejects file activation", () =>
+    withTempDirectory("t3-app-old-desktop-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "state");
+        yield* fakeDesktop({
+          baseDir,
+          reply: (request) => ({
+            version: 1,
+            requestId: request.requestId,
+            ok: false,
+            code: "invalid-request",
+            message: "Unknown request",
+          }),
+        });
+        const error = yield* runCli([
+          "app",
+          NodePath.join(root, "team.code-workspace"),
+          "--base-dir",
+          baseDir,
+        ]).pipe(Effect.flip);
+        expect(error.message).toBe("Update T3 Code desktop to open workspace files");
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect.each([[], ["start"], ["serve"]])(
+    "rejects workspace files before creating server state or a missing path (%j)",
+    (command) =>
+      withTempDirectory("t3-bare-file-", (root) =>
+        Effect.gen(function* () {
+          const filePath = NodePath.join(root, "missing.CODE-WORKSPACE");
+          const baseDir = NodePath.join(root, "state");
+          const error = yield* runCli([...command, filePath, "--base-dir", baseDir]).pipe(
+            Effect.flip,
+          );
+          expect(error.message).toBe(
+            "Use `t3 app FILE` to open or `t3 project add FILE` to register",
+          );
+          expect(yield* pathExists(baseDir)).toBe(false);
+          expect(yield* pathExists(filePath)).toBe(false);
+        }),
+      ),
+  );
+
+  it.effect("shows the desktop's workspace import diagnostic", () =>
+    withTempDirectory("t3-app-file-diagnostic-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "state");
+        yield* fakeDesktop({
+          baseDir,
+          reply: (request) => ({
+            version: 1,
+            requestId: request.requestId,
+            ok: false,
+            code: "project-create-failed",
+            message: "Workspace file not found.",
+          }),
+        });
+        const error = yield* runCli([
+          "app",
+          NodePath.join(root, "missing.code-workspace"),
+          "--base-dir",
+          baseDir,
+        ]).pipe(Effect.flip);
+        expect(error.message).toBe("Workspace file not found.");
+      }).pipe(Effect.scoped),
+    ),
+  );
   it.effect("rejects SSH before it tries to reach a desktop app", () =>
     withTempDirectory("t3-app-ssh-test-", (root) =>
       Effect.gen(function* () {
@@ -198,10 +292,11 @@ describe("t3 app", () => {
         yield* runCli(["app"], { T3CODE_HOME: baseDir });
         yield* runCli(["app", explicitPath, "--base-dir", baseDir]);
 
-        expect(desktop.received.map((request) => request.workspaceRoot)).toEqual([
-          workingDirectory,
-          explicitPath,
-        ]);
+        expect(
+          desktop.received.map((request) =>
+            request.type === "open-workspace" ? request.workspaceRoot : null,
+          ),
+        ).toEqual([workingDirectory, explicitPath]);
         expect(desktop.received.every((request) => request.platform === platform)).toBe(true);
       }).pipe(Effect.scoped),
     ),

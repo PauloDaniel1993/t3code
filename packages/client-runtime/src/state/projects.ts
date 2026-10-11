@@ -121,18 +121,31 @@ export function resolveProjectPathForDispatch(value: string, cwd?: string | null
   );
 }
 
-export function findProjectByPath<T extends { workspaceRoot?: string; cwd?: string }>(
-  projects: ReadonlyArray<T>,
-  candidatePath: string,
-): T | undefined {
+export function findProjectByPath<
+  T extends { workspaceRoot?: string; cwd?: string; workspaceFile?: string | null | undefined },
+>(projects: ReadonlyArray<T>, candidatePath: string): T | undefined {
   const normalizedCandidate = normalizeProjectPathForComparison(candidatePath);
   if (normalizedCandidate.length === 0) {
     return undefined;
   }
   return projects.find((project) => {
+    if (project.workspaceFile != null) return false;
     const cwd = project.workspaceRoot ?? project.cwd;
     return cwd ? normalizeProjectPathForComparison(cwd) === normalizedCandidate : false;
   });
+}
+
+export function findProjectByWorkspaceFile<T extends { workspaceFile?: string | null | undefined }>(
+  projects: ReadonlyArray<T>,
+  candidatePath: string,
+): T | undefined {
+  const normalizedCandidate = normalizeProjectPathForComparison(candidatePath);
+  if (normalizedCandidate.length === 0) return undefined;
+  return projects.find(
+    (project) =>
+      project.workspaceFile != null &&
+      normalizeProjectPathForComparison(project.workspaceFile) === normalizedCandidate,
+  );
 }
 
 /** Whether a project is its environment's Scratch project (`ServerConfig.scratchWorkspaceRoot`). */
