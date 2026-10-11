@@ -102,6 +102,7 @@ interface TestProviderRuntimeState {
   readonly resumeCount: number;
   readonly unloadedNativeThreadIds: ReadonlyArray<string>;
   readonly eventQueues: ReadonlyMap<string, Queue.Queue<ProviderAdapterV2Event, Cause.Done>>;
+  readonly additionalDirectories: ReadonlyArray<string>;
 }
 
 const emptyState: TestProviderRuntimeState = {
@@ -111,6 +112,7 @@ const emptyState: TestProviderRuntimeState = {
   resumeCount: 0,
   unloadedNativeThreadIds: [],
   eventQueues: new Map(),
+  additionalDirectories: [],
 };
 
 const modelSelection = {
@@ -305,7 +307,12 @@ function makeProviderAdapter(
           instanceId: ProviderInstanceId.make("codex"),
           driver: CODEX_DRIVER,
           providerSessionId: input.providerSessionId,
-          providerSession: session,
+          get providerSession() {
+            return {
+              ...session,
+              additionalDirectories: Ref.getUnsafe(state).additionalDirectories,
+            };
+          },
           events: options.failEventStream
             ? Stream.fail(
                 new ProviderAdapterEventStreamError({
@@ -323,6 +330,8 @@ function makeProviderAdapter(
             Ref.update(state, (current) => ({
               ...current,
               resumeCount: current.resumeCount + 1,
+              additionalDirectories:
+                threadInput.runtimePolicy?.additionalDirectories ?? current.additionalDirectories,
             })).pipe(Effect.as(threadInput.providerThread)),
           startTurn: () => Effect.void,
           steerTurn: () => Effect.void,
@@ -1150,6 +1159,63 @@ it.effect("ProviderSessionManagerV2 passes the release reason to event subscribe
       }
     }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
   }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 exposes and persists the latest installed folder scope on release",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("installed-folder-release-thread");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = makeProviderThread({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          now,
+        });
+        for (const additionalDirectories of [[process.cwd()], []]) {
+          yield* runtime.resumeThread({
+            providerThread,
+            threadId,
+            modelSelection,
+            runtimePolicy: { ...runtimePolicy, additionalDirectories },
+          });
+          assert.deepEqual(runtime.providerSession.additionalDirectories, additionalDirectories);
+        }
+        yield* runtime.resumeThread({
+          providerThread,
+          threadId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, additionalDirectories: [process.cwd()] },
+        });
+        yield* manager.release({ providerSessionId, reason: "manual_shutdown" });
+        const projection = yield* projectionStore.getThreadProjection(threadId);
+        const released = projection.providerSessions.find(
+          (session) => session.id === providerSessionId,
+        );
+        assert.deepEqual(released?.additionalDirectories, [process.cwd()]);
+        assert.equal(released?.status, "stopped");
+      }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
+    }),
 );
 
 it.effect(
