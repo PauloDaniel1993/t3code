@@ -66,7 +66,7 @@ const ProjectListTool = Tool.make("t3_project_list", {
 const ProjectReadTool = Tool.make("t3_project_read", {
   ...shared,
   description:
-    "Read a registered project in this environment, including its saved scripts, linked workspaceFile (null for plain projects), and ordered folders with availability and repository facts when known. workspaceRoot is the primary folder. Reading also works when folders are unavailable.",
+    "Read a registered project in this environment, including its saved scripts, linked workspaceFile (null for plain projects), ordered folders with availability and repository facts when known, and workspaceFileStatus when available. workspaceRoot is the primary folder. Reading also works when folders are unavailable.",
   parameters: Schema.Struct({ projectId: ProjectId }),
 })
   .annotate(Tool.Readonly, true)
@@ -87,7 +87,7 @@ const ProjectCreateTool = Tool.make("t3_project_create", {
 const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
   description:
-    "Update a registered project's settings. Omitted fields are preserved. Send workspaceFilePath on its own to link a plain project (the file's first folder must match workspaceRoot), relink to a different file, refresh the current file, or unlink with null. Linking, relinking and refreshing require workspace-file projects to be enabled. Unlink keeps the stored primary folder, history and thread bindings, and may conflict with a plain project at that folder. A linked project's workspaceRoot cannot be edited directly. Results include workspaceFile and ordered folders; workspaceRoot is the primary folder. Uses the same project service as the app.",
+    "Update a registered project's settings. Omitted fields are preserved. Send workspaceFilePath on its own to link a plain project (the file's first folder must match workspaceRoot), relink to a different file, or unlink with null. Sending the project's current workspaceFile path is Refresh: reread the file, reprobe folders, and restart its watch. Refresh succeeds for a broken or missing file, preserving saved folders and returning diagnostics in workspaceFileStatus. Linking, relinking and refreshing require workspace-file projects to be enabled. Unlink keeps the stored primary folder, history and thread bindings, and may conflict with a plain project at that folder. A linked project's workspaceRoot cannot be edited directly. Results include workspaceFile and ordered folders; workspaceRoot follows the file's primary folder. Uses the same project service as the app.",
   parameters: Schema.Struct({ projectId: ProjectId, ...ProjectUpdatePayload.fields }),
 }).annotate(Tool.Destructive, true);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {

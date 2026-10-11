@@ -237,22 +237,55 @@ it.layer(testLayer(true))("workspace-file project MCP tools", (it) => {
       ]);
       expect((yield* update(replacement)).at(-1)?.result).toMatchObject({
         folders: [{ name: "Other" }, { name: "Library" }],
+        workspaceFileStatus: { state: "ok", diagnostics: [] },
+      });
+      yield* dir.write("replacement.code-workspace", [
+        { path: "app", name: "Moved primary" },
+        { path: "lib", name: "Library" },
+      ]);
+      expect((yield* update(replacement)).at(-1)?.result).toMatchObject({
+        workspaceRoot: dir.at("app"),
+        folders: [{ name: "Moved primary" }, { name: "Library" }],
+      });
+      yield* dir.fs.writeFileString(replacement, "{ invalid");
+      expect((yield* update(replacement)).at(-1)?.encodedResult).toMatchObject({
+        id: plain.id,
+        workspaceRoot: dir.at("app"),
+        folders: [{ name: "Moved primary" }, { name: "Library" }],
+        workspaceFileStatus: {
+          state: "invalid",
+          diagnostics: [{ code: "malformed-jsonc", path: replacement }],
+        },
       });
       yield* dir.fs.remove(replacement);
+      const missing = (yield* update(replacement)).at(-1)?.result;
+      expect(missing).toMatchObject({
+        id: plain.id,
+        workspaceRoot: dir.at("app"),
+        folders: [{ name: "Moved primary" }, { name: "Library" }],
+        workspaceFileStatus: {
+          state: "missing",
+          diagnostics: [{ code: "file-not-found", path: replacement }],
+        },
+      });
+      const readMissing = yield* tools
+        .handle("t3_project_read", { projectId: plain.id })
+        .pipe(Stream.unwrap, Stream.runCollect);
+      expect(readMissing.at(-1)?.result).toEqual(missing);
       expect((yield* update(null)).at(-1)?.result).toMatchObject({
         id: plain.id,
         title: "Existing",
         autoPull: true,
-        workspaceRoot: dir.at("other"),
+        workspaceRoot: dir.at("app"),
         workspaceFile: null,
-        folders: [{ name: "other" }],
+        folders: [{ name: "app" }],
       });
       const deleted = yield* tools
         .handle("t3_project_delete", { projectId: plain.id })
         .pipe(Stream.unwrap, Stream.runCollect);
       expect(deleted.at(-1)?.result).toMatchObject({
         workspaceFile: null,
-        folders: [{ path: dir.at("other") }],
+        folders: [{ path: dir.at("app") }],
       });
     }),
   );
