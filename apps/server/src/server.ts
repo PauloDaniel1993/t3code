@@ -365,6 +365,8 @@ const ProjectCloneTrackerLayerLive = ProjectCloneTracker.layer.pipe(
 );
 
 const ReviewLayerLive = ReviewService.layer.pipe(
+  // Diffs may run in any active project's folders.
+  Layer.provide(ProjectStore.layer),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
 );

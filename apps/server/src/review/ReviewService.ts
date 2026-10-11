@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import {
@@ -14,8 +15,10 @@ import {
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewResult,
 } from "@t3tools/contracts";
+import { isPathWithin, projectFolders } from "@t3tools/shared/workspaceFolders";
 
 import * as ServerConfig from "../config.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
@@ -38,6 +41,7 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const projectStore = yield* ProjectStore.ProjectStoreV2;
 
   const canonicalizePath = (value: string) => {
     const resolvedPath = path.resolve(value);
@@ -58,22 +62,50 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  const isWithinRoot = (candidate: string, root: string) => {
-    const relative = path.relative(root, candidate);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-  };
+  // Every folder of every active project, primary first. A folder that can't be
+  // resolved right now is unavailable and grants nothing.
+  const projectFolderRoots = Effect.fn("ReviewService.projectFolderRoots")(function* (cwd: string) {
+    const projects = yield* projectStore.list().pipe(
+      Effect.mapError(
+        (cause) =>
+          new VcsRepositoryDetectionError({
+            operation: "ReviewService.assertWorkspaceBoundCwd.listProjects",
+            cwd,
+            detail: "Failed to read projects while validating the review workspace.",
+            cause,
+          }),
+      ),
+    );
+    const folderPaths = projects.flatMap((project) =>
+      projectFolders(project).flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
+    );
+    const roots = yield* Effect.forEach(
+      folderPaths,
+      (folderPath) => fileSystem.realPath(path.resolve(folderPath)).pipe(Effect.option),
+      { concurrency: "unbounded" },
+    );
+    return roots.flatMap((root) => (Option.isSome(root) ? [root.value] : []));
+  });
 
+  /**
+   * Review diffs run only inside a registered location: the server's launch
+   * directory, its worktrees, or an active project's folder.
+   */
   const assertWorkspaceBoundCwd = Effect.fn("ReviewService.assertWorkspaceBoundCwd")(function* (
     operation: "ReviewService.getDiffPreview" | "ReviewService.getDiffFileContents",
     cwd: string,
   ) {
-    const [candidate, workspaceRoot, worktreesRoot] = yield* Effect.all([
+    const [candidate, launchRoot, worktreesRoot] = yield* Effect.all([
       canonicalizePath(cwd),
       canonicalizePath(config.cwd),
       canonicalizePath(config.worktreesDir),
     ]);
+    if (isPathWithin(launchRoot, candidate) || isPathWithin(worktreesRoot, candidate)) {
+      return;
+    }
 
-    if (isWithinRoot(candidate, workspaceRoot) || isWithinRoot(candidate, worktreesRoot)) {
+    const folderRoots = yield* projectFolderRoots(cwd);
+    if (folderRoots.some((root) => isPathWithin(root, candidate))) {
       return;
     }
 
@@ -82,8 +114,8 @@ export const make = Effect.gen(function* () {
       cwd,
       detail:
         operation === "ReviewService.getDiffPreview"
-          ? "Review diff preview cwd must stay within the configured workspace root."
-          : "Review diff file contents cwd must stay within the configured workspace root.",
+          ? "Review diff preview cwd must stay within a registered project folder or worktree."
+          : "Review diff file contents cwd must stay within a registered project folder or worktree.",
     });
   });
 
