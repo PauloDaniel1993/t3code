@@ -15,6 +15,7 @@ import {
 } from "../lib/videoPreviewSource";
 import { useAssetUrlState, useRefreshAssetUrl } from "../state/assets";
 import { usePreparedConnection } from "../state/session";
+import { useWorkspaceFileBindingKey } from "../state/workspace-file-bindings";
 import { AppText } from "./AppText";
 import { SymbolView } from "./AppSymbol";
 import { MediaActionsMenu } from "./MediaActionsMenu";
@@ -99,10 +100,16 @@ function MediaPreviewModal(props: {
   readonly source: MediaVideoPreviewSource;
   readonly onRequestClose: () => void;
 }) {
+  const bindingKey = useWorkspaceFileBindingKey(
+    "environmentId" in props.source ? props.source.environmentId : null,
+    "resource" in props.source && props.source.resource._tag === "workspace-scope-file"
+      ? props.source.resource.scope
+      : null,
+  );
   return (
     <OpenVideoPreviewModal
       name={props.source.name}
-      thumbnailKey={mediaVideoThumbnailKey(props.source)}
+      thumbnailKey={`${mediaVideoThumbnailKey(props.source)}:${bindingKey}`}
       playback={useMediaPlayback(props.source)}
       onRequestClose={props.onRequestClose}
     />

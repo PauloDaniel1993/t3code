@@ -19,6 +19,7 @@ import {
   workspaceFolderErrors,
 } from "../../lib/workspaceFiles";
 import { collectFileTreeEntries } from "./fileTree";
+import { useWorkspaceFileBindingKey } from "../../state/workspace-file-bindings";
 
 const EMPTY_FOLDERS: ReadonlyArray<WorkspaceScopeFolder> = [];
 
@@ -30,7 +31,8 @@ export function useFileTreeEntries(input: {
 }) {
   const { cwd, environmentId } = input;
   const scope = input.scope ?? null;
-  const workspaceKey = workspaceFileCacheKey({ cwd, environmentId, scope });
+  const bindingKey = useWorkspaceFileBindingKey(environmentId, scope);
+  const workspaceKey = `${workspaceFileCacheKey({ cwd, environmentId, scope })}:${bindingKey}`;
   const [selection, setSelection] = useState<{ key: string; folderPath: string } | null>(null);
   const selectedFolderPath = selection?.key === workspaceKey ? selection.folderPath : null;
   const searching = input.searchQuery.trim().length > 0;

@@ -38,6 +38,7 @@ export function workspaceMarkdownResource(
   if (path === null) return null;
   const explicit = folders.length > 1 ? parseCanonicalPath(path, folders) : null;
   const document = documentPath === undefined ? null : parseCanonicalPath(documentPath, folders);
+  if (documentPath !== undefined && document === null) return null;
   const folder = explicit?.folder ?? document?.folder ?? folders[0]!;
   const base = explicit
     ? ""

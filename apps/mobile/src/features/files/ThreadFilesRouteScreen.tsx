@@ -74,6 +74,7 @@ import {
   workspaceFileReadInput,
 } from "../../lib/workspaceFiles";
 import { useWorkspaceFileScope } from "../../state/use-workspace-file-scope";
+import { useWorkspaceFileBindingKey } from "../../state/workspace-file-bindings";
 import { isAbsolutePath } from "./filePath";
 
 function FilesBrowserHeader(props: {
@@ -650,7 +651,8 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
     readonly mode: FileViewMode;
   } | null>(null);
   const [previewRevision, setPreviewRevision] = useState(0);
-  const previewKey = `${workspaceFileCacheKey({ environmentId, cwd, scope: fileScope, relativePath })}:${previewRevision}`;
+  const bindingKey = useWorkspaceFileBindingKey(environmentId, scope);
+  const previewKey = `${workspaceFileCacheKey({ environmentId, cwd, scope: fileScope, relativePath })}:${bindingKey}:${previewRevision}`;
   const [fullScreenPreview, setFullScreenPreview] = useState<FilePreviewSource | null>(null);
   const isVideoFile = relativePath !== null && isVideoPreviewFile(relativePath);
   const isAudioFile = relativePath !== null && !isVideoFile && isAudioPreviewFile(relativePath);

@@ -122,6 +122,7 @@ import { useServerConfigs } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { projectEnvironment } from "../../state/projects";
 import { useWorkspaceFileScope } from "../../state/use-workspace-file-scope";
+import { useWorkspaceFileBindingKey } from "../../state/workspace-file-bindings";
 import {
   workspaceMarkdownResource,
   workspaceRelativeMarkdownPath,
@@ -682,7 +683,13 @@ function ThreadMediaVisibility(props: { readonly children: ReactNode }) {
 function ThreadMarkdownVideo(props: { readonly source: MediaVideoPreviewSource }) {
   const { source } = props;
   const visible = useContext(ThreadMediaVisibleContext);
-  const thumbnailKey = mediaVideoThumbnailKey(source);
+  const bindingKey = useWorkspaceFileBindingKey(
+    "environmentId" in source ? source.environmentId : null,
+    "resource" in source && source.resource._tag === "workspace-scope-file"
+      ? source.resource.scope
+      : null,
+  );
+  const thumbnailKey = `${mediaVideoThumbnailKey(source)}:${bindingKey}`;
   const asset = useAssetUrlState(
     "environmentId" in source ? source.environmentId : null,
     "resource" in source ? source.resource : null,
@@ -2300,10 +2307,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           }
           return;
         }
-        const relativePath = resolveWorkspaceRelativeFilePath(
-          props.workspaceRoot,
-          presentation.path,
-        );
+        const relativePath = isAbsolutePath(presentation.path)
+          ? null
+          : resolveWorkspaceRelativeFilePath(props.workspaceRoot, presentation.path);
         if (relativePath) {
           void Haptics.selectionAsync();
           if (isPdfFile({ name: relativePath })) {

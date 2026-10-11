@@ -130,6 +130,28 @@ describe("mobile workspace file addressing", () => {
 });
 
 describe("workspace markdown references", () => {
+  it("waits for matching document metadata instead of falling back to the primary", () => {
+    expect(
+      workspaceMarkdownResource(
+        { ...scope, folderPath: "/workspace/api" },
+        folders,
+        "./images/cover.png",
+        "backend/docs/README.md",
+      ),
+    ).toBeNull();
+    const renamed = [folders[0], { ...folders[1], label: "backend" }];
+    expect(
+      workspaceMarkdownResource(
+        { ...scope, folderPath: "/workspace/api" },
+        renamed,
+        "./images/cover.png",
+        "backend/docs/README.md",
+      ),
+    ).toMatchObject({
+      path: "backend/docs/images/cover.png",
+      scope: { folderPath: "/workspace/api" },
+    });
+  });
   it("resolves labeled media directly and ordinary links relative to their document", () => {
     const documentScope = { ...scope, folderPath: "/workspace/api" };
     expect(
