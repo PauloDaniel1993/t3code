@@ -145,7 +145,7 @@ export interface ThreadWorkspace {
 
 /**
  * Resolve a thread's folders from its frozen snapshot. Each folder lives where
- * `worktreeSetPath` puts it, and the primary at the thread's `worktreePath`. A
+ * `snapshotFolderPath` puts it, and the primary at the thread's `worktreePath`. A
  * thread without a snapshot gets exactly one folder at `worktreePath ??
  * project.workspaceRoot`. `unavailableFolderPaths` is the run's record of
  * snapshot folders it can't reach.
@@ -185,7 +185,7 @@ export function resolveThreadWorkspace(input: {
           ? null
           : index === 0
             ? primaryPath
-            : worktreeSetPath(folder.path, members),
+            : (snapshotFolderPath(folder, members) ?? null),
       isPrimary: index === 0,
       checkoutRoot: folder.checkoutRoot,
     })),
@@ -300,9 +300,84 @@ export function worktreeSetPath(
     }
   }
   if (deepest === undefined) return path;
-  if (deepest.rest.length === 0) return deepest.worktree;
-  const separator = isWindowsAbsolutePath(deepest.worktree) ? "\\" : "/";
-  return `${deepest.worktree.replace(/[\\/]+$/, "")}${separator}${deepest.rest.join(separator)}`;
+  return appendSegments(deepest.worktree, deepest.rest);
+}
+
+/**
+ * Where a snapshot folder lives in a thread's worktree set, as `worktreeSetPath`
+ * places it. A folder recorded inside a git checkout maps through that
+ * checkout's root and prefix: those are realpaths like each member's
+ * `repositoryRoot`, so a symlinked or differently cased folder path still
+ * finds its member. Undefined for a URI folder.
+ */
+export function snapshotFolderPath(
+  folder: Pick<OrchestrationV2ThreadWorkspaceFolder, "path" | "checkoutRoot" | "checkoutPrefix">,
+  members: ReadonlyArray<OrchestrationV2ThreadWorktree>,
+): string | undefined {
+  if (folder.path === undefined) return undefined;
+  const location = snapshotFolderCheckoutLocation(folder);
+  if (location !== undefined) {
+    const mapped = worktreeSetPath(location, members);
+    if (mapped !== location) return mapped;
+  }
+  return worktreeSetPath(folder.path, members);
+}
+
+/**
+ * Where git found a snapshot folder: its checkout root plus its prefix, a real
+ * path like a set member's `repositoryRoot`. Undefined outside git, and for
+ * snapshots that recorded no prefix.
+ */
+export function snapshotFolderCheckoutLocation(
+  folder: Pick<OrchestrationV2ThreadWorkspaceFolder, "checkoutRoot" | "checkoutPrefix">,
+): string | undefined {
+  if (typeof folder.checkoutRoot !== "string" || folder.checkoutPrefix === undefined) {
+    return undefined;
+  }
+  return appendSegments(
+    folder.checkoutRoot,
+    folder.checkoutPrefix.split("/").filter((segment) => segment.length > 0),
+  );
+}
+
+function appendSegments(root: string, segments: ReadonlyArray<string>): string {
+  if (segments.length === 0) return root;
+  const separator = isWindowsAbsolutePath(root) ? "\\" : "/";
+  return `${root.replace(/[\\/]+$/, "")}${separator}${segments.join(separator)}`;
+}
+
+/**
+ * The `paths` strictly inside `root`, as git spells them in `root`'s status:
+ * `/`-separated directories with a trailing slash, as in `child/`. A set's
+ * nested members show up this way in their parent's checkout.
+ */
+export function nestedPathPrefixes(
+  root: string,
+  paths: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  return paths.flatMap((path) => {
+    const rest = segmentsBelow(root, path);
+    return rest === null || rest.length === 0 ? [] : [`${rest.join("/")}/`];
+  });
+}
+
+/**
+ * Whether a worktree has changes besides the nested worktrees at `nested`
+ * (see `nestedPathPrefixes`). A change git reported without a path counts.
+ */
+export function hasOwnChanges(
+  status: {
+    readonly hasWorkingTreeChanges: boolean;
+    readonly workingTree: { readonly files: ReadonlyArray<{ readonly path: string }> };
+  },
+  nested: ReadonlyArray<string>,
+): boolean {
+  if (!status.hasWorkingTreeChanges) return false;
+  const files = status.workingTree.files;
+  return (
+    files.length === 0 ||
+    files.some((file) => !nested.some((prefix) => file.path.startsWith(prefix)))
+  );
 }
 
 /** The worktrees a thread owns: each member of its set, or the one it is bound to. */
@@ -319,7 +394,11 @@ type WorktreeOwner = Pick<WorkspaceThread, "worktreePath" | "worktrees"> & {
   readonly id: string;
 };
 
-/** A thread other than `threadId` that works inside any of `worktreePaths`, if one does. */
+/**
+ * A thread other than `threadId` whose worktrees overlap any of
+ * `worktreePaths`, if one does: it works inside one, or one lies inside the
+ * worktree it works in, as a nested member lies in its parent's.
+ */
 export function threadUsingWorktrees<Thread extends WorktreeOwner>(
   threads: ReadonlyArray<Thread>,
   threadId: string,
@@ -329,7 +408,9 @@ export function threadUsingWorktrees<Thread extends WorktreeOwner>(
     (other) =>
       other.id !== threadId &&
       threadWorktreePaths(other).some((otherPath) =>
-        worktreePaths.some((path) => isPathWithin(path, otherPath)),
+        worktreePaths.some(
+          (path) => isPathWithin(path, otherPath) || isPathWithin(otherPath, path),
+        ),
       ),
   );
 }

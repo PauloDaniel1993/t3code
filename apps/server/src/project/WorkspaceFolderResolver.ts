@@ -15,6 +15,8 @@ export interface WorkspaceFolderCheckout {
   readonly checkoutPrefix: string;
   /** Realpath of the git directory every checkout of the repository shares. */
   readonly commonDir: string;
+  /** Realpath of the superproject's checkout when this checkout is a submodule. */
+  readonly superprojectRoot?: string;
 }
 
 /** What one probe found at a workspace folder's path. */
@@ -61,18 +63,22 @@ const make = Effect.gen(function* () {
           "--show-toplevel",
           "--git-common-dir",
           "--show-prefix",
+          // Prints nothing outside a submodule, so it goes last.
+          "--show-superproject-working-tree",
         ],
         timeoutBehavior: "timedOutResult",
       })
       .pipe(Effect.option);
     if (result._tag === "None" || result.value.code !== 0) return null;
-    const [topLevel = "", commonDir = "", prefix = ""] = result.value.stdout.split(/\r?\n/);
+    const [topLevel = "", commonDir = "", prefix = "", superproject = ""] =
+      result.value.stdout.split(/\r?\n/);
     // Lines are taken verbatim: a folder name may start or end with a space.
     if (topLevel === "" || commonDir === "") return null;
     return {
       checkoutRoot: yield* realPath(topLevel),
       checkoutPrefix: prefix.replace(/\/+$/, ""),
       commonDir: yield* realPath(commonDir),
+      ...(superproject === "" ? {} : { superprojectRoot: yield* realPath(superproject) }),
     } satisfies WorkspaceFolderCheckout;
   });
 

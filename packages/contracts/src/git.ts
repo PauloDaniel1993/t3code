@@ -181,6 +181,36 @@ export const VcsRemoveThreadWorktreesInput = Schema.Struct({
 });
 export type VcsRemoveThreadWorktreesInput = typeof VcsRemoveThreadWorktreesInput.Type;
 
+/**
+ * Gives a thread that works in place its own worktrees, one per git checkout
+ * among its folders, and binds it to them. Without a branch, the set gets a
+ * temporary name.
+ */
+export const VcsCreateThreadWorktreesInput = Schema.Struct({
+  threadId: ThreadId,
+  baseRef: TrimmedNonEmptyStringSchema,
+  branch: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type VcsCreateThreadWorktreesInput = typeof VcsCreateThreadWorktreesInput.Type;
+
+/** Where the thread now works: its primary folder in its worktrees. */
+export const VcsCreateThreadWorktreesResult = Schema.Struct({
+  branch: TrimmedNonEmptyStringSchema,
+  worktreePath: TrimmedNonEmptyStringSchema,
+});
+export type VcsCreateThreadWorktreesResult = typeof VcsCreateThreadWorktreesResult.Type;
+
+/**
+ * Checks out `branch` across a thread's worktree set, or only in the members
+ * named by their source checkout. Each member takes its own name in the set.
+ */
+export const VcsSwitchWorktreeSetBranchInput = Schema.Struct({
+  threadId: ThreadId,
+  branch: TrimmedNonEmptyStringSchema,
+  members: Schema.optional(Schema.Array(TrimmedNonEmptyStringSchema)),
+});
+export type VcsSwitchWorktreeSetBranchInput = typeof VcsSwitchWorktreeSetBranchInput.Type;
+
 export const VcsCreateRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,
