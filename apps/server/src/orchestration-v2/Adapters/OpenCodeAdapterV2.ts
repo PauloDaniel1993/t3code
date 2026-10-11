@@ -66,6 +66,7 @@ import {
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { t3OrchestrationSystemPrompt } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
+import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
 import * as OpenCodeRuntime from "../../provider/opencodeRuntime.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { makeProviderFailure } from "../ProviderFailure.ts";
@@ -382,6 +383,7 @@ interface OpenCodeSubagentContext {
 
 interface OpenCodeThreadState {
   readonly nativeSessionId: string;
+  runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   providerThread: OrchestrationV2ProviderThread;
   appThread: OrchestrationV2AppThread | null;
   activeTurn: ActiveOpenCodeTurn | null;
@@ -701,7 +703,7 @@ export function openCodePermissionRules(
         if (typeof root === "string" && root.trim().length > 0) {
           rules.push({
             permission: "external_directory",
-            pattern: `${root.replace(/\/$/, "")}/*`,
+            pattern: openCodeDirectoryPattern(root),
             action: "allow",
           });
         }
@@ -709,7 +711,22 @@ export function openCodePermissionRules(
     }
   }
 
+  // Workspace folders share the primary's read/edit policy. Only the external
+  // directory gate needs a path grant; the edit rules above still ask or deny
+  // in restricted modes, and independent writable roots remain intact.
+  for (const directory of runtimePolicy.additionalDirectories) {
+    rules.push({
+      permission: "external_directory",
+      pattern: openCodeDirectoryPattern(directory),
+      action: "allow",
+    });
+  }
+
   return rules;
+}
+
+function openCodeDirectoryPattern(directory: string): string {
+  return `${directory.replaceAll("\\", "/").replace(/\/+$/, "")}/*`;
 }
 
 function permissionRuleEquals(
@@ -994,6 +1011,7 @@ export function makeOpenCodeAdapterV2(
           providerInstanceId: options.instanceId,
           status: "ready",
           cwd,
+          additionalDirectories: [...input.runtimePolicy.additionalDirectories],
           model: input.modelSelection.model,
           capabilities: OpenCodeProviderCapabilitiesV2,
           createdAt: now,
@@ -1425,6 +1443,7 @@ export function makeOpenCodeAdapterV2(
             );
             threads.set(childSessionId, {
               nativeSessionId: childSessionId,
+              runtimePolicy: turn.runtimePolicy,
               providerThread: childProviderThread,
               appThread: childThread,
               activeTurn: null,
@@ -2785,15 +2804,18 @@ export function makeOpenCodeAdapterV2(
           nativeSession: OpenCodeSession,
           providerThread: OrchestrationV2ProviderThread,
           appThread: OrchestrationV2AppThread | null,
+          runtimePolicy = input.runtimePolicy,
         ): OpenCodeThreadState => {
           const existing = threads.get(nativeSession.id);
           if (existing !== undefined) {
             existing.providerThread = providerThread;
+            existing.runtimePolicy = runtimePolicy;
             if (appThread !== null) existing.appThread = appThread;
             return existing;
           }
           const state: OpenCodeThreadState = {
             nativeSessionId: nativeSession.id,
+            runtimePolicy,
             providerThread,
             appThread,
             activeTurn: null,
@@ -2809,6 +2831,62 @@ export function makeOpenCodeAdapterV2(
           threads.set(nativeSession.id, state);
           return state;
         };
+
+        const requireDrainedPolicyChange = Effect.fnUntraced(function* (
+          previous: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+          next: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+        ) {
+          const previousRules = openCodePermissionRules(previous);
+          const nextRules = openCodePermissionRules(next);
+          const sameRules =
+            previousRules.length === nextRules.length &&
+            previousRules.every((rule, index) => permissionRuleEquals(rule, nextRules[index]!));
+          const sameScope =
+            previous.cwd === next.cwd &&
+            previous.additionalDirectories.length === next.additionalDirectories.length &&
+            previous.additionalDirectories.every(
+              (directory, index) => directory === next.additionalDirectories[index],
+            );
+          if (
+            (!sameScope || !sameRules) &&
+            (busySessionIds.size > 0 ||
+              [...threads.values()].some((thread) => thread.activeTurn !== null))
+          ) {
+            return yield* protocolError(
+              "Cannot change OpenCode workspace permissions while foreground or background work is pending.",
+            );
+          }
+          return !sameRules;
+        });
+
+        const installPermissionRules = Effect.fnUntraced(function* (
+          sessionId: string,
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+        ) {
+          const payload = {
+            sessionID: sessionId,
+            permission: openCodePermissionRules(runtimePolicy),
+          };
+          yield* sdkCall("session.update", payload, () => client.session.update(payload));
+        });
+
+        const recordInstalledScope = Effect.fnUntraced(function* (
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+        ) {
+          if (
+            sessionEntity.additionalDirectories?.length ===
+              runtimePolicy.additionalDirectories.length &&
+            sessionEntity.additionalDirectories.every(
+              (directory, index) => directory === runtimePolicy.additionalDirectories[index],
+            )
+          )
+            return;
+          sessionEntity = {
+            ...sessionEntity,
+            additionalDirectories: [...runtimePolicy.additionalDirectories],
+          };
+          yield* updateProviderSession(sessionEntity.status);
+        });
 
         const resolvePromptParts = (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) => {
           const text = providerMessageTextWithAttachmentPaths({
@@ -2993,7 +3071,9 @@ export function makeOpenCodeAdapterV2(
           instanceId: options.instanceId,
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
-          providerSession: sessionEntity,
+          get providerSession() {
+            return sessionEntity;
+          },
           events: Stream.fromEffectRepeat(Queue.take(events)),
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: (threadInput) =>
@@ -3003,6 +3083,7 @@ export function makeOpenCodeAdapterV2(
               if (threadInput.existingProviderThread?.nativeThreadRef != null) {
                 return yield* runtimeSession.resumeThread({
                   providerThread: threadInput.existingProviderThread,
+                  runtimePolicy: threadInput.runtimePolicy,
                 });
               }
               // No title: OpenCode generates one from the first prompt only when
@@ -3040,7 +3121,8 @@ export function makeOpenCodeAdapterV2(
                       status: created.status,
                       updatedAt: created.updatedAt,
                     };
-              registerThread(nativeSession, providerThread, null);
+              registerThread(nativeSession, providerThread, null, threadInput.runtimePolicy);
+              yield* recordInstalledScope(threadInput.runtimePolicy);
               return providerThread;
             }).pipe(
               Effect.mapError(
@@ -3055,10 +3137,16 @@ export function makeOpenCodeAdapterV2(
           resumeThread: (threadInput) =>
             Effect.gen(function* () {
               const sessionId = nativeThreadId(threadInput.providerThread);
+              const runtimePolicy = threadInput.runtimePolicy ?? input.runtimePolicy;
+              yield* requireDrainedPolicyChange(
+                threads.get(sessionId)?.runtimePolicy ?? input.runtimePolicy,
+                runtimePolicy,
+              );
               const response = yield* sdkCall("session.get", { sessionID: sessionId }, () =>
                 client.session.get({ sessionID: sessionId }),
               );
               const nativeSession = unwrapData("session.get", response);
+              yield* installPermissionRules(sessionId, runtimePolicy);
               const resumedAt = yield* DateTime.now;
               const providerThread = {
                 ...threadInput.providerThread,
@@ -3066,7 +3154,8 @@ export function makeOpenCodeAdapterV2(
                 status: "idle" as const,
                 updatedAt: dateTimeFromEpoch(nativeSession.time.updated, resumedAt),
               };
-              registerThread(nativeSession, providerThread, null);
+              registerThread(nativeSession, providerThread, null, runtimePolicy);
+              yield* recordInstalledScope(runtimePolicy);
               return providerThread;
             }).pipe(
               Effect.mapError(
@@ -3109,6 +3198,15 @@ export function makeOpenCodeAdapterV2(
                   `OpenCode model '${turnInput.modelSelection.model}' must use provider/model format`,
                 );
               }
+              const permissionsChanged = yield* requireDrainedPolicyChange(
+                state.runtimePolicy,
+                turnInput.runtimePolicy,
+              );
+              if (permissionsChanged) {
+                yield* installPermissionRules(sessionId, turnInput.runtimePolicy);
+              }
+              state.runtimePolicy = turnInput.runtimePolicy;
+              yield* recordInstalledScope(turnInput.runtimePolicy);
               const isCompaction =
                 turnInput.message.text.trim() === "/compact" &&
                 turnInput.message.attachments.length === 0;
@@ -3225,6 +3323,10 @@ export function makeOpenCodeAdapterV2(
                 buildRuntimeInstructions({
                   harness: "OpenCode",
                   model: turnInput.modelSelection.model,
+                }),
+                buildWorkspaceFolderInventory({
+                  cwd: turnInput.runtimePolicy.cwd ?? cwd,
+                  additionalDirectories: turnInput.runtimePolicy.additionalDirectories,
                 }),
               ]
                 .filter(Boolean)
@@ -3573,17 +3675,13 @@ export function makeOpenCodeAdapterV2(
                   return yield* protocolError(
                     "OpenCode did not preserve the requested rewind boundary.",
                   );
-                yield* sdkCall("session.update", { sessionID: fork.id }, () =>
-                  client.session.update({
-                    sessionID: fork.id,
-                    permission: openCodePermissionRules(input.runtimePolicy),
-                  }),
-                );
+                const runtimePolicy = state?.runtimePolicy ?? input.runtimePolicy;
+                yield* installPermissionRules(fork.id, runtimePolicy);
                 retainedThread = {
                   ...rollbackInput.providerThread,
                   nativeThreadRef: providerRef(fork.id),
                 };
-                registerThread(fork, retainedThread, state?.appThread ?? null);
+                registerThread(fork, retainedThread, state?.appThread ?? null, runtimePolicy);
               }
               const snapshot = yield* readSnapshot(retainedThread);
               return {
@@ -3611,6 +3709,12 @@ export function makeOpenCodeAdapterV2(
             Effect.gen(function* () {
               const sourceSessionId = nativeThreadId(forkInput.sourceProviderThread);
               const sourceState = threads.get(sourceSessionId);
+              const runtimePolicy =
+                forkInput.runtimePolicy ?? sourceState?.runtimePolicy ?? input.runtimePolicy;
+              yield* requireDrainedPolicyChange(
+                sourceState?.runtimePolicy ?? input.runtimePolicy,
+                runtimePolicy,
+              );
               if (sourceState?.activeTurn !== null && sourceState?.activeTurn !== undefined) {
                 return yield* protocolError(
                   `Cannot fork OpenCode thread ${forkInput.sourceProviderThread.id} while a turn is active`,
@@ -3640,6 +3744,7 @@ export function makeOpenCodeAdapterV2(
                   }),
               );
               const nativeSession = unwrapData("session.fork", response);
+              yield* installPermissionRules(nativeSession.id, runtimePolicy);
               const forkedAt = yield* DateTime.now;
               const providerThread = makeProviderThread({
                 idAllocator,
@@ -3658,7 +3763,8 @@ export function makeOpenCodeAdapterV2(
                 },
                 now: forkedAt,
               });
-              registerThread(nativeSession, providerThread, null);
+              registerThread(nativeSession, providerThread, null, runtimePolicy);
+              yield* recordInstalledScope(runtimePolicy);
               return providerThread;
             }).pipe(
               Effect.mapError(

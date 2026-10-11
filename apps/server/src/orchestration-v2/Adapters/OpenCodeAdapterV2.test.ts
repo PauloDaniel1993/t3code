@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
+import type { OpencodeClient, PermissionRuleset, ToolPart } from "@opencode-ai/sdk/v2";
 import {
   CheckpointId,
   NodeId,
@@ -34,6 +34,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../../config.ts";
 import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
 import type { OpenCodeRuntimeShape } from "../../provider/opencodeRuntime.ts";
+import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 
 import {
@@ -146,6 +147,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   suffix: string,
   nativeSessionId: string,
   client: object,
+  policyOverride: Partial<ProviderAdapterV2RuntimePolicy> = {},
 ) {
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
@@ -155,7 +157,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     model: "anthropic/claude-sonnet",
     options: [],
   };
-  const policy = runtimePolicy("full-access", { cwd: "/workspace" });
+  const policy = runtimePolicy("full-access", { cwd: "/workspace", ...policyOverride });
   const adapter = makeOpenCodeAdapterV2({
     instanceId,
     settings: OPEN_CODE_TEST_SETTINGS,
@@ -182,7 +184,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     runtimePolicy: policy,
   });
   const now = yield* DateTime.now;
-  const startTurn = (text = "hello") =>
+  const startTurn = (text = "hello", turnPolicy = policy) =>
     runtime.startTurn({
       appThread: {
         id: threadId,
@@ -222,7 +224,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
         attachments: [],
       },
       modelSelection,
-      runtimePolicy: policy,
+      runtimePolicy: turnPolicy,
     });
   return {
     nativeSessionId,
@@ -237,6 +239,226 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
+  it.each(["approval-required", "auto-accept-edits", "full-access"] as const)(
+    "workspace folders preserve the primary edit policy in %s",
+    (mode) => {
+      const additionalDirectories = [
+        "/sibling folder/",
+        "D:\\Other Projects\\api\\",
+        "//server/share/",
+      ];
+      const primaryRules = openCodePermissionRules(runtimePolicy(mode));
+      const rules = openCodePermissionRules(runtimePolicy(mode, { additionalDirectories }));
+      assert.equal(permissionAction(rules, "edit"), permissionAction(primaryRules, "edit"));
+      assert.equal(permissionAction(rules, "bash"), permissionAction(primaryRules, "bash"));
+      if (mode !== "full-access") {
+        for (const pattern of [
+          "/sibling folder/*",
+          "D:/Other Projects/api/*",
+          "//server/share/*",
+        ]) {
+          assert.deepInclude(rules, { permission: "external_directory", pattern, action: "allow" });
+        }
+      }
+    },
+  );
+
+  it("keeps read-only, plan, sensitive-file and independent attachment rules with extra folders", () => {
+    const additionalDirectories = ["/extra"];
+    for (const interactionMode of ["default", "plan"] as const) {
+      const override = {
+        approvalPolicy: "never",
+        interactionMode,
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      };
+      const before = openCodePermissionRules(runtimePolicy("approval-required", override));
+      const after = openCodePermissionRules(
+        runtimePolicy("approval-required", { ...override, additionalDirectories }),
+      );
+      assert.equal(permissionAction(after, "edit"), "deny");
+      assert.deepEqual(after.slice(0, before.length), before);
+      assert.deepInclude(after, { permission: "read", pattern: "*.env", action: "deny" });
+    }
+    const override = {
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: ["C:\\attachments\\"] },
+    };
+    const withFolders = openCodePermissionRules(
+      runtimePolicy("auto-accept-edits", { ...override, additionalDirectories }),
+    );
+    assert.deepInclude(withFolders, {
+      permission: "external_directory",
+      pattern: "C:/attachments/*",
+      action: "allow",
+    });
+    const cleared = openCodePermissionRules(runtimePolicy("auto-accept-edits", override));
+    assert.notDeepInclude(cleared, {
+      permission: "external_directory",
+      pattern: "/extra/*",
+      action: "allow",
+    });
+    assert.deepInclude(cleared, {
+      permission: "external_directory",
+      pattern: "C:/attachments/*",
+      action: "allow",
+    });
+    const child = openCodeChildPermissionRules(
+      runtimePolicy("auto-accept-edits", { additionalDirectories }),
+      [{ permission: "task", pattern: "*", action: "deny" }],
+    );
+    assert.equal(permissionAction(child, "task"), "deny");
+    assert.deepInclude(child, {
+      permission: "external_directory",
+      pattern: "/extra/*",
+      action: "allow",
+    });
+  });
+
+  it.effect("replaces root scope on resume, turn start and fork, including an empty list", () =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      const permissions: Array<{ sessionID: string; permission: PermissionRuleset }> = [];
+      const prompts: Array<{ system: string; messageID: string }> = [];
+      const harness = yield* makeOpenCodeRuntimeHarness(
+        "workspace-folders",
+        "root",
+        {
+          event: {
+            subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
+              options.signal?.addEventListener("abort", () => nativeEvents.close(), { once: true });
+              return { stream: nativeEvents.stream };
+            },
+          },
+          session: {
+            create: async (input: { permission: PermissionRuleset }) => {
+              permissions.push({ sessionID: "root", ...input });
+              return { data: { id: "root", time: { created: 1, updated: 1 } } };
+            },
+            get: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+            update: async (input: { sessionID: string; permission: PermissionRuleset }) => {
+              permissions.push(input);
+              return { data: {} };
+            },
+            fork: async () => ({ data: { id: "fork", time: { created: 1, updated: 1 } } }),
+            promptAsync: async (input: { system: string; messageID: string }) => {
+              prompts.push(input);
+              return { data: true };
+            },
+          },
+        },
+        { runtimeMode: "auto-accept-edits", additionalDirectories: ["/old"] },
+      );
+      assert.deepEqual(harness.runtime.providerSession.additionalDirectories, ["/old"]);
+      const resumedPolicy = runtimePolicy("auto-accept-edits", {
+        cwd: "/workspace",
+        additionalDirectories: ["/new", "D:\\Extra Folder"],
+      });
+      yield* harness.runtime.ensureThread({
+        threadId: harness.threadId,
+        modelSelection: {
+          instanceId: harness.providerThread.providerInstanceId,
+          model: "anthropic/claude-sonnet",
+        },
+        existingProviderThread: harness.providerThread,
+        runtimePolicy: resumedPolicy,
+      });
+      assert.deepEqual(permissions.at(-1), {
+        sessionID: "root",
+        permission: openCodePermissionRules(resumedPolicy),
+      });
+      assert.deepEqual(
+        harness.runtime.providerSession.additionalDirectories,
+        resumedPolicy.additionalDirectories,
+      );
+      const turnPolicy = runtimePolicy("auto-accept-edits", {
+        cwd: "/workspace",
+        additionalDirectories: ["/turn"],
+      });
+      yield* harness.startTurn("hello", turnPolicy);
+      assert.deepEqual(permissions.at(-1), {
+        sessionID: "root",
+        permission: openCodePermissionRules(turnPolicy),
+      });
+      assert.include(prompts.at(-1)!.system, buildWorkspaceFolderInventory(turnPolicy)!);
+      assert.notInclude(prompts.at(-1)!.system, '"/old"');
+      assert.deepEqual(harness.runtime.providerSession.additionalDirectories, ["/turn"]);
+      const terminal = yield* harness.runtime.events.pipe(
+        Stream.filter((event) => event.type === "turn.terminal"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() =>
+        nativeEvents.push({
+          type: "message.updated",
+          properties: {
+            sessionID: "root",
+            info: { id: prompts.at(-1)!.messageID, role: "user", time: { created: 1 } },
+          },
+        }),
+      );
+      yield* Effect.promise(() =>
+        nativeEvents.push({
+          type: "session.status",
+          properties: { sessionID: "root", status: { type: "busy" } },
+        }),
+      );
+      yield* Effect.promise(() =>
+        nativeEvents.push({
+          type: "session.status",
+          properties: { sessionID: "root", status: { type: "idle" } },
+        }),
+      );
+      yield* Fiber.join(terminal);
+      // Native background work can outlive the foreground turn. A scope change
+      // must leave its permissions installed until the provider reports idle.
+      yield* Effect.promise(() =>
+        nativeEvents.push({
+          type: "session.status",
+          properties: { sessionID: "root", status: { type: "busy" } },
+        }),
+      );
+      const beforeBlockedChange = permissions.length;
+      const blocked = yield* harness
+        .startTurn("blocked", runtimePolicy("auto-accept-edits", { cwd: "/workspace" }))
+        .pipe(Effect.flip);
+      assert.equal(blocked._tag, "ProviderAdapterTurnStartError");
+      assert.equal(permissions.length, beforeBlockedChange);
+      assert.equal(yield* harness.runtime.hasPendingBackgroundWork!, true);
+      assert.deepEqual(harness.runtime.providerSession.additionalDirectories, ["/turn"]);
+      yield* Effect.promise(() =>
+        nativeEvents.push({
+          type: "session.status",
+          properties: { sessionID: "root", status: { type: "idle" } },
+        }),
+      );
+      const forkPolicy = runtimePolicy("approval-required", {
+        cwd: "/workspace",
+        additionalDirectories: ["/fork-root"],
+      });
+      yield* harness.runtime.forkThread({
+        sourceProviderThread: harness.providerThread,
+        targetThreadId: ThreadId.make("workspace-fork"),
+        runtimePolicy: forkPolicy,
+      });
+      assert.deepEqual(permissions.at(-1), {
+        sessionID: "fork",
+        permission: openCodePermissionRules(forkPolicy),
+      });
+      const cleared = runtimePolicy("auto-accept-edits", {
+        cwd: "/workspace",
+        additionalDirectories: [],
+      });
+      yield* harness.startTurn("clear", cleared);
+      assert.deepEqual(permissions.at(-1), {
+        sessionID: "root",
+        permission: openCodePermissionRules(cleared),
+      });
+      assert.notInclude(prompts.at(-1)!.system, "<workspace_folders>");
+      assert.deepEqual(harness.runtime.providerSession.additionalDirectories, []);
+    }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
   it.effect.each(["completed", "failed", "unresolved", "unavailable", "reconnect"] as const)(
     "normalizes OpenCode step usage for %s turns",
     (ending) =>
