@@ -1648,14 +1648,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           yield* Ref.set(initialized, true);
         });
         const now = yield* DateTime.now;
-        const session = providerSession({
-          providerSessionId: input.providerSessionId,
-          providerInstanceId: adapterOptions.instanceId,
-          cwd: input.runtimePolicy.cwd,
-          additionalDirectories: input.runtimePolicy.additionalDirectories,
-          model: input.modelSelection.model,
-          now,
-        });
+        const session = {
+          ...providerSession({
+            providerSessionId: input.providerSessionId,
+            providerInstanceId: adapterOptions.instanceId,
+            cwd: input.runtimePolicy.cwd,
+            additionalDirectories: input.runtimePolicy.additionalDirectories,
+            model: input.modelSelection.model,
+            now,
+          }),
+        };
         const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
         const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
         const limitedTurnItems = yield* Ref.make(
@@ -5586,6 +5588,25 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 return next;
               });
               const started = yield* client.request("turn/start", turnStartParams);
+              const recordedDirectories = session.additionalDirectories ?? [];
+              if (
+                recordedDirectories.length !==
+                  turnInput.runtimePolicy.additionalDirectories.length ||
+                recordedDirectories.some(
+                  (directory, index) =>
+                    directory !== turnInput.runtimePolicy.additionalDirectories[index],
+                )
+              ) {
+                // Keep the shared runtime record current for reused sessions, and
+                // publish a snapshot so later changes cannot mutate queued events.
+                session.additionalDirectories = [...turnInput.runtimePolicy.additionalDirectories];
+                session.updatedAt = yield* DateTime.now;
+                yield* emitProviderEvent({
+                  type: "provider_session.updated",
+                  driver: CODEX_PROVIDER,
+                  providerSession: { ...session },
+                });
+              }
               const nativeTurnId = started.turn.id;
               const startedAt = codexTimestamp(started.turn.startedAt);
               yield* registerRootTurn({

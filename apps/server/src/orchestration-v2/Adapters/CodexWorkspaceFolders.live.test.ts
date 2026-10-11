@@ -134,6 +134,8 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
             threadId: ThreadId,
             ordinal: number,
             phase: string,
+            additionalDirectories: ReadonlyArray<string> = runtimePolicy.additionalDirectories,
+            expectedWritable = true,
           ) {
             const file = path.join(extra, `${phase}.txt`);
             const marker = NodeCrypto.randomUUID();
@@ -206,18 +208,20 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
                 text: `Read the existing file ${encodePath(file)} in the extra workspace folder. Extract its marker value, preserve the existing line, and append exactly one line with that marker followed by :${phase}. Use a local file tool to make the edit. Do not request more permissions or change any other file. Then reply done.`,
               },
               modelSelection,
-              runtimePolicy,
+              runtimePolicy: { ...runtimePolicy, additionalDirectories },
             };
             yield* runtime.startTurn(input);
             const result = yield* Deferred.await(terminal);
             assert.equal(result.status, "completed", encodeUnknownJson(result));
             assert.equal(
               (yield* fs.readFileString(file)).replaceAll("\r\n", "\n"),
-              `marker=${marker}\n${marker}:${phase}\n`,
+              expectedWritable ? `marker=${marker}\n${marker}:${phase}\n` : `marker=${marker}\n`,
               messages.join("\n"),
             );
-            assert.deepEqual(runtime.providerSession.additionalDirectories, [extra]);
-            yield* Console.log(`Codex workspace-folder ${phase}: read/write passed`);
+            assert.deepEqual(runtime.providerSession.additionalDirectories, additionalDirectories);
+            yield* Console.log(
+              `Codex workspace-folder ${phase}: ${expectedWritable ? "read/write passed" : "write correctly denied"}`,
+            );
           });
 
           const initialScope = yield* Scope.make();
@@ -228,7 +232,8 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
             modelSelection,
             runtimePolicy,
           });
-          yield* edit(initial, source, sourceThreadId, 1, "start");
+          yield* edit(initial, source, sourceThreadId, 1, "outside-scope", [], false);
+          yield* edit(initial, source, sourceThreadId, 2, "start");
           yield* Scope.close(initialScope, Exit.void);
 
           const resumedScope = yield* Scope.make();
@@ -240,7 +245,7 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
             modelSelection,
             runtimePolicy,
           });
-          yield* edit(resumed, resumedThread, sourceThreadId, 2, "resume");
+          yield* edit(resumed, resumedThread, sourceThreadId, 3, "resume");
           const forkThreadId = ThreadId.make("thread:codex-workspace-live:fork");
           const fork = yield* resumed.forkThread({
             sourceProviderThread: resumedThread,
