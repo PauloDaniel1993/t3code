@@ -6,6 +6,9 @@ import {
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpFailure,
+  OrchestratorMcpScheduleTaskInput,
+  OrchestratorMcpScheduledTask,
+  OrchestratorMcpUpdateScheduledTaskInput,
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadListInput,
   OrchestratorMcpThreadReadInput,
@@ -23,8 +26,49 @@ const decodeThreadSendInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSend
 const decodeThreadWaitInput = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitInput);
 const decodeFailure = Schema.decodeUnknownSync(OrchestratorMcpFailure);
 const encodeFailure = Schema.encodeSync(OrchestratorMcpFailure);
+const decodeSchedule = Schema.decodeUnknownSync(OrchestratorMcpScheduleTaskInput);
+const decodeScheduleUpdate = Schema.decodeUnknownSync(OrchestratorMcpUpdateScheduledTaskInput);
+const decodeScheduledTask = Schema.decodeUnknownSync(OrchestratorMcpScheduledTask);
 
 describe("orchestrator MCP contracts", () => {
+  it.each([
+    { type: "root" },
+    { type: "worktree", baseRef: "dev", branch: "schedule/audit", startFromOrigin: false },
+    { type: "existing_worktree", worktreePath: "/sets/audit", branch: "schedule/audit" },
+  ])("preserves an optional scheduled workspace strategy: $type", (workspaceStrategy) => {
+    const input = {
+      prompt: "Audit",
+      schedule: { type: "interval", everyMs: 60_000 },
+      bindToCurrentThread: false,
+    };
+    expect(decodeSchedule({ ...input, workspaceStrategy }).workspaceStrategy).toEqual(
+      workspaceStrategy,
+    );
+    expect(decodeSchedule(input).workspaceStrategy).toBeUndefined();
+    expect(
+      decodeScheduleUpdate({ scheduledTaskId: "schedule:audit", workspaceStrategy })
+        .workspaceStrategy,
+    ).toEqual(workspaceStrategy);
+  });
+
+  it("returns strategy and nullable dispatch errors in schedule summaries", () => {
+    const summary = {
+      scheduledTaskId: "schedule:audit",
+      title: "Audit",
+      prompt: "Audit",
+      enabled: true,
+      projectId: "project:audit",
+      boundThreadId: null,
+      workspaceStrategy: { type: "root" },
+      schedule: { type: "interval", everyMs: 60_000 },
+      nextRunAt: "2026-10-11T12:00:00.000Z",
+      lastRunStatus: "failed",
+      lastRunError: "Workspace file not found.",
+    };
+    expect(decodeScheduledTask(summary)).toEqual(summary);
+    expect(decodeScheduledTask({ ...summary, lastRunError: null }).lastRunError).toBeNull();
+  });
+
   it("preserves workspace diagnostics and conflict IDs while accepting older failures", () => {
     const diagnostic = {
       code: "conflict" as const,

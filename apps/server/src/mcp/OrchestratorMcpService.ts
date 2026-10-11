@@ -211,9 +211,11 @@ function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask
     enabled: task.enabled,
     projectId: task.projectId,
     boundThreadId: task.threadId,
+    workspaceStrategy: task.workspaceStrategy,
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
     lastRunStatus: task.lastRunStatus,
+    lastRunError: task.lastRunError,
   };
 }
 
@@ -1203,6 +1205,12 @@ const make = Effect.gen(function* () {
         yield* requireCapability(scope);
         const parent = yield* loadProjection(scope.threadId);
         const bindToCurrentThread = input.bindToCurrentThread ?? true;
+        if (bindToCurrentThread && input.workspaceStrategy !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "A bound scheduled task follows its thread's workspace; omit workspaceStrategy or set bindToCurrentThread:false.",
+          );
+        }
         const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
         const title =
           input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -1213,7 +1221,8 @@ const make = Effect.gen(function* () {
           schedule: input.schedule,
           projectId: parent.thread.projectId,
           threadId: bindToCurrentThread ? scope.threadId : null,
-          workspaceStrategy: scheduledTaskWorkspaceStrategy(bindToCurrentThread),
+          workspaceStrategy:
+            input.workspaceStrategy ?? scheduledTaskWorkspaceStrategy(bindToCurrentThread),
           modelSelection: parent.thread.modelSelection,
           runtimeMode: parent.thread.runtimeMode,
           interactionMode: parent.thread.interactionMode,
@@ -1272,13 +1281,20 @@ const make = Effect.gen(function* () {
             : input.bindToCurrentThread
               ? scope.threadId
               : null;
+        if (threadId !== null && input.workspaceStrategy !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "A bound scheduled task follows its thread's workspace; omit workspaceStrategy or set bindToCurrentThread:false.",
+          );
+        }
         // Rebinding changes where runs execute, so the workspace strategy must
         // follow: unbinding a root-strategy task would otherwise run loose
         // prompts in the shared project checkout.
         const workspaceStrategy =
-          input.bindToCurrentThread === undefined
+          input.workspaceStrategy ??
+          (existing.threadId === threadId
             ? existing.workspaceStrategy
-            : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread);
+            : scheduledTaskWorkspaceStrategy(threadId !== null));
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,
