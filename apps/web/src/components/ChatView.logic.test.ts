@@ -2265,7 +2265,7 @@ describe("deriveRewindFileRestore", () => {
     ).toEqual({
       canRestoreFiles: true,
       unrestoredFolders: [
-        { label: "lib", reason: "added-later" },
+        { label: "lib", reason: "unavailable" },
         { label: "notes", reason: "not-checkpointed" },
         { label: "remote", reason: "not-checkpointed" },
       ],

@@ -4,6 +4,7 @@ import type {
   OrchestrationV2CheckpointPart,
   OrchestrationV2CheckpointScope,
 } from "@t3tools/contracts";
+import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
@@ -14,27 +15,34 @@ import { checkpointRestoreParts } from "./CheckpointScopeParts.ts";
 import type { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import type * as ProjectStore from "./ProjectStore.ts";
 
-export const SHARED_WORKSPACE_RESTORE_MESSAGE =
-  "File restore requires an isolated worktree. This workspace may contain changes from another thread. Rewind the conversation without restoring files instead.";
+const SHARED_WORKSPACE_RESTORE_REASON =
+  "File restore requires an isolated worktree. This workspace may contain changes from another thread.";
 
 const CONVERSATION_ONLY = "Rewind the conversation without restoring files instead.";
 
-/** What a client shows when a turn's files can't be restored, naming the folders at fault. */
-export function fileRestoreRefusalMessage(refusal: FileRestoreRefusal): string {
+export const SHARED_WORKSPACE_RESTORE_MESSAGE = `${SHARED_WORKSPACE_RESTORE_REASON} ${CONVERSATION_ONLY}`;
+
+/** Why a turn's files can't be restored, naming the folders at fault. */
+export function fileRestoreRefusalReason(refusal: FileRestoreRefusal): string {
   const folders = refusal.folders.join(", ");
   const named = refusal.folders.length > 0;
   switch (refusal.reason) {
     case "not-ready":
-      return `${named ? `Files in ${folders} weren't` : "This turn's files weren't"} checkpointed. ${CONVERSATION_ONLY}`;
+      return `${named ? `Files in ${folders}` : "Files"} weren't checkpointed at that point.`;
     case "missing-checkout":
-      return `${named ? `The checkout for ${folders}` : "This thread's checkout"} no longer exists. ${CONVERSATION_ONLY}`;
+      return `${named ? `The checkout for ${folders}` : "This thread's checkout"} no longer exists.`;
     case "missing-ref":
-      return `${named ? `The checkpoint for ${folders}` : "This turn's checkpoint"} is no longer available. ${CONVERSATION_ONLY}`;
+      return `${named ? `The checkpoint for ${folders}` : "That checkpoint"} is no longer available.`;
     case "shared":
       return named
-        ? `File restore requires isolated worktrees. ${folders} may contain changes from another thread. ${CONVERSATION_ONLY}`
-        : SHARED_WORKSPACE_RESTORE_MESSAGE;
+        ? `File restore requires isolated worktrees. ${folders} may contain changes from another thread.`
+        : SHARED_WORKSPACE_RESTORE_REASON;
   }
+}
+
+/** What a client shows when it asks to restore files that can't be. */
+export function fileRestoreRefusalMessage(refusal: FileRestoreRefusal): string {
+  return `${fileRestoreRefusalReason(refusal)} ${CONVERSATION_ONLY}`;
 }
 
 interface RestoreSafetyDependencies {
@@ -72,6 +80,8 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
             error.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
           ),
         );
+    // realPath keeps the caller's casing, and Windows paths ignore it.
+    const pathKey = (real: string) => (isWindowsAbsolutePath(real) ? real.toLowerCase() : real);
     const refusal = (shared: ReadonlySet<number>): FileRestoreRefusal | undefined =>
       shared.size === 0
         ? undefined
@@ -89,14 +99,14 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
       ...(thread.worktreePath === null ? [] : [thread.worktreePath]),
     ]) {
       const real = yield* existingRealPath(root);
-      if (real !== null) own.add(real);
+      if (real !== null) own.add(pathKey(real));
     }
     const targets: Array<string> = [];
     const shared = new Set<number>();
     for (const [index, part] of parts.entries()) {
       const cwd = yield* fileSystem.realPath(part.cwd);
       targets.push(cwd);
-      if (!own.has(cwd)) shared.add(index);
+      if (!own.has(pathKey(cwd))) shared.add(index);
     }
     if (shared.size === parts.length) return refusal(shared);
 
@@ -109,14 +119,16 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
       const paths = [
         otherThread.worktreePath,
         ...(otherThread.worktrees ?? []).map((member) => member.path),
-        ...other.checkpointScopes.map((candidate) => candidate.cwd),
-        ...other.checkpoints.flatMap(
-          (checkpoint) => checkpoint.parts?.map((part) => part.cwd) ?? [],
-        ),
+        // Where its latest run checkpoints, part by part. Older runs' places
+        // are history: a later thread may own them now.
+        ...other.checkpointScopes.flatMap((scope) => [
+          scope.cwd,
+          ...(scope.parts?.map((part) => part.cwd) ?? []),
+        ]),
         // A failed turn can leave an errored session with a live event stream.
-        // A session shared across threads keeps the cwd it was opened with,
-        // often another thread's; each turn runs in the thread's own
-        // worktree or project root, which this list already covers.
+        // A session shared across threads keeps the cwd and extra directories
+        // it was opened with, often another thread's, even this one's; each
+        // turn runs in the thread's own places, which this list already covers.
         ...providerContext.providerSessions.flatMap((session) =>
           session.status === "stopped" ||
           session.capabilities.sessions.supportsMultipleProviderThreadsPerSession

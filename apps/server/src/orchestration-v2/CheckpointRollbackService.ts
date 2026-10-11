@@ -17,7 +17,11 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { fileRestoreRefusal, fileRestoreRefusalMessage } from "./CheckpointRestoreSafety.ts";
+import {
+  fileRestoreRefusal,
+  fileRestoreRefusalMessage,
+  fileRestoreRefusalReason,
+} from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
@@ -304,26 +308,6 @@ export const layer: Layer.Layer<
         });
       }
 
-      // Refused before the provider rewinds: file restore is all or nothing.
-      if (restoreFiles) {
-        const refusal = yield* fileRestoreRefusal(projection.thread, scope, checkpoint, {
-          checkpoints,
-          fileSystem,
-          projections,
-          projects,
-          path,
-        });
-        if (refusal !== undefined) {
-          return yield* new CheckpointRollbackExecutionError({
-            reason: "file-restore-refused",
-            threadId: input.threadId,
-            providerThreadId: input.providerThreadId,
-            checkpointId: input.checkpointId,
-            detail: fileRestoreRefusalMessage(refusal),
-          });
-        }
-      }
-
       const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
       // Stopped and failed runs after the target leave the provider
       // conversation too, so they must not stay visible.
@@ -335,6 +319,30 @@ export const layer: Layer.Layer<
             run.status === "failed" ||
             run.status === "cancelled"),
       );
+
+      // Refused before the provider rewinds: file restore is all or nothing.
+      if (restoreFiles) {
+        const refusal = yield* fileRestoreRefusal(projection.thread, scope, checkpoint, {
+          checkpoints,
+          fileSystem,
+          projections,
+          projects,
+          path,
+        });
+        if (refusal !== undefined) {
+          // A retry has nothing left to rewind, so its refusal is about files only.
+          const rewound = runsToRollback.length === 0;
+          return yield* new CheckpointRollbackExecutionError({
+            reason: rewound ? "files-not-restored" : "file-restore-refused",
+            threadId: input.threadId,
+            providerThreadId: input.providerThreadId,
+            checkpointId: input.checkpointId,
+            detail: rewound
+              ? `The conversation was rewound, but its files weren't restored. ${fileRestoreRefusalReason(refusal)}`
+              : fileRestoreRefusalMessage(refusal),
+          });
+        }
+      }
       // A retry after the conversation was committed finds no run left to roll
       // back, so it skips the provider and restores the files only.
       const snapshot =
@@ -436,7 +444,15 @@ export const layer: Layer.Layer<
           candidate.status !== "stale",
       );
       if (staleCheckpoints.length === 0) return;
-      yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });
+      // Conversation and files are both back; a ref left behind costs only disk.
+      yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("orchestration V2 stale checkpoint refs kept after a rewind", {
+            threadId: input.threadId,
+            cause: String(cause),
+          }),
+        ),
+      );
       const staleAt = yield* DateTime.now;
       const stale: Array<OrchestrationV2DomainEvent> = [];
       for (const staleCheckpoint of staleCheckpoints) {

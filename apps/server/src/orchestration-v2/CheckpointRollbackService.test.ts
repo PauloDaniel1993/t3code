@@ -785,7 +785,7 @@ it.effect("refuses a file restore before the provider rewinds, naming the folder
     assert.equal(error.reason, "file-restore-refused");
     assert.equal(
       error.message,
-      "Files in lib weren't checkpointed. Rewind the conversation without restoring files instead.",
+      "Files in lib weren't checkpointed at that point. Rewind the conversation without restoring files instead.",
     );
     assert.equal(
       CheckpointRollbackService.rollbackFailureMessage(Cause.fail(error)),
@@ -799,11 +799,15 @@ it.effect("refuses a file restore before the provider rewinds, naming the folder
 
 it.effect("retries a failed file restore without rewinding the provider again", () => {
   let restoreAttempts = 0;
+  let checkoutGone = false;
   const harness = makeRewindHarness({
     name: "rewind-retry",
     targetStatus: "ready",
     checkpoints: {
-      preflightRestore: () => Effect.succeed(undefined),
+      preflightRestore: () =>
+        Effect.sync(() =>
+          checkoutGone ? { reason: "missing-checkout" as const, folders: ["lib"] } : undefined,
+        ),
       restore: ({ scope, checkpoint }) =>
         ++restoreAttempts === 1
           ? Effect.fail(
@@ -816,7 +820,15 @@ it.effect("retries a failed file restore without rewinding the provider again", 
               }),
             )
           : Effect.void,
-      deleteStaleRefs: () => Effect.void,
+      // Refs left behind once everything is back don't fail the rewind.
+      deleteStaleRefs: ({ scope, checkpoints }) =>
+        Effect.fail(
+          new CheckpointService.CheckpointDeleteStaleRefsError({
+            scopeId: scope.id,
+            checkpointIds: checkpoints.map((candidate) => candidate.id),
+            cause: "not a git repository",
+          }),
+        ),
     },
   });
   return Effect.gen(function* () {
@@ -832,6 +844,16 @@ it.effect("retries a failed file restore without rewinding the provider again", 
       runs: ["completed", "rolled_back", "rolled_back"],
       checkpoints: ["ready", "ready", "error"],
     });
+
+    // A retry refused for its files says the conversation is already rewound.
+    checkoutGone = true;
+    const refused = yield* Effect.flip(harness.execute(true));
+    assert.equal(refused.reason, "files-not-restored");
+    assert.equal(
+      refused.message,
+      "The conversation was rewound, but its files weren't restored. The checkout for lib no longer exists.",
+    );
+    checkoutGone = false;
 
     yield* harness.execute(true);
     assert.equal(harness.state.providerRollbacks, 1);

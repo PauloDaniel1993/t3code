@@ -636,6 +636,75 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  it.effect("retires the rewound turns' checkpoints when a rollback gives up on files", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const { threadId, rollback } = yield* seedFailingRollbackThread("runtime-rollback-give-up");
+      const requestId = CommandId.make("runtime-rollback-give-up-request");
+      yield* rollback(requestId);
+      // The rollback committed the conversation, then every file attempt failed.
+      const seeded = yield* orchestrator.getThreadProjection(threadId);
+      const run = seeded.runs[0]!;
+      const scope = seeded.checkpointScopes[0]!;
+      const now = yield* DateTime.now;
+      const rewoundCheckpointId = CheckpointId.make("runtime-rollback-give-up-turn");
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-rollback-give-up-seed"),
+        events: [
+          {
+            id: EventId.make("runtime-rollback-give-up-run"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...run, status: "rolled_back", completedAt: now },
+          },
+          {
+            id: EventId.make("runtime-rollback-give-up-checkpoint"),
+            type: "checkpoint.captured",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: rewoundCheckpointId,
+              threadId,
+              scopeId: scope.id,
+              runId: run.id,
+              nodeId: scope.nodeId,
+              parentCheckpointId: null,
+              ordinalWithinScope: 1,
+              appRunOrdinal: run.ordinal,
+              ref: CheckpointRef.make("refs/t3/runtime-rollback-give-up-turn"),
+              status: "ready",
+              files: [],
+              capturedAt: now,
+            },
+          },
+        ],
+      });
+
+      const message = "The conversation was rewound, but files in lib couldn't be restored.";
+      yield* orchestrator.dispatch({
+        type: "checkpoint.rollback.fail",
+        commandId: CommandId.make(`${requestId}:rollback-failed`),
+        threadId,
+        requestId,
+        message,
+      });
+
+      const failed = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(failed.thread.rollbackFailure, { requestId, message });
+      assert.deepEqual(
+        failed.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint.status]),
+        [
+          [CheckpointId.make("runtime-rollback-give-up-checkpoint"), "ready"],
+          [rewoundCheckpointId, "stale"],
+        ],
+      );
+    }),
+  );
+
   it.effect("refuses file restore to non-ready targets before persisting anything", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -789,7 +858,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
             error.cause,
             status === "stale"
               ? `Checkpoint ${checkpointId} is stale and cannot be restored.`
-              : "This turn's files weren't checkpointed. Rewind the conversation without restoring files instead.",
+              : "Files weren't checkpointed at that point. Rewind the conversation without restoring files instead.",
           );
           assert.equal(yield* orchestrator.getThreadEventSequence(threadId), previousSequence);
           assert.deepEqual(

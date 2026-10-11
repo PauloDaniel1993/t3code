@@ -1124,7 +1124,7 @@ export interface RewindFileRestore {
   /** Workspace folders a file restore leaves as they are. */
   readonly unrestoredFolders: ReadonlyArray<{
     readonly label: string;
-    readonly reason: "not-checkpointed" | "added-later";
+    readonly reason: "not-checkpointed" | "unavailable";
   }>;
 }
 
@@ -1171,7 +1171,7 @@ export function deriveRewindFileRestore(input: {
                         part.folders.some((entry) => entry.folderPath === folder.path),
                       )
                         ? "not-checkpointed"
-                        : "added-later",
+                        : "unavailable",
                   },
                 ],
           ),

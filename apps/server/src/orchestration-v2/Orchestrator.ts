@@ -8415,6 +8415,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
         },
       });
+      // A rollback can give up on files after its conversation was rewound.
+      // The rewound turns' checkpoints must then stop being rewind targets
+      // and capture baselines.
+      const records = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs", "checkpoints"])
+        .pipe(mapDispatchError(command));
+      const rolledBack = new Set(
+        records.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
+      );
+      for (const checkpoint of records.checkpoints) {
+        if (checkpoint.runId === null || checkpoint.status === "stale") continue;
+        if (!rolledBack.has(checkpoint.runId)) continue;
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "checkpoint.captured",
+          threadId: command.threadId,
+          runId: checkpoint.runId,
+          nodeId: checkpoint.nodeId,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: now,
+          payload: { ...checkpoint, status: "stale" },
+        });
+      }
     });
 
   /**

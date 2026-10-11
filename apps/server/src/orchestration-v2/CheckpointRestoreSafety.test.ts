@@ -15,6 +15,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { fileRestoreRefusalMessage, restoreIsolationRefusal } from "./CheckpointRestoreSafety.ts";
 import {
@@ -209,8 +210,13 @@ it.effect.each([
   { owner: "extra-directory", nested: false, shared: ["lib"] },
   { owner: "root-folder", nested: false, shared: ["lib"] },
   { owner: "member", nested: false, shared: ["app"] },
+  // Where the other thread's latest run checkpoints; older places are history.
+  { owner: "scope-part", nested: false, shared: ["lib"] },
+  { owner: "history", nested: false, shared: [] },
   // lib is restored in place, outside the thread's own worktrees.
   { owner: "foreign-part", nested: false, shared: ["lib"] },
+  // Windows paths name one place however they are cased.
+  { owner: "case", nested: false, shared: [] },
 ] as const)(
   "restores only parts no other thread reaches, owner=$owner",
   ({ owner, nested, shared }) =>
@@ -246,11 +252,17 @@ it.effect.each([
           Effect.succeed({
             schemaVersion: 1,
             snapshotSequence: 0,
-            threads: owner === "none" || owner === "foreign-part" ? [] : [otherThread as never],
+            threads: ["none", "foreign-part", "case"].includes(owner) ? [] : [otherThread as never],
             archivedThreads: [],
           }),
         getCheckpointContext: () =>
-          Effect.succeed({ runs: [], checkpointScopes: [], checkpoints: [] }),
+          Effect.succeed({
+            runs: [],
+            checkpointScopes: [
+              { cwd: otherWorktree, ...(owner === "scope-part" ? { parts: [{ cwd: lib }] } : {}) },
+            ],
+            checkpoints: owner === "history" ? [{ parts: [{ cwd: lib }] }] : [],
+          } as never),
         getThreadProviderContext: () =>
           Effect.succeed({
             providerSessions:
@@ -280,7 +292,13 @@ it.effect.each([
         {
           id: ThreadId.make("restore-parts-current"),
           worktreePath: app,
-          worktrees: owner === "foreign-part" ? [member(app)] : [member(app), member(lib)],
+          worktrees:
+            owner === "foreign-part"
+              ? [member(app)]
+              : [
+                  member(app),
+                  member(owner === "case" && isWindowsAbsolutePath(lib) ? lib.toUpperCase() : lib),
+                ],
         },
         [
           { cwd: app, folders: [{ folderPath: "/source/app", label: "app", relativePath: "" }] },

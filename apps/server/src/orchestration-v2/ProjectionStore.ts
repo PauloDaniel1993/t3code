@@ -39,6 +39,7 @@ import {
   OrchestrationV2CheckpointJson as OrchestrationV2CheckpointJsonSchema,
   OrchestrationV2CheckpointPart,
   OrchestrationV2CheckpointScopeJson as OrchestrationV2CheckpointScopeJsonSchema,
+  OrchestrationV2CheckpointScopePart,
   OrchestrationV2ContextHandoffJson as OrchestrationV2ContextHandoffJsonSchema,
   OrchestrationV2ContextTransferJson as OrchestrationV2ContextTransferJsonSchema,
   OrchestrationV2ConversationMessageJson as OrchestrationV2ConversationMessageJsonSchema,
@@ -212,11 +213,12 @@ const ProjectionCheckpointContext = Schema.Struct({
     OrchestrationV2RunJsonSchema.mapFields(({ id, ordinal, status }) => ({ id, ordinal, status })),
   ),
   checkpointScopes: Schema.Array(
-    OrchestrationV2CheckpointScopeJsonSchema.mapFields(({ id, runId, kind, cwd }) => ({
+    OrchestrationV2CheckpointScopeJsonSchema.mapFields(({ id, runId, kind, cwd, parts }) => ({
       id,
       runId,
       kind,
       cwd,
+      parts,
     })),
   ),
   checkpoints: Schema.Array(
@@ -236,6 +238,9 @@ export type ProjectionCheckpointContext = typeof ProjectionCheckpointContext.Typ
 const decodeCheckpointContext = Schema.decodeUnknownEffect(ProjectionCheckpointContext);
 const decodeCheckpointParts = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(OrchestrationV2CheckpointPart)),
+);
+const decodeCheckpointScopeParts = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(OrchestrationV2CheckpointScopePart)),
 );
 
 /** Durable capture targets, without transcript or checkpoint file payloads. */
@@ -4416,7 +4421,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             `,
               sql`
               SELECT scope_id AS id, run_id AS "runId", kind,
-                json_extract(payload_json, '$.cwd') AS cwd
+                json_extract(payload_json, '$.cwd') AS cwd,
+                json_extract(payload_json, '$.parts') AS parts
               FROM orchestration_v2_projection_checkpoint_scopes
               WHERE thread_id = ${threadId}
               ORDER BY ordinal_within_parent ASC, scope_id ASC
@@ -4433,7 +4439,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ]);
             return yield* decodeCheckpointContext({
               runs,
-              checkpointScopes,
+              checkpointScopes: yield* Effect.forEach(checkpointScopes, ({ parts, ...scope }) =>
+                typeof parts === "string"
+                  ? Effect.map(decodeCheckpointScopeParts(parts), (parts) => ({ ...scope, parts }))
+                  : Effect.succeed(scope),
+              ),
               checkpoints: yield* Effect.forEach(checkpoints, ({ parts, ...checkpoint }) =>
                 typeof parts === "string"
                   ? Effect.map(decodeCheckpointParts(parts), (parts) => ({ ...checkpoint, parts }))
@@ -6030,12 +6040,15 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           }
           return {
             runs: projection.runs.map(({ id, ordinal, status }) => ({ id, ordinal, status })),
-            checkpointScopes: projection.checkpointScopes.map(({ id, runId, kind, cwd }) => ({
-              id,
-              runId,
-              kind,
-              cwd,
-            })),
+            checkpointScopes: projection.checkpointScopes.map(
+              ({ id, runId, kind, cwd, parts }) => ({
+                id,
+                runId,
+                kind,
+                cwd,
+                ...(parts === undefined ? {} : { parts }),
+              }),
+            ),
             checkpoints: projection.checkpoints.map(
               ({ scopeId, runId, appRunOrdinal, status, ref, parts }) => ({
                 scopeId,

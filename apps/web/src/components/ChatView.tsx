@@ -11511,13 +11511,13 @@ export default function ChatView(props: ChatViewProps) {
               Rewind chat to before this message. Your prompt and attachments return to the
               composer.
               {pendingRevertFiles?.canRestoreFiles === false
-                ? " This turn's files weren't checkpointed, so they stay as they are."
+                ? " Files from before this message weren't fully checkpointed, so they stay as they are."
                 : null}
               {pendingRevertFiles !== null && pendingRevertFiles.unrestoredFolders.length > 0
                 ? ` Reverting files leaves ${pendingRevertFiles.unrestoredFolders
                     .map(
                       (folder) =>
-                        `${folder.label} (${folder.reason === "not-checkpointed" ? "not checkpointed" : "added after this turn"})`,
+                        `${folder.label} (${folder.reason === "not-checkpointed" ? "not checkpointed" : "unavailable then"})`,
                     )
                     .join(", ")} as they are.`
                 : null}
