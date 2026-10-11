@@ -176,6 +176,14 @@ it.effect(
   "refreshes containing member roots once, using only VCS status for the additional paths",
   () => {
     const scope = finalizedScope(undefined);
+    const shell: Pick<OrchestrationV2ThreadShell, "id" | "worktrees"> = {
+      id: scope.threadId,
+      worktrees: [
+        { repositoryRoot: "/source", path: "/", branch: "feature" },
+        { repositoryRoot: "/repo", path: "/repo", branch: "feature" },
+        { repositoryRoot: "/other", path: "/other", branch: "feature" },
+      ],
+    };
     const refreshed: Array<{ cwd: string; vcsOnly?: boolean }> = [];
     const layer = RunFinalization.layer.pipe(
       Layer.provide(
@@ -191,15 +199,7 @@ it.effect(
                 readyCheckpointOrdinals: [],
                 partTurnCheckpointOrdinals: [],
               }),
-            getThreadShell: () =>
-              Effect.succeed({
-                id: scope.threadId,
-                worktrees: [
-                  { repositoryRoot: "/source", path: "/", branch: "feature" },
-                  { repositoryRoot: "/repo", path: "/repo", branch: "feature" },
-                  { repositoryRoot: "/other", path: "/other", branch: "feature" },
-                ],
-              } as OrchestrationV2ThreadShell),
+            getThreadShell: () => Effect.succeed(shell as OrchestrationV2ThreadShell),
           }),
           Layer.succeed(RunFinalization.RunFinalizationObserver, {
             refresh: ({ cwd, vcsOnly }) =>
