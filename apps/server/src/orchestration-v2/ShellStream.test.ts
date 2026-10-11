@@ -212,6 +212,34 @@ describe("archivedShellStreamItemFromThreadShell", () => {
 });
 
 describe("shellStreamItemFromEnrichmentRefresh", () => {
+  it("selects linked health by project id when a plain project shares its root", () => {
+    const snapshot = {
+      ...emptyShellSnapshot,
+      projects: [
+        {
+          id: ProjectId.make("linked"),
+          workspaceRoot: "/workspace/a",
+          workspaceFile: "/team.code-workspace",
+        },
+        { id: ProjectId.make("plain"), workspaceRoot: "/workspace/a" },
+      ],
+    } as unknown as OrchestrationV2ShellSnapshot;
+    const frame = shellStreamItemFromEnrichmentRefresh({
+      snapshot,
+      changes: [],
+      enrichedProjectIds: [ProjectId.make("linked")],
+    });
+    expect(frame.snapshot.projects.map((project) => project.id)).toEqual(["linked"]);
+    expect(frame.resolvedRepositoryIdentityRoots).toEqual([]);
+    expect(frame.enrichedProjectIds).toEqual(["linked"]);
+    expect(
+      shellStreamItemsFromResumeSnapshot({
+        snapshot,
+        resolvedRepositoryIdentityRoots: [],
+        enrichedProjectIds: [ProjectId.make("linked")],
+      }),
+    ).toEqual([frame]);
+  });
   it("batches nearby completion roots onto one snapshot item", () => {
     expect(
       shellStreamItemFromEnrichmentRefresh({

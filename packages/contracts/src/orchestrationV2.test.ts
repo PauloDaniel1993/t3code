@@ -36,6 +36,7 @@ import {
   OrchestrationV2RpcSchemas,
   OrchestrationV2RunJson,
   OrchestrationV2ShellSnapshot,
+  OrchestrationV2ShellStreamItem,
   OrchestrationV2SubscribeThreadInput,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadProjection,
@@ -59,6 +60,7 @@ const LegacySubscribeThreadInput = Schema.Struct({
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
 });
 const decodeLegacyShellStreamItem = Schema.decodeUnknownSync(LegacyShellStreamItem);
+const decodeShellStreamItem = Schema.decodeUnknownSync(OrchestrationV2ShellStreamItem);
 const decodeLegacySubscribeThreadInput = Schema.decodeUnknownSync(LegacySubscribeThreadInput);
 const decodeOrchestrationV2Command = Schema.decodeUnknownSync(OrchestrationV2Command);
 const decodeOrchestrationV2TurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
@@ -314,10 +316,24 @@ describe("orchestration V2 contracts", () => {
         archivedThreads: [],
       },
       resolvedRepositoryIdentityRoots: ["/workspace/project"],
+      enrichedProjectIds: ["project:workspace"],
     });
 
     expect(decoded.kind).toBe("snapshot");
     expect("resolvedRepositoryIdentityRoots" in decoded).toBe(false);
+    expect("enrichedProjectIds" in decoded).toBe(false);
+    const frame = decodeShellStreamItem({
+      kind: "snapshot",
+      snapshot: {
+        schemaVersion: 1,
+        snapshotSequence: 0,
+        projects: [],
+        threads: [],
+        archivedThreads: [],
+      },
+      enrichedProjectIds: ["project:workspace"],
+    });
+    expect(frame.kind === "snapshot" && frame.enrichedProjectIds).toEqual(["project:workspace"]);
   });
 
   it("decodes nested checkpoint scopes without making child scopes advance app run count", () => {

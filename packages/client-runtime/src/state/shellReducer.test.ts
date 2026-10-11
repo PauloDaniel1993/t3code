@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId, type OrchestrationProjectShell } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { v2Project, v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
@@ -21,6 +21,149 @@ const otherIdentity = {
     remoteUrl: "https://github.com/example/other.git",
   },
 };
+
+const linkedProject: OrchestrationProjectShell = {
+  ...v2Project,
+  workspaceFile: "/team.code-workspace",
+  folders: [
+    {
+      path: v2Project.workspaceRoot,
+      name: "app",
+      label: "app",
+      availability: "available",
+      vcs: { checkoutRoot: v2Project.workspaceRoot },
+    },
+    {
+      path: "/workspace/lib",
+      name: "lib",
+      label: "lib",
+      availability: "unavailable",
+      unavailableReason: "missing",
+      vcs: { checkoutRoot: "/workspace/lib", repositoryIdentity: otherIdentity },
+    },
+  ],
+  workspaceFileStatus: { state: "ok", diagnostics: [], liveDetection: true },
+};
+
+describe("workspace folder enrichment", () => {
+  it("delivers file failure and recovery by id without changing structure or sequence", () => {
+    const plain = { ...v2Project, id: ProjectId.make("plain-at-same-root") };
+    let current = {
+      ...v2ShellSnapshot,
+      snapshotSequence: 10,
+      projects: [linkedProject, plain] as ReadonlyArray<OrchestrationProjectShell>,
+    };
+    for (const state of ["missing", "ok"] as const) {
+      const refreshed = {
+        ...linkedProject,
+        title: "Stale title",
+        workspaceFileStatus: { state, diagnostics: [], liveDetection: true },
+        folders: linkedProject.folders!.map((folder) => ({
+          ...folder,
+          availability: "available" as const,
+          name: "Stale name",
+          label: "stale",
+        })),
+      };
+      current = mergeShellSnapshotProjects(
+        current,
+        { ...v2ShellSnapshot, snapshotSequence: 2, projects: [refreshed] },
+        {
+          resolvedRepositoryIdentityRoots: [],
+          enrichedProjectIds: [linkedProject.id],
+        },
+      );
+      expect(current.snapshotSequence).toBe(10);
+      expect(current.projects[0]?.workspaceFileStatus?.state).toBe(state);
+      expect(current.projects[0]?.title).toBe(linkedProject.title);
+      expect(current.projects[0]?.folders?.[1]).toMatchObject({
+        name: "lib",
+        label: "lib",
+        availability: "available",
+      });
+      expect(current.projects[0]?.folders?.[1]?.unavailableReason).toBeUndefined();
+      expect(current.projects[1]).toBe(plain);
+      expect(current.threads).toBe(v2ShellSnapshot.threads);
+    }
+  });
+
+  it("retains facts by path across rename/reorder updates while dropping removed folders", () => {
+    const snapshot = { ...v2ShellSnapshot, projects: [linkedProject] };
+    const reordered: OrchestrationProjectShell = {
+      ...v2Project,
+      workspaceFile: linkedProject.workspaceFile,
+      workspaceRoot: "/workspace/lib",
+      folders: [
+        { path: "/workspace/lib", name: "Library", label: "library" },
+        { path: "/workspace/new", name: "new", label: "new" },
+      ],
+    };
+    const updated = applyShellStreamEvent(snapshot, {
+      kind: "project.updated",
+      sequence: 1,
+      project: reordered,
+    });
+    expect(updated.projects[0]?.folders).toEqual([
+      {
+        ...reordered.folders![0],
+        availability: "unavailable",
+        unavailableReason: "missing",
+        vcs: { checkoutRoot: "/workspace/lib" },
+      },
+      reordered.folders![1],
+    ]);
+    expect(updated.projects[0]?.workspaceFileStatus).toEqual(linkedProject.workspaceFileStatus);
+  });
+
+  it("accepts explicit VCS null and checkout changes instead of retaining stale identities", () => {
+    const apply = (vcs: NonNullable<OrchestrationProjectShell["folders"]>[number]["vcs"]) =>
+      mergeShellSnapshotProjects(
+        { ...v2ShellSnapshot, projects: [linkedProject] },
+        {
+          ...v2ShellSnapshot,
+          projects: [
+            {
+              ...linkedProject,
+              folders: [linkedProject.folders![0]!, { ...linkedProject.folders![1]!, vcs }],
+            },
+          ],
+        },
+        { resolvedRepositoryIdentityRoots: [], enrichedProjectIds: [linkedProject.id] },
+      ).projects[0]?.folders?.[1]?.vcs;
+    expect(apply(null)).toBeNull();
+    expect(apply({ checkoutRoot: "/workspace/lib", repositoryIdentity: null })).toEqual({
+      checkoutRoot: "/workspace/lib",
+      repositoryIdentity: null,
+    });
+    expect(apply({ checkoutRoot: "/workspace/replacement" })).toEqual({
+      checkoutRoot: "/workspace/replacement",
+    });
+  });
+
+  it("keeps late health frames from relinking or unlinking the current project", () => {
+    for (const project of [
+      v2Project,
+      { ...linkedProject, workspaceFile: "/new.code-workspace", workspaceFileStatus: undefined },
+    ]) {
+      const snapshot = { ...v2ShellSnapshot, snapshotSequence: 3, projects: [project] };
+      const next = mergeShellSnapshotProjects(
+        snapshot,
+        { ...v2ShellSnapshot, projects: [linkedProject] },
+        {
+          resolvedRepositoryIdentityRoots: [],
+          enrichedProjectIds: [linkedProject.id],
+        },
+      );
+      expect(next.projects[0]).toBe(project);
+    }
+    const unlinked = applyShellStreamEvent(
+      { ...v2ShellSnapshot, projects: [linkedProject] },
+      { kind: "project.updated", sequence: 1, project: v2Project },
+    );
+    expect(unlinked.projects[0]?.folders).toBeUndefined();
+    expect(unlinked.projects[0]?.workspaceFileStatus).toBeUndefined();
+  });
+});
 
 describe("applyShellStreamEvent", () => {
   it("updates a thread in place without moving its siblings", () => {

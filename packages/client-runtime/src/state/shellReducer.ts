@@ -2,6 +2,8 @@ import type {
   OrchestrationProjectShell,
   OrchestrationV2ShellSnapshot,
   OrchestrationV2ShellStreamItem,
+  ProjectId,
+  ProjectWorkspaceFolder,
 } from "@t3tools/contracts";
 
 function upsertById<T extends { readonly id: unknown }>(
@@ -13,27 +15,96 @@ function upsertById<T extends { readonly id: unknown }>(
   return items.map((candidate, candidateIndex) => (candidateIndex === index ? item : candidate));
 }
 
-function retainRepositoryIdentity(
+function mergeFolderFacts(
+  previous: ProjectWorkspaceFolder | undefined,
+  next: ProjectWorkspaceFolder,
+  primary: boolean,
+): ProjectWorkspaceFolder {
+  const availability = next.availability ?? previous?.availability;
+  const vcs = next.vcs === undefined ? previous?.vcs : next.vcs;
+  const repositoryIdentity =
+    vcs != null && !primary
+      ? vcs.repositoryIdentity === undefined
+        ? vcs.checkoutRoot === previous?.vcs?.checkoutRoot
+          ? previous?.vcs?.repositoryIdentity
+          : undefined
+        : vcs.repositoryIdentity
+      : undefined;
+  const {
+    availability: _availability,
+    unavailableReason: _reason,
+    remoteDescription: _remote,
+    vcs: _vcs,
+    ...definition
+  } = next;
+  const unavailableReason =
+    availability === "unavailable"
+      ? (next.unavailableReason ?? previous?.unavailableReason)
+      : undefined;
+  const remoteDescription = next.remoteDescription ?? previous?.remoteDescription;
+  return {
+    ...definition,
+    ...(availability === undefined ? {} : { availability }),
+    ...(unavailableReason === undefined ? {} : { unavailableReason }),
+    ...(remoteDescription === undefined ? {} : { remoteDescription }),
+    ...(vcs === undefined
+      ? {}
+      : {
+          vcs:
+            vcs === null
+              ? null
+              : {
+                  checkoutRoot: vcs.checkoutRoot,
+                  ...(repositoryIdentity === undefined ? {} : { repositoryIdentity }),
+                },
+        }),
+  };
+}
+
+function folderKey(folder: ProjectWorkspaceFolder): string | undefined {
+  return folder.path === undefined ? folder.uri : folder.path;
+}
+
+function retainProjectEnrichment(
   previous: OrchestrationProjectShell | undefined,
   next: OrchestrationProjectShell,
 ): OrchestrationProjectShell {
+  let retained = next;
   if (
     next.repositoryIdentity == null &&
     previous?.repositoryIdentity != null &&
     previous.workspaceRoot === next.workspaceRoot
   ) {
-    return { ...next, repositoryIdentity: previous.repositoryIdentity };
+    retained = { ...next, repositoryIdentity: previous.repositoryIdentity };
   }
-  return next;
+  if (!next.workspaceFile || !previous?.workspaceFile) return retained;
+  const priorFolders = new Map(previous.folders?.map((folder) => [folderKey(folder), folder]));
+  return {
+    ...retained,
+    ...(next.folders === undefined
+      ? {}
+      : {
+          folders: next.folders.map((folder, index) =>
+            mergeFolderFacts(priorFolders.get(folderKey(folder)), folder, index === 0),
+          ),
+        }),
+    ...(previous.workspaceFile === next.workspaceFile &&
+    next.workspaceFileStatus === undefined &&
+    previous.workspaceFileStatus !== undefined
+      ? { workspaceFileStatus: previous.workspaceFileStatus }
+      : {}),
+  };
 }
 
 export interface MergeShellSnapshotOptions {
   /**
    * Metadata-only enrichment refresh: structure and sequence never change;
-   * listed roots accept identity exactly (including null).
+   * listed roots accept identity exactly (including null), and listed project
+   * ids accept current folder facts and workspace-file status.
    * Omit this options object for authoritative HTTP/initial WebSocket snapshots.
    */
   readonly resolvedRepositoryIdentityRoots: ReadonlyArray<string>;
+  readonly enrichedProjectIds?: ReadonlyArray<ProjectId>;
 }
 
 /**
@@ -43,7 +114,7 @@ export interface MergeShellSnapshotOptions {
  * lower than cache, while retaining a prior non-null identity when the candidate
  * is still unresolved/null for the same root.
  *
- * Enrichment snapshots (options present) only patch repository identity for
+ * Enrichment snapshots (options present) only patch project display facts for
  * matching current projects. They never replace projects, threads, archives,
  * or sequence, regardless of the incoming snapshot sequence.
  */
@@ -58,6 +129,7 @@ export function mergeShellSnapshotProjects(
 
   const isEnrichment = options !== undefined;
   const resolvedRootSet = isEnrichment ? new Set(options.resolvedRepositoryIdentityRoots) : null;
+  const enrichedIdSet = new Set(options?.enrichedProjectIds);
 
   if (isEnrichment) {
     const nextById = new Map(next.projects.map((project) => [project.id, project] as const));
@@ -65,16 +137,55 @@ export function mergeShellSnapshotProjects(
       ...previous,
       projects: previous.projects.map((project) => {
         const candidate = nextById.get(project.id);
-        if (candidate === undefined || candidate.workspaceRoot !== project.workspaceRoot) {
+        if (candidate === undefined) {
           return project;
         }
-        if (resolvedRootSet?.has(project.workspaceRoot) === true) {
-          return { ...project, repositoryIdentity: candidate.repositoryIdentity };
+        let enriched = project;
+        if (candidate.workspaceRoot === project.workspaceRoot) {
+          if (
+            resolvedRootSet?.has(project.workspaceRoot) === true ||
+            (project.repositoryIdentity == null && candidate.repositoryIdentity != null)
+          ) {
+            enriched = { ...enriched, repositoryIdentity: candidate.repositoryIdentity };
+          }
         }
-        if (project.repositoryIdentity == null && candidate.repositoryIdentity != null) {
-          return { ...project, repositoryIdentity: candidate.repositoryIdentity };
+        if (
+          enrichedIdSet.has(project.id) &&
+          project.workspaceFile &&
+          project.workspaceFile === candidate.workspaceFile
+        ) {
+          const factsByPath = new Map(
+            candidate.folders?.map((folder) => [folderKey(folder), folder]),
+          );
+          enriched = {
+            ...enriched,
+            ...(project.folders === undefined
+              ? {}
+              : {
+                  folders: project.folders.map((folder, index) => {
+                    const facts = factsByPath.get(folderKey(folder));
+                    return facts === undefined
+                      ? folder
+                      : mergeFolderFacts(
+                          folder,
+                          {
+                            ...facts,
+                            ...folder,
+                            availability: facts.availability,
+                            unavailableReason: facts.unavailableReason,
+                            remoteDescription: facts.remoteDescription,
+                            vcs: facts.vcs,
+                          },
+                          index === 0,
+                        );
+                  }),
+                }),
+            ...(candidate.workspaceFileStatus === undefined
+              ? {}
+              : { workspaceFileStatus: candidate.workspaceFileStatus }),
+          };
         }
-        return project;
+        return enriched;
       }),
     };
   }
@@ -84,10 +195,7 @@ export function mergeShellSnapshotProjects(
     ...next,
     projects: next.projects.map((project) => {
       const prior = previousById.get(project.id);
-      if (resolvedRootSet?.has(project.workspaceRoot) === true) {
-        return project;
-      }
-      return retainRepositoryIdentity(prior, project);
+      return retainProjectEnrichment(prior, project);
     }),
   };
 }
@@ -104,12 +212,11 @@ export function applyShellStreamEvent(
 
   switch (event.kind) {
     case "project.updated": {
-      // Enrichment is async. A project mutation can land with null
-      // repositoryIdentity while an earlier snapshot already resolved it.
-      // Keep the prior identity for the same workspace root so multi-env
-      // grouping does not split until a full snapshot refresh arrives.
+      // Async display facts may be absent from a mutation. Keep identity for
+      // the same root, folder facts for the same path, and the linked file's
+      // status until enrichment supplies current values.
       const previous = snapshot.projects.find((project) => project.id === event.project.id);
-      const project = retainRepositoryIdentity(previous, event.project);
+      const project = retainProjectEnrichment(previous, event.project);
       return {
         ...snapshot,
         projects: upsertById(snapshot.projects, project),

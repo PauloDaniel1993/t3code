@@ -9,6 +9,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -29,12 +30,14 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { OrchestrationV2EventSinkLayerLive } from "../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { planThreadWorkspaceUpdate } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as OrchestrationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { subscribeOrchestrationV2Shell } from "../ws.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectService from "./ProjectService.ts";
@@ -236,6 +239,91 @@ const seedThread = Effect.fn("ProjectWorkspaceFileTest.seedThread")(function* (i
 const commandId = (name: string) => CommandId.make(`command:${name}`);
 
 it.layer(dependencies(true))("ProjectService workspace files", (it) => {
+  it.effect(
+    "delivers status-only failure and recovery and folder health to two shell clients",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ProjectService.make;
+          const fs = yield* FileSystem.FileSystem;
+          const dir = yield* workspace(["app", "lib"]);
+          const projectId = ProjectId.make("project:health-delivery");
+          const filePath = yield* dir.writeFile("health.code-workspace", ["app", "lib"]);
+          yield* service.importWorkspaceFile({
+            commandId: commandId("health-import"),
+            projectId,
+            workspaceFilePath: filePath,
+          });
+          const subscribe = subscribeOrchestrationV2Shell({ requestCompletionMarker: true }).pipe(
+            Effect.provideService(ProjectService.ProjectService, service),
+            Effect.provide(
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                getShellSnapshot: () =>
+                  Effect.succeed({
+                    schemaVersion: 1,
+                    snapshotSequence: 0,
+                    threads: [],
+                    archivedThreads: [],
+                  }),
+              }),
+            ),
+          );
+          const clients = yield* Effect.forEach([0, 1], () =>
+            Effect.gen(function* () {
+              const ready = yield* Deferred.make<void>();
+              const missing = yield* Deferred.make<void>();
+              const recovered = yield* Deferred.make<void>();
+              const unavailable = yield* Deferred.make<void>();
+              const available = yield* Deferred.make<void>();
+              const stream = yield* subscribe;
+              yield* stream.pipe(
+                Stream.runForEach((item) =>
+                  Effect.gen(function* () {
+                    if (item.kind === "synchronized") yield* Deferred.succeed(ready, undefined);
+                    if (item.kind !== "snapshot" || !item.enrichedProjectIds?.includes(projectId))
+                      return;
+                    const project = item.snapshot.projects.find((entry) => entry.id === projectId);
+                    if (project?.workspaceFileStatus?.state === "missing")
+                      yield* Deferred.succeed(missing, undefined);
+                    if (
+                      project?.workspaceFileStatus?.state === "ok" &&
+                      (yield* Deferred.isDone(missing))
+                    )
+                      yield* Deferred.succeed(recovered, undefined);
+                    if (project?.folders?.[1]?.availability === "unavailable")
+                      yield* Deferred.succeed(unavailable, undefined);
+                    if (
+                      project?.folders?.[1]?.availability === "available" &&
+                      (yield* Deferred.isDone(unavailable))
+                    )
+                      yield* Deferred.succeed(available, undefined);
+                  }),
+                ),
+                Effect.forkScoped,
+              );
+              return { ready, missing, recovered, unavailable, available };
+            }),
+          );
+          for (const client of clients) yield* Deferred.await(client.ready);
+          yield* fs.remove(filePath);
+          yield* service.refreshWorkspaceFile({ projectId, reason: "refresh" });
+          for (const client of clients) yield* Deferred.await(client.missing);
+          yield* dir.writeFile("health.code-workspace", ["app", "lib"]);
+          yield* service.refreshWorkspaceFile({ projectId, reason: "refresh" });
+          for (const client of clients) yield* Deferred.await(client.recovered);
+          yield* fs.remove(dir.at("lib"), { recursive: true });
+          yield* service.refreshWorkspaceFile({ projectId, reason: "refresh" });
+          for (const client of clients) yield* Deferred.await(client.unavailable);
+          yield* fs.makeDirectory(dir.at("lib"));
+          yield* service.refreshWorkspaceFile({ projectId, reason: "refresh" });
+          for (const client of clients) yield* Deferred.await(client.available);
+          assert.deepEqual(yield* metaUpdates(projectId), []);
+          const shell = Option.getOrThrow(yield* service.getShell(projectId));
+          assert.equal(shell.workspaceFileStatus?.state, "ok");
+          assert.equal(shell.folders?.[1]?.availability, "available");
+        }),
+      ).pipe(Effect.provideService(Clock.Clock, Clock.Clock.defaultValue())),
+  );
   it.effect("imports a workspace file as a project at its first folder, with folder facts", () =>
     Effect.gen(function* () {
       const service = yield* ProjectService.make;
@@ -263,6 +351,13 @@ it.layer(dependencies(true))("ProjectService workspace files", (it) => {
       assert.equal(project.folders?.[2]?.unavailableReason, "missing");
       // Folders outside git say so; the primary never repeats the project's identity.
       assert.deepEqual(project.folders?.[0]?.vcs, null);
+      const shell = Option.getOrThrow(yield* service.getShell(projectId));
+      assert.deepEqual(shell.folders, project.folders);
+      assert.deepEqual(shell.workspaceFileStatus, project.workspaceFileStatus);
+      assert.deepEqual(
+        (yield* service.listShells()).find((entry) => entry.id === projectId)?.folders,
+        project.folders,
+      );
 
       const titled = yield* service.importWorkspaceFile({
         commandId: commandId("import-titled"),
@@ -291,6 +386,10 @@ it.layer(dependencies(true))("ProjectService workspace files", (it) => {
         workspaceRoot: dir.at("app"),
       });
       assert.equal(plain.workspaceFile, undefined);
+      const plainShell = Option.getOrThrow(yield* service.getShell(plain.id));
+      assert.isFalse("folders" in plainShell);
+      assert.isFalse("workspaceFileStatus" in plainShell);
+      assert.isFalse("workspaceFile" in plainShell);
       assert.equal(linked.workspaceRoot, plain.workspaceRoot);
 
       // Folder lookups (desktop activation, the CLI) find the plain project.

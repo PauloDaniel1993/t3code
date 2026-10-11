@@ -1,5 +1,6 @@
 import type {
   ApplicationStoredEvent,
+  ProjectId,
   OrchestrationProjectShell,
   OrchestrationV2ArchivedShellStreamItem,
   OrchestrationV2ShellSnapshot,
@@ -90,6 +91,7 @@ export function dedupeShellEnrichment<E, R>(
       | {
           readonly projects: ReadonlyArray<OrchestrationProjectShell>;
           readonly roots: ReadonlySet<string>;
+          readonly projectIds: ReadonlySet<ProjectId>;
         }
       | undefined;
     return stream.pipe(
@@ -101,7 +103,8 @@ export function dedupeShellEnrichment<E, R>(
           return true;
         }
         if (
-          item.resolvedRepositoryIdentityRoots === undefined ||
+          (item.resolvedRepositoryIdentityRoots === undefined &&
+            item.enrichedProjectIds === undefined) ||
           item.snapshot.threads.length > 0 ||
           item.snapshot.archivedThreads.length > 0
         ) {
@@ -109,15 +112,18 @@ export function dedupeShellEnrichment<E, R>(
           return true;
         }
         const roots = new Set(item.resolvedRepositoryIdentityRoots);
+        const projectIds = new Set(item.enrichedProjectIds);
         const prior = previous;
         if (
           prior !== undefined &&
           roots.size === prior.roots.size &&
           [...roots].every((root) => prior.roots.has(root)) &&
+          projectIds.size === prior.projectIds.size &&
+          [...projectIds].every((id) => prior.projectIds.has(id)) &&
           sameProjects(prior.projects, item.snapshot.projects)
         )
           return false;
-        previous = { projects: item.snapshot.projects, roots };
+        previous = { projects: item.snapshot.projects, roots, projectIds };
         return true;
       }),
     );
@@ -128,6 +134,7 @@ export function dedupeShellEnrichment<E, R>(
 export function shellStreamItemFromEnrichmentRefresh(input: {
   readonly snapshot: OrchestrationV2ShellSnapshot;
   readonly changes: ReadonlyArray<{ readonly workspaceRoot: string }>;
+  readonly enrichedProjectIds?: ReadonlyArray<ProjectId>;
 }): Extract<OrchestrationV2ShellStreamItem, { readonly kind: "snapshot" }> {
   const resolvedRepositoryIdentityRoots = [
     ...new Set(input.changes.map((change) => change.workspaceRoot)),
@@ -136,13 +143,18 @@ export function shellStreamItemFromEnrichmentRefresh(input: {
     kind: "snapshot",
     snapshot: {
       ...input.snapshot,
-      projects: input.snapshot.projects.filter((project) =>
-        resolvedRepositoryIdentityRoots.includes(project.workspaceRoot),
+      projects: input.snapshot.projects.filter(
+        (project) =>
+          resolvedRepositoryIdentityRoots.includes(project.workspaceRoot) ||
+          input.enrichedProjectIds?.includes(project.id),
       ),
       threads: [],
       archivedThreads: [],
     },
     resolvedRepositoryIdentityRoots,
+    ...(input.enrichedProjectIds?.length
+      ? { enrichedProjectIds: [...new Set(input.enrichedProjectIds)] }
+      : {}),
   };
 }
 
@@ -153,12 +165,13 @@ export function shellStreamItemFromEnrichmentRefresh(input: {
 export function shellStreamItemsFromInitialSnapshot(input: {
   readonly snapshot: OrchestrationV2ShellSnapshot;
   readonly resolvedRepositoryIdentityRoots: ReadonlyArray<string>;
+  readonly enrichedProjectIds?: ReadonlyArray<ProjectId>;
 }): ReadonlyArray<Extract<OrchestrationV2ShellStreamItem, { readonly kind: "snapshot" }>> {
   const authoritative = {
     kind: "snapshot" as const,
     snapshot: input.snapshot,
   };
-  if (input.resolvedRepositoryIdentityRoots.length === 0) {
+  if (input.resolvedRepositoryIdentityRoots.length === 0 && !input.enrichedProjectIds?.length) {
     return [authoritative];
   }
   return [
@@ -167,13 +180,18 @@ export function shellStreamItemsFromInitialSnapshot(input: {
       kind: "snapshot" as const,
       snapshot: {
         ...input.snapshot,
-        projects: input.snapshot.projects.filter((project) =>
-          input.resolvedRepositoryIdentityRoots.includes(project.workspaceRoot),
+        projects: input.snapshot.projects.filter(
+          (project) =>
+            input.resolvedRepositoryIdentityRoots.includes(project.workspaceRoot) ||
+            input.enrichedProjectIds?.includes(project.id),
         ),
         threads: [],
         archivedThreads: [],
       },
       resolvedRepositoryIdentityRoots: [...new Set(input.resolvedRepositoryIdentityRoots)],
+      ...(input.enrichedProjectIds?.length
+        ? { enrichedProjectIds: [...new Set(input.enrichedProjectIds)] }
+        : {}),
     },
   ];
 }
@@ -182,9 +200,11 @@ export function shellStreamItemsFromInitialSnapshot(input: {
 export function shellStreamItemsFromResumeSnapshot(input: {
   readonly snapshot: OrchestrationV2ShellSnapshot;
   readonly resolvedRepositoryIdentityRoots: ReadonlyArray<string>;
+  readonly enrichedProjectIds?: ReadonlyArray<ProjectId>;
 }): ReadonlyArray<Extract<OrchestrationV2ShellStreamItem, { readonly kind: "snapshot" }>> {
   return shellStreamItemsFromInitialSnapshot(input).filter(
-    (item) => item.resolvedRepositoryIdentityRoots !== undefined,
+    (item) =>
+      item.resolvedRepositoryIdentityRoots !== undefined || item.enrichedProjectIds !== undefined,
   );
 }
 

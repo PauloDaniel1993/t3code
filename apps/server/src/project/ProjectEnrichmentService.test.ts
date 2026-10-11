@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import type { RepositoryIdentity } from "@t3tools/contracts";
+import { ProjectId, type RepositoryIdentity } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -50,6 +50,63 @@ const makeLayer = (
   Layer.effect(ProjectEnrichment.ProjectEnrichmentService, ProjectEnrichment.make(options)).pipe(
     Layer.provide(Layer.merge(metadataLayer, folderResolver)),
   );
+
+it.effect("publishes changed file health and folder probes to every subscriber, once", () =>
+  Effect.gen(function* () {
+    const probe = yield* Ref.make<WorkspaceFolderResolver.WorkspaceFolderProbe>({
+      path: "/work/app",
+      availability: "available",
+      vcs: null,
+    });
+    const metadata = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: () => Effect.succeed(null),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      const clients = yield* Effect.all([service.subscribeChanges, service.subscribeChanges]);
+      const projectId = ProjectId.make("project:health");
+      const ok = { state: "ok" as const, diagnostics: [], liveDetection: true };
+      yield* service.setWorkspaceFileStatus(projectId, ok);
+      for (const client of clients) assert.deepEqual(yield* PubSub.take(client), { projectId });
+      yield* service.setWorkspaceFileStatus(projectId, { ...ok, diagnostics: [] });
+      yield* service.probeFolders(["/work/app"]);
+      for (const client of clients)
+        assert.deepEqual(yield* PubSub.take(client), { folderPath: "/work/app" });
+      yield* service.probeFolders(["/work/app"]);
+      yield* Ref.set(probe, {
+        path: "/work/app",
+        availability: "unavailable",
+        unavailableReason: "missing",
+      });
+      yield* service.probeFolders(["/work/app"]);
+      for (const client of clients)
+        assert.deepEqual(yield* PubSub.take(client), { folderPath: "/work/app" });
+      yield* service.setWorkspaceFileStatus(projectId, {
+        ...ok,
+        state: "missing",
+        diagnostics: [{ code: "file-not-found", message: "Missing workspace file" }],
+      });
+      for (const client of clients) assert.deepEqual(yield* PubSub.take(client), { projectId });
+      assert.equal((yield* service.getWorkspaceFileStatus(projectId))?.state, "missing");
+      yield* service.setWorkspaceFileStatus(projectId, ok);
+      for (const client of clients) assert.deepEqual(yield* PubSub.take(client), { projectId });
+      assert.equal((yield* service.getWorkspaceFileStatus(projectId))?.state, "ok");
+    }).pipe(
+      Effect.provide(
+        makeLayer(
+          metadata,
+          {},
+          folderResolverLayer(() => Ref.get(probe)),
+        ),
+      ),
+    );
+  }),
+);
 
 it.effect("preserves either enrichment field when the other resolver fails", () =>
   Effect.gen(function* () {
@@ -120,6 +177,7 @@ it.effect("publishes repository completion while favicon enrichment is still pen
       yield* service.request("/completed");
 
       const change = yield* PubSub.take(changes);
+      if (!("workspaceRoot" in change)) return assert.fail("Expected a repository completion");
       assert.equal(change.workspaceRoot, "/completed");
       assert.isTrue(change.repositoryIdentityResolved);
       assert.equal(change.enrichment.repositoryIdentity?.canonicalKey, "example.test/v1/completed");
@@ -258,6 +316,8 @@ it.effect(
 
         yield* service.request("/no-remote");
         const nullChange = yield* PubSub.take(changes);
+        if (!("workspaceRoot" in nullChange))
+          return assert.fail("Expected a repository completion");
         assert.equal(nullChange.workspaceRoot, "/no-remote");
         assert.isTrue(nullChange.repositoryIdentityResolved);
         assert.isNull(nullChange.enrichment.repositoryIdentity);
@@ -270,6 +330,8 @@ it.effect(
 
         yield* service.request("/fails");
         const failChange = yield* PubSub.take(changes);
+        if (!("workspaceRoot" in failChange))
+          return assert.fail("Expected a repository completion");
         assert.equal(failChange.workspaceRoot, "/fails");
         assert.isFalse(failChange.repositoryIdentityResolved);
         const failed = yield* service.peek("/fails");
@@ -399,9 +461,9 @@ it.effect("serves folder facts once probed, and probes missing ones in the backg
       // A probed git folder asks for its own identity; wait for that to land.
       const changes = yield* service.subscribeChanges;
       yield* service.getAvailableFolders(folders);
-      while ((yield* PubSub.take(changes)).workspaceRoot !== "/work/lib") {
-        // Other roots' notifications are not this test's.
-      }
+      let change = yield* PubSub.take(changes);
+      while (!("workspaceRoot" in change) || change.workspaceRoot !== "/work/lib")
+        change = yield* PubSub.take(changes);
       const served = yield* service.getAvailableFolders(folders);
       // The primary's identity is the project's own, so its folder omits it.
       assert.deepEqual(served[0], {
