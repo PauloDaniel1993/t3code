@@ -1503,7 +1503,7 @@ it.effect(
           worktreePath: alias,
           workspaceFolders: snapshot,
         },
-        probe: (cwd: string, options: { readonly vcs?: boolean }) =>
+        probe: (cwd: string, options: { readonly vcs: boolean }) =>
           resolver.probe(cwd === alias ? path.join(root, "apps", "web") : cwd, options),
       };
       const target = yield* withCoordinator(
