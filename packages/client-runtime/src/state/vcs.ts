@@ -28,7 +28,11 @@ import * as Persistence from "../platform/persistence.ts";
 import { request, subscribe, runStream, type EnvironmentRpcInput } from "../rpc/client.ts";
 import { consumeWorkspaceActionProgress, type RunWorkspaceActionInput } from "./workspaceVcs.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
-import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
+import {
+  scheduleWorkspaceVcsCommand,
+  vcsCommandConcurrency,
+  vcsCommandScheduler,
+} from "./vcsCommandScheduler.ts";
 import {
   invalidateCachedVcsRefs,
   vcsRefsCacheStateAtom,
@@ -299,15 +303,18 @@ export function createVcsEnvironmentAtoms<R, E>(
           JSON.stringify([target.environmentId, target.input.threadId]),
       },
       execute: (input: RunWorkspaceActionInput, registry, environmentId) => {
-        const { onProgress, ...rpcInput } = input;
-        return consumeWorkspaceActionProgress(
-          runStream(WS_METHODS.vcsRunWorkspaceAction, rpcInput),
-          input.actionId,
-          onProgress,
-        ).pipe(
-          Effect.ensuring(
-            invalidateCachedVcsRefs(registry, { environmentId, cwd: `thread:${input.threadId}` }),
+        const { onProgress, cwds, ...rpcInput } = input;
+        return scheduleWorkspaceVcsCommand(
+          registry,
+          environmentId,
+          cwds,
+          consumeWorkspaceActionProgress(
+            runStream(WS_METHODS.vcsRunWorkspaceAction, rpcInput),
+            input.actionId,
+            onProgress,
           ),
+        ).pipe(
+          Effect.ensuring(invalidateCachedVcsRefs(registry, { environmentId, cwd: cwds[0] ?? "" })),
         );
       },
     }),

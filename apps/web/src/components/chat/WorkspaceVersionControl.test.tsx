@@ -200,6 +200,48 @@ it("allows batches on Mixed branches in current-checkout threads", async () => {
   expect(button("Commit all").props.disabled).toBe(false);
   expect(text()).not.toContain("Batch actions paused");
 });
+it("runs the healthy members when another checkout disappears", async () => {
+  fixtures.statuses[1] = { status: null, error: true };
+  await render();
+  await act(() => button("Push all").props.onClick());
+  await act(async () => {
+    button("Continue").props.onClick();
+  });
+  expect(fixtures.run).toHaveBeenCalledWith({
+    environmentId,
+    input: expect.objectContaining({ members: ["/api"], cwds: ["/set/api"] }),
+  });
+  expect(text()).not.toContain("Loading branches");
+});
+it("keeps created PR links in the results until the user opens them", async () => {
+  fixtures.run.mockResolvedValue({
+    _tag: "Success",
+    value: {
+      results: [
+        {
+          repositoryRoot: "/api",
+          cwd: "/set/api",
+          label: "api",
+          outcome: {
+            _tag: "completed",
+            result: {
+              toast: { title: "Created PR" },
+              pr: { url: "https://example.com/pr/1" },
+            },
+          },
+        },
+      ],
+    },
+  });
+  await render();
+  await act(() => button("Create PRs (2)").props.onClick());
+  await act(async () => {
+    button("Continue").props.onClick();
+  });
+  expect(fixtures.openLink).not.toHaveBeenCalled();
+  await act(() => button("Open PR").props.onClick());
+  expect(fixtures.openLink).toHaveBeenCalledWith("https://example.com/pr/1");
+});
 it("keeps a checkout with a healthy sibling folder and uses the root when its first folder disappears", async () => {
   const missing = { ...project.folders[1]!, path: "/web/missing" };
   const healthy = { ...missing, path: "/web/healthy", name: "Healthy", label: "healthy" };

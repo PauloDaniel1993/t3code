@@ -211,6 +211,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   availableEditors={props.availableEditors}
                   keybindings={props.keybindings}
                   onShowChanges={props.onOpenFolderChanges}
+                  {...(props.draftId ? { draftId: props.draftId } : {})}
                   onOpenTerminalHere={props.onOpenTerminalHere}
                 />
               ) : null}

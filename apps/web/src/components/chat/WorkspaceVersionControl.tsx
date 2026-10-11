@@ -7,12 +7,11 @@ import type {
 import {
   workspaceGitCheckouts,
   isCheckoutDrifted,
-  isPathWithin,
-  isSamePath,
   type WorkspaceThread,
 } from "@t3tools/shared/workspaceFolders";
 import {
-  workspaceBranchState,
+  workspaceCheckoutStatusCwds,
+  workspaceActionState,
   workspaceActionOutcomeText,
 } from "@t3tools/client-runtime/state/vcs";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -28,6 +27,7 @@ import GitActionsControl from "../GitActionsControl";
 import { type WorkspaceFoldersProject, type WorkspaceFolderRow } from "../workspaceFolders.logic";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { workspaceChangedFiles } from "./workspaceVersionControl.logic";
+import type { DraftId } from "../../composerDraftStore";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
@@ -50,6 +50,7 @@ export function WorkspaceVersionControl(props: {
   rows: ReadonlyArray<WorkspaceFolderRow>;
   onShowChanges?: ((folder: WorkspaceFolderRow) => void) | undefined;
   draftBranchControl?: ReactNode;
+  draftId?: DraftId;
 }) {
   const { environmentId, threadId, rows } = props;
   const threadRef = useMemo(() => ({ environmentId, threadId }), [environmentId, threadId]);
@@ -63,30 +64,14 @@ export function WorkspaceVersionControl(props: {
     worktrees: undefined,
   };
   const checkouts = workspaceGitCheckouts(thread, props.project);
-  const available = checkouts.map((checkout) =>
-    rows.some(
-      (row) =>
-        row.isGit &&
-        (row.label === checkout.label ||
-          (typeof row.checkoutRoot === "string" &&
-            isSamePath(row.checkoutRoot, checkout.repositoryRoot))) &&
-        row.effectivePath !== null &&
-        isPathWithin(checkout.root, row.effectivePath),
-    ),
-  );
-  // The server falls back to the checkout root when its first frozen folder is gone.
-  const statusCwds = checkouts.map((checkout, index) =>
-    !available[index]
-      ? null
-      : rows.find((row) => row.label === checkout.label)?.effectivePath !== null
-        ? checkout.cwd
-        : checkout.root,
-  );
+  const statusCwds = workspaceCheckoutStatusCwds(checkouts, rows);
   const statuses = useWorkspaceStatuses(environmentId, statusCwds);
-  const branch = workspaceBranchState(
-    checkouts,
-    statuses.map((query) => query.status),
-  );
+  const {
+    eligible: available,
+    ready,
+    members,
+    branch,
+  } = workspaceActionState(checkouts, statusCwds, statuses);
   const [breakdown, setBreakdown] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
   const [branchOpen, setBranchOpen] = useState(false);
@@ -109,16 +94,13 @@ export function WorkspaceVersionControl(props: {
     cwd: branchOpen ? (checkouts[0]?.cwd ?? null) : null,
     query: branchQuery,
   });
-  const ready = statuses.every(
-    (query, index) => !available[index] || query.status?.isRepo === true,
-  );
   const actionDisabled =
     busy || props.thread === null || !ready || branch.drifted > 0 || !available.some(Boolean);
   const changed = workspaceChangedFiles(
     props.project,
     thread,
     rows,
-    statuses.map((query) => query.status),
+    statuses.map((query, index) => (available[index] ? query.status : null)),
   );
   const totals = changed.reduce(
     (sum, file) => ({
@@ -128,15 +110,21 @@ export function WorkspaceVersionControl(props: {
     { insertions: 0, deletions: 0 },
   );
   const changedRepos = new Set(changed.map((file) => file.checkout.repositoryRoot)).size;
+  const outsideChanges =
+    statuses.reduce(
+      (count, query, index) =>
+        count + (available[index] ? (query.status?.workingTree.files.length ?? 0) : 0),
+      0,
+    ) - changed.length;
   const stateMessage =
     props.thread === null
       ? "Start the thread to run workspace actions."
-      : statuses.some((query) => query.error)
-        ? "Repository status is unavailable. Refresh or reconnect to try again."
-        : !ready
-          ? "Waiting for repository status."
-          : branch.drifted > 0
-            ? "Batch actions paused. Switch drifted repositories back to their expected branches."
+      : !ready
+        ? "Waiting for repository status."
+        : branch.drifted > 0
+          ? "Batch actions paused. Switch drifted repositories back to their expected branches."
+          : available.some((value) => !value)
+            ? "Unavailable repositories are excluded from batch actions."
             : null;
   const run = async (action: VcsWorkspaceAction) => {
     if (actionDisabled) return;
@@ -152,9 +140,10 @@ export function WorkspaceVersionControl(props: {
           threadId,
           action,
           ...(action === "commit" ? { commitMessage: message.trim() } : {}),
-          members: checkouts
-            .filter((_, index) => available[index])
-            .map((checkout) => checkout.repositoryRoot),
+          members,
+          cwds: statusCwds.filter(
+            (cwd, index): cwd is string => available[index] === true && cwd !== null,
+          ),
           onProgress: (event) => {
             if (
               event.kind !== "phase_started" &&
@@ -181,13 +170,8 @@ export function WorkspaceVersionControl(props: {
       setResults(result.value.results);
       setPendingAction(null);
       setMessage("");
-      if (action === "create-prs")
-        for (const member of result.value.results) {
-          if (member.outcome._tag === "completed" && member.outcome.result.pr.url)
-            await openLink(member.outcome.result.pr.url);
-        }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not open the pull request.");
+      setError(cause instanceof Error ? cause.message : "Could not run the workspace action.");
     } finally {
       setBusy(false);
     }
@@ -219,7 +203,9 @@ export function WorkspaceVersionControl(props: {
         >
           <GitBranchIcon className="size-3.5" />
           <span className="min-w-0 flex-1 truncate text-left">
-            {ready ? branch.branch : "Loading branches…"} · {checkouts.length} repos
+            {checkouts.length === 0
+              ? "No Git repositories"
+              : `${ready ? (members.length > 0 ? branch.branch : "No available Git repositories") : "Loading branches…"} · ${checkouts.length} ${checkouts.length === 1 ? "repo" : "repos"}`}
           </span>
           <ChevronDownIcon className="size-3" />
         </ThreadDetailsControl>
@@ -230,13 +216,20 @@ export function WorkspaceVersionControl(props: {
       >
         <FileDiffIcon className="size-3.5" />
         <span className="flex-1 text-left">
-          {changed.length} files changed across {changedRepos} repos
+          {changed.length} files changed across {changedRepos}{" "}
+          {changedRepos === 1 ? "repo" : "repos"}
         </span>
         <span className="font-mono text-2xs">
           <span className="text-success">+{totals.insertions}</span>{" "}
           <span className="text-destructive">−{totals.deletions}</span>
         </span>
       </ThreadDetailsControl>
+      {outsideChanges > 0 ? (
+        <p className="px-2 py-1 text-2xs text-muted-foreground">
+          +{outsideChanges} changed {outsideChanges === 1 ? "file" : "files"} outside available
+          workspace folders. Commit all includes these files.
+        </p>
+      ) : null}
       {changesOpen ? (
         <div className="px-3 py-2 text-2xs">
           {changed.length === 0 ? (
@@ -260,34 +253,44 @@ export function WorkspaceVersionControl(props: {
           )}
         </div>
       ) : null}
-      <div className="flex flex-wrap gap-1 px-1 py-2">
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={
-            actionDisabled || !statuses.some((query) => query.status?.hasWorkingTreeChanges)
-          }
-          onClick={() => setPendingAction("commit")}
-        >
-          Commit all
-        </Button>
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={actionDisabled}
-          onClick={() => setPendingAction("push")}
-        >
-          Push all
-        </Button>
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={actionDisabled}
-          onClick={() => setPendingAction("create-prs")}
-        >
-          Create PRs ({available.filter(Boolean).length})
-        </Button>
-      </div>
+      {checkouts.length > 0 ? (
+        <div className="flex flex-wrap gap-1 px-1 py-2">
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={
+              actionDisabled || !statuses.some((query) => query.status?.hasWorkingTreeChanges)
+            }
+            onClick={() => setPendingAction("commit")}
+          >
+            Commit all
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={actionDisabled}
+            onClick={() => setPendingAction("push")}
+          >
+            Push all
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={actionDisabled}
+            onClick={() => setPendingAction("create-prs")}
+          >
+            Create PRs ({available.filter(Boolean).length})
+          </Button>
+        </div>
+      ) : rows[0]?.effectivePath ? (
+        <GitActionsControl
+          gitCwd={rows[0].effectivePath}
+          activeThreadRef={threadRef}
+          displayMode="panel"
+          compact
+          {...(props.draftId ? { draftId: props.draftId } : {})}
+        />
+      ) : null}
       {stateMessage ? (
         <p
           className={cn(
@@ -324,6 +327,19 @@ export function WorkspaceVersionControl(props: {
               }
             >
               {result.label}: {workspaceActionOutcomeText(result)}
+              {result.outcome._tag === "completed" && result.outcome.result.pr.url ? (
+                <Button
+                  variant="link"
+                  size="xs"
+                  onClick={() =>
+                    void openLink(
+                      result.outcome._tag === "completed" ? result.outcome.result.pr.url! : "",
+                    )
+                  }
+                >
+                  Open PR
+                </Button>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -338,7 +354,8 @@ export function WorkspaceVersionControl(props: {
       {breakdown
         ? checkouts.map((checkout, index) => {
             const status = statuses[index]?.status;
-            const drifted = status != null && isCheckoutDrifted(checkout, status.refName);
+            const drifted =
+              available[index] && status != null && isCheckoutDrifted(checkout, status.refName);
             const row = rows.find((row) => row.label === checkout.label);
             return (
               <div

@@ -1,11 +1,14 @@
 import type { OrchestrationProjectShell } from "@t3tools/contracts";
 import {
   isSamePath,
+  isPathWithin,
+  workspaceGitCheckouts,
   projectFolders,
   resolveThreadWorkspace,
   type WorkspaceThread,
 } from "@t3tools/shared/workspaceFolders";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
+import { workspaceCheckoutStatusCwds } from "@t3tools/client-runtime/state/vcs";
 
 export type WorkspaceFoldersProject = Pick<
   OrchestrationProjectShell,
@@ -25,17 +28,15 @@ export function workspaceFolderRows(
     ]),
   );
   const factsByLabel = new Map(project.folders?.map((folder) => [folder.label, folder]));
-  const workspace = resolveThreadWorkspace({
-    project,
-    thread: thread ?? {
-      worktreePath: null,
-      workspaceFolders: projectFolders(project).map((folder) => {
-        const vcs = factsByLabel.get(folder.label)?.vcs;
-        return { ...folder, checkoutRoot: vcs === null ? null : vcs?.checkoutRoot };
-      }),
-    },
-  });
-  return workspace.folders.map((resolved) => {
+  const snapshot = thread ?? {
+    worktreePath: null,
+    workspaceFolders: projectFolders(project).map((folder) => {
+      const vcs = factsByLabel.get(folder.label)?.vcs;
+      return { ...folder, checkoutRoot: vcs === null ? null : vcs?.checkoutRoot };
+    }),
+  };
+  const workspace = resolveThreadWorkspace({ project, thread: snapshot });
+  const rows = workspace.folders.map((resolved) => {
     const facts = factsByLocation.get(
       resolved.folder.path === undefined
         ? resolved.folder.uri
@@ -80,6 +81,23 @@ export function workspaceFolderRows(
       reason,
       path: resolved.effectivePath ?? resolved.folder.path ?? resolved.folder.uri ?? "",
     };
+  });
+  const checkouts = workspaceGitCheckouts(snapshot, project);
+  const cwds = workspaceCheckoutStatusCwds(checkouts, rows);
+  return rows.map((row) => {
+    const index = checkouts.findIndex(
+      (checkout) =>
+        row.effectivePath !== null &&
+        isPathWithin(checkout.root, row.effectivePath) &&
+        (row.label === checkout.label ||
+          (typeof row.checkoutRoot === "string" &&
+            isSamePath(row.checkoutRoot, checkout.repositoryRoot))),
+    );
+    const checkout = checkouts[index];
+    const member = thread?.worktrees?.find(
+      (member) => checkout && isSamePath(member.path, checkout.root),
+    );
+    return { ...row, branchCwd: member?.path ?? cwds[index] ?? null };
   });
 }
 

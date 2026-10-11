@@ -3,7 +3,122 @@ import type { VcsWorkspaceActionProgressEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
-import { consumeWorkspaceActionProgress, workspaceBranchState } from "./workspaceVcs.ts";
+import * as Latch from "effect/Latch";
+import * as Fiber from "effect/Fiber";
+import {
+  consumeWorkspaceActionProgress,
+  workspaceActionState,
+  workspaceBranchState,
+  workspaceCheckoutStatusCwds,
+} from "./workspaceVcs.ts";
+import { EnvironmentId, type VcsStatusResult } from "@t3tools/contracts";
+import { AtomRegistry } from "effect/unstable/reactivity";
+import {
+  scheduleWorkspaceVcsCommand,
+  vcsCommandScheduler,
+  vcsCommandConcurrency,
+} from "./vcsCommandScheduler.ts";
+import { scheduleAtomCommandEffect } from "./runtime.ts";
+
+describe("workspace action eligibility", () => {
+  const checkouts = ["/api", "/web"].map((root) => ({
+    root,
+    repositoryRoot: root,
+    cwd: `${root}/service`,
+    label: root.slice(1),
+    expectedBranch: "feature",
+  }));
+  const status = (isRepo: boolean, refName = "feature") => ({ isRepo, refName }) as VcsStatusResult;
+  it("waits for unknown status, then excludes missing or failed members without counting false drift", () => {
+    const healthy = { status: status(true), error: false };
+    expect(
+      workspaceActionState(
+        checkouts,
+        ["/api/service", "/web/service"],
+        [healthy, { status: null, error: false }],
+      ).ready,
+    ).toBe(false);
+    for (const missing of [
+      { status: status(false, "other"), error: false },
+      { status: null, error: true },
+    ]) {
+      expect(
+        workspaceActionState(checkouts, ["/api/service", "/web/service"], [healthy, missing]),
+      ).toMatchObject({
+        ready: true,
+        members: ["/api"],
+        eligible: [true, false],
+        branch: { drifted: 0 },
+      });
+    }
+  });
+  it("uses the root for a missing first folder, without adopting an independent nested repository", () => {
+    expect(
+      workspaceCheckoutStatusCwds(checkouts, [
+        { label: "api", checkoutRoot: "/api", effectivePath: null, isGit: false },
+        { label: "healthy", checkoutRoot: "/api", effectivePath: "/api/healthy", isGit: true },
+        { label: "nested", checkoutRoot: "/web/nested", effectivePath: "/web/nested", isGit: true },
+      ]),
+    ).toEqual(["/api", null]);
+  });
+});
+
+it.effect("serializes a batch with per-repository commands on every checkout lane", () =>
+  Effect.gen(function* () {
+    const registry = AtomRegistry.make();
+    const environmentId = EnvironmentId.make("remote");
+    const events: Array<string> = [];
+    const batchStarted = Latch.makeUnsafe();
+    const finishBatch = Latch.makeUnsafe();
+    try {
+      const batch = yield* Effect.forkChild(
+        scheduleWorkspaceVcsCommand(
+          registry,
+          environmentId,
+          ["/web", "/api", "/api"],
+          Effect.gen(function* () {
+            events.push("batch:start");
+            batchStarted.openUnsafe();
+            yield* finishBatch.await;
+            events.push("batch:end");
+          }),
+        ),
+      );
+      yield* batchStarted.await;
+      const singles = yield* Effect.forEach(["/api", "/web"], (cwd) =>
+        Effect.forkChild(
+          scheduleAtomCommandEffect(
+            registry,
+            vcsCommandScheduler,
+            vcsCommandConcurrency,
+            { environmentId, input: { cwd } },
+            Effect.sync(() => {
+              events.push(cwd);
+            }),
+          ),
+        ),
+      );
+      const overlapping = yield* Effect.forkChild(
+        scheduleWorkspaceVcsCommand(
+          registry,
+          environmentId,
+          ["/api", "/web"],
+          Effect.sync(() => {
+            events.push("overlapping");
+          }),
+        ),
+      );
+      expect(events).toEqual(["batch:start"]);
+      finishBatch.openUnsafe();
+      yield* Effect.forEach([batch, ...singles, overlapping], Fiber.join);
+      expect(events.slice(0, 2)).toEqual(["batch:start", "batch:end"]);
+      expect(events.slice(2)).toEqual(expect.arrayContaining(["/api", "/web", "overlapping"]));
+    } finally {
+      finishBatch.openUnsafe();
+      registry.dispose();
+    }
+  }),
+);
 
 describe("workspace branch presentation", () => {
   const status = (refName: string | null) => ({ isRepo: true, refName });
