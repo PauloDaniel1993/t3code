@@ -29,6 +29,9 @@ export function StarMapSurface(props: {
 function StarMapFolderSurface(props: Parameters<typeof StarMapSurface>[0]) {
   const [folderPath, setFolderPath] = useState<string | null>(null);
   const folder = selectedStarMapFolder(props.workspace, folderPath);
+  if (folderPath !== null && (folder?.folder.path ?? folder?.folder.uri) !== folderPath) {
+    setFolderPath(null);
+  }
   const cwd = folder ? folder.effectivePath : props.cwd;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -36,7 +39,13 @@ function StarMapFolderSurface(props: Parameters<typeof StarMapSurface>[0]) {
         <div className="flex shrink-0 items-center border-b border-border/60 px-2 py-1">
           <Menu>
             <MenuTrigger
-              render={<Button variant="ghost" size="xs" aria-label="Wayfinder workspace folder" />}
+              render={
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  aria-label={`Wayfinder folder: ${folder?.label ?? "Primary"}`}
+                />
+              }
             >
               {folder?.label}
             </MenuTrigger>

@@ -11,7 +11,11 @@ import { useNewThreadTaskAvailability } from "~/hooks/useNewThreadTaskAvailabili
 import { useRightPanelStore } from "~/rightPanelStore";
 
 import { openStarMapTicketAsTask } from "./StarMapTicketDetail.logic";
-import { starMapFileTarget, starMapTaskSourcePath } from "./StarMapSurface.logic";
+import {
+  starMapFileTarget,
+  starMapMarkdownContext,
+  starMapTaskSourcePath,
+} from "./StarMapSurface.logic";
 import type { StarMapGraph, StarMapGraphNode } from "./starMapGraph";
 
 export interface StarMapTicketDetailProps {
@@ -207,7 +211,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
             ) : null}
             <ChatMarkdown
               text={fileQuery.data.contents}
-              cwd={props.cwd}
+              {...starMapMarkdownContext(props.cwd, props.workspace)}
               threadRef={props.threadRef ?? undefined}
               className="px-4 py-3 text-sm"
             />

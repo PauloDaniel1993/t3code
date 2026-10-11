@@ -36,3 +36,8 @@ export function starMapTaskSourcePath(
       : reference.absolutePath!
     : path;
 }
+
+/** Link actions return to a Files panel rooted at the primary; documents resolve in the chosen folder. */
+export function starMapMarkdownContext(cwd: string, workspace: WorkspaceFileContext | undefined) {
+  return { cwd: workspace?.folders[0]?.effectivePath ?? cwd, imageBaseDir: cwd };
+}

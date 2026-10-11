@@ -1,12 +1,14 @@
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { workspaceFileContext } from "../files/workspaceFiles";
+import { resolveInlineCodeFileLinkMeta, resolveMarkdownFileLinkMeta } from "~/markdown-links";
+import { workspaceFileContext, workspaceFileOpenReference } from "../files/workspaceFiles";
 import { buildStartTicketsAsTasksPrompt } from "./StarMapPanel.logic";
 import { buildStarMapTicketTaskDraft } from "./StarMapTicketDetail.logic";
 import {
   selectedStarMapFolder,
   starMapFileTarget,
+  starMapMarkdownContext,
   starMapTaskSourcePath,
 } from "./StarMapSurface.logic";
 
@@ -88,6 +90,29 @@ describe("Wayfinder folder selection and sources", () => {
       folderPath: "/source/ui",
     });
     expect(starMapFileTarget(ticketPath, "/outside", workspace)).toBeNull();
+  });
+
+  it("opens secondary ticket body links in their owning folder through the primary Files panel", () => {
+    const markdown = starMapMarkdownContext("/session/ui", workspace);
+    for (const resolve of [resolveMarkdownFileLinkMeta, resolveInlineCodeFileLinkMeta]) {
+      const link = resolve("src/index.ts:12", markdown.cwd, markdown.imageBaseDir)!;
+      expect(link.line).toBe(12);
+      expect(
+        workspaceFileOpenReference(
+          workspace,
+          link.workspaceRelativePath ?? link.filePath,
+          markdown.cwd,
+        ),
+      ).toMatchObject({
+        canonicalPath: "ui/src/index.ts",
+        folderPath: "/source/ui",
+        absolutePath: "/session/ui/src/index.ts",
+      });
+    }
+    expect(starMapMarkdownContext("/plain", undefined)).toEqual({
+      cwd: "/plain",
+      imageBaseDir: "/plain",
+    });
   });
 
   it("addresses both bulk and single-ticket tasks in the secondary mapped folder", () => {
