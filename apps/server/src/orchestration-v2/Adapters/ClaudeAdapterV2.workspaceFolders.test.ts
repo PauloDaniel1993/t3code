@@ -138,7 +138,7 @@ describe("Claude workspace folders", () => {
     if (runtimePolicy.interactionMode === "plan") {
       assert.equal(options.permissionMode, "plan");
     } else {
-      assert.deepEqual(options.tools, ClaudeAdapterV2.CLAUDE_READ_ONLY_ALLOWED_TOOLS);
+      assert.deepEqual(options.tools, [...ClaudeAdapterV2.CLAUDE_READ_ONLY_ALLOWED_TOOLS]);
     }
   });
 
