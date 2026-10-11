@@ -58,8 +58,6 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
           yield* fs.makeDirectory(primary);
           yield* fs.makeDirectory(extra);
           const file = path.join(extra, "access.txt");
-          const initial = `OPENCODE_EXTRA_${yield* randomUuidV4}`;
-          yield* fs.writeFileString(file, initial);
           const model = process.env.T3_OPENCODE_LIVE_MODEL;
           assert.isDefined(model, "Set T3_OPENCODE_LIVE_MODEL to a credentialed provider/model.");
           const modelSelection = {
@@ -126,9 +124,14 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
             providerThread: OrchestrationV2ProviderThread,
             suffix: string,
           ) {
+            const initial = `OPENCODE_EXTRA_${yield* randomUuidV4}`;
+            yield* fs.writeFileString(file, initial);
             ordinal += 1;
             const terminal = yield* session.events.pipe(
-              Stream.filter((event) => event.type === "turn.terminal"),
+              Stream.filter(
+                (event) =>
+                  event.type === "turn.terminal" || event.type === "runtime_request.updated",
+              ),
               Stream.take(1),
               Stream.runCollect,
               Effect.forkScoped,
@@ -154,7 +157,14 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
               runtimePolicy,
             });
             const events = yield* Fiber.join(terminal);
-            assert.equal(events[0]?.status, "completed");
+            const event = events[0];
+            assert.equal(
+              event?.type,
+              "turn.terminal",
+              "Native tool access requested approval instead of using the installed folder grant.",
+            );
+            if (event?.type === "turn.terminal") assert.equal(event.status, "completed");
+            assert.equal(yield* fs.readFileString(file), `${initial}${suffix}`);
           });
           const openSession = (scope: Scope.Scope, stage: string) =>
             adapter
@@ -173,7 +183,6 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
             runtimePolicy,
           });
           yield* run(first, source, "_START");
-          assert.equal(yield* fs.readFileString(file), `${initial}_START`);
           yield* Scope.close(firstScope, Exit.void);
           const resumed = yield* adapter.openSession({
             threadId: sourceId,
@@ -186,21 +195,22 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
             runtimePolicy,
           });
           yield* run(resumed, resumedThread, "_RESUME");
-          assert.equal(yield* fs.readFileString(file), `${initial}_START_RESUME`);
           const forked = yield* resumed.forkThread({
             sourceProviderThread: resumedThread,
             targetThreadId: targetId,
             runtimePolicy,
           });
           yield* run(resumed, forked, "_FORK");
-          assert.equal(yield* fs.readFileString(file), `${initial}_START_RESUME_FORK`);
         }).pipe(
           Effect.scoped,
-          Effect.provide(IdAllocator.layer),
           Effect.provide(
-            OpenCodeRuntime.OpenCodeRuntimeLive.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              OpenCodeRuntime.OpenCodeRuntimeLive.pipe(
+                Layer.provide(OpenCodeServerLedger.layerTest),
+              ),
+            ).pipe(Layer.provideMerge(NodeServices.layer)),
           ),
-          Effect.provide(NodeServices.layer),
         ),
       { timeout: 300_000 },
     );
