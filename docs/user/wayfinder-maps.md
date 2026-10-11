@@ -15,6 +15,9 @@ surfaces, choose **Map** from its empty state instead.
 
 The Map surface is available in the web and desktop apps. It is not available in the mobile app.
 
+In a multi-root project, the surface starts with the primary folder's maps. Use the folder menu
+in its header to read another folder's maps.
+
 ## Move Between Maps, Tickets, and Blockers
 
 The surface has three levels:

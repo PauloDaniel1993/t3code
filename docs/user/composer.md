@@ -121,6 +121,11 @@ rewinds the conversation only, and so does a turn whose files weren't checkpoint
 for example in a folder outside git. The selected prompt and its attachments return to the composer for editing and
 resending. Any unsent draft stays above the restored prompt.
 
+In a thread with several workspace folders, file restore covers every Git repository or none,
+and the dialog names the folders it leaves as they are, such as folders outside Git. If files
+can't be restored after the conversation has rewound, the conversation stays rewound and the
+message names the folders that were and weren't restored.
+
 This removes the selected message and later conversation from the active thread
 and provider history. It does not undo external actions or separate provider
 memory. The action is available only when the provider supports rewind.
@@ -222,6 +227,11 @@ Images keep their thumbnail shelf above the text and also get a chip at your cur
 say exactly which image you mean. Deleting an image chip leaves the image on the shelf; removing
 the thumbnail asks first when the image is still mentioned in your text, then removes both. Files
 exist only as chips: deleting a file's last chip removes the file from the message.
+
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), file search and the
+`@` menu show each file with its folder, like `api/src/index.ts`. On web and desktop, choose a
+folder in the menu's header to search only that folder. A file from a folder other than the
+primary is inserted with its full path, so the agent can reach it.
 
 Copy text that holds chips and paste it into another draft, in the same thread or another one,
 and the chips come along with what they point to. Images and files are fetched again from the

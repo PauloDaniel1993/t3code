@@ -86,7 +86,9 @@ t3 app
 ```
 
 This opens a new thread for the current directory, adding the project if needed.
-Pass a path, such as `t3 app ../my-project`, to open another directory. It requires
+Pass a path, such as `t3 app ../my-project`, to open another directory, or a VS Code
+`.code-workspace` file to open it as a
+[multi-root project](./project-settings.md#vs-code-workspace-files). It requires
 the desktop app, so a standalone server or an SSH session is not enough. If the
 command cannot reach the app, start or update the desktop app and try again.
 

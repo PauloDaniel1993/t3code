@@ -13,7 +13,6 @@ import {
   type WorkspaceFileDiagnostic,
   type WorkspaceFileStatus,
   type WorkspaceFolderEntry,
-  WorkspaceFileProjectsDisabledError,
   WorkspaceFileUnavailableError,
   WorkspacePrimaryFolderUnavailableError,
 } from "@t3tools/contracts";
@@ -28,7 +27,6 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import * as ServerConfig from "../config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
 import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
@@ -188,8 +186,7 @@ export type ProjectServiceError =
   | ProjectInvalidRequestError
   | ProjectNotEmptyError
   | ProjectOperationError
-  | WorkspaceFileUnavailableError
-  | WorkspaceFileProjectsDisabledError;
+  | WorkspaceFileUnavailableError;
 
 export class ProjectService extends Context.Service<
   ProjectService,
@@ -285,7 +282,6 @@ export const make = Effect.gen(function* () {
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const workspaceFiles = yield* WorkspaceFiles.WorkspaceFiles;
-  const config = yield* ServerConfig.ServerConfig;
   const path = yield* Path.Path;
   // Commands for one project run in order. A command also holds every root and
   // workspace file it claims or releases, roots before files, so two projects
@@ -610,11 +606,6 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  const requireWorkspaceFileProjects =
-    config.workspaceFileProjects === true
-      ? Effect.void
-      : Effect.fail(new WorkspaceFileProjectsDisabledError());
-
   /** Read a workspace file and probe its folders; its first folder must be usable. */
   const readUsableWorkspaceFile = Effect.fn("ProjectService.readUsableWorkspaceFile")(function* (
     projectId: ProjectId,
@@ -818,7 +809,6 @@ export const make = Effect.gen(function* () {
   const refreshWorkspaceFile: ProjectService["Service"]["refreshWorkspaceFile"] = Effect.fn(
     "ProjectService.refreshWorkspaceFile",
   )(function* (input) {
-    yield* requireWorkspaceFileProjects;
     yield* workspaceFileSyncLocks.withLock(
       input.projectId,
       syncWorkspaceFile(input.projectId, input.reason),
@@ -828,7 +818,6 @@ export const make = Effect.gen(function* () {
 
   const watchWorkspaceFiles: ProjectService["Service"]["watchWorkspaceFiles"] = Effect.gen(
     function* () {
-      if (config.workspaceFileProjects !== true) return;
       const rows = yield* projects
         .list()
         .pipe(
@@ -854,7 +843,6 @@ export const make = Effect.gen(function* () {
   const importWorkspaceFile: ProjectService["Service"]["importWorkspaceFile"] = Effect.fn(
     "ProjectService.importWorkspaceFile",
   )(function* (input) {
-    yield* requireWorkspaceFileProjects;
     const definition = yield* readUsableWorkspaceFile(input.projectId, input.workspaceFilePath);
     yield* commit({
       type: "project.create",
@@ -880,7 +868,6 @@ export const make = Effect.gen(function* () {
   const linkWorkspaceFile: ProjectService["Service"]["linkWorkspaceFile"] = Effect.fn(
     "ProjectService.linkWorkspaceFile",
   )(function* (input) {
-    yield* requireWorkspaceFileProjects;
     return yield* workspaceFileSyncLocks.withLock(
       input.projectId,
       Effect.gen(function* () {
@@ -958,8 +945,8 @@ export const make = Effect.gen(function* () {
   const unlinkWorkspaceFile: ProjectService["Service"]["unlinkWorkspaceFile"] = Effect.fn(
     "ProjectService.unlinkWorkspaceFile",
   )(function* (input) {
-    // Unlinking is the way back to a plain project, so it works with the
-    // feature off and with the file gone. It never touches the disk.
+    // Unlinking is the way back to a plain project, so it works with the file
+    // gone. It never touches the disk.
     return yield* workspaceFileSyncLocks.withLock(
       input.projectId,
       Effect.gen(function* () {
@@ -1015,11 +1002,9 @@ export const make = Effect.gen(function* () {
     return yield* workspaceFileSyncLocks.withLock(
       projectId,
       Effect.gen(function* () {
-        if (config.workspaceFileProjects === true) {
-          const diagnostic = yield* syncWorkspaceFile(projectId, "bind");
-          if (diagnostic !== undefined) {
-            return yield* new WorkspaceFileUnavailableError({ projectId, diagnostic });
-          }
+        const diagnostic = yield* syncWorkspaceFile(projectId, "bind");
+        if (diagnostic !== undefined) {
+          return yield* new WorkspaceFileUnavailableError({ projectId, diagnostic });
         }
         const current = yield* readRow(projectId);
         if (Option.isNone(current)) return yield* new ProjectNotFoundError({ projectId });

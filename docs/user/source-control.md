@@ -107,6 +107,28 @@ messages, review titles, and descriptions from your changes.
 Choose the writing style and model in **Settings → Source Control**. **Repository conventions**
 uses the project's instructions and recent commit subjects.
 
+## Threads across several repositories
+
+When a thread's folders span more than one Git repository, thread details show one **Version
+Control** section for all of them; on mobile it's the Version Control sheet.
+
+- The branch row shows the shared branch and how many repositories it covers. In a thread with
+  worktrees, its menu switches every repository to another branch, which must exist in each. A
+  thread on the current checkout whose repositories are on different branches shows **Mixed
+  branches**.
+- **Commit all** commits every repository with one message, **Push all** pushes each one on its own
+  branch, and **Create PRs** creates a pull request wherever none is open yet. Each repository runs
+  on its own, so one failure doesn't stop the others. The results list each repository, with a
+  link to its pull request.
+- **Per-repo breakdown** shows each repository's branch and changes, with its own commit, push, and
+  pull request actions.
+- In a thread with worktrees, a repository that leaves its expected branch is marked drifted, in
+  the sidebar too. Batch actions wait until you choose **Switch back to** its branch or switch the
+  shared branch.
+- Folders outside Git and unavailable folders are listed but left out of these actions.
+
+Checking out a pull request into a new thread applies only to the primary repository.
+
 ## Review and merge
 
 Open **Pull requests** to review changes and comments, request reviewers, check out a branch,

@@ -124,3 +124,9 @@ for those actions.
   keeping the registry-declared arguments and environment.
 - **Authentication method** picks a specific method when the agent advertises more than one.
 - **Custom models** adds model IDs the agent does not report.
+
+## Multi-root projects
+
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), a registry agent can't
+yet run a thread that reaches folders outside its primary folder. Choose Codex or Claude for those
+threads. Other threads are unaffected.

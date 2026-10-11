@@ -105,3 +105,8 @@ In an existing Codex thread, send `/feedback` with an optional description, for
 example `/feedback The agent stopped before finishing the tests`. This uploads
 the conversation and Codex logs to OpenAI. The returned thread ID can be shared
 with OpenAI support.
+
+## Multi-root projects
+
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), Codex works in the primary folder and can
+also read and edit the project's other available folders, within the thread's access mode.

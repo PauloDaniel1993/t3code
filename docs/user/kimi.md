@@ -20,3 +20,9 @@ T3 disables Kimi's automatic updates while managing its processes. npm and WinGe
 ```powershell
 irm https://code.kimi.com/kimi-code/install.ps1 | iex
 ```
+
+## Multi-root projects
+
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), Kimi can't yet run a
+thread that reaches folders outside its primary folder. Choose Codex or Claude for those threads.
+Other threads are unaffected.

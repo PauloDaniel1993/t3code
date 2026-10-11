@@ -64,3 +64,9 @@ restart before T3 Code can see configuration changes.
 
 Existing threads keep their selected model and options even when it disappears
 from the catalog. If OpenCode rejects that model, select an available one and retry.
+
+## Multi-root projects
+
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), OpenCode can't yet run a
+thread that reaches folders outside its primary folder, and OpenCode 2 doesn't support such
+threads. Choose Codex or Claude for those threads. Other threads are unaffected.

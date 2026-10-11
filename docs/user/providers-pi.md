@@ -65,3 +65,9 @@ threads.
 - If a project skill is missing from the `$` menu, approve the project in Pi and refresh the provider.
 - The context meter appears once Pi reports usage for the thread. Some model providers only
   report usage when a response completes, so the meter can wait for the first reply.
+
+## Multi-root projects
+
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), Pi can't yet run a
+thread that reaches folders outside its primary folder. Choose Codex or Claude for those threads.
+Other threads are unaffected.

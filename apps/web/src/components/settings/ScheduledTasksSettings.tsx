@@ -127,7 +127,7 @@ function Field({
   children,
 }: {
   label: string;
-  hint?: string;
+  hint?: string | undefined;
   htmlFor?: string;
   children: ReactNode;
 }) {
@@ -772,7 +772,15 @@ function ScheduledTaskEditorDialog({
             </div>
 
             {draft.workspaceMode === "worktree" ? (
-              <Field label="Base branch" htmlFor="scheduled-task-base-ref">
+              <Field
+                label="Base branch"
+                hint={
+                  (selectedProject?.folders?.length ?? 0) > 1
+                    ? "Applies to the primary repository"
+                    : undefined
+                }
+                htmlFor="scheduled-task-base-ref"
+              >
                 <WorktreeBaseBranchPicker
                   key={`${environmentId}:${selectedProjectId}`}
                   id="scheduled-task-base-ref"

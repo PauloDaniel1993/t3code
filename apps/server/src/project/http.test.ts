@@ -2,7 +2,6 @@ import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
   EnvironmentRequestInvalidError,
-  WorkspaceFileProjectsDisabledError,
   WorkspaceFileUnavailableError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -37,7 +36,6 @@ it.effect.each([
     projectId,
     diagnostic: { code: "file-not-found", message: "Workspace file not found." },
   }),
-  new WorkspaceFileProjectsDisabledError(),
 ])("maps expected project mutation failures to invalid requests", (cause) =>
   Effect.gen(function* () {
     const error = yield* failProjectMutation(cause).pipe(Effect.flip);

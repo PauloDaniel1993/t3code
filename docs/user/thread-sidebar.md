@@ -41,6 +41,35 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Threads in multi-root projects
+
+In a project linked to a [VS Code workspace file](./project-settings.md#vs-code-workspace-files),
+a thread with two or more folders shows a folder chip in the sidebar on every client. Open it to
+see the thread's folders, grouped into Git repositories and other folders, with the reason any
+folder is unavailable. The **Workspace** section of thread details lists the same folders. Each
+folder's menu can copy its path, show its changes, or open a terminal there, and on web and
+desktop open it in an editor. Diffs and file lists name each file with its folder, like
+`api/src/index.ts`.
+
+**New worktree** creates one worktree for each Git checkout among the thread's folders, together
+in one directory; folders inside the same checkout share its worktree. Either all of them are
+created or none is. The primary folder must be in a Git repository. The base branch you choose
+applies to the primary repository; the others start from their current branch. When two folders
+are separate checkouts of the same repository, the second one's branch gets the folder's name as a
+suffix. Folders outside Git are shared rather than copied, and their changes aren't checkpointed.
+On mobile, **Create worktree** in **Branches & worktrees** adds the worktrees to an existing
+thread.
+
+**New thread in this worktree** and the previous worktree reuse all of a thread's worktrees.
+Picking one worktree from the branch picker isolates only the primary folder. Deleting the last
+thread that uses a set of worktrees offers to remove all of them together.
+
+**Open in** and the favorite-editor shortcut open a thread with worktrees in VS Code, Cursor, and
+other VS Code-based editors as a generated workspace file that lists its folders in their
+worktrees. A thread on the current checkout opens the project's own workspace file, and other
+editors open the primary folder. On mobile, **Open in editor on server** does the same on the
+environment's machine.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
