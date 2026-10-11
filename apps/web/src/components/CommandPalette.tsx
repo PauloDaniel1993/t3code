@@ -131,7 +131,6 @@ import {
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
 import { onOpenCommandPalette } from "../commandPaletteBus";
-import { useImportWorkspaceFile, workspaceFileErrorMessage } from "../hooks/useImportWorkspaceFile";
 import { WorkspaceFileImportDialog } from "./WorkspaceFileImportDialog";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -708,9 +707,10 @@ function OpenCommandPaletteDialog(props: {
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
-  const importWorkspaceFile = useImportWorkspaceFile();
-  const [workspaceFileImportEnvironmentId, setWorkspaceFileImportEnvironmentId] =
-    useState<EnvironmentId | null>(null);
+  const [workspaceFileImport, setWorkspaceFileImport] = useState<{
+    environmentId: EnvironmentId;
+    initialPath?: string;
+  } | null>(null);
   const { scratchEnvironmentId, scratchWorkspaceRootFor, startScratchThread } = useScratchProject();
   const lookupRepository = useAtomQueryRunner(sourceControlEnvironment.repository, {
     reportFailure: false,
@@ -1185,7 +1185,11 @@ function OpenCommandPaletteDialog(props: {
             pinnedDirectoryName: pinnedCloneDirectoryName,
             caseSensitive: !isWindowsPlatform(browseEnvironmentPlatform),
           })
-        : filterFilesystemBrowseEntries(browseEntries, browsePath.filterQuery),
+        : filterFilesystemBrowseEntries(
+            browseEntries,
+            browsePath.filterQuery,
+            !isWindowsPlatform(browseEnvironmentPlatform),
+          ),
     [browseEntries, browseEnvironmentPlatform, browsePath.filterQuery, pinnedCloneDirectoryName],
   );
 
@@ -1638,7 +1642,7 @@ function OpenCommandPaletteDialog(props: {
           icon: <FileSearchIcon className={ITEM_ICON_CLASS} />,
           keepOpen: true,
           run: async () => {
-            setWorkspaceFileImportEnvironmentId(environmentId);
+            setWorkspaceFileImport({ environmentId });
           },
         });
       }
@@ -2497,44 +2501,33 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
 
-      let projectId = newProjectId();
       if (fileMode) {
-        try {
-          projectId = await importWorkspaceFile(input.environmentId, cwd);
-        } catch (error) {
+        setWorkspaceFileImport({ environmentId: input.environmentId, initialPath: cwd });
+        return;
+      }
+      const projectId = newProjectId();
+      const createResult = await createProject({
+        environmentId: input.environmentId,
+        input: {
+          projectId,
+          title: inferProjectTitleFromPath(cwd),
+          workspaceRoot: cwd,
+          createWorkspaceRootIfMissing: true,
+          defaultModelSelection: null,
+        },
+      });
+      if (createResult._tag === "Failure") {
+        if (!isAtomCommandInterrupted(createResult)) {
+          const error = squashAtomCommandFailure(createResult);
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Failed to import workspace file",
-              description: workspaceFileErrorMessage(error),
+              title: "Failed to add project",
+              description: error instanceof Error ? error.message : "An error occurred.",
             }),
           );
-          return;
         }
-      } else {
-        const createResult = await createProject({
-          environmentId: input.environmentId,
-          input: {
-            projectId,
-            title: inferProjectTitleFromPath(cwd),
-            workspaceRoot: cwd,
-            createWorkspaceRootIfMissing: true,
-            defaultModelSelection: null,
-          },
-        });
-        if (createResult._tag === "Failure") {
-          if (!isAtomCommandInterrupted(createResult)) {
-            const error = squashAtomCommandFailure(createResult);
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Failed to add project",
-                description: error instanceof Error ? error.message : "An error occurred.",
-              }),
-            );
-          }
-          return;
-        }
+        return;
       }
 
       const navigationResult = await settlePromise(() =>
@@ -2556,7 +2549,6 @@ function OpenCommandPaletteDialog(props: {
     [
       handleNewThread,
       createProject,
-      importWorkspaceFile,
       environments,
       navigate,
       primaryEnvironmentId,
@@ -3566,11 +3558,11 @@ function OpenCommandPaletteDialog(props: {
                   ? { emptyStateMessage: "Searching thread messages…" }
                   : {})}
       />
-      {workspaceFileImportEnvironmentId ? (
+      {workspaceFileImport ? (
         <WorkspaceFileImportDialog
-          environmentId={workspaceFileImportEnvironmentId}
+          {...workspaceFileImport}
           onOpenChange={(open) => {
-            if (!open) setWorkspaceFileImportEnvironmentId(null);
+            if (!open) setWorkspaceFileImport(null);
           }}
           onImported={async (ref) => {
             await handleNewThread(ref);

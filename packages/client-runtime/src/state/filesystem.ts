@@ -32,6 +32,7 @@ export function getFilesystemBrowsePath(query: string, platform = "", enabled = 
 export function filterFilesystemBrowseEntries(
   entries: ReadonlyArray<FilesystemBrowseEntry>,
   query: string,
+  caseSensitive = true,
 ) {
   const lowerQuery = query.toLowerCase();
   const showHidden = query.startsWith(".");
@@ -41,7 +42,11 @@ export function filterFilesystemBrowseEntries(
       (showHidden || !entry.name.startsWith(".")),
   );
   const exactEntry =
-    query.length > 0 ? (visibleEntries.find((entry) => entry.name === query) ?? null) : null;
+    query.length > 0
+      ? (visibleEntries.find((entry) =>
+          caseSensitive ? entry.name === query : entry.name.toLowerCase() === lowerQuery,
+        ) ?? null)
+      : null;
 
   return { visibleEntries, exactEntry };
 }

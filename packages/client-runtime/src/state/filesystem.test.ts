@@ -6,8 +6,23 @@ import {
   filterFilesystemBrowseEntries,
   getFilesystemBrowsePath,
 } from "./filesystem.ts";
+import { resolveAddProjectKind } from "../operations/projects.ts";
 
 describe("filesystem browse model", () => {
+  it("keeps server directory kinds authoritative with Windows name casing", () => {
+    const directory = {
+      name: "team.code-workspace",
+      fullPath: "C:/Work/team.code-workspace",
+      kind: "directory" as const,
+    };
+    const query = "TEAM.CODE-WORKSPACE";
+    const windows = filterFilesystemBrowseEntries([directory], query, false);
+    expect(windows.exactEntry).toBe(directory);
+    expect(resolveAddProjectKind("C:/Work/TEAM.CODE-WORKSPACE", windows.exactEntry)).toBe(
+      "directory",
+    );
+    expect(filterFilesystemBrowseEntries([directory], query, true).exactEntry).toBeNull();
+  });
   it("derives the browse target and navigation state", () => {
     expect(getFilesystemBrowsePath("~/projects/t3")).toEqual({
       isBrowsing: true,

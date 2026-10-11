@@ -9,7 +9,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { newProjectId } from "../lib/utils";
 import { useCallback } from "react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { listProjectsUsingFolder } from "@t3tools/client-runtime/operations/projects";
+import { listProjectFolderOverlaps } from "@t3tools/client-runtime/operations/projects";
 import { readProjects, waitForProject } from "../state/entities";
 import { toastManager } from "../components/ui/toast";
 
@@ -51,13 +51,13 @@ export function useImportWorkspaceFile() {
       const others = readProjects().filter(
         (candidate) => candidate.environmentId === environmentId && candidate.id !== projectId,
       );
-      const overlapping = listProjectsUsingFolder(others, project.workspaceRoot);
-      if (overlapping.length)
+      for (const overlapping of listProjectFolderOverlaps(others, project)) {
         toastManager.add({
           type: "info",
-          title: `This folder is also used by ${overlapping.map((candidate) => candidate.title).join(", ")}`,
-          description: project.workspaceRoot,
+          title: `This folder is also used by ${overlapping.projects.map((candidate) => candidate.title).join(", ")}`,
+          description: overlapping.path,
         });
+      }
       return projectId;
     },
     [importWorkspaceFile],

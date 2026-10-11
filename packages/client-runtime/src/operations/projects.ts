@@ -353,13 +353,16 @@ export function resolveAddProjectKind(
   );
 }
 
+type FolderProject = {
+  readonly workspaceRoot: string;
+  readonly folders?: ReadonlyArray<{ readonly path?: string | undefined }> | undefined;
+};
+
 /** Folder overlap is informational; a plain project can coexist with a linked project. */
-export function listProjectsUsingFolder<
-  T extends {
-    readonly workspaceRoot: string;
-    readonly folders?: ReadonlyArray<{ readonly path?: string | undefined }> | undefined;
-  },
->(projects: ReadonlyArray<T>, path: string): T[] {
+export function listProjectsUsingFolder<T extends FolderProject>(
+  projects: ReadonlyArray<T>,
+  path: string,
+): T[] {
   return projects.filter((project) =>
     (project.folders ?? [{ path: project.workspaceRoot }]).some(
       (folder) =>
@@ -367,6 +370,22 @@ export function listProjectsUsingFolder<
         normalizeProjectPathForComparison(folder.path) === normalizeProjectPathForComparison(path),
     ),
   );
+}
+
+/** Lists each overlapping local folder once, including secondary folders. */
+export function listProjectFolderOverlaps<T extends FolderProject>(
+  projects: ReadonlyArray<T>,
+  project: FolderProject,
+) {
+  const seen = new Set<string>();
+  return (project.folders ?? [{ path: project.workspaceRoot }]).flatMap((folder) => {
+    if (folder.path === undefined) return [];
+    const key = normalizeProjectPathForComparison(folder.path);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const overlapping = listProjectsUsingFolder(projects, folder.path);
+    return overlapping.length ? [{ path: folder.path, projects: overlapping }] : [];
+  });
 }
 
 export function buildProjectCreateCommand(input: {

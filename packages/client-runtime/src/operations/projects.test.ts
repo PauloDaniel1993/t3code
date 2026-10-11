@@ -21,11 +21,22 @@ import {
   resolveAddProjectPath,
   resolveAddProjectKind,
   listProjectsUsingFolder,
+  listProjectFolderOverlaps,
   sortAddProjectProviderSources,
 } from "./projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
 
 describe("add project shared logic", () => {
+  it("reports secondary overlaps once and omits remote folder entries", () => {
+    const plain = { workspaceRoot: "C:/Work/API", title: "API" };
+    const linked = {
+      workspaceRoot: "C:/Work/UI",
+      folders: [{ path: "C:/Work/UI" }, { path: "C:/Work/API" }, { path: "c:/work/api/" }, {}],
+    };
+    expect(listProjectFolderOverlaps([plain], linked)).toEqual([
+      { path: "C:/Work/API", projects: [plain] },
+    ]);
+  });
   it("routes by server kind, with a file hint only for a missing entry", () => {
     const path = "/work/team.code-workspace";
     expect(
