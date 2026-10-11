@@ -9,6 +9,7 @@ import {
 
 import {
   buildProjectScript,
+  canReuseProjectScriptTerminal,
   commandForProjectScript,
   nextProjectScriptId,
   primaryProjectScript,
@@ -16,6 +17,11 @@ import {
 } from "./projectScripts";
 
 describe("projectScripts helpers", () => {
+  it("never reuses a pending terminal or a terminal in another folder", () => {
+    expect(canReuseProjectScriptTerminal(undefined, "/primary")).toBe(false);
+    expect(canReuseProjectScriptTerminal("/secondary", "/primary")).toBe(false);
+    expect(canReuseProjectScriptTerminal("C:\\repos\\ui", "c:/repos/UI")).toBe(true);
+  });
   it("keeps a chosen folder on actions and clears it for primary-only setup", () => {
     const input = {
       name: "Test UI",

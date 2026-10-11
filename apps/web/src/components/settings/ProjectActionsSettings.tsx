@@ -54,7 +54,9 @@ export function ProjectActionsSettings() {
     (candidate) =>
       JSON.stringify(candidate.settings.defaultProjectScripts) !== JSON.stringify(scripts),
   );
-  const [request, setRequest] = useState<ProjectScriptEditorRequest | null>(null);
+  const [request, setRequest] = useState<
+    (ProjectScriptEditorRequest & { folderScopeOwner: string | undefined }) | null
+  >(null);
   const memberById = new Map(
     isProjectScope ? scope.members.map((member) => [member.id, member]) : [],
   );
@@ -91,10 +93,18 @@ export function ProjectActionsSettings() {
   // representative checkout. Folder identities are environment-local, so
   // selecting a secondary folder requires one selected environment.
   const representativeMember = target?.projectId ? memberById.get(target.projectId) : undefined;
+  const folderScopeOwner = representativeMember
+    ? `${representativeMember.environmentId}:${representativeMember.id}`
+    : undefined;
+  const canUseFolderScope =
+    isProjectScope &&
+    scope.environmentId !== null &&
+    scope.members.length === 1 &&
+    targets.length === 1;
   const folders =
     representativeMember &&
     representativeConfig?.workspaceFileProjects === true &&
-    targets.length === 1
+    canUseFolderScope
       ? projectFolders(representativeMember).map((folder) => ({
           ...folder,
           availability: representativeMember.folders?.find((entry) => entry.path === folder.path)
@@ -105,7 +115,7 @@ export function ProjectActionsSettings() {
     null,
   );
   const importFolderPath =
-    targets.length === 1 && importFolder?.projectKey === representativeMember?.physicalProjectKey
+    canUseFolderScope && importFolder?.projectKey === representativeMember?.physicalProjectKey
       ? importFolder?.path
       : undefined;
   const selectedImportFolder = folders.find((folder) => folder.path === importFolderPath);
@@ -150,12 +160,13 @@ export function ProjectActionsSettings() {
         const error = squashAtomCommandFailure(result);
         setRequest({
           scriptId: null,
+          folderScopeOwner,
           initial: payload,
           error: error instanceof Error ? error.message : "Failed to import action.",
         });
       }
     },
-    [importFolderPath, submit],
+    [folderScopeOwner, importFolderPath, submit],
   );
 
   return (
@@ -188,7 +199,7 @@ export function ProjectActionsSettings() {
                 </SelectTrigger>
                 <SelectPopup>
                   <SelectItem value="">Primary folder</SelectItem>
-                  {folders.map((folder) => (
+                  {folders.slice(1).map((folder) => (
                     <SelectItem
                       key={folder.path ?? folder.label}
                       value={folder.path ?? folder.label}
@@ -249,7 +260,13 @@ export function ProjectActionsSettings() {
               size="xs"
               variant="outline"
               disabled={saving || targets.length === 0}
-              onClick={() => setRequest({ scriptId: null, initial: EMPTY_PROJECT_SCRIPT_INPUT })}
+              onClick={() =>
+                setRequest({
+                  scriptId: null,
+                  initial: EMPTY_PROJECT_SCRIPT_INPUT,
+                  folderScopeOwner,
+                })
+              }
             >
               <PlusIcon className="size-3.5" />
               Add action
@@ -268,7 +285,9 @@ export function ProjectActionsSettings() {
           folders={folders}
           keybindings={keybindings}
           disabled={saving}
-          onEdit={(script) => setRequest(editorRequestForScript(script, keybindings))}
+          onEdit={(script) =>
+            setRequest({ ...editorRequestForScript(script, keybindings), folderScopeOwner })
+          }
         />
       )}
       {t3File.status === "invalid" ? (
@@ -282,7 +301,17 @@ export function ProjectActionsSettings() {
         request={request}
         scripts={scripts}
         folders={folders}
-        onSubmit={submit}
+        onSubmit={(id, input) => {
+          if (
+            input.folderPath &&
+            (!canUseFolderScope || request?.folderScopeOwner !== folderScopeOwner)
+          ) {
+            return Promise.reject(
+              new Error("Choose one checkout before saving an action with a folder scope."),
+            );
+          }
+          return submit(id, input);
+        }}
         onDelete={(id) =>
           void persist((current) => current.filter((script) => script.id !== id), id, null)
         }
