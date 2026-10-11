@@ -999,6 +999,19 @@ const make = Effect.gen(function* () {
       ? `${session}.code-workspace`
       : path.join(session, `${path.basename(session)}.code-workspace`);
 
+  const primaryWorktreeRoot = Effect.fn("WorktreeSetService.primaryWorktreeRoot")(function* (
+    cwd: string,
+  ) {
+    const probe = yield* folderResolver.probe(cwd, { vcs: true });
+    if (probe.vcs == null) return undefined;
+    // Keep the binding's lexical path, including symlink aliases, in both
+    // generation and removal; the resolver's checkoutRoot is a real path.
+    return probe.vcs.checkoutPrefix
+      .split("/")
+      .filter(Boolean)
+      .reduce((root) => path.dirname(root), path.resolve(cwd));
+  });
+
   const editorWorkspaceFile: WorktreeSetService["Service"]["editorWorkspaceFile"] = Effect.fn(
     "WorktreeSetService.editorWorkspaceFile",
   )(function* (threadId) {
@@ -1018,15 +1031,15 @@ const make = Effect.gen(function* () {
     if (members.length === 0) {
       // Picking a single worktree isolates only the primary. Find its checkout
       // root so a subfolder cwd cannot put the generated file inside git.
-      const probe = yield* folderResolver.probe(thread.worktreePath, { vcs: true });
-      if (probe.vcs == null) {
+      const root = yield* primaryWorktreeRoot(thread.worktreePath);
+      if (root === undefined) {
         return yield* fail("The primary worktree is unavailable.");
       }
       members = [
         {
           repositoryRoot:
             thread.workspaceFolders[0]!.checkoutRoot ?? thread.workspaceFolders[0]!.path!,
-          path: probe.vcs.checkoutRoot,
+          path: root,
         },
       ];
     }
@@ -1036,6 +1049,21 @@ const make = Effect.gen(function* () {
       return yield* fail("The thread's worktrees have no session directory.");
     }
     const target = editorWorkspaceFilePath(session, members);
+    const project = yield* projects
+      .getById(thread.projectId, { includeDeleted: true })
+      .pipe(Effect.mapError((cause) => fail("Could not read the thread's project.", cause)));
+    if (Option.isSome(project) && project.value.workspaceFile != null) {
+      const source = project.value.workspaceFile;
+      const [targetPath, sourcePath] = yield* Effect.all([
+        fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => target)),
+        fileSystem.realPath(source).pipe(Effect.orElseSucceed(() => source)),
+      ]);
+      if (isSamePath(target, source) || isSamePath(targetPath, sourcePath)) {
+        return yield* fail(
+          "The generated editor workspace would overwrite the linked source file.",
+        );
+      }
+    }
     const primaryPath = thread.worktreePath;
     const folders = thread.workspaceFolders.map((folder, index) => ({
       name: folder.name,
@@ -1109,10 +1137,11 @@ const make = Effect.gen(function* () {
         if (Option.isNone(project)) {
           return yield* fail("The thread's project no longer exists.");
         }
+        const root = yield* primaryWorktreeRoot(thread.worktreePath);
         members = [
           {
             repositoryRoot: thread.workspaceFolders?.[0]?.path ?? project.value.workspaceRoot,
-            path: thread.worktreePath,
+            path: root ?? thread.worktreePath,
           },
         ];
       }

@@ -11,15 +11,22 @@ export function useEditorTarget(environmentId: EnvironmentId, workspace?: Editor
     "prepare editor workspace",
   );
   const workspaceFile = workspace?.workspaceFile;
+  const worktreePath = workspace?.worktreePath;
   const worktreeThreadId = workspace?.worktreeThreadId;
 
   return useCallback(
     async (cwd: string, editor: EditorId) => {
-      const target = resolveEditorTarget({ cwd, editor, workspaceFile, worktreeThreadId });
+      const target = resolveEditorTarget({
+        cwd,
+        editor,
+        workspaceFile,
+        worktreePath,
+        worktreeThreadId,
+      });
       if ("cwd" in target) return target.cwd;
       const result = await generateWorkspace({ environmentId, input: target });
       return result._tag === "Success" ? result.value : null;
     },
-    [environmentId, generateWorkspace, workspaceFile, worktreeThreadId],
+    [environmentId, generateWorkspace, workspaceFile, worktreePath, worktreeThreadId],
   );
 }

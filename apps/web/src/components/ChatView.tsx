@@ -4007,9 +4007,10 @@ export default function ChatView(props: ChatViewProps) {
   const editorWorkspace = useMemo(
     () => ({
       workspaceFile: activeProject?.workspaceFile,
+      worktreePath: actionThread?.worktreePath,
       worktreeThreadId: editorWorktreeThreadId,
     }),
-    [activeProject?.workspaceFile, editorWorktreeThreadId],
+    [activeProject?.workspaceFile, actionThread?.worktreePath, editorWorktreeThreadId],
   );
   useOpenFavoriteEditorShortcut({
     enabled: showOpenInPicker,

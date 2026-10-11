@@ -13,6 +13,7 @@ const WORKSPACE_FILE_EDITORS = new Set<EditorId>([
 /** Context for opening the whole workspace; folder and file opens omit it. */
 export interface EditorWorkspace {
   readonly workspaceFile?: string | null | undefined;
+  readonly worktreePath?: string | null | undefined;
   readonly worktreeThreadId?: ThreadId | undefined;
 }
 
@@ -25,7 +26,9 @@ export function resolveEditorTarget(
 ): { readonly cwd: string } | { readonly threadId: ThreadId } {
   if (WORKSPACE_FILE_EDITORS.has(input.editor)) {
     if (input.worktreeThreadId !== undefined) return { threadId: input.worktreeThreadId };
-    if (input.workspaceFile != null) return { cwd: input.workspaceFile };
+    if (input.worktreePath == null && input.workspaceFile != null) {
+      return { cwd: input.workspaceFile };
+    }
   }
   return { cwd: input.cwd };
 }

@@ -44,6 +44,17 @@ describe("resolveEditorTarget", () => {
     });
   });
 
+  it("keeps drafts and imported worktree threads at their worktree when generation is unavailable", () => {
+    expect(
+      resolveEditorTarget({
+        cwd: context.cwd,
+        worktreePath: context.cwd,
+        workspaceFile: context.workspaceFile,
+        editor: "vscode",
+      }),
+    ).toEqual({ cwd: context.cwd });
+  });
+
   it("keeps plain-project and explicitly scoped folder or file opens unchanged", () => {
     expect(resolveEditorTarget({ cwd: "/source/backend", editor: "vscode" })).toEqual({
       cwd: "/source/backend",

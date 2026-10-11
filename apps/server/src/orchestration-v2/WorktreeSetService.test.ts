@@ -35,7 +35,7 @@ const GitLayer = Layer.mergeAll(GitVcsDriver.layer, WorkspaceFolderResolver.laye
 
 const threadId = ThreadId.make("thread:worktree-set");
 const projectId = ProjectId.make("project:worktree-set");
-const decodeJson = Schema.decodeSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 
 interface ThreadRecord {
   readonly id: ThreadId;
@@ -116,6 +116,7 @@ const withCoordinator = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   input: {
     readonly projectRoot?: string;
+    readonly workspaceFile?: string;
     readonly thread?: ThreadRecord & { readonly deletedAt?: string };
     readonly threads?: ReadonlyArray<ThreadRecord>;
     readonly activeThreads?: ReadonlyArray<ThreadRecord>;
@@ -172,7 +173,11 @@ const withCoordinator = <A, E, R>(
                 Effect.succeed(
                   input.projectRoot === undefined
                     ? Option.none()
-                    : Option.some({ id: projectId, workspaceRoot: input.projectRoot } as never),
+                    : Option.some({
+                        id: projectId,
+                        workspaceRoot: input.projectRoot,
+                        workspaceFile: input.workspaceFile ?? null,
+                      } as never),
                 ),
               listShells: () => Effect.succeed((input.projects ?? []) as never),
             }),
@@ -1412,6 +1417,56 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
+it.effect(
+  "generates and removes a picked subfolder worktree's file at the same checkout root",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repo = yield* makeRepo("picked-subfolder", [
+        "apps/web/index.ts",
+        "packages/core/index.ts",
+      ]);
+      const snapshot = yield* snapshotOf([
+        path.join(repo.root, "apps", "web"),
+        path.join(repo.root, "packages", "core"),
+      ]);
+      const set = yield* withCoordinator(
+        createSet({ projectRoot: repo.root, baseRef: repo.branch, branch: "picked-subfolder" }),
+      );
+      const root = set.members[0]!.path;
+      const thread = {
+        id: threadId,
+        title: "Picked subfolder",
+        branch: "picked-subfolder",
+        worktreePath: path.join(root, "apps", "web"),
+        workspaceFolders: snapshot,
+      };
+      const target = yield* withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+          coordinator.editorWorkspaceFile(threadId),
+        ),
+        { thread, projectRoot: repo.root },
+      );
+      assert.equal(target, `${root}.code-workspace`);
+      assert.deepEqual(decodeJson(yield* fileSystem.readFileString(target)), {
+        folders: [
+          { name: "web", path: thread.worktreePath },
+          { name: "core", path: snapshot[1]!.path },
+        ],
+      });
+      assert.equal(yield* git(root, ["status", "--porcelain"]), "");
+      yield* withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+          coordinator.remove({ threadId }),
+        ),
+        { thread, projectRoot: repo.root },
+      );
+      assert.isFalse(yield* fileSystem.exists(target));
+      assert.isFalse(yield* fileSystem.exists(root));
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
 it.effect("puts a nested set's workspace beside its parent member, outside both repositories", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1444,6 +1499,44 @@ it.effect("puts a nested set's workspace beside its parent member, outside both 
     });
     assert.notInclude(yield* git(parentMember.path, ["status", "--porcelain"]), ".code-workspace");
     assert.equal(yield* git(set.members[0]!.path, ["status", "--porcelain"]), "");
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("never overwrites the linked source file when a reused worktree collides with it", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const repo = yield* makeRepo("source-collision");
+    const external = yield* fileSystem.makeTempDirectoryScoped({ prefix: "external-worktree-" });
+    const worktreePath = path.join(external, "feature");
+    yield* git(repo.root, ["worktree", "add", "-b", "feature", worktreePath]);
+    const source = `${worktreePath}.code-workspace`;
+    const original = '{"folders":[{"path":"./feature"}],"settings":{"editor.tabSize":4}}\n';
+    yield* fileSystem.writeFileString(source, original);
+    const snapshot = yield* snapshotOf([repo.root]);
+    const result = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.editorWorkspaceFile(threadId),
+      ),
+      {
+        projectRoot: repo.root,
+        workspaceFile: source,
+        thread: {
+          id: threadId,
+          title: "Reused",
+          branch: "feature",
+          worktreePath,
+          workspaceFolders: snapshot,
+        },
+      },
+    ).pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") {
+      assert.equal(result.failure._tag, "VcsThreadWorktreesError");
+      assert.include(result.failure.detail, "overwrite the linked source file");
+    }
+    assert.equal(yield* fileSystem.readFileString(source), original);
+    assert.equal(yield* git(worktreePath, ["status", "--porcelain"]), "");
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 

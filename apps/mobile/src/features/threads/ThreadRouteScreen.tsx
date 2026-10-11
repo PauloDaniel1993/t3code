@@ -492,6 +492,7 @@ function ThreadRouteContent(
       cwd: selectedThreadCwd,
       editor: workspaceEditor.id,
       workspaceFile: selectedThreadProject?.workspaceFile,
+      worktreePath: selectedThread.worktreePath,
       worktreeThreadId:
         selectedThread.workspaceFolderCount !== undefined && selectedThread.worktreePath !== null
           ? selectedThread.id
