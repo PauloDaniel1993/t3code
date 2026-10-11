@@ -84,6 +84,44 @@ describe("acpPermissionDisposition", () => {
     );
   });
 
+  it("replaces workspace folder grants without loosening read-only or approvals", () => {
+    const extra = NodePath.resolve(process.cwd(), "acp-workspace-folder");
+    const request = permissionRequest("edit", [{ path: NodePath.join(extra, "new.ts") }]);
+    const scoped = { ...policy, additionalDirectories: [extra] };
+    assert.equal(acpPermissionDisposition(scoped, request), "allow");
+    assert.equal(
+      acpPermissionDisposition({ ...scoped, additionalDirectories: [] }, request),
+      "deny",
+    );
+    assert.equal(
+      acpPermissionDisposition({ ...scoped, sandboxPolicy: { type: "readOnly" } }, request),
+      "deny",
+    );
+    assert.equal(
+      acpPermissionDisposition({ ...scoped, approvalPolicy: "on-request" }, request),
+      "ask",
+    );
+    assert.equal(acpPermissionDisposition(scoped, permissionRequest("execute")), "deny");
+    assert.equal(
+      acpPermissionDisposition(
+        scoped,
+        permissionRequest("edit", [
+          { path: NodePath.join(extra, "new.ts") },
+          { path: NodePath.join(extra, "..", "outside.ts") },
+        ]),
+      ),
+      "deny",
+    );
+    // Explicit attachment/writable-root grants survive clearing workspace folders.
+    assert.equal(
+      acpPermissionDisposition(
+        { ...scoped, additionalDirectories: [] },
+        permissionRequest("edit", [{ path: NodePath.join(writableRoot, "attachment.ts") }]),
+      ),
+      "allow",
+    );
+  });
+
   it("keeps non-mutating workspace permissions and denials unchanged", () => {
     assert.equal(acpPermissionDisposition(policy, permissionRequest("read")), "allow");
     assert.equal(acpPermissionDisposition(policy, permissionRequest("execute")), "deny");

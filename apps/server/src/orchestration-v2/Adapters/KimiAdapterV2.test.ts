@@ -44,8 +44,12 @@ const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
   environment: NodeJS.ProcessEnv = {},
   runtimeMode: RuntimeMode = "approval-required",
   initialNativeThreadId?: string,
+  withWorkspaceFolders = false,
 ) {
   const h = yield* makeKimiTestHarness(environment);
+  const additionalDirectories = withWorkspaceFolders
+    ? [yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({ prefix: "t3-kimi-extra-" })]
+    : [];
   if (initialNativeThreadId) {
     yield* Effect.scoped(
       Effect.gen(function* () {
@@ -73,6 +77,7 @@ const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
     runtimeMode,
     interactionMode: "default",
     cwd: h.root,
+    additionalDirectories,
   });
   const adapter = makeKimiAdapterV2({
     instanceId,
@@ -141,10 +146,162 @@ const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
     modelSelection,
     runtimePolicy,
   });
-  return { ...h, adapter, session, providerThread, turn, policy, modelSelection };
+  return { ...h, adapter, session, providerThread, turn, policy, modelSelection, threadId };
 });
 
 it.layer(testLayer, { excludeTestServices: true })("Kimi V2 adapter", (it) => {
+  it.effect("installs folders on new sessions and hands off when the scope is cleared", () =>
+    Effect.gen(function* () {
+      const h = yield* makeSession(
+        { T3_KIMI_ADDITIONAL_DIRECTORIES: "1" },
+        "full-access",
+        undefined,
+        true,
+      );
+      expect(h.session.providerSession.additionalDirectories).toEqual(
+        h.policy.additionalDirectories,
+      );
+      expect(h.session.providerSession.capabilities.runtimePolicy.workspaceFolderAccess).toBe(
+        "unverified",
+      );
+      expect(h.session.providerSession.capabilities.threads.canForkThread).toBe(false);
+      yield* h.session.startTurn(h.turn(h.providerThread, yield* DateTime.now));
+      yield* h.session.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runDrain,
+      );
+      const cleared = ProviderAdapterV2RuntimePolicy.make({
+        ...h.policy,
+        additionalDirectories: [],
+      });
+      const error = yield* h.session
+        .resumeThread({ providerThread: h.providerThread, runtimePolicy: cleared })
+        .pipe(Effect.flip);
+      expect(error.message).toContain("resume");
+      const replacement = yield* h.session.ensureThread({
+        threadId: h.threadId,
+        modelSelection: h.modelSelection,
+        runtimePolicy: cleared,
+        existingProviderThread: { ...h.providerThread, nativeThreadRef: null },
+      });
+      expect(replacement.id).toBe(h.providerThread.id);
+      expect(replacement.nativeThreadRef?.nativeId).not.toBe(
+        h.providerThread.nativeThreadRef?.nativeId,
+      );
+      expect(h.session.providerSession.additionalDirectories).toEqual([]);
+      yield* h.session.startTurn(h.turn(replacement, yield* DateTime.now, cleared, 2));
+      yield* h.session.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runDrain,
+      );
+      const requests = yield* h.requests;
+      expect(
+        requests
+          .filter((request) => request.method === "session/new")
+          .map((request) => request.params.additionalDirectories),
+      ).toEqual([h.policy.additionalDirectories, []]);
+      expect(
+        requests.some((request) =>
+          ["session/resume", "session/load", "session/fork"].includes(request.method),
+        ),
+      ).toBe(false);
+      const prompts = requests.filter((request) => request.method === "session/prompt");
+      expect(prompts.map((request) => request.params.additionalDirectoriesAtPrompt)).toEqual([
+        h.policy.additionalDirectories,
+        [],
+      ]);
+      expect(JSON.stringify(prompts[0]?.params.prompt)).toContain("<workspace_folders>");
+      expect(JSON.stringify(prompts[1]?.params.prompt)).not.toContain("<workspace_folders>");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "opens a fresh Kimi session for a persisted scope change and refuses native resume",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeSession(
+          { T3_KIMI_ADDITIONAL_DIRECTORIES: "1" },
+          "full-access",
+          undefined,
+          true,
+        );
+        const cleared = ProviderAdapterV2RuntimePolicy.make({
+          ...h.policy,
+          additionalDirectories: [],
+        });
+        const reopened = yield* h.adapter.openSession({
+          threadId: h.threadId,
+          providerSessionId: h.session.providerSessionId,
+          modelSelection: h.modelSelection,
+          runtimePolicy: cleared,
+          resumeFromSession: h.session.providerSession,
+          initialNativeThreadId: h.providerThread.nativeThreadRef!.nativeId!,
+        });
+        yield* reopened
+          .resumeThread({ providerThread: h.providerThread, runtimePolicy: cleared })
+          .pipe(Effect.flip);
+        const replacement = yield* reopened.ensureThread({
+          threadId: h.threadId,
+          modelSelection: h.modelSelection,
+          runtimePolicy: cleared,
+          existingProviderThread: { ...h.providerThread, nativeThreadRef: null },
+        });
+        expect(replacement.nativeThreadRef?.nativeId).not.toBe(
+          h.providerThread.nativeThreadRef?.nativeId,
+        );
+        expect(
+          (yield* h.requests)
+            .filter((request) => request.method === "session/new")
+            .map((request) => request.params.additionalDirectories),
+        ).toEqual([h.policy.additionalDirectories, []]);
+        expect((yield* h.requests).some((request) => request.method === "session/resume")).toBe(
+          false,
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses extra folders when Kimi does not advertise access", () =>
+    Effect.gen(function* () {
+      const error = yield* makeSession({}, "full-access", undefined, true).pipe(Effect.flip);
+      expect(error.message).toContain("open");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("retains the installed folders when resuming an unchanged Kimi scope", () =>
+    Effect.gen(function* () {
+      const h = yield* makeSession(
+        { T3_KIMI_ADDITIONAL_DIRECTORIES: "1" },
+        "full-access",
+        undefined,
+        true,
+      );
+      const reopened = yield* h.adapter.openSession({
+        threadId: h.threadId,
+        providerSessionId: h.session.providerSessionId,
+        modelSelection: h.modelSelection,
+        runtimePolicy: h.policy,
+        resumeFromSession: h.session.providerSession,
+        initialNativeThreadId: h.providerThread.nativeThreadRef!.nativeId!,
+      });
+      const resumed = yield* reopened.resumeThread({
+        providerThread: h.providerThread,
+        runtimePolicy: h.policy,
+      });
+      yield* reopened.startTurn(h.turn(resumed, yield* DateTime.now));
+      yield* reopened.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runDrain,
+      );
+      const requests = yield* h.requests;
+      expect(requests.filter((request) => request.method === "session/new")).toHaveLength(1);
+      expect(requests.filter((request) => request.method === "session/resume")).toHaveLength(1);
+      expect(
+        requests.find((request) => request.method === "session/prompt")?.params
+          .additionalDirectoriesAtPrompt,
+      ).toEqual(h.policy.additionalDirectories);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect.each(["full-access", "auto-accept-edits", "auto", "approval-required"] as const)(
     "keeps native approvals supervised under %s",
     (mode) =>

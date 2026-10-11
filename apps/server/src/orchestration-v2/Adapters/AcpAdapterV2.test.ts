@@ -605,6 +605,155 @@ function makeTurnInput(input: {
 }
 
 describe("AcpAdapterV2", () => {
+  it.live(
+    "replaces workspace folders on turns, resume and fork and retains them on runtime replacement",
+    () =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("acp-workspace-folders");
+        const threadId = ThreadId.make("thread-acp-workspace-folders");
+        const requests: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+        const runtimeInputs: Array<AcpAdapterV2RuntimeInput> = [];
+        const path = yield* Path.Path;
+        const cwd = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
+        const additionalDirectories = [path.join(cwd, "a"), path.join(cwd, "b")];
+        const baseRuntime = makeMockRuntime({
+          childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+          mockAgentPath: yield* path.fromFileUrl(
+            new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+          ),
+        });
+        const adapter = makeAcpAdapterV2({
+          instanceId,
+          crypto: yield* Crypto.Crypto,
+          fileSystem: yield* FileSystem.FileSystem,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig: yield* ServerConfig.ServerConfig,
+          selfInvocation: yield* resolveSelfInvocation(),
+          nativeLogging: () => ({
+            requestLogger: (event) =>
+              Effect.sync(() => {
+                requests.push(event);
+              }),
+          }),
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: (input) =>
+              Effect.sync(() => {
+                runtimeInputs.push(input);
+              }).pipe(Effect.andThen(baseRuntime(input))),
+          },
+        });
+        const modelSelection = { instanceId, model: "default" };
+        const policy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd,
+          additionalDirectories,
+        });
+        const session = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("acp-workspace-session"),
+          modelSelection,
+          runtimePolicy: policy,
+        });
+        const thread = yield* session.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy: policy,
+        });
+        const cleared = ProviderAdapterV2RuntimePolicy.make({
+          ...policy,
+          additionalDirectories: [],
+        });
+        for (const [ordinal, runtimePolicy] of [
+          [1, policy],
+          [2, cleared],
+        ] as const) {
+          yield* session.startTurn(
+            makeTurnInput({
+              threadId,
+              providerThread: thread,
+              instanceId,
+              runtimePolicy,
+              ordinal,
+              now: yield* DateTime.now,
+            }),
+          );
+          yield* session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runDrain,
+          );
+        }
+        assert.deepEqual(session.providerSession.additionalDirectories, []);
+        const resumedPolicy = ProviderAdapterV2RuntimePolicy.make({
+          ...policy,
+          additionalDirectories: [additionalDirectories[1]!],
+        });
+        yield* session.resumeThread({ providerThread: thread, runtimePolicy: resumedPolicy });
+        const forkPolicy = ProviderAdapterV2RuntimePolicy.make({
+          ...policy,
+          additionalDirectories: [additionalDirectories[0]!],
+        });
+        const forked = yield* session.forkThread({
+          sourceProviderThread: thread,
+          targetThreadId: ThreadId.make("acp-workspace-child"),
+          runtimePolicy: forkPolicy,
+        });
+        yield* session.rollbackThread({
+          providerThread: forked,
+          providerThreadTurns: [],
+          target: {
+            type: "thread_start",
+            checkpointId: CheckpointId.make("acp-workspace-checkpoint"),
+            appRunOrdinal: 0,
+          },
+        });
+        assert.deepEqual(
+          runtimeInputs.map((input) => input.runtimePolicy.additionalDirectories),
+          [additionalDirectories, forkPolicy.additionalDirectories],
+        );
+        assert.deepEqual(
+          runtimeInputs.map((input) => input.additionalDirectories),
+          [additionalDirectories, forkPolicy.additionalDirectories],
+        );
+        const scopes = requests
+          .filter(
+            (event) =>
+              event.status === "started" &&
+              ["session/new", "session/load", "session/fork"].includes(event.method),
+          )
+          .map((event) => event.payload);
+        assert.deepEqual(scopes, [
+          { cwd, mcpServers: [], additionalDirectories },
+          {
+            sessionId: thread.nativeThreadRef?.nativeId,
+            cwd,
+            mcpServers: [],
+            additionalDirectories: [],
+          },
+          {
+            sessionId: thread.nativeThreadRef?.nativeId,
+            cwd,
+            mcpServers: [],
+            additionalDirectories: resumedPolicy.additionalDirectories,
+          },
+          {
+            sessionId: thread.nativeThreadRef?.nativeId,
+            cwd,
+            mcpServers: [],
+            additionalDirectories: forkPolicy.additionalDirectories,
+          },
+          { cwd, mcpServers: [], additionalDirectories: forkPolicy.additionalDirectories },
+        ]);
+        const prompts = requests.filter(
+          (event) => event.status === "started" && event.method === "session/prompt",
+        );
+        assert.include(JSON.stringify(prompts[0]?.payload), "<workspace_folders>");
+        assert.notInclude(JSON.stringify(prompts[1]?.payload), "<workspace_folders>");
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
   it.effect.each(["timer", "settlement"] as const)(
     "keeps one assistant reply across a held tool-progress projection on %s",
     (flush) =>
@@ -2334,6 +2483,7 @@ describe("AcpAdapterV2", () => {
       assert.deepEqual(forkRequest.params, {
         sessionId: "mock-session-1",
         cwd: process.cwd(),
+        additionalDirectories: [],
         mcpServers: [
           {
             type: "stdio",
