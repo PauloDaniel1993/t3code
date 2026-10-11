@@ -2570,9 +2570,13 @@ function OpenCommandPaletteDialog(props: {
         currentProjectCwd: currentProjectCwdForBrowse,
         kind:
           kind ??
-          (hasTrailingPathSeparator(query) && browseResult
-            ? "directory"
-            : resolveAddProjectKind(rawCwd, exactBrowseEntry)),
+          (includeWorkspaceFiles
+            ? resolveAddProjectKind(
+                rawCwd,
+                exactBrowseEntry,
+                hasTrailingPathSeparator(query) && browseResult != null,
+              )
+            : "directory"),
       });
     },
     [
@@ -2583,6 +2587,7 @@ function OpenCommandPaletteDialog(props: {
       query,
       browseResult,
       exactBrowseEntry,
+      includeWorkspaceFiles,
     ],
   );
 
@@ -2815,7 +2820,8 @@ function OpenCommandPaletteDialog(props: {
   const browseTo = useCallback(
     async (name: string, kind: "directory" | "workspace-file" = "directory"): Promise<void> => {
       if (kind === "workspace-file") {
-        await handleAddProject(appendBrowsePathSegment(query, name, kind), kind);
+        const entry = browseEntries.find((candidate) => candidate.name === name);
+        await handleAddProject(entry?.fullPath ?? appendBrowsePathSegment(query, name, kind), kind);
         return;
       }
       const nextQuery = pinnedCloneDirectoryName
@@ -2837,6 +2843,7 @@ function OpenCommandPaletteDialog(props: {
     },
     [
       browseNavigation,
+      browseEntries,
       browseEnvironmentPlatform,
       browsePath.directoryPath,
       pinnedCloneDirectoryName,
@@ -3046,14 +3053,21 @@ function OpenCommandPaletteDialog(props: {
         getCommandPaletteInputPlaceholder(paletteMode));
   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
   const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
+  const addProjectKind = includeWorkspaceFiles
+    ? resolveAddProjectKind(
+        resolvedAddProjectPath,
+        exactBrowseEntry,
+        hasTrailingPathSeparator(query) && browseResult != null,
+      )
+    : "directory";
   const canSubmitBrowsePath =
     isBrowsing &&
-    !isBrowsePending &&
+    (!includeWorkspaceFiles || !isBrowsePending) &&
     !relativePathNeedsActiveProject &&
     canCreateProjectInEnvironment(browseEnvironment?.connection.phase);
   const willCreateProjectPath =
     canSubmitBrowsePath &&
-    resolveAddProjectKind(resolvedAddProjectPath, exactBrowseEntry) !== "workspace-file" &&
+    addProjectKind !== "workspace-file" &&
     !isBrowsePending &&
     query.trim().length > 0 &&
     !hasHighlightedBrowseItem &&
@@ -3065,9 +3079,7 @@ function OpenCommandPaletteDialog(props: {
     ? willCreateProjectPath
       ? "Create & Clone"
       : "Clone"
-    : includeWorkspaceFiles &&
-        resolveAddProjectKind(resolvedAddProjectPath, exactBrowseEntry) === "workspace-file" &&
-        !hasTrailingPathSeparator(query)
+    : addProjectKind === "workspace-file"
       ? "Import"
       : willCreateProjectPath
         ? "Create & Add"

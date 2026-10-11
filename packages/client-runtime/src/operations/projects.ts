@@ -342,7 +342,9 @@ export function findExistingAddProject(input: {
 export function resolveAddProjectKind(
   path: string,
   entry: FilesystemBrowseEntry | null | undefined,
+  existingDirectory = false,
 ): "directory" | "workspace-file" {
+  if (existingDirectory) return "directory";
   return (
     entry?.kind ??
     (entry

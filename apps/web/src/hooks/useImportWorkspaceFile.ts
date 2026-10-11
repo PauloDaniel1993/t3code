@@ -47,7 +47,15 @@ export function useImportWorkspaceFile() {
           throw error;
         }
       }
-      const project = await waitForProject(scopeProjectRef(environmentId, projectId));
+      const project = await waitForProject(scopeProjectRef(environmentId, projectId)).catch(() => {
+        toastManager.add({
+          type: "info",
+          title: "The project is ready on the environment",
+          description: "It will appear in the sidebar once this client catches up.",
+        });
+        return null;
+      });
+      if (project === null) return null;
       const others = readProjects().filter(
         (candidate) => candidate.environmentId === environmentId && candidate.id !== projectId,
       );

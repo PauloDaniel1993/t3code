@@ -130,11 +130,13 @@ export function ProjectWorkspaceFileSettings({
         {linked ? (
           <div className="space-y-3 px-4 pb-4 text-sm">
             <p role="status">
-              {status
-                ? status.state === "ok"
-                  ? "Up to date"
-                  : `Workspace file ${status.state}`
-                : "Checking workspace file…"}
+              {!enabled
+                ? "Workspace-file support is disabled on this environment."
+                : status
+                  ? status.state === "ok"
+                    ? "Up to date"
+                    : `Workspace file ${status.state}`
+                  : "Checking workspace file…"}
               {status?.liveDetection === false
                 ? " · Live detection unavailable. Refresh to check for changes."
                 : ""}
@@ -176,15 +178,21 @@ export function ProjectWorkspaceFileSettings({
                       {folder.path ?? folder.uri}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {folder.uri
-                        ? `Remote (${folder.remoteDescription ?? "remote folder"}), not available here`
-                        : folder.availability === "unavailable"
-                          ? index === 0
-                            ? "Primary folder unavailable"
-                            : `Unavailable (${folder.unavailableReason ?? "unknown"})`
-                          : folder.availability === "available"
-                            ? "Available"
-                            : "Checking availability…"}
+                      {!enabled
+                        ? "Availability checks are disabled"
+                        : folder.uri
+                          ? `Remote (${folder.remoteDescription ?? "remote folder"}), not available here`
+                          : folder.availability === "unavailable"
+                            ? index === 0
+                              ? "Primary folder unavailable"
+                              : folder.unavailableReason === "missing"
+                                ? "Missing on disk"
+                                : folder.unavailableReason === "not-directory"
+                                  ? "Not a folder on disk"
+                                  : "Unavailable"
+                            : folder.availability === "available"
+                              ? "Available"
+                              : "Checking availability…"}
                     </p>
                     {others.length ? (
                       <p className="text-xs text-muted-foreground">

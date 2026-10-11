@@ -58,6 +58,8 @@ describe("add project shared logic", () => {
     ).toBe("workspace-file");
     expect(resolveAddProjectKind("/missing/TEAM.CODE-WORKSPACE", null)).toBe("workspace-file");
     expect(resolveAddProjectKind("/missing/folder", null)).toBe("directory");
+    expect(resolveAddProjectKind("/missing/team.code-workspace/", null)).toBe("workspace-file");
+    expect(resolveAddProjectKind("/work/team.code-workspace/", null, true)).toBe("directory");
   });
 
   it("finds plain and linked projects using a folder without treating descendants as overlaps", () => {

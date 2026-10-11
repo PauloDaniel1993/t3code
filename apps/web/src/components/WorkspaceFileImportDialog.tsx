@@ -5,10 +5,11 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import { useProjects } from "../state/entities";
 import { projectEnvironment } from "../state/projects";
 import { useAtomCommand } from "../state/use-atom-command";
-import { useImportWorkspaceFile } from "../hooks/useImportWorkspaceFile";
+import { useImportWorkspaceFile, workspaceFileErrorMessage } from "../hooks/useImportWorkspaceFile";
 import { WorkspaceFilePickerDialog } from "./WorkspaceFilePickerDialog";
 import { Button } from "./ui/button";
 import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "./ui/select";
+import { toastManager } from "./ui/toast";
 
 export function WorkspaceFileImportDialog(props: {
   readonly environmentId: EnvironmentId;
@@ -39,10 +40,20 @@ export function WorkspaceFileImportDialog(props: {
           if (result._tag === "Failure") throw squashAtomCommandFailure(result);
           projectId = existing.id;
         } else {
-          projectId = await importFile(props.environmentId, path);
+          const importedId = await importFile(props.environmentId, path);
+          if (importedId === null) return;
+          projectId = importedId;
         }
         const ref = scopeProjectRef(props.environmentId, projectId);
-        await props.onImported(ref);
+        try {
+          await props.onImported(ref);
+        } catch (error) {
+          toastManager.add({
+            type: "error",
+            title: "The project was saved, but could not be opened",
+            description: workspaceFileErrorMessage(error),
+          });
+        }
       }}
     >
       {plainProjects.length ? (

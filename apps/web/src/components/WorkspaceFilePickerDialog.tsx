@@ -11,6 +11,7 @@ import { useWorkspaceFileNativePicker } from "../hooks/useWorkspaceFileNativePic
 import { workspaceFileErrorMessage } from "../hooks/useImportWorkspaceFile";
 import {
   appendBrowsePathSegment,
+  ensureBrowseDirectoryPath,
   getBrowseParentPath,
   hasTrailingPathSeparator,
 } from "../lib/projectPaths";
@@ -45,7 +46,12 @@ export function WorkspaceFilePickerDialog(props: {
     environment?.serverConfig?.workspaceFileProjects === true &&
     environment.connection.phase === "connected";
   const platform = environment?.serverConfig?.environment.platform.os ?? "";
-  const [query, setQuery] = useState(props.initialPath ?? "~/");
+  const [query, setQuery] = useState(
+    props.initialPath ??
+      ensureBrowseDirectoryPath(
+        environment?.serverConfig?.settings.addProjectBaseDirectory || "~/",
+      ),
+  );
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pickNative = useWorkspaceFileNativePicker(props.environmentId);
@@ -133,7 +139,11 @@ export function WorkspaceFilePickerDialog(props: {
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
-                void submit(selectedPath);
+                if (exactEntry && exactEntry.kind !== "workspace-file") {
+                  setQuery(ensureBrowseDirectoryPath(exactEntry.fullPath));
+                } else {
+                  void submit(selectedPath);
+                }
               }
             }}
           />
