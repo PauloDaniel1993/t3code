@@ -57,7 +57,6 @@ export interface ImportWorkspaceFileProjectInput extends CommandMetadata {
 
 export interface UpdateProjectInput extends CommandMetadata {
   readonly projectId: ProjectId;
-  readonly workspaceFilePath?: string | null;
   readonly title?: string;
   readonly workspaceRoot?: string;
   readonly workspaceFilePath?: string | null;
