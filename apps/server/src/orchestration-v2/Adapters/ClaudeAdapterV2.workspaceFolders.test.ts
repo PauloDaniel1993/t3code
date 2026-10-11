@@ -117,6 +117,7 @@ describe("Claude workspace folders", () => {
       "C:\\attachments",
     ]);
     assert.equal(options.permissionMode, "acceptEdits");
+    assert.propertyVal(options.systemPrompt, "snapshot", false);
     assert.include(systemAppend(options), "<workspace_folders>");
   });
 
@@ -172,6 +173,11 @@ describe("Claude workspace folders", () => {
           yield* harness.startTurn({ ordinal: 3, runtimePolicy: replacement });
           assert.isTrue(harness.queries[0]!.closed);
           assert.isDefined(harness.queries[1]!.input.options.resume);
+          assert.propertyVal(harness.queries[1]!.input.options.systemPrompt, "snapshot", false);
+          assert.include(
+            systemAppend(harness.queries[1]!.input.options),
+            buildWorkspaceFolderInventory(replacement)!,
+          );
           assert.deepEqual(
             (yield* Queue.take(harness.sessions)).providerSession.additionalDirectories,
             replacement.additionalDirectories,
@@ -200,6 +206,7 @@ describe("Claude workspace folders", () => {
             harness.attachmentsDir,
           ]);
           assert.notInclude(systemAppend(harness.queries[3]!.input.options), "<workspace_folders>");
+          assert.propertyVal(harness.queries[3]!.input.options.systemPrompt, "snapshot", false);
           assert.deepEqual(
             (yield* Queue.take(harness.sessions)).providerSession.additionalDirectories,
             [],

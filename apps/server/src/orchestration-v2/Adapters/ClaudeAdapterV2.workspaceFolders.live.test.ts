@@ -28,7 +28,6 @@ const platformLayer = Layer.mergeAll(
   ),
 );
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
-const quotePath = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const liveLayer = Layer.merge(
   platformLayer,
   ClaudeAdapterV2.claudeAgentSdkQueryRunnerLiveLayer.pipe(Layer.provide(platformLayer)),
@@ -39,7 +38,7 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
   "Claude Personal workspace folders (live)",
   () => {
     it.effect(
-      "reads and edits an extra folder after start, process resume and native fork",
+      "discovers and edits changing extra folders after start, process resume and native fork",
       () =>
         Effect.scoped(
           Effect.gen(function* () {
@@ -58,7 +57,6 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
             const secondary = path.join(directory, "secondary worktree");
             yield* fileSystem.makeDirectory(cwd);
             yield* fileSystem.makeDirectory(secondary);
-            const file = path.join(secondary, "proof.txt");
             const scope = ProviderAdapterV2RuntimePolicy.make({
               runtimeMode: "auto-accept-edits",
               interactionMode: "default",
@@ -85,6 +83,7 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
               threadId = harness.threadId,
               runtimePolicy = scope,
             ) {
+              const file = path.join(runtimePolicy.additionalDirectories[0]!, "proof.txt");
               const fixtureValue = NodeCrypto.randomUUID();
               const marker = `CLAUDE_WORKSPACE_${stage.toUpperCase()}_OK`;
               yield* fileSystem.writeFileString(
@@ -96,7 +95,7 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
                 providerThread,
                 threadId,
                 runtimePolicy,
-                text: `I created a disposable fixture for this workspace-folder integration test at ${quotePath(file)}. Use Read to inspect it, then Edit to replace stage=pending with stage=${marker}, preserving the fixture-value line. Report the fixture-value from the file so the test can verify the read. It is randomly generated test data. Use only Read and Edit; do no other work.`,
+                text: `I created a disposable proof.txt fixture in the extra folder listed in the <workspace_folders> block of your current system instructions. Use that current inventory to locate it. Use Read to inspect it, then Edit to replace stage=pending with stage=${marker}, preserving the fixture-value line. Report the fixture-value from the file so the test can verify the read. It is randomly generated test data. Use only Read and Edit; do no other work.`,
               });
               const terminal = yield* Queue.take(harness.terminals);
               assert.equal(
@@ -129,19 +128,31 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
               providerTurnId: firstTurn.providerTurnId,
               requestRuntimeRestart: true,
             });
+            const resumedFolder = path.join(directory, "resumed worktree");
+            yield* fileSystem.makeDirectory(resumedFolder);
+            const resumedScope = ProviderAdapterV2RuntimePolicy.make({
+              ...scope,
+              additionalDirectories: [resumedFolder],
+            });
             const resumed = yield* harness.runtime.resumeThread({
               providerThread: harness.providerThread,
-              runtimePolicy: scope,
+              runtimePolicy: resumedScope,
             });
-            yield* prove("resume", 2, resumed);
+            yield* prove("resume", 2, resumed, harness.threadId, resumedScope);
             const targetThreadId = ThreadId.make("claude-workspace-folders-live-fork");
+            const forkFolder = path.join(directory, "fork worktree");
+            yield* fileSystem.makeDirectory(forkFolder);
+            const forkScope = ProviderAdapterV2RuntimePolicy.make({
+              ...scope,
+              additionalDirectories: [forkFolder],
+            });
             const forked = yield* harness.runtime.forkThread({
               sourceProviderThread: resumed,
               targetThreadId,
-              runtimePolicy: scope,
+              runtimePolicy: forkScope,
             });
             assert.notEqual(forked.nativeThreadRef?.nativeId, resumed.nativeThreadRef?.nativeId);
-            yield* prove("fork", 3, forked, targetThreadId);
+            yield* prove("fork", 3, forked, targetThreadId, forkScope);
           }),
         ).pipe(Effect.provide(liveLayer)),
       { timeout: 240_000 },
