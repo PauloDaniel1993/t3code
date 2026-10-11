@@ -189,6 +189,76 @@ it.effect("checkout changes replace secondary identities after background probes
   checkCheckoutChange(true),
 );
 
+it.effect("evicted folder facts do not let a new checkout reuse a warm identity", () =>
+  Effect.gen(function* () {
+    const checkout = yield* Ref.make("/work");
+    const release = yield* Deferred.make<void>();
+    let resolverCheckout = "/work";
+    const metadata = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (_path, options) =>
+          Effect.gen(function* () {
+            if (options?.refresh) resolverCheckout = yield* Ref.get(checkout);
+            if (resolverCheckout === "/work/lib") yield* Deferred.await(release);
+            return identity(resolverCheckout);
+          }),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      const changes = yield* service.subscribeChanges;
+      yield* service.probeFolders(["/work/lib"]);
+      yield* PubSub.take(changes);
+      yield* service.request("/work/lib");
+      yield* PubSub.take(changes);
+      // Display facts and identities have independent bounded caches. A
+      // non-git folder can evict the former without evicting the latter.
+      yield* service.probeFolders(["/shared"]);
+      yield* PubSub.take(changes);
+      yield* Ref.set(checkout, "/work/lib");
+      yield* service.probeFolders(["/work/lib"]);
+      yield* PubSub.take(changes);
+      const folders = [
+        { uri: "vscode-remote://ssh-remote+devbox/app", name: "app", label: "app" },
+        { path: "/work/lib", name: "lib", label: "lib" },
+      ];
+      assert.deepEqual((yield* service.getAvailableFolders(folders, { request: false }))[1]?.vcs, {
+        checkoutRoot: "/work/lib",
+      });
+      yield* Deferred.succeed(release, undefined);
+      const change = yield* PubSub.take(changes);
+      assert.isTrue("workspaceRoot" in change);
+      assert.equal(
+        (yield* service.getAvailableFolders(folders, { request: false }))[1]?.vcs
+          ?.repositoryIdentity?.rootPath,
+        "/work/lib",
+      );
+    }).pipe(
+      Effect.provide(
+        makeLayer(
+          metadata,
+          { cacheCapacity: 1 },
+          folderResolverLayer((path) =>
+            Ref.get(checkout).pipe(
+              Effect.map((checkoutRoot) => ({
+                path,
+                availability: "available",
+                vcs:
+                  path === "/shared"
+                    ? null
+                    : { checkoutRoot, checkoutPrefix: "", commonDir: `${checkoutRoot}/.git` },
+              })),
+            ),
+          ),
+        ),
+      ),
+    );
+  }),
+);
+
 it.effect("publishes changed file health and folder probes to every subscriber, once", () =>
   Effect.gen(function* () {
     const probe = yield* Ref.make<WorkspaceFolderResolver.WorkspaceFolderProbe>({

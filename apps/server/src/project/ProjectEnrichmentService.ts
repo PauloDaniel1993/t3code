@@ -209,10 +209,13 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   ) {
     const previous = publishedFolderFacts.get(probe.path);
     const checkoutChanged =
-      previous !== undefined && previous.vcs?.checkoutRoot !== probe.vcs?.checkoutRoot;
+      previous === undefined
+        ? yield* Cache.has(repositoryIdentityCache, probe.path)
+        : previous.vcs?.checkoutRoot !== probe.vcs?.checkoutRoot;
     if (checkoutChanged) {
       // Both this cache and the resolver cache are keyed by folder path. A
       // folder gaining or leaving a nested checkout changes that path's owner.
+      // If its previous probe was evicted, a warm identity still needs checking.
       repositoryIdentityRefreshes.add(probe.path);
       yield* Cache.invalidate(repositoryIdentityCache, probe.path);
     }
