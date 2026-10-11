@@ -45,17 +45,6 @@ import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 import * as WorkspaceFiles from "./WorkspaceFiles.ts";
 import * as WorkspaceFolderResolver from "./WorkspaceFolderResolver.ts";
 
-const configLayer = (workspaceFileProjects: boolean) =>
-  Layer.effect(
-    ServerConfig.ServerConfig,
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      return { ...config, workspaceFileProjects };
-    }),
-  ).pipe(
-    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "project-workspace-file-" })),
-  );
-
 /**
  * Watches the tests drive in place of the filesystem's: each watched project's
  * hint, projects whose watch can't start, and reads held until released.
@@ -126,36 +115,35 @@ const metaUpdates = Effect.fn("ProjectWorkspaceFileTest.metaUpdates")(function* 
 });
 
 /** Every dependency of ProjectService.make, with real folders, git and workspace files. */
-const dependencies = (workspaceFileProjects: boolean) =>
-  Layer.mergeAll(
-    OrchestrationV2EventSinkLayerLive,
-    OrchestrationEventStoreLive,
-    ProjectStore.layer,
-    ProjectionStore.layer,
-    IdAllocator.layer,
-    ThreadCommandExecutor.layer,
-    drivenWorkspaceFiles,
-  ).pipe(
-    Layer.provideMerge(
-      LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
+const dependencies = Layer.mergeAll(
+  OrchestrationV2EventSinkLayerLive,
+  OrchestrationEventStoreLive,
+  ProjectStore.layer,
+  ProjectionStore.layer,
+  IdAllocator.layer,
+  ThreadCommandExecutor.layer,
+  drivenWorkspaceFiles,
+).pipe(
+  Layer.provideMerge(
+    LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
+  ),
+  Layer.provideMerge(ProjectEnrichmentService.layer),
+  Layer.provideMerge(WorkspacePaths.layer),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: () => Effect.succeed(null),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+      WorkspaceFolderResolver.layer,
     ),
-    Layer.provideMerge(ProjectEnrichmentService.layer),
-    Layer.provideMerge(WorkspacePaths.layer),
-    Layer.provideMerge(
-      Layer.mergeAll(
-        Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
-          resolve: () => Effect.succeed(null),
-        }),
-        Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
-          resolvePath: () => Effect.succeed(null),
-        }),
-        WorkspaceFolderResolver.layer,
-      ),
-    ),
-    Layer.provideMerge(SqlitePersistenceMemory),
-    Layer.provideMerge(configLayer(workspaceFileProjects)),
-    Layer.provideMerge(NodeServices.layer),
-  );
+  ),
+  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "project-workspace-file-" })),
+  Layer.provideMerge(NodeServices.layer),
+);
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -238,7 +226,7 @@ const seedThread = Effect.fn("ProjectWorkspaceFileTest.seedThread")(function* (i
 
 const commandId = (name: string) => CommandId.make(`command:${name}`);
 
-it.layer(dependencies(true))("ProjectService workspace files", (it) => {
+it.layer(dependencies)("ProjectService workspace files", (it) => {
   it.effect(
     "delivers status-only failure and recovery and folder health to two shell clients",
     () =>
@@ -1195,39 +1183,6 @@ it.layer(dependencies(true))("ProjectService workspace files", (it) => {
       yield* service.delete({ commandId: commandId("stop-delete"), projectId: deletedId });
       assert.isFalse(watches.hints.has(deletedId));
       assert.isUndefined(yield* enrichment.getWorkspaceFileStatus(deletedId));
-    }),
-  );
-});
-
-it.layer(dependencies(false))("ProjectService workspace files, turned off", (it) => {
-  it.effect("refuses to import or link while the server has them off", () =>
-    Effect.gen(function* () {
-      const service = yield* ProjectService.make;
-      const dir = yield* workspace(["app"]);
-      const filePath = yield* dir.writeFile("app.code-workspace", ["app"]);
-      const imported = yield* service
-        .importWorkspaceFile({
-          commandId: commandId("off-import"),
-          projectId: ProjectId.make("project:off-import"),
-          workspaceFilePath: filePath,
-        })
-        .pipe(Effect.flip);
-      assert.equal(imported._tag, "WorkspaceFileProjectsDisabledError");
-      const projectId = ProjectId.make("project:off-plain");
-      yield* service.create({
-        commandId: commandId("off-plain"),
-        projectId,
-        title: "App",
-        workspaceRoot: dir.at("app"),
-      });
-      const linked = yield* service
-        .update({ commandId: commandId("off-link"), projectId, workspaceFilePath: filePath })
-        .pipe(Effect.flip);
-      assert.equal(linked._tag, "WorkspaceFileProjectsDisabledError");
-      const refreshed = yield* service
-        .refreshWorkspaceFile({ projectId, reason: "refresh" })
-        .pipe(Effect.flip);
-      assert.equal(refreshed._tag, "WorkspaceFileProjectsDisabledError");
     }),
   );
 });

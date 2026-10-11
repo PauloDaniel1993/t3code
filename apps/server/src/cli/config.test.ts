@@ -58,7 +58,6 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
     otelEnvironment: OtelEnvironment.none,
     devAllowedOrigins: [],
-    workspaceFileProjects: false,
   } as const;
 
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
@@ -209,7 +208,6 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
                   T3CODE_NO_BROWSER: "true",
                   T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
                   T3CODE_LOG_WS_EVENTS: "true",
-                  T3CODE_WORKSPACE_FILE_PROJECTS: "true",
                 },
               }),
             ),
@@ -237,7 +235,6 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         logWebSocketEvents: true,
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
-        workspaceFileProjects: true,
       });
       assert.equal(resolved.stateDir, join(baseDir, "userdata"));
     }),

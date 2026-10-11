@@ -65,10 +65,10 @@ import {
 } from "./project.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
-const runCli = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
+const runCli = (args: ReadonlyArray<string>) =>
   Command.runWith(cli, { version: "0.0.0" })(args).pipe(
     Effect.provide(
-      Layer.mergeAll(CliRuntimeLayer, ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+      Layer.mergeAll(CliRuntimeLayer, ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
     ),
   );
 
@@ -129,8 +129,6 @@ const readProjects = (baseDir: string) =>
     );
   });
 
-const workspaceFileEnvironment = { T3CODE_WORKSPACE_FILE_PROJECTS: "true" };
-
 class ProjectCliTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.projects,
 ) {}
@@ -152,7 +150,7 @@ it.effect.each(["import", "link"] as const)(
               Effect.andThen(readProjects(baseDir)),
             )).projects[0]!.id
           : undefined;
-      const config = { ...(yield* makeConfig(baseDir)), workspaceFileProjects: true };
+      const config = yield* makeConfig(baseDir);
       const serviceLayer = ProjectServiceLayerLive.pipe(
         Layer.provideMerge(ProjectEnrichmentService.layer),
         Layer.provideMerge(RepositoryIdentityResolver.layer),
@@ -228,7 +226,6 @@ it.effect.each(["import", "link"] as const)(
         operation === "import"
           ? ["project", "add", filePath, "--title", "  Explicit title  ", "--base-dir", baseDir]
           : ["project", "link", existingProjectId!, filePath, "--base-dir", baseDir],
-        workspaceFileEnvironment,
       ).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.forkChild);
       yield* Deferred.await(mutationStarted);
       yield* TestClock.adjust("2 seconds");
@@ -238,10 +235,10 @@ it.effect.each(["import", "link"] as const)(
       assert.equal(added.title, operation === "import" ? "Explicit title" : "app");
       assert.equal(added.workspaceFile, filePath);
       assert.include(requests, "POST /api/projects/mutate");
-      const duplicate = yield* runCli(
-        ["project", "add", filePath, "--base-dir", baseDir],
-        workspaceFileEnvironment,
-      ).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.flip);
+      const duplicate = yield* runCli(["project", "add", filePath, "--base-dir", baseDir]).pipe(
+        Effect.provideService(FetchHttpClient.Fetch, fetch),
+        Effect.flip,
+      );
       assert.instanceOf(duplicate, ProjectLiveServerDeclaredResponseError);
       assert.equal(duplicate.diagnostic?.code, "conflict");
       assert.equal(duplicate.conflictingProjectId, added.id);
@@ -258,7 +255,7 @@ it.effect("directory mutations preserve a linked project with the same stored fi
     const filePath = NodePath.join(root, "team.code-workspace");
     yield* fs.makeDirectory(primary);
     yield* fs.writeFileString(filePath, '{"folders":[{"path":"app"}]}');
-    yield* runCli(["project", "add", filePath, "--base-dir", baseDir], workspaceFileEnvironment);
+    yield* runCli(["project", "add", filePath, "--base-dir", baseDir]);
     const linked = (yield* readProjects(baseDir)).projects[0]!;
     const threadId = ThreadId.make("linked-history");
     yield* seedNativeThreads(baseDir, [{ id: threadId, projectId: linked.id, archived: false }]);
@@ -307,7 +304,7 @@ it.effect("imports workspace files alongside plain projects and preserves file i
       filePath,
       '{ // JSONC\n "folders": [{"path":"app"}, {"path":"shared", "name":"Shared"}], }',
     );
-    yield* runCli(["project", "add", filePath, "--base-dir", baseDir], workspaceFileEnvironment);
+    yield* runCli(["project", "add", filePath, "--base-dir", baseDir]);
     yield* runCli(["project", "add", primary, "--base-dir", baseDir]);
     const snapshot = yield* readProjects(baseDir);
     assert.equal(snapshot.projects.length, 2);
@@ -318,10 +315,9 @@ it.effect("imports workspace files alongside plain projects and preserves file i
       linked.folders?.map((folder) => folder.path),
       [primary, secondary],
     );
-    const duplicate = yield* runCli(
-      ["project", "add", filePath, "--base-dir", baseDir],
-      workspaceFileEnvironment,
-    ).pipe(Effect.flip);
+    const duplicate = yield* runCli(["project", "add", filePath, "--base-dir", baseDir]).pipe(
+      Effect.flip,
+    );
     assert.equal((duplicate as { conflictingProjectId?: string }).conflictingProjectId, linked.id);
     yield* runCli(["project", "rename", primary, "Plain", "--base-dir", baseDir]);
     assert.equal(
@@ -363,18 +359,11 @@ it.effect("links, relinks, rereads and unlinks through the project mutation serv
     const second = NodePath.join(root, "second.code-workspace");
     yield* fs.writeFileString(first, '{"folders":[{"path":"app"}]}');
     yield* fs.writeFileString(second, '{"folders":[{"path":"app"},{"path":"other"}]}');
-    const disabledLink = yield* runCli(["project", "link", id, first, "--base-dir", baseDir]).pipe(
-      Effect.flip,
-    );
-    assert.equal((disabledLink as { _tag?: string })._tag, "WorkspaceFileProjectsDisabledError");
-    yield* runCli(["project", "link", id, first, "--base-dir", baseDir], workspaceFileEnvironment);
-    yield* runCli(
-      ["project", "link", first, second, "--base-dir", baseDir],
-      workspaceFileEnvironment,
-    );
+    yield* runCli(["project", "link", id, first, "--base-dir", baseDir]);
+    yield* runCli(["project", "link", first, second, "--base-dir", baseDir]);
     assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceFile, second);
     yield* fs.writeFileString(second, '{"folders":[{"path":"app"},{"path":"shared"}]}');
-    yield* runCli(["project", "link", id, second, "--base-dir", baseDir], workspaceFileEnvironment);
+    yield* runCli(["project", "link", id, second, "--base-dir", baseDir]);
     assert.deepEqual(
       (yield* readProjects(baseDir)).projects[0]?.folders?.map((folder) => folder.path),
       [primary, NodePath.join(root, "shared")],
@@ -397,27 +386,26 @@ it.effect("keeps suffix-named directories plain and never creates missing file p
     yield* runCli(["project", "add", directory, "--base-dir", baseDir]);
     assert.isTrue((yield* readProjects(baseDir)).projects[0]?.workspaceFile == null);
     const missing = NodePath.join(root, "missing.code-workspace");
-    const disabled = yield* runCli(["project", "add", missing, "--base-dir", baseDir]).pipe(
+    const absent = yield* runCli(["project", "add", missing, "--base-dir", baseDir]).pipe(
       Effect.flip,
     );
-    assert.equal((disabled as { _tag?: string })._tag, "WorkspaceFileProjectsDisabledError");
-    const absent = yield* runCli(
-      ["project", "add", missing, "--base-dir", baseDir],
-      workspaceFileEnvironment,
-    ).pipe(Effect.flip);
     assert.equal((absent as { diagnostic?: { code: string } }).diagnostic?.code, "file-not-found");
     assert.isFalse(yield* fs.exists(missing));
     const malformed = NodePath.join(root, "bad.code-workspace");
     yield* fs.writeFileString(malformed, '{"folders":[');
-    const broken = yield* runCli(
-      ["project", "add", malformed, "--base-dir", baseDir],
-      workspaceFileEnvironment,
-    ).pipe(Effect.flip);
+    const broken = yield* runCli(["project", "add", malformed, "--base-dir", baseDir]).pipe(
+      Effect.flip,
+    );
     assert.equal((broken as { diagnostic?: { code: string } }).diagnostic?.code, "malformed-jsonc");
-    const emptyTitle = yield* runCli(
-      ["project", "add", malformed, "--title", "   ", "--base-dir", baseDir],
-      workspaceFileEnvironment,
-    ).pipe(Effect.flip);
+    const emptyTitle = yield* runCli([
+      "project",
+      "add",
+      malformed,
+      "--title",
+      "   ",
+      "--base-dir",
+      baseDir,
+    ]).pipe(Effect.flip);
     assert.equal((emptyTitle as { _tag?: string })._tag, "ProjectTitleEmptyError");
   }).pipe(Effect.provide(NodeServices.layer)),
 );

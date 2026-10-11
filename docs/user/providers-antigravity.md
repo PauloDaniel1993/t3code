@@ -138,3 +138,9 @@ for eligibility.
 
 [registry]: https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json
 [plans]: https://antigravity.google/docs/plans
+
+## Multi-root projects
+
+Antigravity can't yet run a thread that uses more than one folder of a
+[multi-root project](./project-settings.md#vs-code-workspace-files). Choose Codex or Claude for those threads.
+Single-folder projects are unaffected.

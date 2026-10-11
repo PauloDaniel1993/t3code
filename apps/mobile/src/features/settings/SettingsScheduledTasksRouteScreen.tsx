@@ -766,17 +766,24 @@ function TaskForm({
           }}
         />
         {draft.workspace === "worktree" ? (
-          <PickerRow
-            label="Base branch"
-            value={resolveNewTaskBranchLabel({
-              branchName: draft.baseRef,
-              startFromOrigin: draft.startFromOrigin,
-              workspaceMode: "worktree",
-            })}
-            borderTop
-            disabled={!draft.projectId || saving || dictationPending || environmentUnavailable}
-            onPress={() => navigation.navigate("SettingsScheduledTaskBranch")}
-          />
+          <>
+            <PickerRow
+              label="Base branch"
+              value={resolveNewTaskBranchLabel({
+                branchName: draft.baseRef,
+                startFromOrigin: draft.startFromOrigin,
+                workspaceMode: "worktree",
+              })}
+              borderTop
+              disabled={!draft.projectId || saving || dictationPending || environmentUnavailable}
+              onPress={() => navigation.navigate("SettingsScheduledTaskBranch")}
+            />
+            {projects.find((project) => project.id === draft.projectId)?.workspaceFile != null ? (
+              <Text className="px-4 pb-3 text-sm text-foreground-muted">
+                Applies to the primary repository.
+              </Text>
+            ) : null}
+          </>
         ) : null}
         {draft.workspace === "existing_worktree" ? (
           <FormField

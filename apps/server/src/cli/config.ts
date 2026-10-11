@@ -162,11 +162,6 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
-  // Workspace-file projects stay behind this flag until import, provider
-  // access, worktree sets and restore have all landed.
-  workspaceFileProjects: Config.Boolean("T3CODE_WORKSPACE_FILE_PROJECTS").pipe(
-    Config.withDefault(false),
-  ),
 });
 
 const DevAuthTokenConfig = Config.Redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
@@ -463,7 +458,6 @@ export const resolveServerConfig = (
       logWebSocketEvents,
       tailscaleServeEnabled,
       tailscaleServePort,
-      workspaceFileProjects: env.workspaceFileProjects,
     };
 
     return config;

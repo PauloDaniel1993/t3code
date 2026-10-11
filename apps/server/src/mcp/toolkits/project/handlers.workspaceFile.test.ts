@@ -49,63 +49,53 @@ const caller = {
   deletedAt: null,
 } as OrchestrationV2ThreadShell;
 
-const dependencies = (workspaceFileProjects: boolean) =>
-  Layer.mergeAll(
-    OrchestrationV2EventSinkLayerLive,
-    ProjectStore.layer,
-    ProjectionStore.layer,
-    IdAllocator.layer,
-  ).pipe(
-    Layer.provideMerge(
-      LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
+const dependencies = Layer.mergeAll(
+  OrchestrationV2EventSinkLayerLive,
+  ProjectStore.layer,
+  ProjectionStore.layer,
+  IdAllocator.layer,
+).pipe(
+  Layer.provideMerge(
+    LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
+  ),
+  Layer.provideMerge(ProjectEnrichmentService.layer),
+  Layer.provideMerge(WorkspacePaths.layer),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: () => Effect.succeed(null),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+      WorkspaceFolderResolver.layer,
     ),
-    Layer.provideMerge(ProjectEnrichmentService.layer),
-    Layer.provideMerge(WorkspacePaths.layer),
-    Layer.provideMerge(
-      Layer.mergeAll(
-        Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
-          resolve: () => Effect.succeed(null),
-        }),
-        Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
-          resolvePath: () => Effect.succeed(null),
-        }),
-        WorkspaceFolderResolver.layer,
-      ),
-    ),
-    Layer.provideMerge(SqlitePersistenceMemory),
-    Layer.provideMerge(
-      Layer.effect(
-        ServerConfig.ServerConfig,
-        Effect.gen(function* () {
-          const config = yield* ServerConfig.ServerConfig;
-          return { ...config, workspaceFileProjects };
-        }),
-      ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "mcp-project-file-" }))),
-    ),
-    Layer.provideMerge(NodeServices.layer),
-    Layer.provideMerge(NodeCrypto.layer),
-  );
+  ),
+  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "mcp-project-file-" })),
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(NodeCrypto.layer),
+);
 
-const testLayer = (enabled: boolean) =>
-  Layer.mergeAll(
-    Project.layer,
-    Layer.succeed(McpInvocationContext.McpInvocationContext, {
-      environmentId: EnvironmentId.make("environment:mcp-project"),
-      threadId,
-      providerSessionId: "session",
-      providerInstanceId,
-      issuedAt: 0,
-      capabilities: new Set(["orchestration" as const]),
-    }),
-    Layer.mock(ThreadManagement.ThreadManagementService)({
-      getThreadShell: () => Effect.succeed(caller),
-    }),
-    Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
-    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-      namedProjectsRoot: "/unused-projects",
-      createNamedProject: () => Effect.die("A file import must not create a named project."),
-    }),
-  ).pipe(Layer.provideMerge(dependencies(enabled)));
+const testLayer = Layer.mergeAll(
+  Project.layer,
+  Layer.succeed(McpInvocationContext.McpInvocationContext, {
+    environmentId: EnvironmentId.make("environment:mcp-project"),
+    threadId,
+    providerSessionId: "session",
+    providerInstanceId,
+    issuedAt: 0,
+    capabilities: new Set(["orchestration" as const]),
+  }),
+  Layer.mock(ThreadManagement.ThreadManagementService)({
+    getThreadShell: () => Effect.succeed(caller),
+  }),
+  Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+    namedProjectsRoot: "/unused-projects",
+    createNamedProject: () => Effect.die("A file import must not create a named project."),
+  }),
+).pipe(Layer.provideMerge(dependencies));
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const fixture = Effect.gen(function* () {
@@ -121,7 +111,7 @@ const fixture = Effect.gen(function* () {
 
 const toolkit = ProjectToolkit.pipe(Effect.provide(ProjectHandlersLive));
 
-it.layer(testLayer(true))("workspace-file project MCP tools", (it) => {
+it.layer(testLayer)("workspace-file project MCP tools", (it) => {
   it.effect("imports, reads and pages one project with ordered folder facts", () =>
     Effect.gen(function* () {
       const tools = yield* toolkit;
@@ -364,36 +354,6 @@ it.layer(testLayer(true))("workspace-file project MCP tools", (it) => {
         expect(rejected.at(-1)?.result).toMatchObject({ code: "invalid_request" });
       }
       expect((yield* (yield* Project.ProjectService).snapshot).projects).toEqual(before.projects);
-    }),
-  );
-});
-
-it.layer(testLayer(false))("disabled workspace-file project MCP tools", (it) => {
-  it.effect("refuses import and link without falling back to named creation", () =>
-    Effect.gen(function* () {
-      const tools = yield* toolkit;
-      const dir = yield* fixture;
-      const file = yield* dir.write("team.code-workspace", [{ path: "app", name: "App" }]);
-      const imported = yield* tools
-        .handle("t3_project_create", { workspaceFilePath: file, title: "Team" })
-        .pipe(Stream.unwrap, Stream.runCollect);
-      expect(imported.at(-1)?.encodedResult).toMatchObject({
-        code: "invalid_request",
-        message: "Workspace-file projects are not enabled on this server.",
-      });
-      const created = yield* tools
-        .handle("t3_project_create", { title: "Plain", workspaceRoot: dir.at("app") })
-        .pipe(Stream.unwrap, Stream.runCollect);
-      const project = created.at(-1)?.result;
-      if (project === undefined || !("id" in project)) throw new Error("Create failed");
-      const linked = yield* tools
-        .handle("t3_project_update", { projectId: project.id, workspaceFilePath: file })
-        .pipe(Stream.unwrap, Stream.runCollect);
-      expect(linked.at(-1)?.encodedResult).toMatchObject({
-        code: "invalid_request",
-        message: "Workspace-file projects are not enabled on this server.",
-      });
-      expect((yield* (yield* Project.ProjectService).snapshot).projects).toHaveLength(1);
     }),
   );
 });

@@ -106,3 +106,8 @@ config directory and put the router's endpoint and credential variables in that
 instance's **Environment variables**. The router must run where the environment
 can reach it. Follow the [Claude Code Router instructions](https://github.com/musistudio/claude-code-router)
 for its installation and routing configuration.
+
+## Multi-root projects
+
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), Claude works in the primary folder and can
+also read and edit the project's other available folders, within the thread's access mode.

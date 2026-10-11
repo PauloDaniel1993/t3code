@@ -80,3 +80,9 @@ pnpm --filter t3 record:cursor-replay --scenario simple
 
 Use `--out <path>` to record a temporary probe without replacing a checked-in fixture. Supported
 scenarios are listed by the recorder when an invalid scenario is supplied.
+
+## Multi-root projects
+
+Cursor can't yet run a thread that uses more than one folder of a
+[multi-root project](./project-settings.md#vs-code-workspace-files). Choose Codex or Claude for those threads.
+Single-folder projects are unaffected.

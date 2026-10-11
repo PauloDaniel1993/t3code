@@ -381,7 +381,7 @@ export class WorkspacePrimaryFolderUnavailableError extends Schema.TaggedError<W
   }
 }
 
-/** Workspace-file projects are turned off on this server. */
+/** The server predates workspace-file projects or has them turned off. */
 export class WorkspaceFileProjectsDisabledError extends Schema.TaggedError<WorkspaceFileProjectsDisabledError>()(
   "WorkspaceFileProjectsDisabledError",
   {},

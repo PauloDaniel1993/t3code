@@ -24,7 +24,9 @@ Use `mod+shift+m` to choose a model and `mod+shift+h` to choose a host.
 Use `mod+shift+e` for effort, `mod+shift+a` for access mode, `mod+shift+x` for the
 workspace, and `mod+shift+g` for the Git branch. The workspace menu includes the
 current checkout, a new worktree, and the previous worktree when available.
-Use `mod+shift+l` to reuse the previous worktree directly.
+Use `mod+shift+l` to reuse the previous worktree directly. In a multi-root project,
+a new or previous worktree covers every Git repository among the thread's folders; see
+[threads in multi-root projects](./thread-sidebar.md#threads-in-multi-root-projects).
 
 In the model picker, press Left in an empty search field or Shift+Tab to reach
 the provider list. Use Up/Down to move and Enter to choose. Right returns to
