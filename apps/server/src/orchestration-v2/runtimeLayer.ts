@@ -238,7 +238,8 @@ const orchestratorProvided = orchestratorLayer.pipe(
 const agentSessionImporterProvided = agentSessionImporterLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      AgentSessionScanner.layer,
+      AgentSessionScanner.layer.pipe(Layer.provide(projectionStoreLayer)),
+      projectionStoreLayer,
       ProjectServiceLayerLive,
       orchestratorProvided,
       eventSinkProvided,

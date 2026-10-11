@@ -34,6 +34,8 @@ import * as Stream from "effect/Stream";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import type { ThreadWorkspaceBinding } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
@@ -172,6 +174,7 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
   const importRecentAgentThreads = Effect.fn("importRecentAgentThreadsV2")(function* (
     input: AgentSessionImportInput,
   ) {
@@ -185,12 +188,40 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
-    if (
-      input.expectedWorkspaceRoot !== undefined &&
-      normalizeProjectPathForComparison(project.workspaceRoot) !==
-        normalizeProjectPathForComparison(input.expectedWorkspaceRoot)
-    ) {
-      return yield* new AgentSessionImportProjectChangedError({ projectId: input.projectId });
+    const cwd = input.expectedWorkspaceRoot ?? project.workspaceRoot;
+    const atProjectRoot =
+      normalizeProjectPathForComparison(project.workspaceRoot) ===
+      normalizeProjectPathForComparison(cwd);
+    let binding: ThreadWorkspaceBinding;
+    if (atProjectRoot) {
+      const workspaceFolders =
+        project.workspaceFile === undefined
+          ? undefined
+          : yield* projects
+              .snapshotWorkspaceFolders(input.projectId)
+              .pipe(
+                Effect.mapError(
+                  (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+                ),
+              );
+      if (
+        workspaceFolders?.[0]?.path !== undefined &&
+        normalizeProjectPathForComparison(workspaceFolders[0].path) !==
+          normalizeProjectPathForComparison(cwd)
+      ) {
+        return yield* new AgentSessionImportProjectChangedError({ projectId: input.projectId });
+      }
+      binding = {
+        branch: null,
+        worktreePath: null,
+        ...(workspaceFolders === undefined ? {} : { workspaceFolders }),
+      };
+    } else {
+      const worktree = yield* scanner.worktreeBinding(input.projectId, cwd);
+      if (Option.isNone(worktree)) {
+        return yield* new AgentSessionImportProjectChangedError({ projectId: input.projectId });
+      }
+      binding = worktree.value;
     }
     const runtimeRows = yield* runtimes
       .list()
@@ -205,13 +236,13 @@ const make = Effect.gen(function* () {
         Option.isNone(payload) ||
         payload.value.cwd === undefined ||
         normalizeProjectPathForComparison(payload.value.cwd) !==
-          normalizeProjectPathForComparison(project.workspaceRoot)
+          normalizeProjectPathForComparison(cwd)
       ) {
         return [];
       }
       return payload.value.importedTranscripts ?? [];
     });
-    const outcomes = scanner.recentThreads(project.workspaceRoot, completedSources);
+    const outcomes = scanner.recentThreads(cwd, completedSources, binding);
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
@@ -271,6 +302,10 @@ const make = Effect.gen(function* () {
             driver,
             nativeThreadId: thread.providerSessionId,
           });
+          // Native stores also contain sessions T3 ran itself. Importing one
+          // must not transfer its provider-thread record to a second thread.
+          const owner = yield* projections.getProviderThreadOwner(providerThreadId);
+          if (owner !== undefined && owner !== threadId) return undefined;
           const createdAt = dateTime(thread.createdAt);
           const updatedAt = dateTime(thread.updatedAt);
           const appThread: OrchestrationV2AppThread = {
@@ -283,8 +318,7 @@ const make = Effect.gen(function* () {
             modelSelection: { instanceId: thread.providerInstanceId, model },
             runtimeMode: DEFAULT_RUNTIME_MODE,
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            branch: null,
-            worktreePath: null,
+            ...binding,
             linkedPullRequest: null,
             branchPullRequest: null,
             activeProviderThreadId: providerThreadId,
@@ -345,7 +379,7 @@ const make = Effect.gen(function* () {
                 thread.source === "codex"
                   ? { threadId: thread.providerSessionId }
                   : { threadId, resume: thread.providerSessionId },
-              runtimePayload: { cwd: project.workspaceRoot },
+              runtimePayload: { cwd },
             },
             { onConflict: "ignore" },
           );
@@ -384,6 +418,7 @@ const make = Effect.gen(function* () {
             }).pipe(Effect.as(false)),
           ),
         );
+        if (imported === undefined) return;
         if (imported) {
           importedThreadIds.add(threadId);
           importedCount += 1;

@@ -3,7 +3,9 @@ import * as NodeOS from "node:os";
 import { describe, expect, it } from "@effect/vitest";
 import {
   type OrchestrationProjectShell,
+  type OrchestrationV2AppThread,
   ProjectId,
+  ThreadId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerSettings as ContractServerSettings,
@@ -20,6 +22,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 
@@ -33,12 +36,9 @@ const makeProjectShell = (workspaceRoot: string): OrchestrationProjectShell => (
   updatedAt: "2026-01-01T00:00:00.000Z",
 });
 
-const makeProjectStoreLayer = (importedWorkspaceRoots: ReadonlyArray<string>) =>
+const makeProjectStoreLayer = (projects: ReadonlyArray<OrchestrationProjectShell>) =>
   Layer.mock(ProjectStore.ProjectStoreV2)({
-    listShells: () =>
-      Effect.succeed(
-        importedWorkspaceRoots.map((workspaceRoot) => makeProjectShell(workspaceRoot)),
-      ),
+    listShells: () => Effect.succeed(projects),
   });
 
 /**
@@ -49,6 +49,13 @@ interface ScannerTestInput {
   readonly claudeHomePath: string;
   readonly codexHomePath: string;
   readonly importedWorkspaceRoots?: ReadonlyArray<string>;
+  readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
+  readonly worktreeThreads?: ReadonlyArray<
+    Pick<
+      OrchestrationV2AppThread,
+      "id" | "projectId" | "branch" | "worktreePath" | "workspaceFolders" | "worktrees"
+    >
+  >;
   /** Base dir for the test ServerConfig; worktreesDir derives from it. */
   readonly configBaseDir?: string;
   readonly providerInstances?: ContractServerSettings["providerInstances"];
@@ -71,7 +78,17 @@ const makeScannerTestLayer = (input: ScannerTestInput) =>
           input.claudeHomePath,
           input.configBaseDir ?? { prefix: "t3code-scanner-config-" },
         ),
-        makeProjectStoreLayer(input.importedWorkspaceRoots ?? []),
+        makeProjectStoreLayer(
+          input.projects ?? (input.importedWorkspaceRoots ?? []).map(makeProjectShell),
+        ),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getWorkspaceWorktreeBindings: () =>
+            Effect.succeed(
+              (input.worktreeThreads ?? []).filter(
+                (thread) => thread.workspaceFolders !== undefined,
+              ),
+            ),
+        }),
       ),
     ),
   );
@@ -155,6 +172,290 @@ function makeRecordLimitTranscript(cwd: string, overflow: boolean): string {
 
 it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
   describe("scan", () => {
+    it.effect("keeps ordinary managed projects and worktrees out of onboarding", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const configBaseDir = yield* makeTempDir("t3code-config-");
+        const plainRoot = yield* makeTempDir("t3code-project-");
+        const cwds = [
+          path.join(configBaseDir, "scratch", "thread"),
+          path.join(configBaseDir, "projects", "named"),
+          path.join(configBaseDir, "worktrees", "plain"),
+        ];
+        for (const [index, cwd] of cwds.entries()) {
+          yield* fileSystem.makeDirectory(cwd, { recursive: true });
+          yield* writeTranscript({
+            filePath: path.join(
+              codexHomePath,
+              "sessions",
+              "2026",
+              "08",
+              "24",
+              `rollout-${index}.jsonl`,
+            ),
+            contents: codexRolloutLine(cwd),
+            mtimeMs: nowMs,
+          });
+        }
+        yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          expect((yield* scanner.scan).candidates).toEqual([]);
+          for (const cwd of cwds) {
+            expect(yield* scanner.recentThreads(cwd).pipe(Stream.runCollect)).toEqual([]);
+          }
+        }).pipe(
+          Effect.provide(
+            makeScannerTestLayer({
+              claudeHomePath,
+              codexHomePath,
+              configBaseDir,
+              projects: [
+                ...cwds.slice(0, 2).map((cwd, index) => ({
+                  ...makeProjectShell(cwd),
+                  id: ProjectId.make(`managed-${index}`),
+                })),
+                makeProjectShell(plainRoot),
+              ],
+              worktreeThreads: [
+                {
+                  id: ThreadId.make("plain-worktree"),
+                  projectId: ProjectId.make("project-1"),
+                  branch: "plain",
+                  worktreePath: cwds[2]!,
+                },
+              ],
+            }),
+          ),
+        );
+      }),
+    );
+    it.effect("offers secondary-folder sessions to plain projects and reads each store once", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const primary = yield* makeTempDir("t3code-primary-");
+        const secondary = path.join(primary, "nested");
+        const other = yield* makeTempDir("t3code-secondary-");
+        const notDirectory = path.join(primary, "file.txt");
+        yield* fileSystem.makeDirectory(secondary);
+        yield* fileSystem.writeFileString(notDirectory, "not a folder");
+        const linked = {
+          ...makeProjectShell(primary),
+          workspaceFile: path.join(primary, "project.code-workspace"),
+          folders: [
+            { path: primary, name: "Primary", label: "primary" },
+            { path: secondary, name: "Nested", label: "nested" },
+            { path: other, name: "Other", label: "other" },
+            { path: path.join(primary, "missing"), name: "Missing", label: "missing" },
+            { path: notDirectory, name: "File", label: "file" },
+            { uri: "vscode-remote://ssh-remote+host/project", name: "Remote", label: "remote" },
+          ],
+        };
+        const plain = { ...makeProjectShell(other), id: ProjectId.make("plain-secondary") };
+        for (const [index, cwd] of [primary, secondary, other, notDirectory].entries()) {
+          yield* writeTranscript({
+            filePath: path.join(
+              codexHomePath,
+              "sessions",
+              "2026",
+              "08",
+              "24",
+              `rollout-${index}.jsonl`,
+            ),
+            contents: [
+              encodeTranscriptRecord({
+                type: "session_meta",
+                payload: { id: `session-${index}`, cwd },
+              }),
+              encodeTranscriptRecord({
+                type: "event_msg",
+                payload: { type: "user_message", message: cwd },
+              }),
+            ].join("\n"),
+            mtimeMs: nowMs,
+          });
+        }
+        const storeReads = new Map<string, number>();
+        const countingFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          readDirectory: (directory, options) => {
+            storeReads.set(directory, (storeReads.get(directory) ?? 0) + 1);
+            return fileSystem.readDirectory(directory, options);
+          },
+        });
+        yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          const result = yield* scanner.scan;
+          expect(result.candidates).toHaveLength(3);
+          expect(result.candidates.find((candidate) => candidate.path === primary)).toMatchObject({
+            projectId: linked.id,
+            alreadyImported: true,
+          });
+          expect(result.candidates.find((candidate) => candidate.path === secondary)).toMatchObject(
+            { alreadyImported: false },
+          );
+          expect(
+            result.candidates.find((candidate) => candidate.path === secondary),
+          ).not.toHaveProperty("projectId");
+          expect(result.candidates.find((candidate) => candidate.path === other)).toMatchObject({
+            projectId: plain.id,
+            alreadyImported: true,
+          });
+          for (const [index, cwd] of [primary, secondary, other].entries()) {
+            const outcomes = yield* scanner.recentThreads(cwd).pipe(Stream.runCollect);
+            expect(outcomes).toMatchObject([
+              { _tag: "Importable", thread: { providerSessionId: `session-${index}` } },
+            ]);
+          }
+          expect(storeReads.get(path.join(codexHomePath, "sessions"))).toBe(1);
+          expect(storeReads.get(path.join(claudeHomePath, "projects"))).toBe(1);
+        }).pipe(
+          Effect.provide(
+            makeScannerTestLayer({ claudeHomePath, codexHomePath, projects: [linked, plain] }),
+          ),
+          Effect.provideService(FileSystem.FileSystem, countingFileSystem),
+        );
+      }),
+    );
+
+    it.effect("prefers a plain project that coexists with a workspace-file primary", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const workspace = yield* makeTempDir("t3code-workspace-");
+        const plain = makeProjectShell(workspace);
+        const linked = {
+          ...plain,
+          id: ProjectId.make("linked"),
+          workspaceFile: path.join(workspace, "project.code-workspace"),
+          folders: [{ path: workspace, name: "Primary", label: "primary" }],
+        };
+        yield* writeTranscript({
+          filePath: path.join(codexHomePath, "sessions", "2026", "08", "24", "rollout-plain.jsonl"),
+          contents: codexRolloutLine(workspace),
+          mtimeMs: 1_000,
+        });
+        const result = yield* runScan({ claudeHomePath, codexHomePath, projects: [plain, linked] });
+        expect(result.candidates).toMatchObject([
+          { path: workspace, projectId: plain.id, alreadyImported: true },
+        ]);
+      }),
+    );
+
+    it.effect("matches mapped worktree folders without rebinding secondary sessions", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const repositoryRoot = yield* makeTempDir("t3code-repo-primary-");
+        const secondaryRoot = yield* makeTempDir("t3code-repo-secondary-");
+        const configBaseDir = yield* makeTempDir("t3code-config-");
+        const primary = path.join(repositoryRoot, "subfolder");
+        const primaryMember = path.join(configBaseDir, "worktrees", "set", "primary");
+        const secondaryMember = path.join(configBaseDir, "worktrees", "set", "secondary");
+        const mappedPrimary = path.join(primaryMember, "subfolder");
+        const mappedSecondary = path.join(secondaryMember, "nested");
+        const unknown = path.join(configBaseDir, "worktrees", "unknown");
+        for (const folder of [primary, mappedPrimary, mappedSecondary, unknown]) {
+          yield* fileSystem.makeDirectory(folder, { recursive: true });
+        }
+        const project = {
+          ...makeProjectShell(primary),
+          workspaceFile: path.join(repositoryRoot, "project.code-workspace"),
+          folders: [
+            { path: primary, name: "Primary", label: "primary" },
+            { path: path.join(secondaryRoot, "nested"), name: "Secondary", label: "secondary" },
+          ],
+        };
+        const binding = {
+          branch: "shared",
+          worktreePath: mappedPrimary,
+          workspaceFolders: project.folders.map((folder, index) => ({
+            ...folder,
+            checkoutRoot: index === 0 ? repositoryRoot : secondaryRoot,
+            checkoutPrefix: index === 0 ? "subfolder" : "nested",
+          })),
+          worktrees: [
+            { repositoryRoot, path: primaryMember, branch: "shared" },
+            { repositoryRoot: secondaryRoot, path: secondaryMember, branch: "shared" },
+          ],
+        };
+        for (const [index, cwd] of [mappedPrimary, mappedSecondary, unknown].entries()) {
+          yield* writeTranscript({
+            filePath: path.join(
+              codexHomePath,
+              "sessions",
+              "2026",
+              "08",
+              "24",
+              `rollout-${index}.jsonl`,
+            ),
+            contents: [
+              encodeTranscriptRecord({
+                type: "session_meta",
+                payload: { id: `mapped-${index}`, cwd },
+              }),
+              encodeTranscriptRecord({
+                type: "event_msg",
+                payload: { type: "user_message", message: cwd },
+              }),
+            ].join("\n"),
+            mtimeMs: nowMs,
+          });
+        }
+        yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          const result = yield* scanner.scan;
+          expect(result.candidates).toHaveLength(2);
+          expect(
+            result.candidates.find((candidate) => candidate.path === mappedPrimary),
+          ).toMatchObject({ projectId: project.id, alreadyImported: true });
+          expect(
+            result.candidates.find((candidate) => candidate.path === mappedSecondary),
+          ).toMatchObject({ alreadyImported: false });
+          expect(
+            result.candidates.find((candidate) => candidate.path === mappedSecondary),
+          ).not.toHaveProperty("projectId");
+          expect(yield* scanner.worktreeBinding(project.id, mappedPrimary)).toEqual(
+            Option.some(binding),
+          );
+          expect(yield* scanner.worktreeBinding(project.id, mappedSecondary)).toEqual(
+            Option.none(),
+          );
+          for (const [index, cwd] of [mappedPrimary, mappedSecondary].entries()) {
+            expect(yield* scanner.recentThreads(cwd).pipe(Stream.runCollect)).toMatchObject([
+              { _tag: "Importable", thread: { providerSessionId: `mapped-${index}` } },
+            ]);
+          }
+        }).pipe(
+          Effect.provide(
+            makeScannerTestLayer({
+              claudeHomePath,
+              codexHomePath,
+              configBaseDir,
+              projects: [project],
+              worktreeThreads: [
+                { id: ThreadId.make("mapped-thread"), projectId: project.id, ...binding },
+              ],
+            }),
+          ),
+        );
+      }),
+    );
+
     it.effect("reads Claude project cwds from transcripts, newest first", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

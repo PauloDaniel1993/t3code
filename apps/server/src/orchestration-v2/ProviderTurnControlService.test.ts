@@ -215,6 +215,8 @@ it.effect(
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
           getThreadShell: () => Effect.die("unused getThreadShell"),
           getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
+          getWorkspaceWorktreeBindings: () => Effect.die("unused workspace bindings"),
+          getProviderThreadOwner: () => Effect.die("unused provider thread ownership"),
           getSettlementCandidates: () => Effect.die("unused getSettlementCandidates"),
           getThreadsWithPullRequests: () => Effect.die("unused getThreadsWithPullRequests"),
           getThreadProjection: () => Effect.die("control effects must not load transcript"),

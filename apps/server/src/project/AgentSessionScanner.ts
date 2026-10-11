@@ -21,6 +21,7 @@ import {
   CodexSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProjectId,
   resolveProviderInstanceEnabled,
   type AgentSessionImportSource,
   type AgentSessionProjectCandidate,
@@ -46,9 +47,12 @@ import {
 } from "@t3tools/shared/git";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
+import { projectFolders, resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import type { ThreadWorkspaceBinding } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -189,9 +193,15 @@ export class AgentSessionScanner extends Context.Service<
      * error directly — there is no server-local context worth wrapping.
      */
     readonly scan: Effect.Effect<AgentSessionScanResult, AgentSessionScanError>;
+    /** Preserve a known worktree primary's binding instead of moving its native session. */
+    readonly worktreeBinding: (
+      projectId: ProjectId,
+      cwd: string,
+    ) => Effect.Effect<Option.Option<ThreadWorkspaceBinding>, AgentSessionScanError>;
     readonly recentThreads: (
       workspaceRoot: string,
       completedSources?: ReadonlyArray<AgentSessionImportSource>,
+      binding?: ThreadWorkspaceBinding,
     ) => Stream.Stream<AgentSessionRecentThread, AgentSessionScanError>;
   }
 >()("t3/project/AgentSessionScanner") {}
@@ -537,8 +547,8 @@ function shouldRetainDecodedRecord(
 
 /**
  * T3 Code runs its own agent sessions inside disposable worktrees. Their
- * transcripts look exactly like user sessions, but re-importing the app's own
- * sandboxes as projects is never right. Matches this server's configured
+ * transcripts look exactly like user sessions. Sandboxes must not become
+ * projects. Matches this server's configured
  * worktrees directory plus the conventional `.t3/worktrees` layout, which
  * also catches sandboxes from other T3 homes on the same machine. Separators
  * are normalized (and, on Windows, case folded) so the prefix match holds
@@ -625,6 +635,7 @@ export const make = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projectStore = yield* ProjectStore.ProjectStoreV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
   const baseDir = path.resolve(serverConfig.baseDir);
   const worktreesDir = path.resolve(serverConfig.worktreesDir);
   // Windows filesystems are case-insensitive, so path prefix checks there
@@ -683,6 +694,92 @@ export const make = Effect.gen(function* () {
       .realPath(resolved)
       .pipe(Effect.orElseSucceed(() => resolved));
     return `path:${normalizeProjectPathForComparison(realPath)}`;
+  });
+
+  // Match available directories by filesystem identity. Secondary folders
+  // stay plain-project candidates; a plain project wins when it coexists
+  // with a workspace-file project at the same cwd.
+  const workspaceDirectories = Effect.fn("AgentSessionScanner.workspaceDirectories")(function* () {
+    const projects = yield* projectStore
+      .listShells()
+      .pipe(
+        Effect.mapError(
+          (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+        ),
+      );
+    const bindings = yield* projections
+      .getWorkspaceWorktreeBindings()
+      .pipe(
+        Effect.mapError(
+          (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+        ),
+      );
+    const directories = new Map<
+      string,
+      Array<{
+        readonly path: string;
+        readonly project: (typeof projects)[number];
+        readonly isPrimary: boolean;
+        readonly binding?: ThreadWorkspaceBinding;
+      }>
+    >();
+    const identities = new Map<string, string | null>();
+    const add = Effect.fnUntraced(function* (
+      entry: NonNullable<ReturnType<typeof directories.get>>[number],
+    ) {
+      const directory = path.resolve(expandHomePath(entry.path));
+      let identity = identities.get(directory);
+      if (identity === undefined) {
+        const stats = yield* statOption(directory);
+        identity =
+          Option.isSome(stats) && stats.value.type === "Directory"
+            ? yield* directoryIdentity(directory, stats.value)
+            : null;
+        identities.set(directory, identity);
+      }
+      if (identity === null) return;
+      const matches = directories.get(identity) ?? [];
+      matches.push(entry);
+      directories.set(identity, matches);
+    });
+    for (const project of projects) {
+      for (const [index, folder] of projectFolders(project).entries()) {
+        if (folder.path !== undefined) {
+          yield* add({ path: folder.path, project, isPrimary: index === 0 });
+        }
+      }
+    }
+    const projectsById = new Map(projects.map((project) => [project.id, project]));
+    for (const thread of bindings) {
+      const project = projectsById.get(thread.projectId);
+      if (project === undefined) continue;
+      const binding: ThreadWorkspaceBinding = {
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+        ...(thread.workspaceFolders === undefined
+          ? {}
+          : { workspaceFolders: thread.workspaceFolders }),
+        ...(thread.worktrees === undefined ? {} : { worktrees: thread.worktrees }),
+      };
+      for (const folder of resolveThreadWorkspace({ thread, project }).folders) {
+        if (folder.effectivePath !== null) {
+          yield* add({ path: folder.effectivePath, project, isPrimary: folder.isPrimary, binding });
+        }
+      }
+    }
+    return directories;
+  });
+
+  const worktreeBinding: AgentSessionScanner["Service"]["worktreeBinding"] = Effect.fn(
+    "AgentSessionScanner.worktreeBinding",
+  )(function* (projectId, cwd) {
+    const directories = yield* workspaceDirectories();
+    const matches = directories.get(yield* directoryIdentity(cwd));
+    return Option.fromNullishOr(
+      matches?.find(
+        (match) => match.isPrimary && match.project.id === projectId && match.binding !== undefined,
+      )?.binding,
+    );
   });
 
   /**
@@ -1201,6 +1298,7 @@ export const make = Effect.gen(function* () {
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
     const { candidates: raw, truncated } = yield* collectCandidates();
     cachedCandidates = raw;
+    const directories = yield* workspaceDirectories();
 
     // Filesystem identity merges symlinks and case aliases without collapsing
     // distinct case-sensitive directories.
@@ -1221,7 +1319,6 @@ export const make = Effect.gen(function* () {
       const expanded = expandHomePath(candidate.cwd.trim());
       if (!path.isAbsolute(expanded)) continue;
       const resolved = path.resolve(expanded);
-      if (isExcludedProjectPath(resolved)) continue;
       let key = directoryKeys.get(resolved);
       if (key === undefined) {
         const stats = yield* statOption(resolved);
@@ -1235,14 +1332,15 @@ export const make = Effect.gen(function* () {
           .pipe(Effect.orElseSucceed(() => resolved));
         // A symlink can point into the worktrees directory even when its own
         // spelling doesn't; check again with links resolved.
-        if (isExcludedProjectPath(realPath)) {
+        key = yield* directoryIdentity(resolved, stats.value);
+        const known = directories.get(key)?.some((entry) => entry.binding !== undefined) ?? false;
+        if (!known && (isExcludedProjectPath(resolved) || isExcludedProjectPath(realPath))) {
           key = "";
         } else {
           const gitIdentity = yield* readGitIdentity(resolved);
-          if (gitIdentity._tag === "Worktree") {
+          if (gitIdentity._tag === "Worktree" && !known) {
             key = "";
           } else {
-            key = yield* directoryIdentity(resolved, stats.value);
             gitIdentities.set(key, gitIdentity._tag === "Repository" ? gitIdentity.git : null);
           }
         }
@@ -1271,30 +1369,14 @@ export const make = Effect.gen(function* () {
           : Math.max(existing.lastActiveAtMs, candidate.lastActiveAtMs);
     }
 
-    // Resolve persisted roots too. A project and a transcript can name
-    // different symlinks to the same directory.
-    const importedProjects = yield* projectStore
-      .listShells()
-      .pipe(
-        Effect.mapError(
-          (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
-        ),
-      );
-    const importedProjectsByRoot = new Map<string, (typeof importedProjects)[number]>();
-    for (const project of importedProjects) {
-      const projectRoot = path.resolve(expandHomePath(project.workspaceRoot));
-      importedProjectsByRoot.set(normalizeProjectPathForComparison(projectRoot), project);
-      importedProjectsByRoot.set(yield* directoryIdentity(projectRoot), project);
-    }
-
     const candidates: Array<AgentSessionProjectCandidate> = [];
     for (const [key, entry] of merged.entries()) {
-      // Keep the path key for missing roots and use filesystem identity for
-      // aliases that resolve to the same directory.
-      const importedProject =
-        importedProjectsByRoot.get(normalizeProjectPathForComparison(entry.path)) ??
-        importedProjectsByRoot.get(key);
-      const candidatePath = importedProject?.workspaceRoot ?? entry.path;
+      const matches = directories.get(key) ?? [];
+      const primary =
+        matches.find((match) => match.isPrimary && match.project.workspaceFile === undefined) ??
+        matches.find((match) => match.isPrimary);
+      const importedProject = primary?.project;
+      const candidatePath = primary?.path ?? entry.path;
       candidates.push({
         path: candidatePath,
         title: path.basename(candidatePath) || candidatePath,
@@ -1328,11 +1410,22 @@ export const make = Effect.gen(function* () {
   const prepareRecentThreads = Effect.fn("AgentSessionScanner.prepareRecentThreads")(function* (
     workspaceRoot: string,
     completedSources: ReadonlyArray<AgentSessionImportSource>,
+    binding?: ThreadWorkspaceBinding,
   ) {
     const root = path.resolve(expandHomePath(workspaceRoot));
     const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
-    if (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot)) return Stream.empty;
     const rootIdentity = yield* directoryIdentity(root);
+    if (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot)) {
+      // Only frozen workspace worktrees lift the sandbox exclusion. Ordinary
+      // project folders keep the same onboarding filters as before.
+      const known =
+        binding?.workspaceFolders !== undefined && binding.worktreePath === workspaceRoot
+          ? true
+          : ((yield* workspaceDirectories())
+              .get(rootIdentity)
+              ?.some((entry) => entry.binding !== undefined) ?? false);
+      if (!known) return Stream.empty;
+    }
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
 
@@ -1487,9 +1580,10 @@ export const make = Effect.gen(function* () {
   const recentThreads: AgentSessionScanner["Service"]["recentThreads"] = (
     workspaceRoot,
     completedSources = [],
-  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources));
+    binding,
+  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources, binding));
 
-  return AgentSessionScanner.of({ scan, recentThreads });
+  return AgentSessionScanner.of({ scan, recentThreads, worktreeBinding });
 });
 
 export const layer = Layer.effect(AgentSessionScanner, make);
