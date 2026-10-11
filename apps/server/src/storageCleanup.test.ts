@@ -7,7 +7,11 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { storageCleanupActivityAt, storageCleanupThreadIdle } from "./storageCleanup.ts";
+import {
+  storageCleanupActivityAt,
+  storageCleanupCandidates,
+  storageCleanupThreadIdle,
+} from "./storageCleanup.ts";
 
 const NOW_MS = Date.parse("2026-06-10T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -103,4 +107,62 @@ describe("V2 storage cleanup eligibility", () => {
   function candidateWithStatus(status: OrchestrationV2ThreadShell["status"]) {
     return { ...candidate(), status };
   }
+});
+
+describe("V2 storage cleanup candidates", () => {
+  const projects = [{ id: ProjectId.make("project-1"), workspaceRoot: "/repo" }];
+  const set = [
+    { repositoryRoot: "/api", path: "/worktrees/s/api", branch: "feature" },
+    { repositoryRoot: "/web", path: "/worktrees/s/web", branch: "feature" },
+  ];
+  const thread = (id: string, overrides: Partial<OrchestrationV2ThreadShell> = {}) =>
+    shell({ id: ThreadId.make(id), branch: "feature", ...overrides });
+
+  it("takes a set whole, each member from its own checkout, and a lone worktree from its project", () => {
+    const candidates = storageCleanupCandidates({
+      threads: [
+        thread("set", { worktreePath: "/worktrees/s/api", worktrees: set }),
+        thread("plain", { worktreePath: "/worktrees/plain" }),
+        thread("in-place"),
+      ],
+      deletedThreads: [],
+      projects,
+    });
+    expect(candidates.map((candidate) => [candidate.thread.id, candidate.worktrees])).toEqual([
+      ["set", set],
+      ["plain", [{ repositoryRoot: "/repo", path: "/worktrees/plain", branch: "feature" }]],
+    ]);
+  });
+
+  it("leaves a set whose members nest for explicit removal", () => {
+    const nested = [
+      { repositoryRoot: "/parent", path: "/worktrees/s", branch: "feature" },
+      { repositoryRoot: "/child", path: "/worktrees/s/libs/child", branch: "feature" },
+    ];
+    const candidates = storageCleanupCandidates({
+      threads: [thread("nested", { worktreePath: "/worktrees/s", worktrees: nested })],
+      deletedThreads: [],
+      projects,
+    });
+    expect(candidates).toEqual([]);
+  });
+
+  it("keeps a set while any other thread, archived or deleted, could still need a member", () => {
+    const candidates = storageCleanupCandidates({
+      threads: [
+        thread("set", { worktreePath: "/worktrees/s/api", worktrees: set }),
+        // An archived fork of the set's thread shares its whole set.
+        thread("archived-fork", {
+          worktreePath: "/worktrees/s/api",
+          worktrees: set,
+          archivedAt: at(-DAY_MS),
+        }),
+      ],
+      deletedThreads: [
+        { ...thread("deleted", { worktreePath: "/worktrees/s/web" }), workspaceRoot: "/repo" },
+      ],
+      projects,
+    });
+    expect(candidates).toEqual([]);
+  });
 });

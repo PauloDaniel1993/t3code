@@ -34,6 +34,9 @@ export function useSelectedThreadGitActions() {
   const switchRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const createRef = useAtomCommand(vcsEnvironment.createRef, { reportFailure: false });
   const createWorktree = useAtomCommand(vcsEnvironment.createWorktree, { reportFailure: false });
+  const createThreadWorktrees = useAtomCommand(vcsEnvironment.createThreadWorktrees, {
+    reportFailure: false,
+  });
   const pull = useAtomCommand(vcsEnvironment.pull, { reportFailure: false });
   const { selectedThread, selectedThreadProject } = useThreadSelection();
   const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
@@ -45,7 +48,10 @@ export function useSelectedThreadGitActions() {
     { reportFailure: false },
   );
 
-  const selectedThreadGitRootCwd = selectedThreadProject?.workspaceRoot ?? null;
+  // A thread with workspace folders keeps its own primary, which a relink of
+  // the project's workspace file never moves.
+  const selectedThreadGitRootCwd =
+    selectedThread?.workspacePrimaryPath ?? selectedThreadProject?.workspaceRoot ?? null;
   const branchTarget = useMemo(
     () => ({
       environmentId: selectedThread?.environmentId ?? null,
@@ -265,6 +271,28 @@ export function useSelectedThreadGitActions() {
         "create_worktree",
         "Creating worktree",
         async ({ thread, project }) => {
+          // A thread with workspace folders gets one worktree per repository,
+          // which the server creates and binds as one set.
+          if (thread.workspaceFolderCount !== undefined) {
+            const created = await createThreadWorktrees({
+              environmentId: thread.environmentId,
+              input: {
+                threadId: thread.id,
+                baseRef: nextWorktree.baseBranch,
+                branch: sanitizeFeatureBranchName(nextWorktree.newBranch),
+              },
+            });
+            if (AsyncResult.isFailure(created)) {
+              return created;
+            }
+            const syncResult = await syncSelectedThreadBranchState({
+              thread,
+              cwd: created.value.worktreePath,
+            });
+            return AsyncResult.isFailure(syncResult)
+              ? AsyncResult.failure(syncResult.cause)
+              : created;
+          }
           const result = await createWorktree({
             environmentId: thread.environmentId,
             input: {
@@ -289,7 +317,12 @@ export function useSelectedThreadGitActions() {
         },
       );
     },
-    [createWorktree, runSelectedThreadGitMutation, syncSelectedThreadBranchState],
+    [
+      createThreadWorktrees,
+      createWorktree,
+      runSelectedThreadGitMutation,
+      syncSelectedThreadBranchState,
+    ],
   );
 
   const onPullSelectedThreadBranch = useCallback(async () => {

@@ -79,6 +79,34 @@ it.layer(TestLayer)("WorkspaceFolderResolver", (it) => {
       // Checkouts of one repository share its git directory.
       expect(inWorktree.vcs?.commonDir).toBe(atRoot.vcs?.commonDir);
       expect(inside.vcs?.commonDir).toBe(atRoot.vcs?.commonDir);
+      expect(atRoot.vcs).not.toHaveProperty("superprojectRoot");
+    }),
+  );
+
+  it.effect("names the superproject of a submodule's checkout", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const resolver = yield* WorkspaceFolderResolver.WorkspaceFolderResolver;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-folder-submodule-" });
+      const identity = ["-c", "user.email=t3@example.com", "-c", "user.name=T3"];
+      for (const name of ["parent", "vendored"]) {
+        yield* fs.makeDirectory(path.join(root, name));
+        yield* git(path.join(root, name), ["init", "--initial-branch=main"]);
+        yield* git(path.join(root, name), [...identity, "commit", "--allow-empty", "-m", "init"]);
+      }
+      const parent = path.join(root, "parent");
+      yield* git(parent, [
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        path.join(root, "vendored"),
+        "vendored",
+      ]);
+
+      const submodule = yield* resolver.probe(path.join(parent, "vendored"), { vcs: true });
+      expect(submodule.vcs?.superprojectRoot).toBe(yield* fs.realPath(parent));
     }),
   );
 });

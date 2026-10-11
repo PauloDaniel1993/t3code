@@ -340,6 +340,12 @@ export function createVcsEnvironmentAtoms<R, E>(
       label: "environment-data:vcs:remove-thread-worktrees",
       tag: WS_METHODS.vcsRemoveThreadWorktrees,
     }),
+    // Gives a thread its worktree set and binds it there. Keyed by thread,
+    // like removal, so callers refresh what they show afterwards.
+    createThreadWorktrees: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:create-thread-worktrees",
+      tag: WS_METHODS.vcsCreateThreadWorktrees,
+    }),
     createRef: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:create-ref",
       tag: WS_METHODS.vcsCreateRef,

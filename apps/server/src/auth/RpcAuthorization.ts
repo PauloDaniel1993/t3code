@@ -163,6 +163,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.vcsCreateWorktree]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsRemoveWorktree]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsRemoveThreadWorktrees]: AuthOrchestrationOperateScope,
+  [WS_METHODS.vcsCreateThreadWorktrees]: AuthOrchestrationOperateScope,
+  [WS_METHODS.vcsSwitchWorktreeSetBranch]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsCreateRef]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsSwitchRef]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsInit]: AuthOrchestrationOperateScope,
