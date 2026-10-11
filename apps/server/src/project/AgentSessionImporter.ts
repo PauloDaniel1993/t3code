@@ -34,6 +34,7 @@ import * as Stream from "effect/Stream";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import type { ThreadWorkspaceBinding } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
@@ -173,6 +174,7 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
   const importRecentAgentThreads = Effect.fn("importRecentAgentThreadsV2")(function* (
     input: AgentSessionImportInput,
   ) {
@@ -240,7 +242,7 @@ const make = Effect.gen(function* () {
       }
       return payload.value.importedTranscripts ?? [];
     });
-    const outcomes = scanner.recentThreads(cwd, completedSources);
+    const outcomes = scanner.recentThreads(cwd, completedSources, binding);
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
@@ -300,6 +302,10 @@ const make = Effect.gen(function* () {
             driver,
             nativeThreadId: thread.providerSessionId,
           });
+          // Native stores also contain sessions T3 ran itself. Importing one
+          // must not transfer its provider-thread record to a second thread.
+          const owner = yield* projections.getProviderThreadOwner(providerThreadId);
+          if (owner !== undefined && owner !== threadId) return undefined;
           const createdAt = dateTime(thread.createdAt);
           const updatedAt = dateTime(thread.updatedAt);
           const appThread: OrchestrationV2AppThread = {
@@ -412,6 +418,7 @@ const make = Effect.gen(function* () {
             }).pipe(Effect.as(false)),
           ),
         );
+        if (imported === undefined) return;
         if (imported) {
           importedThreadIds.add(threadId);
           importedCount += 1;

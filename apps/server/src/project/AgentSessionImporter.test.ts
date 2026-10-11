@@ -14,6 +14,7 @@ import * as Stream from "effect/Stream";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import type { ThreadWorkspaceBinding } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as AgentSessionImporter from "./AgentSessionImporter.ts";
@@ -49,19 +50,26 @@ const mappedBinding: ThreadWorkspaceBinding = {
   ],
 };
 
-it.effect.each(["plain", "workspace-file", "worktree"] as const)(
+it.effect.each(["plain", "workspace-file", "worktree", "owned-session"] as const)(
   "%s: imports once and preserves the native resume and workspace bindings",
   (scenario) => {
     const writes: Array<ReadonlyArray<OrchestrationV2DomainEvent>> = [];
     const upserts: Array<unknown> = [];
     const recorded: Array<unknown> = [];
     let imported = false;
-    const cwd = scenario === "worktree" ? mappedBinding.worktreePath! : "/workspace/project";
+    const cwd =
+      scenario === "worktree" || scenario === "owned-session"
+        ? mappedBinding.worktreePath!
+        : "/workspace/project";
     const scannedRoots: Array<string> = [];
     const scanner = AgentSessionScanner.AgentSessionScanner.of({
       scan: Effect.die("unused"),
       worktreeBinding: () =>
-        Effect.succeed(scenario === "worktree" ? Option.some(mappedBinding) : Option.none()),
+        Effect.succeed(
+          scenario === "worktree" || scenario === "owned-session"
+            ? Option.some(mappedBinding)
+            : Option.none(),
+        ),
       recentThreads: (root) => {
         scannedRoots.push(root);
         return Stream.succeed({
@@ -97,6 +105,12 @@ it.effect.each(["plain", "workspace-file", "worktree"] as const)(
       Layer.provide(
         Layer.mergeAll(
           Layer.succeed(AgentSessionScanner.AgentSessionScanner, scanner),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getProviderThreadOwner: () =>
+              Effect.succeed(
+                scenario === "owned-session" ? ThreadId.make("original-thread") : undefined,
+              ),
+          }),
           Layer.mock(ProjectService.ProjectService)({
             getById: () =>
               Effect.succeed(
@@ -141,16 +155,21 @@ it.effect.each(["plain", "workspace-file", "worktree"] as const)(
       expect(
         yield* importer.importRecentAgentThreads({ projectId, expectedWorkspaceRoot: cwd }),
       ).toEqual({
-        importedCount: 1,
+        importedCount: scenario === "owned-session" ? 0 : 1,
         skippedCount: 0,
       });
       expect(
         yield* importer.importRecentAgentThreads({ projectId, expectedWorkspaceRoot: cwd }),
       ).toEqual({
-        importedCount: 1,
+        importedCount: scenario === "owned-session" ? 0 : 1,
         skippedCount: 0,
       });
-
+      if (scenario === "owned-session") {
+        expect(writes).toEqual([]);
+        expect(upserts).toEqual([]);
+        expect(recorded).toEqual([]);
+        return;
+      }
       expect(writes).toHaveLength(1);
       expect(writes[0]?.map((event) => event.type)).toEqual([
         "thread.created",
@@ -235,6 +254,7 @@ it.effect("rejects secondary and stale worktree cwds before importing any histor
             Layer.mock(Orchestrator.OrchestratorV2)({}),
             Layer.mock(EventSink.EventSinkV2)({}),
             Layer.mock(ProviderSessionRuntime.ProviderSessionRuntimeRepository)({}),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
             IdAllocator.layer,
           ),
         ),
@@ -272,6 +292,7 @@ it.effect("rejects a workspace file that changes primary during import binding",
             Layer.mock(Orchestrator.OrchestratorV2)({}),
             Layer.mock(EventSink.EventSinkV2)({}),
             Layer.mock(ProviderSessionRuntime.ProviderSessionRuntimeRepository)({}),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
             IdAllocator.layer,
           ),
         ),

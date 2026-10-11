@@ -201,6 +201,7 @@ export class AgentSessionScanner extends Context.Service<
     readonly recentThreads: (
       workspaceRoot: string,
       completedSources?: ReadonlyArray<AgentSessionImportSource>,
+      binding?: ThreadWorkspaceBinding,
     ) => Stream.Stream<AgentSessionRecentThread, AgentSessionScanError>;
   }
 >()("t3/project/AgentSessionScanner") {}
@@ -546,8 +547,8 @@ function shouldRetainDecodedRecord(
 
 /**
  * T3 Code runs its own agent sessions inside disposable worktrees. Their
- * transcripts look exactly like user sessions. Unknown sandboxes must not
- * become projects; known folder bindings are matched separately. Matches this server's configured
+ * transcripts look exactly like user sessions. Sandboxes must not become
+ * projects. Matches this server's configured
  * worktrees directory plus the conventional `.t3/worktrees` layout, which
  * also catches sandboxes from other T3 homes on the same machine. Separators
  * are normalized (and, on Windows, case folded) so the prefix match holds
@@ -706,8 +707,8 @@ export const make = Effect.gen(function* () {
           (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
         ),
       );
-    const snapshot = yield* projections
-      .getShellSnapshot()
+    const bindings = yield* projections
+      .getWorkspaceWorktreeBindings()
       .pipe(
         Effect.mapError(
           (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
@@ -749,17 +750,9 @@ export const make = Effect.gen(function* () {
       }
     }
     const projectsById = new Map(projects.map((project) => [project.id, project]));
-    for (const shell of [...snapshot.threads, ...snapshot.archivedThreads]) {
-      const project = projectsById.get(shell.projectId);
-      if (project === undefined || shell.worktreePath === null) continue;
-      const thread = yield* projections
-        .getThread(shell.id)
-        .pipe(
-          Effect.mapError(
-            (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
-          ),
-        );
-      if (thread.deletedAt !== null) continue;
+    for (const thread of bindings) {
+      const project = projectsById.get(thread.projectId);
+      if (project === undefined) continue;
       const binding: ThreadWorkspaceBinding = {
         branch: thread.branch,
         worktreePath: thread.worktreePath,
@@ -1340,7 +1333,7 @@ export const make = Effect.gen(function* () {
         // A symlink can point into the worktrees directory even when its own
         // spelling doesn't; check again with links resolved.
         key = yield* directoryIdentity(resolved, stats.value);
-        const known = directories.has(key);
+        const known = directories.get(key)?.some((entry) => entry.binding !== undefined) ?? false;
         if (!known && (isExcludedProjectPath(resolved) || isExcludedProjectPath(realPath))) {
           key = "";
         } else {
@@ -1417,16 +1410,21 @@ export const make = Effect.gen(function* () {
   const prepareRecentThreads = Effect.fn("AgentSessionScanner.prepareRecentThreads")(function* (
     workspaceRoot: string,
     completedSources: ReadonlyArray<AgentSessionImportSource>,
+    binding?: ThreadWorkspaceBinding,
   ) {
     const root = path.resolve(expandHomePath(workspaceRoot));
     const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
     const rootIdentity = yield* directoryIdentity(root);
-    const directories = yield* workspaceDirectories();
-    if (
-      !directories.has(rootIdentity) &&
-      (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot))
-    ) {
-      return Stream.empty;
+    if (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot)) {
+      // Only frozen workspace worktrees lift the sandbox exclusion. Ordinary
+      // project folders keep the same onboarding filters as before.
+      const known =
+        binding?.workspaceFolders !== undefined && binding.worktreePath === workspaceRoot
+          ? true
+          : ((yield* workspaceDirectories())
+              .get(rootIdentity)
+              ?.some((entry) => entry.binding !== undefined) ?? false);
+      if (!known) return Stream.empty;
     }
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
@@ -1582,7 +1580,8 @@ export const make = Effect.gen(function* () {
   const recentThreads: AgentSessionScanner["Service"]["recentThreads"] = (
     workspaceRoot,
     completedSources = [],
-  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources));
+    binding,
+  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources, binding));
 
   return AgentSessionScanner.of({ scan, recentThreads, worktreeBinding });
 });
