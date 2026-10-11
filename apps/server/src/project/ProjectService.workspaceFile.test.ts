@@ -71,6 +71,7 @@ const drivenWorkspaceFiles = Layer.effect(
   WorkspaceFiles.make.pipe(
     Effect.map((real) =>
       WorkspaceFiles.WorkspaceFiles.of({
+        resolveProjectPath: real.resolveProjectPath,
         read: (filePath) =>
           Effect.suspend(() => {
             const held = watches.heldReads.get(filePath);
