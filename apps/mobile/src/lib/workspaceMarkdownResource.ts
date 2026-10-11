@@ -26,7 +26,7 @@ export function workspaceRelativeMarkdownPath(href: string) {
   return path;
 }
 
-/** Relative media stays at its document (or primary); a labeled reference addresses that folder. */
+/** Authored relative strings keep their document or primary base, even when a segment matches a label. */
 export function workspaceMarkdownResource(
   scope: WorkspaceScope | null,
   folders: ReadonlyArray<WorkspaceScopeFolder>,
@@ -36,15 +36,13 @@ export function workspaceMarkdownResource(
   if (scope === null || folders.length === 0) return null;
   const path = workspaceRelativeMarkdownPath(href);
   if (path === null) return null;
-  const explicit = folders.length > 1 ? parseCanonicalPath(path, folders) : null;
   const document = documentPath === undefined ? null : parseCanonicalPath(documentPath, folders);
   if (documentPath !== undefined && document === null) return null;
-  const folder = explicit?.folder ?? document?.folder ?? folders[0]!;
-  const base = explicit
-    ? ""
-    : (document?.relativePath.slice(0, Math.max(0, document.relativePath.lastIndexOf("/"))) ?? "");
+  const folder = document?.folder ?? folders[0]!;
+  const base =
+    document?.relativePath.slice(0, Math.max(0, document.relativePath.lastIndexOf("/"))) ?? "";
   const segments: string[] = [];
-  for (const segment of `${base}/${explicit?.relativePath ?? path}`.split("/")) {
+  for (const segment of `${base}/${path}`.split("/")) {
     if (!segment || segment === ".") continue;
     if (segment === "..") {
       if (segments.length === 0) return null;

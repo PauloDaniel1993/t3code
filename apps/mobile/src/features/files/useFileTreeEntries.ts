@@ -129,7 +129,15 @@ export function useFileTreeEntries(input: {
         if (controller.signal.aborted) return;
         directories.pending.delete(directoryPath);
         if (result._tag === "Success") {
-          directories.entries.set(directoryPath, result.value.entries);
+          directories.entries.set(
+            directoryPath,
+            scope
+              ? result.value.entries
+              : result.value.entries.filter(
+                  (entry) =>
+                    entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) === directoryPath,
+                ),
+          );
         } else {
           const error = Cause.squash(result.cause);
           directories.errors.set(
@@ -148,12 +156,12 @@ export function useFileTreeEntries(input: {
     return {
       revision,
       ...collectFileTreeEntries(
-        rootData?.entries ?? [],
+        (rootData?.entries ?? []).filter((entry) => scope !== null || !entry.path.includes("/")),
         directories.entries,
         searching ? searchData?.entries : [],
       ),
     };
-  }, [directories, revision, rootData, searchData, searching]);
+  }, [directories, revision, rootData, searchData, searching, scope]);
 
   const refresh = useCallback(() => {
     inventory.refresh();

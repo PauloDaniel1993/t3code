@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { getBrowseDirectoryPath } from "@t3tools/client-runtime/state/projects";
+import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
 import { useCallback, useMemo, useState } from "react";
 import {
   Markdown,
@@ -275,6 +276,10 @@ export function FileMarkdownPreview(props: {
   const styles = useMarkdownPreviewStyles(renderImage);
   const onLinkPress = useCallback(
     (href: string) => {
+      if (resolveMarkdownLinkPresentation(href).kind !== "file") {
+        void tryOpenExternalUrl(href, "markdown-link");
+        return;
+      }
       const resource = workspaceMarkdownResource(
         props.scope ?? null,
         props.folders ?? [],

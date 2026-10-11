@@ -28,6 +28,7 @@ export type ComposerCommandItem =
       readonly id: string;
       readonly type: "path";
       readonly path: string;
+      readonly folderPath?: string;
       readonly kind: "file" | "directory";
       readonly label: string;
       readonly description: string;

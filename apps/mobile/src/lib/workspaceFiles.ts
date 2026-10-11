@@ -6,13 +6,57 @@ import type {
   ThreadId,
   WorkspaceScope,
   WorkspaceScopeFolder,
+  OrchestrationV2ThreadWorktree,
 } from "@t3tools/contracts";
-import { parseCanonicalPath } from "@t3tools/shared/workspaceFolders";
+import {
+  parseCanonicalPath,
+  toCanonicalPath,
+  worktreeSetPath,
+} from "@t3tools/shared/workspaceFolders";
 
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 
 function isAbsolutePath(path: string): boolean {
   return path.startsWith("/") || isWindowsAbsolutePath(path);
+}
+
+/** Canonical selections carry a pin; authored relative links keep their primary base. */
+export function workspaceFileOpenReference(
+  scope: WorkspaceScope | null,
+  path: string | null,
+  folders: ReadonlyArray<WorkspaceScopeFolder>,
+  folderPath?: string,
+) {
+  if (scope === null || path === null || isAbsolutePath(path)) return null;
+  if (folderPath !== undefined) return { path, scope: { ...scope, folderPath } };
+  const primary = folders[0];
+  return primary === undefined
+    ? null
+    : {
+        path: toCanonicalPath(primary, path, folders.length),
+        scope: { ...scope, folderPath: primary.folderPath },
+      };
+}
+
+/** The provider sees cwd-relative primary paths and concrete mapped secondary paths. */
+export function workspaceFileMentionPath(
+  path: string,
+  folders: ReadonlyArray<WorkspaceScopeFolder>,
+  worktrees: ReadonlyArray<OrchestrationV2ThreadWorktree> = [],
+  folderPath?: string,
+) {
+  const parsed = parseCanonicalPath(path, folders);
+  if (
+    parsed === null ||
+    parsed.folder.status !== "ok" ||
+    (folderPath !== undefined && folderPath !== parsed.folder.folderPath)
+  )
+    return null;
+  if (parsed.folder === folders[0]) return parsed.relativePath || ".";
+  const base = worktreeSetPath(parsed.folder.folderPath, worktrees);
+  if (!isAbsolutePath(base)) return null;
+  const separator = isWindowsAbsolutePath(base) ? "\\" : "/";
+  return `${base.replace(/[\\/]+$/, "")}${separator}${parsed.relativePath.replaceAll("/", separator)}`;
 }
 
 /** Scoped inputs are offered only by capable peers and only for workspace-file bindings. */

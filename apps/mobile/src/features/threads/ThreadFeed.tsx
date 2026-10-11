@@ -2156,7 +2156,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       if (fileScope && workspaceRelativeMarkdownPath(href) !== null && resource === null)
         return null;
       return resource
-        ? { relativePath: resource.path, resource }
+        ? {
+            ...resolveFileChipTarget(href, props.workspaceRoot),
+            relativePath: resource.path,
+            resource,
+          }
         : resolveFileChipTarget(href, props.workspaceRoot);
     },
     [fileScope, mediaContext.folders, props.workspaceRoot],

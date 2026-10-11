@@ -21,7 +21,7 @@ describe("resolveMarkdownMediaPreview", () => {
       source: { resource: { _tag: "media-file", path: "/tmp/frame.png" } },
     });
   });
-  it("previews labeled work-log media through the owning folder", () => {
+  it("keeps label-shaped work-log media relative to the primary", () => {
     const scope = { projectId: ProjectId.make("project-1"), threadId: input.threadId };
     expect(
       resolveMarkdownMediaPreview("api/clip.mp4#t=2", {
@@ -38,10 +38,10 @@ describe("resolveMarkdownMediaPreview", () => {
         srcFragment: "#t=2",
         resource: {
           _tag: "workspace-scope-file",
-          scope: { ...scope, folderPath: "/api" },
-          path: "api/clip.mp4",
+          scope: { ...scope, folderPath: "/repo" },
+          path: "web/api/clip.mp4",
         },
-        actionsSource: { resource: { _tag: "workspace-scope-file", path: "api/clip.mp4" } },
+        actionsSource: { resource: { _tag: "workspace-scope-file", path: "web/api/clip.mp4" } },
       },
     });
   });

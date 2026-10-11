@@ -5,6 +5,7 @@ import type {
   ServerProvider,
   ThreadId,
   WorkspaceScope,
+  OrchestrationV2ThreadWorktree,
 } from "@t3tools/contracts";
 import { matchComposerThreadItems } from "@t3tools/client-runtime/composerThreadItems";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -48,7 +49,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useComposerPathSearch, useComposerPullRequestSearch } from "../../state/queries";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
-import { pinWorkspaceFileScope, workspaceFileCacheKey } from "../../lib/workspaceFiles";
+import { pinWorkspaceFileScope, workspaceFileMentionPath } from "../../lib/workspaceFiles";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
 
@@ -175,6 +176,7 @@ export function useComposerCommandMenu({
   currentThreadId = null,
   projectCwd,
   fileScope = null,
+  fileWorktrees,
   pullRequestProjectId = null,
   pullRequestRepository = null,
   selectedProviderStatus,
@@ -195,6 +197,7 @@ export function useComposerCommandMenu({
   readonly currentThreadId?: ThreadId | null;
   readonly projectCwd: string | null;
   readonly fileScope?: WorkspaceScope | null;
+  readonly fileWorktrees?: ReadonlyArray<OrchestrationV2ThreadWorktree>;
   readonly pullRequestProjectId?: ProjectId | null;
   readonly pullRequestRepository?: string | null;
   readonly selectedProviderStatus: ServerProvider | null;
@@ -317,13 +320,6 @@ export function useComposerCommandMenu({
     scope: fileScope,
     query: trigger?.kind === "path" ? trigger.query : null,
   });
-  const pathOwnerKey = `${ownerKey}:${workspaceFileCacheKey({ environmentId, cwd: projectCwd, scope: fileScope })}`;
-  const pathPins = useRef<{ ownerKey: string; paths: Map<string, string> }>({
-    ownerKey: pathOwnerKey,
-    paths: new Map(),
-  });
-  if (pathPins.current.ownerKey !== pathOwnerKey)
-    pathPins.current = { ownerKey: pathOwnerKey, paths: new Map() };
   const pullRequestSearch = useComposerPullRequestSearch({
     environmentId,
     projectId: pullRequestProjectId,
@@ -485,6 +481,9 @@ export function useComposerCommandMenu({
           return {
             id: `path:${entry.path}`,
             type: "path" as const,
+            folderPath: fileScope
+              ? pinWorkspaceFileScope(fileScope, entry.path, pathSearch.folders)?.folderPath
+              : undefined,
             path: entry.path,
             kind: entry.kind,
             label: parts[parts.length - 1] ?? entry.path,
@@ -503,6 +502,8 @@ export function useComposerCommandMenu({
     hasCompactableConversation,
     onUpdateInteractionMode,
     pathSearch.entries,
+    pathSearch.folders,
+    fileScope,
     pullRequestSearch.entries,
     projectCwd,
     selectedProviderStatus,
@@ -514,9 +515,16 @@ export function useComposerCommandMenu({
   const onSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!trigger) return;
+      let selectedItem = item;
       if (item.type === "path" && fileScope) {
-        const pin = pinWorkspaceFileScope(fileScope, item.path, pathSearch.folders);
-        if (pin?.folderPath !== undefined) pathPins.current.paths.set(item.path, pin.folderPath);
+        const destination = workspaceFileMentionPath(
+          item.path,
+          pathSearch.folders,
+          fileWorktrees,
+          item.folderPath,
+        );
+        if (destination === null) return;
+        selectedItem = { ...item, path: destination };
       }
       if (item.type === "thread") {
         if (!ownerKey || trigger.kind !== "path") return;
@@ -602,7 +610,7 @@ export function useComposerCommandMenu({
       const result = resolveComposerCommandSelection({
         draftMessage,
         trigger,
-        item,
+        item: selectedItem,
         allowInteractionMode:
           onUpdateInteractionMode !== undefined &&
           selectedProviderStatus?.showInteractionModeToggle !== false,
@@ -624,12 +632,12 @@ export function useComposerCommandMenu({
       threadShells,
       trigger,
       fileScope,
+      fileWorktrees,
       pathSearch.folders,
     ],
   );
 
   return {
-    folderPathForMention: (path: string) => pathPins.current.paths.get(path),
     selection,
     onSelectionChange,
     trigger,

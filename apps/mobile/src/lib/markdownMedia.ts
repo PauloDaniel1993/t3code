@@ -1,5 +1,4 @@
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
-import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
 import type {
   EnvironmentId,
   ThreadId,
@@ -38,7 +37,7 @@ export function resolveMarkdownMediaPreview(
   const scopedResource = workspaceMarkdownResource(input.scope ?? null, input.folders ?? [], href);
   if (input.scope && workspaceRelativeMarkdownPath(href) !== null && scopedResource === null)
     return null;
-  const reference = scopedResource ? mediaFileReference(scopedResource.path) : media.reference;
+  const reference = media.reference;
   const resource = scopedResource ?? (media.access === "environment" ? media.resource : null);
 
   const target =

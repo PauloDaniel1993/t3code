@@ -8,6 +8,8 @@ import {
   workspaceFileReadInput,
   workspaceFileScope,
   workspaceFolderErrors,
+  workspaceFileOpenReference,
+  workspaceFileMentionPath,
 } from "./workspaceFiles";
 import { workspaceMarkdownResource } from "./workspaceMarkdownResource";
 import { mediaVideoThumbnailKey } from "./videoPreviewSource";
@@ -129,6 +131,34 @@ describe("mobile workspace file addressing", () => {
   });
 });
 
+describe("workspace authored paths", () => {
+  it("distinguishes unpinned primary-relative opens from pinned canonical selections", () => {
+    expect(workspaceFileOpenReference(scope, "api/routes.ts", folders)).toEqual({
+      path: "web/api/routes.ts",
+      scope: { ...scope, folderPath: "/workspace/web" },
+    });
+    expect(workspaceFileOpenReference(scope, "api/routes.ts", folders, "/workspace/api")).toEqual({
+      path: "api/routes.ts",
+      scope: { ...scope, folderPath: "/workspace/api" },
+    });
+    expect(workspaceFileOpenReference(scope, "/workspace/web/api/routes.ts", folders)).toBeNull();
+    expect(workspaceFileReadInput("/workspace/web", "/workspace/web/api/routes.ts", null)).toEqual({
+      cwd: "/workspace/web",
+      relativePath: "/workspace/web/api/routes.ts",
+    });
+  });
+
+  it("sends primary mentions relative to cwd and secondary mentions to their mapped worktree", () => {
+    const members = [{ repositoryRoot: "/workspace/api", path: "/session/api", branch: "feature" }];
+    expect(workspaceFileMentionPath("web/api/routes.ts", folders, members)).toBe("api/routes.ts");
+    expect(workspaceFileMentionPath("api/routes.ts", folders, members)).toBe(
+      "/session/api/routes.ts",
+    );
+    expect(workspaceFileMentionPath("api/routes.ts", folders)).toBe("/workspace/api/routes.ts");
+    expect(workspaceFileMentionPath("api/routes.ts", folders, members, "/replaced/api")).toBeNull();
+  });
+});
+
 describe("workspace markdown references", () => {
   it("waits for matching document metadata instead of falling back to the primary", () => {
     expect(
@@ -152,13 +182,13 @@ describe("workspace markdown references", () => {
       scope: { folderPath: "/workspace/api" },
     });
   });
-  it("resolves labeled media directly and ordinary links relative to their document", () => {
+  it("keeps label-shaped relative media at its document's folder", () => {
     const documentScope = { ...scope, folderPath: "/workspace/api" };
     expect(
       workspaceMarkdownResource(documentScope, folders, "web/image.png", "api/docs/README.md"),
     ).toMatchObject({
-      scope: { folderPath: "/workspace/web" },
-      path: "web/image.png",
+      scope: { folderPath: "/workspace/api" },
+      path: "api/docs/web/image.png",
     });
     expect(
       workspaceMarkdownResource(

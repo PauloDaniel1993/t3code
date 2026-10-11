@@ -69,9 +69,9 @@ import { useWorkspaceFileAssetUrlState } from "./workspaceFileAssetUrl";
 import { useProject, useServerConfigs } from "../../state/entities";
 import { WorkspaceFolderPicker } from "./WorkspaceFolderPicker";
 import {
-  pinWorkspaceFileScope,
   workspaceFileCacheKey,
   workspaceFileReadInput,
+  workspaceFileOpenReference,
 } from "../../lib/workspaceFiles";
 import { useWorkspaceFileScope } from "../../state/use-workspace-file-scope";
 import { useWorkspaceFileBindingKey } from "../../state/workspace-file-bindings";
@@ -628,24 +628,31 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   const { appearance, setCodeWordBreak } = useAppearancePreferences();
   const iconColor = useUniwindTheme()["--color-icon"];
   const params = props.route.params;
-  const relativePath = normalizeRoutePath(params.path);
+  const routePath = normalizeRoutePath(params.path);
   const targetLine = normalizeRouteLine(firstRouteParam(params.line));
   const { cwd, scope, environmentId, projectName, selectedThread, threadId } =
     useThreadFilesWorkspace(props.route.params);
   const inventory = useEnvironmentQuery(
-    environmentId !== null && scope !== null
+    environmentId !== null &&
+      scope !== null &&
+      routePath !== null &&
+      !isAbsolutePath(routePath) &&
+      (params.folderPath === undefined || isMarkdownPreviewFile(routePath))
       ? projectEnvironment.listEntries({ environmentId, input: { scope, directoryPath: "" } })
       : null,
   );
-  const fileScope = useMemo(
+  const fileReference = useMemo(
     () =>
-      scope === null || relativePath === null || isAbsolutePath(relativePath)
-        ? null
-        : params.folderPath !== undefined
-          ? { ...scope, folderPath: params.folderPath }
-          : pinWorkspaceFileScope(scope, relativePath, inventory.data?.folders ?? []),
-    [scope, relativePath, params.folderPath, inventory.data?.folders],
+      workspaceFileOpenReference(
+        scope,
+        routePath,
+        inventory.data?.folders ?? [],
+        params.folderPath,
+      ),
+    [scope, routePath, params.folderPath, inventory.data?.folders],
   );
+  const relativePath = fileReference?.path ?? routePath;
+  const fileScope = fileReference?.scope ?? null;
   const [modeOverride, setModeOverride] = useState<{
     readonly path: string;
     readonly mode: FileViewMode;

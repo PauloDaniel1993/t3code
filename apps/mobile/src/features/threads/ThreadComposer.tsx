@@ -486,6 +486,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   });
   const composerMenu = useComposerCommandMenu({
     fileScope,
+    fileWorktrees: props.selectedThread.worktrees,
     draftMessage: props.draftMessage,
     ownerKey: composerOwnerKey,
     environmentId: props.environmentId,
@@ -780,7 +781,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         composerMenu.trigger &&
         (composerMenu.items.length > 0 ||
           composerMenu.trigger.kind === "pull-request" ||
-          composerMenu.trigger.kind === "path") ? (
+          composerMenu.error !== null) ? (
           <View className="absolute inset-x-0 bottom-full z-10 mb-2">
             <ComposerCommandPopover
               items={composerMenu.items}
@@ -905,7 +906,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     environmentId: String(props.environmentId),
                     threadId: String(props.selectedThread.id),
                     path: fileRoutePathSegments(path),
-                    folderPath: composerMenu.folderPathForMention(path),
                   });
                 }}
                 onOpenAttachment={openDraftDocument}
