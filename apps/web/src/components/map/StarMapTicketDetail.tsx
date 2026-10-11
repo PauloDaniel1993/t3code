@@ -59,7 +59,16 @@ function blockersOf(graph: StarMapGraph, nodeId: string): ReadonlyArray<StarMapG
 export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
   const { node } = props;
   const taskUnavailableId = useId();
-  const fileQuery = useProjectFileQuery(props.environmentId, props.cwd, node.relativePath);
+  const fileTarget = starMapFileTarget(node.relativePath, props.cwd, props.workspace);
+  const fileQuery = useProjectFileQuery(
+    props.environmentId,
+    props.cwd,
+    fileTarget?.path ?? null,
+    fileTarget !== null,
+    fileTarget?.folderPath && props.workspace
+      ? { ...props.workspace.scope, folderPath: fileTarget.folderPath }
+      : undefined,
+  );
   const blockers = blockersOf(props.graph, node.id);
   // The parent is this panel's own thread, whichever thread it is. The New task host's shared
   // guard decides whether that thread can take a task, and says why when it cannot.
@@ -76,11 +85,10 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
     //      a wayfinder-specific variant would fork behaviour users already
     //      learned.
     // The action is explicit and user-initiated — it never fires silently.
-    const target = starMapFileTarget(node.relativePath, props.cwd, props.workspace);
-    if (target === null) return;
+    if (fileTarget === null) return;
     useRightPanelStore
       .getState()
-      .openFile(props.threadRef, target.path, undefined, target.folderPath);
+      .openFile(props.threadRef, fileTarget.path, undefined, fileTarget.folderPath);
   };
 
   const openAsTask = () => {

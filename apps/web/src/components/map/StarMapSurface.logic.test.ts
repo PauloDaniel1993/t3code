@@ -109,6 +109,30 @@ describe("Wayfinder folder selection and sources", () => {
     expect(starMapTaskSourcePath(ticketPath, "/session/api", workspace)).toBe(ticketPath);
   });
 
+  it("rebases primary-owned task sources when the selected folder contains the primary", () => {
+    const overlapping = workspaceFileContext(
+      {
+        ...project,
+        workspaceRoot: "/repo/.plan",
+        folders: [
+          { path: "/repo/.plan", name: "plans", label: "plans" },
+          { path: "/repo", name: "repo", label: "repo" },
+        ],
+      },
+      null,
+      undefined,
+      true,
+    )!;
+    expect(starMapTaskSourcePath(".plan/effort/map.md", "/repo", overlapping)).toBe(
+      "effort/map.md",
+    );
+    expect(starMapTaskSourcePath(ticketPath, "/repo", overlapping)).toBe("effort/issues/01-fix.md");
+    expect(starMapFileTarget(ticketPath, "/repo", overlapping)).toEqual({
+      path: "plans/effort/issues/01-fix.md",
+      folderPath: "/repo/.plan",
+    });
+  });
+
   it("preserves plain and single-folder paths, including label-looking directories", () => {
     const path = `api/${ticketPath}`;
     expect(selectedStarMapFolder(undefined, null)).toBeUndefined();

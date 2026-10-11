@@ -30,5 +30,9 @@ export function starMapTaskSourcePath(
   workspace: WorkspaceFileContext | undefined,
 ) {
   const reference = workspaceFileReference(workspace, resolvePathLinkTarget(path, cwd));
-  return reference && !reference.folder.isPrimary ? reference.absolutePath! : path;
+  return reference
+    ? reference.folder.isPrimary
+      ? reference.relativePath
+      : reference.absolutePath!
+    : path;
 }
