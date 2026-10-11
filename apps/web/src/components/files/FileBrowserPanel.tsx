@@ -5,7 +5,14 @@ import type {
 } from "@pierre/trees";
 import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelector } from "@pierre/trees/react";
-import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import {
+  workspaceFileMention,
+  workspaceFileReference,
+  workspaceFileScopeKey,
+  workspaceResultFolderPath,
+  type WorkspaceFileContext,
+} from "./workspaceFiles";
+import { WorkspaceFolderPicker, WorkspaceFolderStatus } from "./WorkspaceFileControls";
 import { ChevronsDownUpIcon, ChevronsUpDownIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -24,19 +31,20 @@ import { PIERRE_TREE_UNSAFE_CSS, pierreTreeStyle } from "~/pierre-tree-theme";
 
 import { createFileTreeDragMentionController } from "./fileTreeDragMention";
 import { areAllDirectoriesExpanded, setAllDirectoriesExpanded } from "./fileTreeExpansion";
-import { buildFileTreePathUpdates } from "./fileTreePathReconciliation";
+import { buildFileTreePathUpdates, fileTreeSearchEntries } from "./fileTreePathReconciliation";
 import { useDirectoryEntries } from "./useDirectoryEntries";
 import { useProjectPathSearch } from "~/state/queries";
 
 interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
   cwd: string;
+  workspace?: WorkspaceFileContext | undefined;
   projectName: string;
   /** Entry currently open in the surface; revealed and selected in the tree. A directory is expanded. */
   selectedPath: string | null;
   /** Bumped when the same path should be revealed again (e.g. re-opened from search). */
   selectedPathRevealId: number;
-  onOpenFile: (relativePath: string) => void;
+  onOpenFile: (relativePath: string, folderPath?: string) => void;
   onRefreshSelectedFile?: () => void;
   workspaceMutationId: string | null;
 }
@@ -97,6 +105,7 @@ function FileSearchField(props: {
 export default function FileBrowserPanel({
   environmentId,
   cwd,
+  workspace,
   projectName,
   selectedPath,
   selectedPathRevealId,
@@ -109,29 +118,32 @@ export default function FileBrowserPanel({
   const fileContextMenu = useFileContextMenu(environmentId);
   const {
     entries: directoryEntries,
+    folders,
     load,
     refresh,
     ready,
     error,
     isPending,
-  } = useDirectoryEntries(environmentId, cwd);
+  } = useDirectoryEntries(environmentId, cwd, workspace);
+  const [folderPath, setFolderPath] = useState<string>();
+  const scope = useMemo(
+    () => (workspace ? { ...workspace.scope, ...(folderPath ? { folderPath } : {}) } : undefined),
+    [workspace, folderPath],
+  );
   const [query, setQuery] = useState("");
   const [expandAll, setExpandAll] = useState(false);
-  const pathSearch = useProjectPathSearch({ environmentId, cwd, query: query.slice(0, 256) }, 200);
-  const entries = useMemo(() => {
-    const result = new Map(directoryEntries.map((entry) => [entry.path, entry]));
-    if (query.trim() && !pathSearch.isPending) {
-      for (const entry of pathSearch.entries) {
-        if (!result.has(entry.path)) result.set(entry.path, entry);
-        const segments = entry.path.split("/");
-        for (let index = 1; index < segments.length; index++) {
-          const path = segments.slice(0, index).join("/");
-          if (!result.has(path)) result.set(path, { path, kind: "directory" });
-        }
-      }
-    }
-    return [...result.values()];
-  }, [directoryEntries, pathSearch.entries, pathSearch.isPending, query]);
+  const multiRoot = (workspace?.folders.length ?? 1) > 1;
+  const pathSearch = useProjectPathSearch(
+    { environmentId, cwd, scope, query: query.slice(0, 256) },
+    200,
+  );
+  const entries = useMemo(
+    () =>
+      query.trim()
+        ? fileTreeSearchEntries(pathSearch.isPending ? [] : pathSearch.entries)
+        : directoryEntries,
+    [directoryEntries, pathSearch.entries, pathSearch.isPending, query],
+  );
   const entryKinds = useMemo(
     () => new Map(entries.map((entry) => [entry.path, entry.kind] as const)),
     [entries],
@@ -170,14 +182,23 @@ export default function FileBrowserPanel({
       return;
     }
     const relativePath = item.path.replace(/\/$/, "");
-    const mention = serializeComposerFileLink(relativePath);
+    const reference = workspaceFileReference(workspace, relativePath);
+    const mention = workspaceFileMention(workspace, relativePath);
+    if (workspace && (!reference || !mention)) {
+      context.close();
+      return;
+    }
     const pointer = contextMenuPointerRef.current;
     const pointerIsFresh = pointer !== null && performance.now() - pointer.at < 1000;
     const anchorRect = context.anchorElement.getBoundingClientRect();
     const position = pointerIsFresh
       ? { x: pointer.x, y: pointer.y }
       : { x: anchorRect.left, y: anchorRect.bottom };
-    const fileTarget = { environmentId, filePath: relativePath, workspaceRoot: cwd };
+    const fileTarget = {
+      environmentId,
+      filePath: reference?.absolutePath ?? relativePath,
+      workspaceRoot: reference?.folder.effectivePath ?? cwd,
+    };
     const fileMenuItems = fileContextMenu.buildItems(fileTarget);
     try {
       const clicked = await api.contextMenu.show(
@@ -199,7 +220,7 @@ export default function FileBrowserPanel({
       }
       if (clicked === "copy-mention") {
         try {
-          await writeTextToClipboard(mention);
+          await writeTextToClipboard(mention!);
           toastManager.add({ type: "success", title: "Mention copied", description: relativePath });
         } catch (error) {
           toastManager.add({
@@ -239,9 +260,14 @@ export default function FileBrowserPanel({
   });
 
   const treeModelRef = useRef<ReturnType<typeof useFileTree>["model"] | null>(null);
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace;
+  const selectionRef = useRef({ onOpenFile, folders, searchFolders: pathSearch.folders });
+  selectionRef.current = { onOpenFile, folders, searchFolders: pathSearch.folders };
   const dragMention = useMemo(
     () =>
       createFileTreeDragMentionController({
+        mention: (path) => workspaceFileMention(workspaceRef.current, path.replace(/\/+$/, "")),
         deselect: (path) => treeModelRef.current?.getItem(path)?.deselect(),
       }),
     [],
@@ -278,7 +304,13 @@ export default function FileBrowserPanel({
       const selectedPath = selectedPaths.at(-1)?.replace(/\/$/, "");
       if (selectedPath && entryKindsRef.current.get(selectedPath) === "file") {
         treeSelectionPathRef.current = selectedPath;
-        onOpenFile(selectedPath);
+        const { onOpenFile, folders, searchFolders } = selectionRef.current;
+        const pin = workspaceResultFolderPath(
+          selectedPath,
+          treeModelRef.current?.isSearchOpen() ? searchFolders : folders,
+        );
+        if (workspaceRef.current && pin === undefined) return;
+        onOpenFile(selectedPath, pin);
       }
     },
     paths: [],
@@ -291,8 +323,9 @@ export default function FileBrowserPanel({
     areAllDirectoriesExpanded(currentModel, directoryPaths),
   );
   const toggleAllDirectories = () => {
-    const expanded = !(expandAll || allDirectoriesExpanded);
-    setExpandAll(expanded);
+    const expanded = multiRoot ? false : !(expandAll || allDirectoriesExpanded);
+    // Scoped expansion opens only the loaded rows; new children stay collapsed.
+    setExpandAll(workspace ? false : expanded);
     setAllDirectoriesExpanded(model, directoryPaths, expanded);
   };
   const closeSearch = () => {
@@ -300,6 +333,9 @@ export default function FileBrowserPanel({
     search.close();
   };
   const expandedPathsRef = useRef(new Set<string>());
+  useEffect(() => {
+    expandedPathsRef.current.clear();
+  }, [load]);
   useEffect(() => {
     const currentPaths = new Set(directoryPaths);
     for (const path of expandedPathsRef.current) {
@@ -365,11 +401,18 @@ export default function FileBrowserPanel({
       refresh();
       if (query.trim()) pathSearch.refresh();
     },
-    resourceKey: `files:${environmentId}:${cwd}`,
+    resourceKey: `files:${environmentId}:${workspaceFileScopeKey(cwd, workspace?.scope)}`,
   });
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready) {
+      if (previousTreePathsRef.current !== null) {
+        previousTreePathsRef.current = null;
+        entryKindsRef.current = new Map();
+        model.resetPaths([]);
+      }
+      return;
+    }
     if (previousTreePathsRef.current === treePaths) return;
     entryKindsRef.current = entryKinds;
     const previousTreePaths = previousTreePathsRef.current;
@@ -465,7 +508,7 @@ export default function FileBrowserPanel({
   const panelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     treeModelRef.current = model;
-  }, [model]);
+  }, [model, treeModelRef]);
   useEffect(() => {
     const panel = panelRef.current;
     if (panel === null) {
@@ -499,6 +542,7 @@ export default function FileBrowserPanel({
           onValueChange={handleSearchValueChange}
           onClose={closeSearch}
         />
+        <WorkspaceFolderPicker workspace={workspace} value={folderPath} onChange={setFolderPath} />
         {directoryPaths.length > 0 ? (
           <Tooltip>
             <TooltipTrigger
@@ -508,7 +552,7 @@ export default function FileBrowserPanel({
                   size="icon-xs"
                   variant="ghost"
                   aria-label={
-                    expandAll || allDirectoriesExpanded
+                    multiRoot || expandAll || allDirectoriesExpanded
                       ? "Collapse all folders"
                       : "Expand all folders"
                   }
@@ -516,18 +560,21 @@ export default function FileBrowserPanel({
                 />
               }
             >
-              {allDirectoriesExpanded ? (
+              {multiRoot || allDirectoriesExpanded ? (
                 <ChevronsDownUpIcon className="size-3.5" />
               ) : (
                 <ChevronsUpDownIcon className="size-3.5" />
               )}
             </TooltipTrigger>
             <TooltipPopup>
-              {expandAll || allDirectoriesExpanded ? "Collapse all folders" : "Expand all folders"}
+              {multiRoot || expandAll || allDirectoriesExpanded
+                ? "Collapse all folders"
+                : "Expand all folders"}
             </TooltipPopup>
           </Tooltip>
         ) : null}
       </div>
+      <WorkspaceFolderStatus folders={query.trim() ? pathSearch.folders : folders} />
       {error || pathSearch.error ? (
         <button
           type="button"

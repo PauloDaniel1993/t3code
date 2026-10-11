@@ -1,3 +1,10 @@
+import {
+  workspaceFileOpenReference,
+  workspaceFileScopeKey,
+  workspaceFileAsset,
+  useWorkspaceFileScope,
+  type WorkspaceFileContext,
+} from "./workspaceFiles";
 import { Spinner } from "~/components/ui/spinner";
 import type {
   ChatFileAttachment,
@@ -5,6 +12,8 @@ import type {
   EnvironmentId,
   ResolvedKeybindingsConfig,
   ScopedThreadRef,
+  WorkspaceScope,
+  AssetResource,
 } from "@t3tools/contracts";
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
 import {
@@ -95,6 +104,8 @@ import {
 interface FilePreviewPanelProps {
   environmentId: EnvironmentId;
   cwd: string;
+  workspace?: WorkspaceFileContext | undefined;
+  folderPath?: string | undefined;
   projectName: string;
   relativePath: string | null;
   attachment?: ChatFileAttachment;
@@ -104,7 +115,7 @@ interface FilePreviewPanelProps {
   availableEditors: ReadonlyArray<EditorId>;
   revealLine: number | null;
   revealRequestId: number;
-  onOpenFile: (relativePath: string) => void;
+  onOpenFile: (relativePath: string, folderPath?: string) => void;
   onPendingChange: (relativePath: string, pending: boolean) => void;
   selectedFilePending: boolean;
   workspaceMutationId: string | null;
@@ -120,17 +131,19 @@ function WorkspaceImagePreview(props: {
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
   readonly absolutePath: string;
+  readonly resource?: AssetResource | undefined;
   readonly workspaceRoot: string;
   readonly alt: string;
   readonly workspaceMutationId: string | null;
 }) {
   const resource = useMemo(
-    () => ({
-      _tag: "workspace-file" as const,
-      threadId: props.threadRef.threadId,
-      path: props.absolutePath,
-    }),
-    [props.threadRef.threadId, props.absolutePath],
+    () =>
+      props.resource ?? {
+        _tag: "workspace-file" as const,
+        threadId: props.threadRef.threadId,
+        path: props.absolutePath,
+      },
+    [props.resource, props.threadRef.threadId, props.absolutePath],
   );
   const assetUrl = useAssetUrlState(props.environmentId, resource);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
@@ -185,6 +198,7 @@ function WorkspaceBrowserPreview(props: {
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
   readonly absolutePath: string;
+  readonly resource?: AssetResource | undefined;
   readonly workspaceRoot: string;
   readonly title: string;
   readonly workspaceMutationId: string | null;
@@ -192,12 +206,13 @@ function WorkspaceBrowserPreview(props: {
   const insideWorkspace =
     mediaFileReference(props.absolutePath, props.workspaceRoot).relativePath !== undefined;
   const resource = useMemo(
-    () => ({
-      _tag: insideWorkspace ? ("workspace-file" as const) : ("media-file" as const),
-      threadId: props.threadRef.threadId,
-      path: props.absolutePath,
-    }),
-    [insideWorkspace, props.threadRef.threadId, props.absolutePath],
+    () =>
+      props.resource ?? {
+        _tag: insideWorkspace ? ("workspace-file" as const) : ("media-file" as const),
+        threadId: props.threadRef.threadId,
+        path: props.absolutePath,
+      },
+    [props.resource, insideWorkspace, props.threadRef.threadId, props.absolutePath],
   );
   const assetUrl = useAssetUrlState(props.environmentId, resource);
   const revisionSuffix =
@@ -232,17 +247,19 @@ function WorkspaceVideoPreview(props: {
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
   readonly absolutePath: string;
+  readonly resource?: AssetResource | undefined;
   readonly workspaceRoot: string;
   readonly name: string;
   readonly workspaceMutationId: string | null;
 }) {
   const resource = useMemo(
-    () => ({
-      _tag: "media-file" as const,
-      threadId: props.threadRef.threadId,
-      path: props.absolutePath,
-    }),
-    [props.threadRef.threadId, props.absolutePath],
+    () =>
+      props.resource ?? {
+        _tag: "media-file" as const,
+        threadId: props.threadRef.threadId,
+        path: props.absolutePath,
+      },
+    [props.resource, props.threadRef.threadId, props.absolutePath],
   );
   const assetUrl = useAssetUrlState(props.environmentId, resource);
   const refreshAssetUrl = useAssetUrlRefresh(props.environmentId, resource);
@@ -286,16 +303,18 @@ function WorkspaceAudioPreview(props: {
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
   readonly absolutePath: string;
+  readonly resource?: AssetResource | undefined;
   readonly name: string;
   readonly workspaceMutationId: string | null;
 }) {
   const resource = useMemo(
-    () => ({
-      _tag: "media-file" as const,
-      threadId: props.threadRef.threadId,
-      path: props.absolutePath,
-    }),
-    [props.threadRef.threadId, props.absolutePath],
+    () =>
+      props.resource ?? {
+        _tag: "media-file" as const,
+        threadId: props.threadRef.threadId,
+        path: props.absolutePath,
+      },
+    [props.resource, props.threadRef.threadId, props.absolutePath],
   );
   const assetUrl = useAssetUrlState(props.environmentId, resource);
   const refreshAssetUrl = useAssetUrlRefresh(props.environmentId, resource);
@@ -547,6 +566,9 @@ function useFileLineReveal(
 interface EditableFileSurfaceProps {
   environmentId: EnvironmentId;
   cwd: string;
+  scope?: WorkspaceScope | undefined;
+  documentCwd?: string | undefined;
+  documentPath?: string | undefined;
   relativePath: string;
   composerDraftTarget: ScopedThreadRef | DraftId;
   contents: string;
@@ -565,6 +587,7 @@ interface FileSelectionOverride {
 function EditableFileSurface({
   environmentId,
   cwd,
+  scope,
   relativePath,
   composerDraftTarget,
   contents,
@@ -591,6 +614,7 @@ function EditableFileSurface({
   const saveCoordinator = useFileSaveCoordinator({
     environmentId,
     cwd,
+    scope,
     relativePath,
     onPendingChange,
   });
@@ -600,7 +624,7 @@ function EditableFileSurface({
         persistState: true,
         persistStateStorage: "inMemory",
         onChange: (file, nextLineAnnotations) => {
-          setProjectFileQueryData(environmentId, cwd, relativePath, file.contents);
+          setProjectFileQueryData(environmentId, cwd, relativePath, file.contents, scope);
           saveCoordinator.change(file.contents);
           if (nextLineAnnotations) {
             const remapped = remapFileCommentAnnotations(
@@ -626,7 +650,15 @@ function EditableFileSurface({
           }
         },
       }),
-    [addReviewComment, composerDraftTarget, cwd, environmentId, relativePath, saveCoordinator],
+    [
+      addReviewComment,
+      composerDraftTarget,
+      cwd,
+      scope,
+      environmentId,
+      relativePath,
+      saveCoordinator,
+    ],
   );
 
   useEffect(
@@ -791,7 +823,7 @@ function EditableFileSurface({
               contents,
               cacheKey: projectFileEditorCacheKey(
                 environmentId,
-                cwd,
+                workspaceFileScopeKey(cwd, scope),
                 relativePath,
                 contents,
                 editor.getFile(),
@@ -838,8 +870,11 @@ function EditableFileSurface({
 }
 
 function RenderedMarkdownSurface({
+  documentCwd,
+  documentPath,
   environmentId,
   cwd,
+  scope,
   relativePath,
   contents,
   threadRef,
@@ -860,6 +895,7 @@ function RenderedMarkdownSurface({
   const saveCoordinator = useFileSaveCoordinator({
     environmentId,
     cwd,
+    scope,
     relativePath,
     onPendingChange,
   });
@@ -868,19 +904,19 @@ function RenderedMarkdownSurface({
     <ScrollArea className="min-h-0 flex-1">
       <FileMarkdownPreview
         text={contents}
-        cwd={cwd}
-        relativePath={relativePath}
+        cwd={documentCwd ?? cwd}
+        relativePath={documentPath ?? relativePath}
         threadRef={threadRef}
         onTaskListChange={
           readOnly
             ? undefined
             : ({ markerOffset, checked }) => {
                 const currentContents =
-                  getOptimisticProjectFileQueryData(environmentId, cwd, relativePath)?.contents ??
-                  contents;
+                  getOptimisticProjectFileQueryData(environmentId, cwd, relativePath, scope)
+                    ?.contents ?? contents;
                 const nextContents = setMarkdownTaskChecked(currentContents, markerOffset, checked);
                 if (nextContents === currentContents) return;
-                setProjectFileQueryData(environmentId, cwd, relativePath, nextContents);
+                setProjectFileQueryData(environmentId, cwd, relativePath, nextContents, scope);
                 saveCoordinator.change(nextContents);
               }
         }
@@ -907,6 +943,8 @@ function initialExplorerOpen(): boolean {
 export default function FilePreviewPanel({
   environmentId,
   cwd,
+  workspace,
+  folderPath,
   projectName,
   relativePath: requestedPath,
   attachment,
@@ -921,8 +959,34 @@ export default function FilePreviewPanel({
   selectedFilePending,
   workspaceMutationId,
 }: FilePreviewPanelProps) {
+  const reference = useMemo(
+    () =>
+      attachment === undefined && requestedPath !== null
+        ? workspaceFileOpenReference(workspace, requestedPath, cwd, folderPath)
+        : null,
+    [workspace, requestedPath, cwd, folderPath, attachment],
+  );
   const relativePath =
-    attachment === undefined ? resolveFilePreviewPath(requestedPath, cwd) : requestedPath;
+    attachment === undefined
+      ? (reference?.canonicalPath ?? resolveFilePreviewPath(requestedPath, cwd))
+      : requestedPath;
+  const scope = useWorkspaceFileScope(
+    workspace && attachment === undefined && relativePath !== null && !isAbsolutePath(relativePath)
+      ? {
+          ...workspace.scope,
+          ...(folderPath ? { folderPath } : reference ? { folderPath: reference.folderPath } : {}),
+        }
+      : undefined,
+  );
+  const effectiveCwd = reference?.folder.effectivePath ?? cwd;
+  const handlePendingChange = useCallback(
+    (path: string, pending: boolean) => onPendingChange(requestedPath ?? path, pending),
+    [onPendingChange, requestedPath],
+  );
+  const assetResource = useMemo(
+    () => (relativePath === null ? undefined : workspaceFileAsset(scope, relativePath)),
+    [scope, relativePath],
+  );
   const { resolvedTheme } = useTheme();
   const wordWrap = useClientSettings((settings) => settings.wordWrap);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -953,6 +1017,7 @@ export default function FilePreviewPanel({
     cwd,
     relativePath,
     attachment === undefined && relativePath !== null,
+    scope,
   );
   // A chat link cannot tell a folder from a file, so a folder arrives here as
   // a file surface and the read fails. Keep the breadcrumbs, drop the preview
@@ -1033,7 +1098,9 @@ export default function FilePreviewPanel({
     isPreviewSupportedInRuntime() &&
     isBrowserPreviewFile(previewPath);
   const absolutePath =
-    relativePath && attachment === undefined ? resolvePathLinkTarget(relativePath, cwd) : null;
+    relativePath && attachment === undefined
+      ? (reference?.absolutePath ?? (scope ? null : resolvePathLinkTarget(relativePath, cwd)))
+      : null;
   const onFilePostRender = useFileLineReveal(relativePath, revealLine, revealRequestId);
   useWorkspaceMutationRefresh({
     enabled:
@@ -1046,7 +1113,7 @@ export default function FilePreviewPanel({
       !selectedFilePending,
     mutationId: workspaceMutationId,
     refresh: file.refresh,
-    resourceKey: `file:${environmentId}:${cwd}:${relativePath ?? ""}`,
+    resourceKey: `file:${environmentId}:${workspaceFileScopeKey(cwd, scope)}:${relativePath ?? ""}`,
   });
 
   useEffect(() => {
@@ -1074,7 +1141,8 @@ export default function FilePreviewPanel({
       const result = await openFileInPreview({
         threadRef,
         filePath: absolutePath,
-        workspaceRoot: cwd,
+        workspaceRoot: effectiveCwd,
+        resource: assetResource,
         httpBaseUrl: environmentHttpBaseUrl,
         createAssetUrl,
         openPreview,
@@ -1091,7 +1159,15 @@ export default function FilePreviewPanel({
         }),
       );
     })();
-  }, [absolutePath, createAssetUrl, cwd, environmentHttpBaseUrl, openPreview, threadRef]);
+  }, [
+    absolutePath,
+    assetResource,
+    effectiveCwd,
+    createAssetUrl,
+    environmentHttpBaseUrl,
+    openPreview,
+    threadRef,
+  ]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
@@ -1108,6 +1184,7 @@ export default function FilePreviewPanel({
             <div className="flex h-full w-max min-w-full items-center text-xs">
               <FileBreadcrumbs
                 cwd={cwd}
+                workspace={workspace}
                 environmentId={environmentId}
                 onOpenFile={onOpenFile}
                 projectName={projectName}
@@ -1201,7 +1278,8 @@ export default function FilePreviewPanel({
               environmentId={environmentId}
               threadRef={threadRef}
               absolutePath={absolutePath}
-              workspaceRoot={cwd}
+              resource={assetResource}
+              workspaceRoot={effectiveCwd}
               name={relativePath}
               workspaceMutationId={workspaceMutationId}
             />
@@ -1211,6 +1289,7 @@ export default function FilePreviewPanel({
               environmentId={environmentId}
               threadRef={threadRef}
               absolutePath={absolutePath}
+              resource={assetResource}
               name={relativePath}
               workspaceMutationId={workspaceMutationId}
             />
@@ -1220,7 +1299,8 @@ export default function FilePreviewPanel({
               environmentId={environmentId}
               threadRef={threadRef}
               absolutePath={absolutePath}
-              workspaceRoot={cwd}
+              resource={assetResource}
+              workspaceRoot={effectiveCwd}
               alt={relativePath}
               workspaceMutationId={workspaceMutationId}
             />
@@ -1230,7 +1310,8 @@ export default function FilePreviewPanel({
               environmentId={environmentId}
               threadRef={threadRef}
               absolutePath={absolutePath}
-              workspaceRoot={cwd}
+              resource={assetResource}
+              workspaceRoot={effectiveCwd}
               title={relativePath}
               workspaceMutationId={workspaceMutationId}
             />
@@ -1251,11 +1332,14 @@ export default function FilePreviewPanel({
                 key={relativePath}
                 environmentId={environmentId}
                 cwd={cwd}
+                scope={scope}
+                documentCwd={effectiveCwd}
+                documentPath={reference?.relativePath}
                 relativePath={relativePath}
                 threadRef={threadRef}
                 contents={file.data.contents}
                 readOnly={isHostFile}
-                onPendingChange={onPendingChange}
+                onPendingChange={handlePendingChange}
               />
             ) : tableDelimiter && renderTable ? (
               <DelimitedTablePreview
@@ -1268,7 +1352,11 @@ export default function FilePreviewPanel({
               <SourceFilePreview
                 name={relativePath}
                 text={file.data.contents}
-                cacheKey={projectFileCacheKey(cwd, relativePath, file.data.contents)}
+                cacheKey={projectFileCacheKey(
+                  workspaceFileScopeKey(cwd, scope),
+                  relativePath,
+                  file.data.contents,
+                )}
                 onPostRender={onFilePostRender}
               />
             ) : (
@@ -1277,6 +1365,7 @@ export default function FilePreviewPanel({
                   key={`${relativePath}:${resolvedTheme}`}
                   environmentId={environmentId}
                   cwd={cwd}
+                  scope={scope}
                   relativePath={relativePath}
                   composerDraftTarget={composerDraftTarget}
                   contents={file.data.contents}
@@ -1284,7 +1373,7 @@ export default function FilePreviewPanel({
                   revealRequestId={revealRequestId}
                   wordWrap={wordWrap}
                   onPostRender={onFilePostRender}
-                  onPendingChange={onPendingChange}
+                  onPendingChange={handlePendingChange}
                 />
               </DiffWorkerPoolProvider>
             )
@@ -1300,9 +1389,10 @@ export default function FilePreviewPanel({
             )}
           >
             <FileBrowserPanel
-              key={`${environmentId}:${cwd}`}
+              key={`${environmentId}:${workspaceFileScopeKey(cwd, workspace?.scope)}`}
               environmentId={environmentId}
               cwd={cwd}
+              workspace={workspace}
               projectName={projectName}
               selectedPath={relativePath}
               selectedPathRevealId={revealRequestId}

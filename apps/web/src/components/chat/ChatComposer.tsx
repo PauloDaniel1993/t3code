@@ -1,3 +1,5 @@
+import { WorkspaceFolderPicker } from "../files/WorkspaceFileControls";
+import { workspaceFileMention, type WorkspaceFileContext } from "../files/workspaceFiles";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
@@ -1594,6 +1596,7 @@ export interface ChatComposerProps {
   keybindings: ResolvedKeybindingsConfig;
   terminalOpen: boolean;
   gitCwd: string | null;
+  fileWorkspace?: WorkspaceFileContext | undefined;
   pullRequestProjectId: ProjectId | null;
   pullRequestRepository: string | null;
   restingControlsHost: HTMLDivElement | null;
@@ -2487,9 +2490,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pullRequestTextQuery === debouncedPullRequestTextQuery ? pullRequestTextQuery : null;
   const isPathTrigger = composerTriggerKind === "path";
   const environmentThreadShells = useThreadShells();
+  const [searchFolderPath, setSearchFolderPath] = useState<string>();
+  useEffect(
+    () => setSearchFolderPath(undefined),
+    [props.fileWorkspace?.scope.projectId, props.fileWorkspace?.scope.threadId],
+  );
+  const fileSearchScope = useMemo(
+    () =>
+      props.fileWorkspace
+        ? {
+            ...props.fileWorkspace.scope,
+            ...(searchFolderPath ? { folderPath: searchFolderPath } : {}),
+          }
+        : undefined,
+    [props.fileWorkspace, searchFolderPath],
+  );
   const workspaceEntries = useComposerPathSearch({
     environmentId,
     cwd: isPathTrigger ? gitCwd : null,
+    scope: fileSearchScope,
     query: isPathTrigger ? pathTriggerQuery : null,
   });
   const compactSlashCommandAvailable =
@@ -2582,6 +2601,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           type: "path" as const,
           path: entry.path,
           pathKind: entry.kind,
+          folderPath: entry.folderPath,
           label: basenameOfPath(entry.path),
           description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
         })),
@@ -3869,7 +3889,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const { snapshot, trigger } = resolveActiveComposerTrigger();
       if (!trigger) return;
       if (item.type === "path") {
-        const replacement = `${serializeComposerFileLink(item.path)} `;
+        const mention = workspaceFileMention(props.fileWorkspace, item.path, item.folderPath);
+        if (mention === null) return;
+        const replacement = `${mention} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,
@@ -4019,6 +4041,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       handleInteractionModeChange,
       planModeUiEnabled,
       onUsageLimitsCommand,
+      props.fileWorkspace,
       resolveActiveComposerTrigger,
     ],
   );
@@ -6855,6 +6878,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               {composerSuggestionsVisible && (
                 <ComposerCommandMenuLayer anchor={composerMenuAnchor}>
                   <ComposerCommandMenu
+                    header={
+                      isPathTrigger && (props.fileWorkspace?.folders.length ?? 0) > 1 ? (
+                        <div className="px-3 pt-1">
+                          <WorkspaceFolderPicker
+                            workspace={props.fileWorkspace}
+                            value={searchFolderPath}
+                            onChange={setSearchFolderPath}
+                          />
+                        </div>
+                      ) : undefined
+                    }
+                    status={isPathTrigger ? workspaceEntries.error : null}
                     listId={composerSuggestionListId}
                     items={composerMenuItems}
                     resolvedTheme={resolvedTheme}

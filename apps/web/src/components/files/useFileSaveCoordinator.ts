@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, WorkspaceScope } from "@t3tools/contracts";
 import { createRef, useEffect, useMemo } from "react";
 
 import { projectEnvironment } from "~/state/projects";
@@ -6,12 +6,14 @@ import { useAtomCommand } from "~/state/use-atom-command";
 
 import { FileSaveCoordinator } from "./fileSaveCoordinator";
 import { confirmProjectFileQueryData } from "./projectFilesQueryState";
+import { useWorkspaceFileScope } from "./workspaceFiles";
 
 const FILE_SAVE_DEBOUNCE_MS = 500;
 
 interface FileSaveOptions {
   environmentId: EnvironmentId;
   cwd: string;
+  scope?: WorkspaceScope | undefined;
   relativePath: string;
   onPendingChange: (relativePath: string, pending: boolean) => void;
 }
@@ -19,10 +21,12 @@ interface FileSaveOptions {
 export function useFileSaveCoordinator({
   environmentId,
   cwd,
+  scope: inputScope,
   relativePath,
   onPendingChange,
 }: FileSaveOptions): Pick<FileSaveCoordinator, "change"> {
   const writeFile = useAtomCommand(projectEnvironment.writeFile);
+  const scope = useWorkspaceFileScope(inputScope);
   const session = useMemo(() => {
     const coordinatorRef = createRef<FileSaveCoordinator>();
     return {
@@ -34,10 +38,20 @@ export function useFileSaveCoordinator({
           persist: (nextContents) =>
             writeFile({
               environmentId,
-              input: { cwd, relativePath, contents: nextContents },
+              input: scope
+                ? { scope, path: relativePath, contents: nextContents }
+                : { cwd, relativePath, contents: nextContents },
             }),
           onConfirmed: (confirmedContents) => {
-            confirmProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
+            if (scope)
+              confirmProjectFileQueryData(
+                environmentId,
+                cwd,
+                relativePath,
+                confirmedContents,
+                scope,
+              );
+            else confirmProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
           },
         });
         coordinatorRef.current = coordinator;
@@ -47,7 +61,7 @@ export function useFileSaveCoordinator({
         };
       },
     };
-  }, [cwd, environmentId, onPendingChange, relativePath, writeFile]);
+  }, [cwd, scope, environmentId, onPendingChange, relativePath, writeFile]);
 
   // StrictMode replays effect setup. Retired file sessions stay inert, while the
   // replay gets a fresh coordinator instead of reusing a disposed one.

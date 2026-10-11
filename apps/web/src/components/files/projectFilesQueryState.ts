@@ -2,6 +2,7 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   type EnvironmentId,
   type ProjectListEntriesResult,
+  type WorkspaceScope,
   ProjectReadFileError,
   type ProjectReadFileResult,
 } from "@t3tools/contracts";
@@ -16,6 +17,8 @@ import { projectEnvironment } from "~/state/projects";
 import { useProjectPathSearch } from "~/state/queries";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 
+import { workspaceFileScopeKey } from "./workspaceFiles";
+
 const EMPTY_PROJECT_FILE_PATH = "";
 const EMPTY_PROJECT_FILE_QUERY_ATOM = Atom.make(
   AsyncResult.initial<ProjectReadFileResult, never>(false),
@@ -25,8 +28,13 @@ export function optimisticFileAtom(
   environmentId: EnvironmentId,
   cwd: string,
   relativePath: string,
+  scope?: WorkspaceScope,
 ) {
-  return projectEnvironment.optimisticFile({ environmentId, cwd, relativePath });
+  return projectEnvironment.optimisticFile({
+    environmentId,
+    cwd: workspaceFileScopeKey(cwd, scope),
+    relativePath,
+  });
 }
 
 interface ProjectQueryState<A> {
@@ -45,10 +53,13 @@ function getProjectEntriesQueryAtom(
   environmentId: EnvironmentId,
   cwd: string,
   directoryPath?: string,
+  scope?: WorkspaceScope,
 ) {
   return projectEnvironment.listEntries({
     environmentId,
-    input: { cwd, ...(directoryPath !== undefined ? { directoryPath } : {}) },
+    input: scope
+      ? { scope, directoryPath: directoryPath ?? "" }
+      : { cwd, ...(directoryPath !== undefined ? { directoryPath } : {}) },
   });
 }
 
@@ -56,10 +67,13 @@ export function getProjectFileQueryAtom(
   environmentId: EnvironmentId,
   cwd: string,
   relativePath: string | null,
+  scope?: WorkspaceScope,
 ) {
   return projectEnvironment.readFile({
     environmentId,
-    input: { cwd, relativePath: relativePath ?? EMPTY_PROJECT_FILE_PATH },
+    input: scope
+      ? { scope, path: relativePath ?? EMPTY_PROJECT_FILE_PATH }
+      : { cwd, relativePath: relativePath ?? EMPTY_PROJECT_FILE_PATH },
   });
 }
 
@@ -68,8 +82,9 @@ export function setProjectFileQueryData(
   cwd: string,
   relativePath: string,
   contents: string,
+  scope?: WorkspaceScope,
 ): void {
-  appAtomRegistry.set(optimisticFileAtom(environmentId, cwd, relativePath), {
+  appAtomRegistry.set(optimisticFileAtom(environmentId, cwd, relativePath, scope), {
     confirmedAgainst: undefined,
     data: {
       relativePath,
@@ -84,8 +99,11 @@ export function getOptimisticProjectFileQueryData(
   environmentId: EnvironmentId,
   cwd: string,
   relativePath: string,
+  scope?: WorkspaceScope,
 ): ProjectReadFileResult | null {
-  return appAtomRegistry.get(optimisticFileAtom(environmentId, cwd, relativePath))?.data ?? null;
+  return (
+    appAtomRegistry.get(optimisticFileAtom(environmentId, cwd, relativePath, scope))?.data ?? null
+  );
 }
 
 export function confirmProjectFileQueryData(
@@ -93,12 +111,13 @@ export function confirmProjectFileQueryData(
   cwd: string,
   relativePath: string,
   contents: string,
+  scope?: WorkspaceScope,
 ): boolean {
-  const atom = optimisticFileAtom(environmentId, cwd, relativePath);
+  const atom = optimisticFileAtom(environmentId, cwd, relativePath, scope);
   const optimisticFile = appAtomRegistry.get(atom);
   if (optimisticFile?.data.contents !== contents) return false;
 
-  const queryAtom = getProjectFileQueryAtom(environmentId, cwd, relativePath);
+  const queryAtom = getProjectFileQueryAtom(environmentId, cwd, relativePath, scope);
   const confirmed = {
     ...optimisticFile,
     confirmedAgainst: appAtomRegistry.get(queryAtom),
@@ -121,17 +140,21 @@ export function resolveProjectFileQueryData(
   cwd: string,
   relativePath: string | null,
   data: ProjectReadFileResult | null,
+  scope?: WorkspaceScope,
 ): ProjectReadFileResult | null {
   if (relativePath === null) return data;
-  return appAtomRegistry.get(optimisticFileAtom(environmentId, cwd, relativePath))?.data ?? data;
+  return (
+    appAtomRegistry.get(optimisticFileAtom(environmentId, cwd, relativePath, scope))?.data ?? data
+  );
 }
 
 export function clearProjectFileQueryData(
   environmentId: EnvironmentId,
   cwd: string,
   relativePath: string,
+  scope?: WorkspaceScope,
 ): void {
-  appAtomRegistry.set(optimisticFileAtom(environmentId, cwd, relativePath), null);
+  appAtomRegistry.set(optimisticFileAtom(environmentId, cwd, relativePath, scope), null);
 }
 
 function failureCause<A>(result: AsyncResult.AsyncResult<A, unknown>): unknown {
@@ -149,8 +172,9 @@ export function useProjectEntriesQuery(
   environmentId: EnvironmentId,
   cwd: string,
   directoryPath?: string,
+  scope?: WorkspaceScope,
 ): ProjectQueryState<ProjectListEntriesResult> {
-  const atom = getProjectEntriesQueryAtom(environmentId, cwd, directoryPath);
+  const atom = getProjectEntriesQueryAtom(environmentId, cwd, directoryPath, scope);
   const result = useAtomValue(atom);
   const refreshAtom = useAtomRefresh(atom);
   const refresh = useCallback(() => refreshAtom(), [refreshAtom]);
@@ -175,12 +199,13 @@ export function useProjectFilePickerQuery(
   cwd: string,
   query: string,
   limit: number,
-  options?: { readonly imageOnly?: boolean },
+  options?: { readonly imageOnly?: boolean; readonly scope?: WorkspaceScope | undefined },
 ) {
   const search = useProjectPathSearch(
     {
       environmentId,
       cwd,
+      scope: options?.scope,
       query,
       kind: "file",
       ...(options?.imageOnly ? { imageOnly: true } : {}),
@@ -190,6 +215,7 @@ export function useProjectFilePickerQuery(
   );
 
   return {
+    folders: search.folders,
     entries: search.isPending ? [] : search.entries,
     error: search.error,
     isPending: search.isPending,
@@ -202,18 +228,19 @@ export function useProjectFileQuery(
   cwd: string,
   relativePath: string | null,
   enabled = true,
+  scope?: WorkspaceScope,
 ): ProjectFileQueryState {
   // The caller decides what to read. A media path is not skipped here: a folder
   // named `assets.png` is only knowable as a folder from the read failure.
   const atom = enabled
-    ? getProjectFileQueryAtom(environmentId, cwd, relativePath)
+    ? getProjectFileQueryAtom(environmentId, cwd, relativePath, scope)
     : EMPTY_PROJECT_FILE_QUERY_ATOM;
   const result = useAtomValue(atom);
   const refreshAtom = useAtomRefresh(atom);
   const refresh = useCallback(() => refreshAtom(), [refreshAtom]);
   const data = Option.getOrNull(AsyncResult.value(result));
   const optimisticResult = useAtomValue(
-    optimisticFileAtom(environmentId, cwd, relativePath ?? EMPTY_PROJECT_FILE_PATH),
+    optimisticFileAtom(environmentId, cwd, relativePath ?? EMPTY_PROJECT_FILE_PATH, scope),
   );
   const optimisticFile = relativePath === null ? null : optimisticResult;
   const cause = failureCause(result);

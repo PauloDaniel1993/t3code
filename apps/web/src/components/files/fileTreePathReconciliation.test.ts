@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildFileTreePathUpdates } from "./fileTreePathReconciliation";
+import { buildFileTreePathUpdates, fileTreeSearchEntries } from "./fileTreePathReconciliation";
+
+it("shows only scoped search matches and their ancestors, replacing previously loaded rows", () => {
+  const previous = fileTreeSearchEntries([
+    { path: "api/readme.md", kind: "file" },
+    { path: "ui/readme.md", kind: "file" },
+  ]);
+  const narrowed = fileTreeSearchEntries([{ path: "api/docs/readme.md", kind: "file" }]);
+  expect(narrowed).toEqual([
+    { path: "api/docs/readme.md", kind: "file" },
+    { path: "api", kind: "directory" },
+    { path: "api/docs", kind: "directory" },
+  ]);
+  expect(
+    buildFileTreePathUpdates(
+      previous.map((entry) => entry.path),
+      narrowed.map((entry) => entry.path),
+    ),
+  ).toContainEqual({ type: "remove", path: "ui/readme.md" });
+});
 
 describe("buildFileTreePathUpdates", () => {
   it("updates only paths that changed", () => {

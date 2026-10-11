@@ -1,13 +1,26 @@
-import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectEntry, WorkspaceScopeFolder } from "@t3tools/contracts";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import {
+  workspaceFileReference,
+  workspaceFileContextKey,
+  type WorkspaceFileContext,
+} from "./workspaceFiles";
 import { projectEnvironment } from "~/state/projects";
 
 /** Loads only requested directories; collapsing a folder keeps its children cached. */
-export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
+export function useDirectoryEntries(
+  environmentId: EnvironmentId,
+  cwd: string,
+  workspace?: WorkspaceFileContext,
+) {
+  const workspaceKey = workspaceFileContextKey(cwd, workspace);
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace;
+  const [folders, setFolders] = useState<readonly WorkspaceScopeFolder[]>([]);
   const [directories, setDirectories] = useState(new Map<string, readonly ProjectEntry[]>());
   const [errors, setErrors] = useState(new Map<string, string>());
   const [pending, setPending] = useState(0);
@@ -15,25 +28,38 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
   const loaded = useRef(new Set<string>());
   const requested = useRef(new Set<string>());
   const active = useRef(true);
+  const generation = useRef(0);
   const running = useRef(0);
   const waiting = useRef<Array<() => void>>([]);
 
   const load = useCallback(
     function loadDirectory(directoryPath: string, refresh = false): Promise<void> {
+      const requestGeneration = generation.current;
       const existing = requests.current.get(directoryPath);
       if (existing)
-        return refresh ? existing.then(() => loadDirectory(directoryPath, true)) : existing;
+        return refresh
+          ? existing.then(() => {
+              if (active.current && generation.current === requestGeneration)
+                return loadDirectory(directoryPath, true);
+            })
+          : existing;
       if (!refresh && loaded.current.has(directoryPath)) return Promise.resolve();
       loaded.current.add(directoryPath);
       requested.current.add(directoryPath);
-      const atom = projectEnvironment.listEntries({ environmentId, input: { cwd, directoryPath } });
+      const workspace = workspaceRef.current;
+      const reference = directoryPath ? workspaceFileReference(workspace, directoryPath) : null;
+      const scope = reference?.scope ?? workspace?.scope;
+      const atom = projectEnvironment.listEntries({
+        environmentId,
+        input: scope ? { scope, directoryPath } : { cwd, directoryPath },
+      });
       setPending((count) => count + 1);
       const request = (async () => {
         if (running.current >= 4)
           await new Promise<void>((resolve) => waiting.current.push(resolve));
         else running.current++;
         try {
-          if (!active.current) return undefined;
+          if (!active.current || generation.current !== requestGeneration) return undefined;
           return await executeAtomQuery(appAtomRegistry, atom, {
             refresh: true,
             reportFailure: false,
@@ -46,17 +72,21 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
         }
       })()
         .then((result) => {
-          if (!active.current || !result) return;
+          if (!active.current || generation.current !== requestGeneration || !result) return;
           if (result._tag === "Success") {
-            setDirectories((previous) =>
-              new Map(previous).set(
-                directoryPath,
-                result.value.entries.filter(
-                  (entry) =>
-                    entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) === directoryPath,
-                ),
-              ),
-            );
+            setFolders(result.value.folders ?? []);
+            const roots =
+              directoryPath === "" && (result.value.folders?.length ?? 0) > 1
+                ? result.value.folders!.map((folder) => ({
+                    path: folder.label,
+                    kind: "directory" as const,
+                  }))
+                : result.value.entries.filter(
+                    (entry) =>
+                      entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) ===
+                      directoryPath,
+                  );
+            setDirectories((previous) => new Map(previous).set(directoryPath, roots));
             setErrors((previous) => {
               const next = new Map(previous);
               next.delete(directoryPath);
@@ -74,20 +104,31 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
           }
         })
         .finally(() => {
-          requests.current.delete(directoryPath);
-          if (active.current) setPending((count) => count - 1);
+          if (generation.current === requestGeneration) {
+            requests.current.delete(directoryPath);
+            if (active.current) setPending((count) => count - 1);
+          }
         });
       requests.current.set(directoryPath, request);
       return request;
     },
-    [cwd, environmentId],
+    [cwd, environmentId, workspaceKey],
   );
 
   useEffect(() => {
+    generation.current++;
     active.current = true;
+    requests.current.clear();
+    loaded.current.clear();
+    requested.current.clear();
+    setFolders([]);
+    setDirectories(new Map());
+    setErrors(new Map());
+    setPending(0);
     void load("");
     return () => {
       active.current = false;
+      generation.current++;
     };
   }, [load]);
 
@@ -113,11 +154,12 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
   );
 
   const refresh = useCallback(() => {
+    const refreshGeneration = generation.current;
     // Refresh folders already visited, preserving the current expansion state.
     const paths = [...requested.current].filter((path) => reachableDirectories.has(path));
     let next = 0;
     const worker = async () => {
-      while (next < paths.length && active.current) {
+      while (next < paths.length && active.current && generation.current === refreshGeneration) {
         const path = paths[next++];
         if (path !== undefined) await load(path, true);
       }
@@ -127,6 +169,7 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
 
   return {
     entries,
+    folders,
     load,
     refresh,
     isPending: pending > 0,

@@ -1,18 +1,21 @@
 import {
-  type ComposerPathSearchState,
-  type ComposerPathSearchTarget,
-} from "@t3tools/client-runtime/state/threads";
+  workspaceFolderProblems,
+  workspaceResultFolderPath,
+} from "~/components/files/workspaceFiles";
+import {
+  type ProjectPathSearchTarget,
+  useComposerPathSearch as useComposerPathSearchQuery,
+} from "../state/queries";
 
-import { useComposerPathSearch as useComposerPathSearchQuery } from "../state/queries";
-
-export function useComposerPathSearch(target: ComposerPathSearchTarget): ComposerPathSearchState {
+export function useComposerPathSearch(target: ProjectPathSearchTarget) {
   const state = useComposerPathSearchQuery(target);
   return {
     entries: state.entries.map((entry) => ({
       path: entry.path,
       kind: entry.kind,
+      folderPath: workspaceResultFolderPath(entry.path, state.folders),
     })),
-    error: state.error,
+    error: state.error ?? (workspaceFolderProblems(state.folders) || null),
     isPending: state.isPending,
   };
 }

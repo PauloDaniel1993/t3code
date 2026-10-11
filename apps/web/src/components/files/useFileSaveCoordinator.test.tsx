@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { act, StrictMode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
@@ -34,7 +34,7 @@ function FileSurface(props: Parameters<typeof useFileSaveCoordinator>[0]) {
   return <ChangeSource onChange={(contents) => coordinator.change(contents)} />;
 }
 
-function mount(props = defaultProps) {
+function mount(props: Parameters<typeof useFileSaveCoordinator>[0] = defaultProps) {
   act(() => {
     renderer = create(
       <StrictMode>
@@ -64,6 +64,52 @@ afterEach(async () => {
 });
 
 describe("file-save React lifecycle", () => {
+  it("keeps the active edit session when an equal scope arrives in a new projection object", async () => {
+    const scope = {
+      projectId: ProjectId.make("project"),
+      threadId: ThreadId.make("thread"),
+      folderPath: "/ui",
+    };
+    const props = { ...defaultProps, relativePath: "ui/file.txt", scope };
+    mount(props);
+    const originalChange = changeHandler();
+    originalChange("first edit");
+    act(() =>
+      renderer!.update(
+        <StrictMode>
+          <FileSurface {...props} scope={{ ...scope }} />
+        </StrictMode>,
+      ),
+    );
+    expect(writeFile).not.toHaveBeenCalled();
+    originalChange("second edit");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writeFile).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { scope, path: "ui/file.txt", contents: "second edit" },
+    });
+  });
+  it("saves a secondary file with its original folder pin and confirms the same cache", async () => {
+    const scope = {
+      projectId: ProjectId.make("project"),
+      threadId: ThreadId.make("thread"),
+      folderPath: "/ui",
+    };
+    mount({ ...defaultProps, relativePath: "ui/file.txt", scope });
+    changeHandler()("updated");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writeFile).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { scope, path: "ui/file.txt", contents: "updated" },
+    });
+    expect(confirmFile).toHaveBeenCalledExactlyOnceWith(
+      environmentId,
+      "/workspace",
+      "ui/file.txt",
+      "updated",
+      scope,
+    );
+  });
   it("persists editor model changes after StrictMode setup replay", async () => {
     mount();
     changeHandler()("AUDIT7907NATIVE\n");
