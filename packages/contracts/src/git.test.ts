@@ -183,21 +183,17 @@ describe("VcsStatusInput", () => {
 describe("VcsRunWorkspaceActionInput", () => {
   const decodeWorkspaceActionInput = Schema.decodeUnknownSync(VcsRunWorkspaceActionInput);
 
-  it("accepts the three batch actions and optional repository roots", () => {
-    expect(
-      decodeWorkspaceActionInput({
-        actionId: "batch-1",
-        threadId: "thread-1",
-        action: "create-prs",
-        members: ["/src/api"],
-      }).members,
-    ).toEqual(["/src/api"]);
-    expect(() =>
-      decodeWorkspaceActionInput({
-        actionId: "batch-1",
-        threadId: "thread-1",
-        action: "commit_push_pr",
-      }),
-    ).toThrow();
+  it("accepts the three batch actions and a non-empty list of repository roots", () => {
+    for (const action of ["commit", "push", "create-prs"]) {
+      expect(
+        decodeWorkspaceActionInput({ actionId: "batch-1", threadId: "thread-1", action }).action,
+      ).toBe(action);
+    }
+    const base = { actionId: "batch-1", threadId: "thread-1", action: "push" };
+    expect(decodeWorkspaceActionInput({ ...base, members: ["/src/api"] }).members).toEqual([
+      "/src/api",
+    ]);
+    expect(() => decodeWorkspaceActionInput({ ...base, members: [] })).toThrow();
+    expect(() => decodeWorkspaceActionInput({ ...base, action: "commit_push_pr" })).toThrow();
   });
 });

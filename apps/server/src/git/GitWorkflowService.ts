@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,7 +25,7 @@ import {
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
   type GitStackedAction,
-  type GitWorkspaceAction,
+  type VcsWorkspaceAction,
   type VcsStatusInput,
   type VcsStatusLocalResult,
   type VcsStatusRemoteResult,
@@ -82,7 +83,14 @@ export class GitWorkflowService extends Context.Service<
      */
     readonly runWorkspaceAction: (
       input: VcsRunWorkspaceActionInput,
-      options?: { readonly progressReporter?: GitManager.GitActionProgressReporter },
+      options?: {
+        readonly progressReporter?: GitManager.GitActionProgressReporter;
+        /** Runs as each checkout's action succeeds, even if the rest are then interrupted. */
+        readonly onCompleted?: (completed: {
+          readonly cwd: string;
+          readonly result: GitRunStackedActionResult;
+        }) => Effect.Effect<void>;
+      },
     ) => Effect.Effect<VcsRunWorkspaceActionResult, VcsWorkspaceActionError>;
     readonly resolvePullRequest: (
       input: GitPullRequestRefInput,
@@ -175,13 +183,18 @@ const WORKSPACE_STACKED_ACTIONS = {
   push: "push",
   // Opens a checkout's open pull request, and creates one only where none is open.
   "create-prs": "create_pr",
-} as const satisfies Record<GitWorkspaceAction, GitStackedAction>;
+} as const satisfies Record<VcsWorkspaceAction, GitStackedAction>;
 
 const workspaceActionFailure = (
   threadId: VcsRunWorkspaceActionInput["threadId"],
   detail: string,
   cause?: unknown,
 ) => new VcsWorkspaceActionError({ threadId, detail, ...(cause === undefined ? {} : { cause }) });
+
+const failureMessage = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return error instanceof Error ? error.message : String(error);
+};
 
 function nonRepositoryListRefs(): VcsListRefsResult {
   return {
@@ -321,42 +334,73 @@ export const make = Effect.gen(function* () {
       Effect.andThen(gitManager.runStackedAction(input, options)),
     );
 
+  // The branch checked out at `cwd`, or null when its HEAD is detached.
+  const currentBranch = (cwd: string) =>
+    git
+      .execute({
+        operation: "GitWorkflowService.currentBranch",
+        cwd,
+        args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        allowNonZeroExit: true,
+      })
+      .pipe(
+        Effect.flatMap((result) =>
+          result.exitCode === 0
+            ? Effect.succeed(result.stdout.trim())
+            : result.exitCode === 1
+              ? Effect.succeed(null)
+              : Effect.fail(
+                  new GitCommandError({
+                    operation: "GitWorkflowService.currentBranch",
+                    command: "git symbolic-ref",
+                    cwd,
+                    exitCode: result.exitCode,
+                    detail: result.stderr.trim() || "Could not read the checked-out branch.",
+                  }),
+                ),
+        ),
+      );
+
   const runInCheckout = Effect.fn("GitWorkflowService.runInCheckout")(function* (
     input: VcsRunWorkspaceActionInput,
     checkout: WorkspaceGitCheckout,
     options: Parameters<GitWorkflowService["Service"]["runWorkspaceAction"]>[1],
   ) {
-    const { repositoryRoot, cwd, label } = checkout;
     const finish = (
+      cwd: string,
       outcome: VcsWorkspaceActionMemberResult["outcome"],
-    ): VcsWorkspaceActionMemberResult => ({ repositoryRoot, cwd, label, outcome });
-    const probe = yield* folderResolver.probe(cwd, { vcs: false });
-    if (probe.availability === "unavailable") {
-      return finish({ _tag: "unavailable", reason: probe.unavailableReason ?? "missing" });
+    ): VcsWorkspaceActionMemberResult => ({
+      repositoryRoot: checkout.repositoryRoot,
+      cwd,
+      label: checkout.label,
+      outcome,
+    });
+    const probe = yield* folderResolver.probe(checkout.cwd, { vcs: false });
+    // A folder that is gone leaves git the top of its checkout to run at.
+    const top =
+      probe.availability === "available" || checkout.root === checkout.cwd
+        ? probe
+        : yield* folderResolver.probe(checkout.root, { vcs: false });
+    if (top.availability === "unavailable") {
+      return finish(checkout.cwd, {
+        _tag: "unavailable",
+        reason: top.unavailableReason ?? "missing",
+      });
     }
-    if (checkout.expectedBranch !== null) {
-      const details = yield* Effect.result(
-        git.statusDetailsLocal(cwd, { includeDivergence: false }),
-      );
-      if (details._tag === "Failure") {
-        return finish({ _tag: "failed", message: details.failure.message });
+    const cwd = probe.availability === "available" ? checkout.cwd : checkout.root;
+    const outcome = yield* Effect.gen(function* () {
+      if (checkout.expectedBranch !== null) {
+        const refName = yield* currentBranch(cwd);
+        if (isCheckoutDrifted(checkout, refName)) {
+          return { _tag: "drifted", refName, expectedBranch: checkout.expectedBranch } as const;
+        }
       }
-      if (isCheckoutDrifted(checkout, details.success.branch)) {
-        return finish({
-          _tag: "drifted",
-          refName: details.success.branch,
-          expectedBranch: checkout.expectedBranch,
-        });
-      }
-    }
-    const action = WORKSPACE_STACKED_ACTIONS[input.action];
-    const result = yield* Effect.result(
-      runStackedAction(
+      const run = runStackedAction(
         {
           actionId: input.actionId,
           cwd,
-          action,
-          ...(action === "commit" && input.commitMessage !== undefined
+          action: WORKSPACE_STACKED_ACTIONS[input.action],
+          ...(input.action === "commit" && input.commitMessage !== undefined
             ? { commitMessage: input.commitMessage }
             : {}),
           threadId: input.threadId,
@@ -365,19 +409,35 @@ export const make = Effect.gen(function* () {
           actionId: input.actionId,
           ...(options?.progressReporter ? { progressReporter: options.progressReporter } : {}),
         },
+      );
+      const result = yield* Effect.uninterruptibleMask((restore) =>
+        restore(run).pipe(
+          Effect.tap((result) => options?.onCompleted?.({ cwd, result }) ?? Effect.void),
+        ),
+      );
+      return { _tag: "completed", result } as const;
+    }).pipe(
+      // A failure, a defect included, is this checkout's outcome alone.
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause as Cause.Cause<never>)
+          : Effect.succeed({ _tag: "failed", message: failureMessage(cause) } as const),
       ),
     );
-    return finish(
-      result._tag === "Success"
-        ? { _tag: "completed", result: result.success }
-        : { _tag: "failed", message: result.failure.message },
-    );
+    return finish(cwd, outcome);
   });
 
   const runWorkspaceAction: GitWorkflowService["Service"]["runWorkspaceAction"] = Effect.fn(
     "GitWorkflowService.runWorkspaceAction",
   )(function* (input, options) {
     const { threadId } = input;
+    // One message for every repository; a generated message would differ in each.
+    if (input.action === "commit" && input.commitMessage === undefined) {
+      return yield* workspaceActionFailure(
+        threadId,
+        "Committing every repository needs a message.",
+      );
+    }
     const thread = yield* projections
       .getThread(threadId)
       .pipe(

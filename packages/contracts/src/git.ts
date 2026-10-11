@@ -223,21 +223,21 @@ export const VcsSwitchWorktreeSetBranchInput = Schema.Struct({
 });
 export type VcsSwitchWorktreeSetBranchInput = typeof VcsSwitchWorktreeSetBranchInput.Type;
 
-export const GitWorkspaceAction = Schema.Literals(["commit", "push", "create-prs"]);
-export type GitWorkspaceAction = typeof GitWorkspaceAction.Type;
+export const VcsWorkspaceAction = Schema.Literals(["commit", "push", "create-prs"]);
+export type VcsWorkspaceAction = typeof VcsWorkspaceAction.Type;
 
 /**
  * Runs one stacked action in each git checkout a thread works in, or only in
- * the checkouts named by their repository root. Every commit gets the one
- * message; without it each repository's message is generated. Checkouts that
- * left their worktree set's branch, or can't be reached, are skipped.
+ * the checkouts named by their repository root. A commit needs a message,
+ * and every repository gets that one message. Checkouts that left their
+ * worktree set's branch, or can't be reached, are skipped.
  */
 export const VcsRunWorkspaceActionInput = Schema.Struct({
   actionId: TrimmedNonEmptyStringSchema,
   threadId: ThreadId,
-  action: GitWorkspaceAction,
+  action: VcsWorkspaceAction,
   commitMessage: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000))),
-  members: Schema.optional(Schema.Array(TrimmedNonEmptyStringSchema)),
+  members: Schema.optional(Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1))),
 });
 export type VcsRunWorkspaceActionInput = typeof VcsRunWorkspaceActionInput.Type;
 

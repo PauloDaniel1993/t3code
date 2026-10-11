@@ -1,8 +1,10 @@
 import { assert, describe, expect, it, vi } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   GitManagerError,
@@ -258,7 +260,7 @@ const workspaceFolders = [
 
 function workspaceThread(
   binding: Pick<OrchestrationV2AppThread, "worktreePath" | "worktrees">,
-  folders = workspaceFolders,
+  folders: NonNullable<OrchestrationV2AppThread["workspaceFolders"]> = workspaceFolders,
 ): OrchestrationV2AppThread {
   return {
     createdBy: "user",
@@ -295,22 +297,6 @@ const setThread = workspaceThread({
     branch: "feature",
   })),
 });
-
-function statusDetails(branch: string | null): GitVcsDriver.GitStatusDetails {
-  return {
-    isRepo: true,
-    hasOriginRemote: true,
-    isDefaultBranch: false,
-    branch,
-    upstreamRef: null,
-    hasWorkingTreeChanges: true,
-    workingTree: { files: [], insertions: 0, deletions: 0 },
-    hasUpstream: false,
-    aheadCount: 0,
-    behindCount: 0,
-    aheadOfDefaultCount: 0,
-  };
-}
 
 function stackedResult(
   input: Pick<GitRunStackedActionInput, "action" | "commitMessage">,
@@ -354,10 +340,22 @@ function makeWorkspaceLayer(input: {
     ),
     Layer.provide(
       Layer.mock(GitVcsDriver.GitVcsDriver)({
-        statusDetailsLocal: (cwd) =>
+        // `git symbolic-ref`: the branch, or exit 1 for a detached HEAD.
+        execute: ({ cwd }) =>
           Effect.sync(() => {
             input.branchReads?.push(cwd);
-            return statusDetails(input.branches?.[cwd] ?? null);
+            const branch = input.branches?.[cwd] ?? null;
+            return {
+              exitCode: ChildProcessSpawner.ExitCode(branch === null ? 1 : 0),
+              stdout:
+                branch === null
+                  ? ""
+                  : `${branch}
+`,
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            };
           }),
       }),
     ),
@@ -499,7 +497,7 @@ describe("GitWorkflowService.runWorkspaceAction", () => {
     },
   );
 
-  it.effect("opens each checkout's pull request and creates one only where none is open", () => {
+  it.effect("asks each checkout to open its pull request or create the missing one", () => {
     const calls: Array<GitRunStackedActionInput> = [];
     const layer = makeWorkspaceLayer({
       thread: workspaceThread(
@@ -612,6 +610,111 @@ describe("GitWorkflowService.runWorkspaceAction", () => {
       ]);
       expect(calls.toSorted()).toEqual(["/src/api", "/src/app", "/src/docs", "/src/lib"]);
       expect(branchReads).toEqual([]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses to commit every repository without one message", () => {
+    const calls: Array<string> = [];
+    const layer = makeWorkspaceLayer({
+      thread: setThread,
+      runStackedAction: (input) =>
+        Effect.sync(() => {
+          calls.push(input.cwd);
+          return stackedResult(input);
+        }),
+    });
+
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const error = yield* workflow
+        .runWorkspaceAction({ actionId: "batch-6", threadId: THREAD_ID, action: "commit" })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "VcsWorkspaceActionError",
+        detail: "Committing every repository needs a message.",
+      });
+      expect(calls).toEqual([]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "hands each success on before the rest finish and keeps a defect to its checkout",
+    () => {
+      const completed: Array<string> = [];
+      const appHandedOn = Deferred.makeUnsafe<void>();
+      const layer = makeWorkspaceLayer({
+        thread: workspaceThread(
+          { worktreePath: "/wt/s/app", worktrees: setThread.worktrees!.slice(0, 2) },
+          workspaceFolders.slice(0, 2),
+        ),
+        branches: { "/wt/s/app": "feature", "/wt/s/api": "feature" },
+        runStackedAction: (input) =>
+          input.cwd === "/wt/s/app"
+            ? Effect.succeed(stackedResult(input))
+            : // api ends only once app's success was handed on, and then crashes.
+              Deferred.await(appHandedOn).pipe(
+                Effect.andThen(Effect.die(new Error("git crashed"))),
+              ),
+      });
+
+      return Effect.gen(function* () {
+        const workflow = yield* GitWorkflowService.GitWorkflowService;
+        const { results } = yield* workflow.runWorkspaceAction(
+          { actionId: "batch-7", threadId: THREAD_ID, action: "push" },
+          {
+            onCompleted: ({ cwd }) =>
+              Effect.sync(() => void completed.push(cwd)).pipe(
+                Effect.andThen(Deferred.succeed(appHandedOn, undefined)),
+                Effect.asVoid,
+              ),
+          },
+        );
+        expect(completed).toEqual(["/wt/s/app"]);
+        expect(results.map(({ label, outcome }) => [label, outcome])).toEqual([
+          ["app", { _tag: "completed", result: stackedResult({ action: "push" }) }],
+          ["api", { _tag: "failed", message: "git crashed" }],
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("runs at the top of a checkout whose first folder is gone", () => {
+    const calls: Array<string> = [];
+    const layer = makeWorkspaceLayer({
+      thread: workspaceThread(
+        { worktreePath: "/wt/s/app", worktrees: setThread.worktrees!.slice(0, 2) },
+        [
+          workspaceFolders[0]!,
+          {
+            path: "/src/api/pkg",
+            name: "pkg",
+            label: "pkg",
+            checkoutRoot: "/src/api",
+            checkoutPrefix: "pkg",
+          },
+        ],
+      ),
+      branches: { "/wt/s/app": "feature", "/wt/s/api": "feature" },
+      missing: ["/wt/s/api/pkg"],
+      runStackedAction: (input) =>
+        Effect.sync(() => {
+          calls.push(input.cwd);
+          return stackedResult(input);
+        }),
+    });
+
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const { results } = yield* workflow.runWorkspaceAction({
+        actionId: "batch-8",
+        threadId: THREAD_ID,
+        action: "push",
+      });
+      expect(results.map(({ cwd, outcome }) => [cwd, outcome._tag])).toEqual([
+        ["/wt/s/app", "completed"],
+        ["/wt/s/api", "completed"],
+      ]);
+      expect(calls.toSorted()).toEqual(["/wt/s/api", "/wt/s/app"]);
     }).pipe(Effect.provide(layer));
   });
 });

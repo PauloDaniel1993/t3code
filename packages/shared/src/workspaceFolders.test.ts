@@ -231,12 +231,14 @@ describe("workspaceGitCheckouts", () => {
     ).toEqual([
       {
         repositoryRoot: "/repo",
+        root: "/wt/s/repo",
         cwd: "/wt/s/repo/web",
         label: "web",
         expectedBranch: "t3code/feature",
       },
       {
         repositoryRoot: "/repo/lib/vendor",
+        root: "/wt/s/repo/lib/vendor",
         cwd: "/wt/s/repo/lib/vendor",
         label: "vendor",
         expectedBranch: "t3code/feature",
@@ -248,9 +250,16 @@ describe("workspaceGitCheckouts", () => {
     expect(
       workspaceGitCheckouts({ worktreePath: null, workspaceFolders: snapshotFolders }, project),
     ).toEqual([
-      { repositoryRoot: "/repo", cwd: "/repo/web", label: "web", expectedBranch: null },
+      {
+        repositoryRoot: "/repo",
+        root: "/repo",
+        cwd: "/repo/web",
+        label: "web",
+        expectedBranch: null,
+      },
       {
         repositoryRoot: "/repo/lib/vendor",
+        root: "/repo/lib/vendor",
         cwd: "/repo/lib/vendor",
         label: "vendor",
         expectedBranch: null,
@@ -258,22 +267,54 @@ describe("workspaceGitCheckouts", () => {
     ]);
   });
 
-  it("keeps a worktree picked for the primary apart from the primary's own checkout", () => {
+  it("never lets a submodule listed first stand for the member it rides in", () => {
+    // The submodule rides in the /repo member's worktree, which populates it.
+    const folders = [
+      { path: "/repo/ext/sdk", name: "sdk", label: "sdk", checkoutRoot: "/repo/ext/sdk" },
+      { path: "/repo/web", name: "web", label: "web", checkoutRoot: "/repo" },
+    ];
+    expect(
+      workspaceGitCheckouts(
+        {
+          worktreePath: "/wt/s/repo/ext/sdk",
+          workspaceFolders: folders,
+          worktrees: [worktrees[0]!],
+        },
+        project,
+      ).map(({ repositoryRoot, root, cwd, expectedBranch }) => [
+        repositoryRoot,
+        root,
+        cwd,
+        expectedBranch,
+      ]),
+    ).toEqual([
+      ["/repo/ext/sdk", "/wt/s/repo/ext/sdk", "/wt/s/repo/ext/sdk", null],
+      ["/repo", "/wt/s/repo", "/wt/s/repo/web", "t3code/feature"],
+    ]);
+  });
+
+  it("names a worktree picked for the primary by itself, apart from the primary's checkout", () => {
     expect(
       workspaceGitCheckouts(
         { worktreePath: "/wt/picked", workspaceFolders: snapshotFolders },
         project,
-      ).map((checkout) => [checkout.repositoryRoot, checkout.cwd]),
+      ).map((checkout) => [checkout.repositoryRoot, checkout.cwd, checkout.expectedBranch]),
     ).toEqual([
-      ["/repo", "/wt/picked"],
-      ["/repo/lib/vendor", "/repo/lib/vendor"],
-      ["/repo", "/repo/lib"],
+      ["/wt/picked", "/wt/picked", null],
+      ["/repo/lib/vendor", "/repo/lib/vendor", null],
+      ["/repo", "/repo/lib", null],
     ]);
   });
 
   it("gives a thread without a snapshot one checkout at its primary path", () => {
     expect(workspaceGitCheckouts({ worktreePath: "/wt/feature" }, project)).toEqual([
-      { repositoryRoot: "/wt/feature", cwd: "/wt/feature", label: "web", expectedBranch: null },
+      {
+        repositoryRoot: "/wt/feature",
+        root: "/wt/feature",
+        cwd: "/wt/feature",
+        label: "web",
+        expectedBranch: null,
+      },
     ]);
   });
 });
