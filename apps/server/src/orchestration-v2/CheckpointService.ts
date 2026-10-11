@@ -33,6 +33,7 @@ import {
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import {
   checkpointBarrierStatus,
+  checkpointRestoreParts,
   checkpointScopeParts,
   PRIMARY_CHECKPOINT_PART_KEY,
 } from "./CheckpointScopeParts.ts";
@@ -97,6 +98,10 @@ export class CheckpointRestoreError extends Schema.TaggedError<CheckpointRestore
   {
     scopeId: CheckpointScopeId,
     checkpointId: CheckpointId,
+    /** Labels of the folders whose checkout was restored before another failed. */
+    restoredFolders: Schema.optional(Schema.Array(Schema.String)),
+    /** Labels of the folders whose checkout wasn't restored. */
+    unrestoredFolders: Schema.optional(Schema.Array(Schema.String)),
     cause: Schema.Defect(),
   },
 ) {
@@ -130,6 +135,16 @@ export type CheckpointServiceV2Error = typeof CheckpointServiceV2Error.Type;
 
 const isCheckpointRestoreError = Schema.is(CheckpointRestoreError);
 
+/**
+ * Why a turn's files can't be restored. Restore is all or nothing, so one part
+ * refuses it all. `folders` are the labels of the parts at fault, empty for a
+ * checkpoint without parts.
+ */
+export interface FileRestoreRefusal {
+  readonly reason: "not-ready" | "missing-checkout" | "missing-ref" | "shared";
+  readonly folders: ReadonlyArray<string>;
+}
+
 export interface CheckpointServiceV2Shape {
   readonly prepareRootRunScope: (input: {
     readonly threadId: ThreadId;
@@ -162,6 +177,18 @@ export interface CheckpointServiceV2Shape {
     readonly appRunOrdinal: number | null;
     readonly capturedAt: DateTime.Utc;
   }) => Effect.Effect<OrchestrationV2Checkpoint, CheckpointServiceV2Error>;
+  /**
+   * Whether every git part of `checkpoint` can be restored: ready, its
+   * checkout present, and its ref there. Undefined when all can.
+   */
+  readonly preflightRestore: (input: {
+    readonly scope: OrchestrationV2CheckpointScope;
+    readonly checkpoint: OrchestrationV2Checkpoint;
+  }) => Effect.Effect<FileRestoreRefusal | undefined>;
+  /**
+   * Restores every git part's files in parallel; HEAD never moves. Restoring
+   * again converges, and a failure names the folders restored and not.
+   */
   readonly restore: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
     readonly checkpoint: OrchestrationV2Checkpoint;
@@ -656,41 +683,104 @@ export const layer: Layer.Layer<
         ),
       );
 
-    const restore: CheckpointServiceV2Shape["restore"] = (input) =>
-      withCheckoutLock(
-        input.scope.cwd,
-        Effect.gen(function* () {
-          if (input.checkpoint.status !== "ready") {
-            return yield* new CheckpointRestoreError({
-              scopeId: input.scope.id,
-              checkpointId: input.checkpoint.id,
-              cause: `Checkpoint status is ${input.checkpoint.status}.`,
-            });
-          }
-          // Both rollback gates already refuse this. Should one let it through,
-          // refusing beats restoring the primary part's whole checkout alone.
-          if (input.checkpoint.parts !== undefined || input.scope.parts !== undefined) {
-            return yield* new CheckpointRestoreError({
-              scopeId: input.scope.id,
-              checkpointId: input.checkpoint.id,
-              cause: "File restore of a checkpoint with several parts isn't supported.",
-            });
-          }
+    const partLabels = (parts: ReadonlyArray<OrchestrationV2CheckpointPart>) =>
+      parts.flatMap((part) => part.folders.map((folder) => folder.label));
 
-          const restored = yield* checkpointStore.restoreCheckpoint({
-            cwd: input.scope.cwd,
-            checkpointRef: input.checkpoint.ref,
-            fallbackToHead: false,
+    const preflightRestore: CheckpointServiceV2Shape["preflightRestore"] = (input) =>
+      Effect.gen(function* () {
+        const parts = checkpointRestoreParts(input.scope, input.checkpoint);
+        const notReady = parts.filter((part) => part.status !== "ready" || part.ref === null);
+        if (input.checkpoint.status !== "ready" || parts.length === 0 || notReady.length > 0) {
+          return { reason: "not-ready", folders: partLabels(notReady) } as const;
+        }
+        const missing = yield* Effect.filter(
+          parts,
+          (part) =>
+            fileSystem.exists(part.cwd).pipe(
+              Effect.map((exists) => !exists),
+              Effect.orElseSucceed(() => true),
+            ),
+          { concurrency: PART_CONCURRENCY },
+        );
+        if (missing.length > 0) {
+          return { reason: "missing-checkout", folders: partLabels(missing) } as const;
+        }
+        const unresolved = yield* Effect.filter(
+          parts,
+          (part) =>
+            part.ref === null
+              ? Effect.succeed(true)
+              : checkpointStore.hasCheckpointRef({ cwd: part.cwd, checkpointRef: part.ref }).pipe(
+                  Effect.map((exists) => !exists),
+                  Effect.orElseSucceed(() => true),
+                ),
+          { concurrency: PART_CONCURRENCY },
+        );
+        if (unresolved.length > 0) {
+          return { reason: "missing-ref", folders: partLabels(unresolved) } as const;
+        }
+        return undefined;
+      });
+
+    // Each part holds its own checkout's lock, so parts restore in parallel.
+    // Restore is idempotent, so a retry after a part failed converges.
+    const restore: CheckpointServiceV2Shape["restore"] = (input) =>
+      Effect.gen(function* () {
+        const parts = checkpointRestoreParts(input.scope, input.checkpoint);
+        if (input.checkpoint.status !== "ready") {
+          return yield* new CheckpointRestoreError({
+            scopeId: input.scope.id,
+            checkpointId: input.checkpoint.id,
+            restoredFolders: [],
+            unrestoredFolders: partLabels(parts),
+            cause: `Checkpoint status is ${input.checkpoint.status}.`,
           });
-          if (!restored) {
-            return yield* new CheckpointRestoreError({
-              scopeId: input.scope.id,
-              checkpointId: input.checkpoint.id,
-              cause: "Checkpoint ref is unavailable.",
-            });
-          }
-        }),
-      ).pipe(
+        }
+        const results = yield* Effect.forEach(
+          parts,
+          (part) =>
+            Effect.result(
+              withCheckoutLock(
+                part.cwd,
+                Effect.gen(function* () {
+                  if (part.status !== "ready" || part.ref === null) {
+                    return yield* Effect.fail(`Checkpoint part status is ${part.status}.`);
+                  }
+                  const restored = yield* checkpointStore.restoreCheckpoint({
+                    cwd: part.cwd,
+                    checkpointRef: part.ref,
+                    pathspecs: part.pathspecs,
+                    fallbackToHead: false,
+                  });
+                  if (!restored) return yield* Effect.fail("Checkpoint ref is unavailable.");
+                }),
+              ).pipe(
+                Effect.tapError((cause) =>
+                  Effect.logWarning("orchestration V2 checkpoint part restore failed", {
+                    scopeId: input.scope.id,
+                    checkpointId: input.checkpoint.id,
+                    cwd: part.cwd,
+                    cause: String(cause),
+                  }),
+                ),
+              ),
+            ),
+          { concurrency: PART_CONCURRENCY },
+        );
+        const failure = results.find(Result.isFailure);
+        if (failure === undefined) return;
+        return yield* new CheckpointRestoreError({
+          scopeId: input.scope.id,
+          checkpointId: input.checkpoint.id,
+          restoredFolders: partLabels(
+            parts.filter((_, index) => Result.isSuccess(results[index]!)),
+          ),
+          unrestoredFolders: partLabels(
+            parts.filter((_, index) => Result.isFailure(results[index]!)),
+          ),
+          cause: failure.failure,
+        });
+      }).pipe(
         Effect.mapError((cause) =>
           isCheckpointRestoreError(cause)
             ? cause
@@ -705,7 +795,8 @@ export const layer: Layer.Layer<
     // Each part's refs live in its own repository, reached through the part's
     // current checkout when the scope still has it. The primary part's refs are
     // deleted as before; another part's checkout may be gone, so those are best
-    // effort.
+    // effort. Only a ready part's ref was surely written, so a non-ready
+    // checkpoint gives up just its healthy parts' refs.
     const deleteStaleRefs: CheckpointServiceV2Shape["deleteStaleRefs"] = (input) => {
       const current = scopeParts(input.scope);
       const refsByPart = new Map<
@@ -719,10 +810,11 @@ export const layer: Layer.Layer<
             cwd: input.scope.cwd,
             vcs: "git",
             ref: checkpoint.ref,
+            status: checkpoint.status,
           },
         ];
         for (const part of parts) {
-          if (part.vcs === null || part.ref === null) continue;
+          if (part.vcs === null || part.ref === null || part.status !== "ready") continue;
           const group = refsByPart.get(part.key) ?? {
             cwd: current.find((candidate) => candidate.key === part.key)?.cwd ?? part.cwd,
             refs: [],
@@ -779,6 +871,7 @@ export const layer: Layer.Layer<
       captureBaseline,
       materializeBaselineCheckpoint,
       capture,
+      preflightRestore,
       restore,
       deleteStaleRefs,
     } satisfies CheckpointServiceV2Shape);

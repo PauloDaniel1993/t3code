@@ -705,6 +705,126 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         );
       }),
   );
+  it.effect("restores every part or names the folders it couldn't, leaving HEAD", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "checkpoint-restore-" });
+      const write = (file: string, contents: string) =>
+        Effect.andThen(
+          fileSystem.makeDirectory(path.dirname(file), { recursive: true }),
+          fileSystem.writeFileString(file, contents),
+        );
+      const repositories = ["app", "lib"].map((name) => path.join(root, name));
+      for (const repository of repositories) {
+        yield* write(path.join(repository, "file.txt"), "0");
+        for (const args of [
+          ["init"],
+          ["config", "user.email", "test@test.com"],
+          ["config", "user.name", "Test"],
+          ["config", "core.autocrlf", "false"],
+          ["add", "."],
+          ["commit", "-m", "initial"],
+        ]) {
+          yield* git(repository, args);
+        }
+      }
+      const [app, lib] = yield* Effect.forEach(repositories, (repository) =>
+        fileSystem.realPath(repository),
+      );
+      const heads = yield* Effect.forEach([app!, lib!], (cwd) => git(cwd, ["rev-parse", "HEAD"]));
+      const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+      const scope = yield* checkpoints.prepareRootRunScope({
+        threadId,
+        runId,
+        rootNodeId: nodeId,
+        providerThreadId,
+        cwd: app!,
+        thread: {
+          worktreePath: null,
+          workspaceFolders: [snapshotFolder(app!, "app", app!), snapshotFolder(lib!, "lib", lib!)],
+        },
+        createdAt,
+      });
+      const checkpoint = yield* checkpoints.capture({
+        scope,
+        runId,
+        nodeId,
+        ordinalWithinScope: 1,
+        appRunOrdinal: 1,
+        capturedAt: createdAt,
+      });
+      const [appPart, libPart] = checkpoint.parts ?? [];
+      const withLib = (part: Partial<NonNullable<typeof libPart>>) => ({
+        ...checkpoint,
+        parts: [appPart!, { ...libPart!, ...part }],
+      });
+      const edit = Effect.forEach(
+        [app!, lib!],
+        (cwd) =>
+          Effect.andThen(
+            write(path.join(cwd, "file.txt"), "1"),
+            write(path.join(cwd, "new.txt"), "1"),
+          ),
+        { discard: true },
+      );
+      const assertRestored = (cwd: string, restored: boolean) =>
+        Effect.gen(function* () {
+          assert.equal(
+            yield* fileSystem.readFileString(path.join(cwd, "file.txt")),
+            restored ? "0" : "1",
+          );
+          assert.equal(yield* fileSystem.exists(path.join(cwd, "new.txt")), !restored);
+        });
+
+      assert.isUndefined(yield* checkpoints.preflightRestore({ scope, checkpoint }));
+      assert.deepStrictEqual(
+        yield* checkpoints.preflightRestore({
+          scope,
+          checkpoint: { ...withLib({ status: "error" }), status: "error" },
+        }),
+        { reason: "not-ready", folders: ["lib"] },
+      );
+      assert.deepStrictEqual(
+        yield* checkpoints.preflightRestore({
+          scope,
+          checkpoint: withLib({ cwd: path.join(root, "moved") }),
+        }),
+        { reason: "missing-checkout", folders: ["lib"] },
+      );
+      const missingRef = withLib({ ref: CheckpointRef.make("refs/t3/checkpoints/missing") });
+      assert.deepStrictEqual(
+        yield* checkpoints.preflightRestore({ scope, checkpoint: missingRef }),
+        {
+          reason: "missing-ref",
+          folders: ["lib"],
+        },
+      );
+
+      // One part failing leaves the other restored, and says which is which.
+      yield* edit;
+      const failure = yield* checkpoints
+        .restore({ scope, checkpoint: missingRef })
+        .pipe(Effect.flip);
+      assert.equal(failure._tag, "CheckpointRestoreError");
+      if (failure._tag === "CheckpointRestoreError") {
+        assert.deepStrictEqual(failure.restoredFolders, ["app"]);
+        assert.deepStrictEqual(failure.unrestoredFolders, ["lib"]);
+      }
+      yield* assertRestored(app!, true);
+      yield* assertRestored(lib!, false);
+
+      // Restoring again converges.
+      yield* checkpoints.restore({ scope, checkpoint });
+      yield* assertRestored(app!, true);
+      yield* assertRestored(lib!, true);
+      assert.deepStrictEqual(
+        yield* Effect.forEach([app!, lib!], (cwd) => git(cwd, ["rev-parse", "HEAD"])),
+        heads,
+      );
+    }),
+  );
+
   it.effect("drops member folders git ignores or that vanished, instead of failing the part", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

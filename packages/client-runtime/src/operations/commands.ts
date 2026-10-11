@@ -867,7 +867,13 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
           ? candidate.ordinalWithinScope === 0 && candidate.appRunOrdinal === null
           : candidate.appRunOrdinal === input.turnCount,
       );
-    if (checkpoint === undefined || checkpoint.status !== "ready") {
+    // Only file restore needs a ready checkpoint; a conversation-only rewind
+    // needs a turn that wasn't rolled back.
+    if (
+      checkpoint === undefined ||
+      checkpoint.status === "stale" ||
+      (input.restoreFiles !== false && checkpoint.status !== "ready")
+    ) {
       const target =
         input.checkpointId === undefined
           ? `run ordinal ${input.turnCount ?? "unknown"}`

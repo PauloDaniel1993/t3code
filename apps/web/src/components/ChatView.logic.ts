@@ -11,7 +11,9 @@ import {
   ProjectId,
   type MessageId,
   type ModelSelection,
+  type OrchestrationV2Checkpoint,
   type OrchestrationV2ProjectedTurnItem,
+  type OrchestrationV2ThreadWorkspaceFolder,
   type PreviewAnnotationPayload,
   type ProviderInteractionMode,
   ProviderDriverKind,
@@ -1116,19 +1118,82 @@ export async function waitForStartedServerThread(
   });
 }
 
+export interface RewindFileRestore {
+  /** Whether the turn's files can be restored; otherwise only the conversation rewinds. */
+  readonly canRestoreFiles: boolean;
+  /** Workspace folders a file restore leaves as they are. */
+  readonly unrestoredFolders: ReadonlyArray<{
+    readonly label: string;
+    readonly reason: "not-checkpointed" | "unavailable";
+  }>;
+}
+
+/**
+ * What a rewind to `turnCount` can do with files, from the checkpoint the
+ * server will restore. A folder outside git, or unavailable when the thread
+ * was bound, is never checkpointed; one that was unavailable during that turn
+ * has nothing to restore it to.
+ */
+export function deriveRewindFileRestore(input: {
+  readonly checkpoints: ReadonlyArray<
+    Pick<OrchestrationV2Checkpoint, "appRunOrdinal" | "ordinalWithinScope" | "status" | "parts">
+  >;
+  readonly workspaceFolders: ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder> | undefined;
+  readonly turnCount: number;
+}): RewindFileRestore {
+  const target = input.checkpoints.findLast((checkpoint) =>
+    input.turnCount === 0
+      ? checkpoint.ordinalWithinScope === 0 && checkpoint.appRunOrdinal === null
+      : checkpoint.appRunOrdinal === input.turnCount,
+  );
+  if (target?.status !== "ready") return { canRestoreFiles: false, unrestoredFolders: [] };
+  const parts = target.parts ?? [];
+  const restored = new Set(
+    parts.flatMap((part) =>
+      part.vcs === "git" ? part.folders.map((folder) => folder.folderPath) : [],
+    ),
+  );
+  return {
+    canRestoreFiles: true,
+    unrestoredFolders:
+      parts.length === 0
+        ? []
+        : (input.workspaceFolders ?? []).flatMap((folder) =>
+            folder.path !== undefined && restored.has(folder.path)
+              ? []
+              : [
+                  {
+                    label: folder.label,
+                    reason:
+                      folder.path === undefined ||
+                      folder.checkoutRoot == null ||
+                      parts.some((part) =>
+                        part.folders.some((entry) => entry.folderPath === folder.path),
+                      )
+                        ? "not-checkpointed"
+                        : "unavailable",
+                  },
+                ],
+          ),
+  };
+}
+
 /**
  * Runs `revert` (the rollback command `requestId`) and resolves once the
- * message's run is rolled back. Rejects with the server's reason as soon as
- * the thread records that this rollback failed.
+ * message's run is rolled back and, when restoring files, once they are back:
+ * the server marks the rewound turns' checkpoints stale last. Resolves with
+ * the server's reason when the conversation was rewound but its files weren't.
+ * Rejects with it when the rollback failed before the conversation rewound.
  */
 export async function waitForRevertedMessage(
   threadRef: ScopedThreadRef,
   messageId: MessageId,
   turnCount: number,
   requestId: CommandId,
+  restoreFiles: boolean,
   revert: () => Promise<void>,
   timeoutMs = 120_000,
-): Promise<void> {
+): Promise<{ readonly filesFailure: string | null }> {
   const threadAtom = environmentThreadDetails.stateAtom(threadRef);
   const readProjection = () => Option.getOrNull(appAtomRegistry.get(threadAtom).data);
   const initial = readProjection();
@@ -1136,46 +1201,56 @@ export async function waitForRevertedMessage(
     throw new Error("The message to rewind is no longer available.");
   }
   const messageRunId = initial.messages.find((message) => message.id === messageId)?.runId;
-  return new Promise<void>((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
     let accepted = false;
     let unsubscribe = () => {};
     let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
-    const finish = (error?: unknown) => {
+    const finish = (
+      outcome: { readonly error: unknown } | { readonly filesFailure: string | null },
+    ) => {
       if (settled) return;
       settled = true;
       if (timeout !== undefined) globalThis.clearTimeout(timeout);
       unsubscribe();
-      if (error !== undefined) reject(error);
-      else resolve();
+      if ("error" in outcome) reject(outcome.error);
+      else resolve(outcome);
     };
     const inspect = () => {
       const thread = readProjection();
       if (!thread) return;
+      const rewound = thread.runs.some(
+        (run) => run.id === messageRunId && run.ordinal > turnCount && run.status === "rolled_back",
+      );
+      // A failure recorded for this request also proves the server accepted it.
       const failure = thread.thread.rollbackFailure;
       if (failure?.requestId === requestId) {
-        finish(new Error(failure.message));
+        finish(rewound ? { filesFailure: failure.message } : { error: new Error(failure.message) });
         return;
       }
       if (
         accepted &&
-        thread.runs.some(
-          (run) =>
-            run.id === messageRunId && run.ordinal > turnCount && run.status === "rolled_back",
-        )
+        rewound &&
+        (!restoreFiles ||
+          thread.checkpoints.every(
+            (checkpoint) => checkpoint.runId !== messageRunId || checkpoint.status === "stale",
+          ))
       )
-        finish();
+        finish({ filesFailure: null });
     };
     unsubscribe = appAtomRegistry.subscribe(threadAtom, inspect);
     timeout = globalThis.setTimeout(() => {
-      finish(new Error("Timed out waiting for the thread to rewind."));
+      finish({ error: new Error("Timed out waiting for the thread to rewind.") });
     }, timeoutMs);
     Promise.resolve()
       .then(revert)
-      .then(() => {
-        accepted = true;
-        inspect();
-      }, finish);
+      .then(
+        () => {
+          accepted = true;
+          inspect();
+        },
+        (error: unknown) => finish({ error }),
+      );
   });
 }
 

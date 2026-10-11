@@ -471,8 +471,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
   );
 
   /**
-   * A thread with one ready checkpoint and no queued turn start. Every provider
-   * rollback on it fails, so each rollback effect retries until it gives up.
+   * A thread with one ready checkpoint, one completed run after it and no
+   * queued turn start. Every provider rollback on it fails, so each rollback
+   * effect retries until it gives up.
    */
   const seedFailingRollbackThread = (name: string) =>
     Effect.gen(function* () {
@@ -506,12 +507,24 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         attachments: [],
         dispatchMode: { type: "start_immediately" },
       });
-      const scope = (yield* orchestrator.getThreadProjection(threadId)).checkpointScopes[0]!;
+      const seeded = yield* orchestrator.getThreadProjection(threadId);
+      const scope = seeded.checkpointScopes[0]!;
+      const run = seeded.runs[0]!;
       const now = yield* DateTime.now;
       const checkpointId = CheckpointId.make(`${name}-checkpoint`);
       yield* eventSink.write({
         commandId: CommandId.make(`${name}-seed`),
         events: [
+          // A rewind with no turn after its target never reaches the provider.
+          {
+            id: EventId.make(`${name}-run-event`),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...run, status: "completed", completedAt: now },
+          },
           {
             id: EventId.make(`${name}-checkpoint-event`),
             type: "checkpoint.captured",
@@ -623,7 +636,76 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
-  it.effect("rejects non-ready rollback targets before persisting events or effects", () =>
+  it.effect("retires the rewound turns' checkpoints when a rollback gives up on files", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const { threadId, rollback } = yield* seedFailingRollbackThread("runtime-rollback-give-up");
+      const requestId = CommandId.make("runtime-rollback-give-up-request");
+      yield* rollback(requestId);
+      // The rollback committed the conversation, then every file attempt failed.
+      const seeded = yield* orchestrator.getThreadProjection(threadId);
+      const run = seeded.runs[0]!;
+      const scope = seeded.checkpointScopes[0]!;
+      const now = yield* DateTime.now;
+      const rewoundCheckpointId = CheckpointId.make("runtime-rollback-give-up-turn");
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-rollback-give-up-seed"),
+        events: [
+          {
+            id: EventId.make("runtime-rollback-give-up-run"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...run, status: "rolled_back", completedAt: now },
+          },
+          {
+            id: EventId.make("runtime-rollback-give-up-checkpoint"),
+            type: "checkpoint.captured",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: rewoundCheckpointId,
+              threadId,
+              scopeId: scope.id,
+              runId: run.id,
+              nodeId: scope.nodeId,
+              parentCheckpointId: null,
+              ordinalWithinScope: 1,
+              appRunOrdinal: run.ordinal,
+              ref: CheckpointRef.make("refs/t3/runtime-rollback-give-up-turn"),
+              status: "ready",
+              files: [],
+              capturedAt: now,
+            },
+          },
+        ],
+      });
+
+      const message = "The conversation was rewound, but files in lib couldn't be restored.";
+      yield* orchestrator.dispatch({
+        type: "checkpoint.rollback.fail",
+        commandId: CommandId.make(`${requestId}:rollback-failed`),
+        threadId,
+        requestId,
+        message,
+      });
+
+      const failed = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(failed.thread.rollbackFailure, { requestId, message });
+      assert.deepEqual(
+        failed.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint.status]),
+        [
+          [CheckpointId.make("runtime-rollback-give-up-checkpoint"), "ready"],
+          [rewoundCheckpointId, "stale"],
+        ],
+      );
+    }),
+  );
+
+  it.effect("refuses file restore to non-ready targets before persisting anything", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
@@ -678,7 +760,10 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
                 parentCheckpointId: null,
                 ordinalWithinScope: 0,
                 appRunOrdinal: null,
-                ref: CheckpointRef.make(`refs/t3/runtime-rollback-${status}`),
+                // The ready checkpoint's ref must resolve for its files to restore.
+                ref: CheckpointRef.make(
+                  status === "ready" ? "HEAD" : `refs/t3/runtime-rollback-${status}`,
+                ),
                 status,
                 files: [],
                 capturedAt: now,
@@ -754,26 +839,6 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.match(String(shared.cause), /isolated worktree/);
           assert.equal(yield* orchestrator.getThreadEventSequence(threadId), sequence);
           assert.deepEqual(yield* outbox.listByCommandId(sharedCommandId), []);
-          // A thread spanning several workspace folders can only rewind its conversation.
-          yield* orchestrator.dispatch({
-            type: "thread.metadata.update",
-            commandId: CommandId.make("runtime-rollback-folders"),
-            threadId,
-            workspaceFolders: [
-              { path: process.cwd(), name: "app", label: "app", checkoutRoot: null },
-              { path: path.dirname(process.cwd()), name: "parent", label: "parent" },
-            ],
-          });
-          const multiFolder = yield* orchestrator
-            .dispatch({
-              type: "checkpoint.rollback",
-              commandId: CommandId.make("runtime-rollback-multi-folder"),
-              threadId,
-              checkpointId,
-              scopeId: scope.id,
-            })
-            .pipe(Effect.flip);
-          assert.match(String(multiFolder.cause), /several workspace folders/);
           const conversationOnly = yield* orchestrator.dispatch({
             type: "checkpoint.rollback",
             commandId: CommandId.make("runtime-rollback-conversation"),
@@ -791,7 +856,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
           assert.equal(
             error.cause,
-            `Checkpoint ${checkpointId} is ${status} and cannot be restored.`,
+            status === "stale"
+              ? `Checkpoint ${checkpointId} is stale and cannot be restored.`
+              : "Files weren't checkpointed at that point. Rewind the conversation without restoring files instead.",
           );
           assert.equal(yield* orchestrator.getThreadEventSequence(threadId), previousSequence);
           assert.deepEqual(
@@ -799,6 +866,26 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
             [],
           );
           assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+          // Only file restore needs a ready checkpoint.
+          const conversation = orchestrator.dispatch({
+            type: "checkpoint.rollback",
+            commandId: CommandId.make(`runtime-rollback-${status}-conversation`),
+            threadId,
+            checkpointId,
+            scopeId: scope.id,
+            restoreFiles: false,
+          });
+          if (status === "stale") {
+            assert.instanceOf(
+              yield* Effect.flip(conversation),
+              Orchestrator.OrchestratorDispatchError,
+            );
+          } else {
+            assert.deepEqual(
+              (yield* conversation).storedEvents.map((stored) => stored.event.type),
+              ["thread.metadata-updated", "checkpoint.rollback-requested"],
+            );
+          }
         }
       }
     }).pipe(Effect.provide(Layer.fresh(TestLayer))),

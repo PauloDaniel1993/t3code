@@ -522,6 +522,7 @@ import {
   readFileAsDataUrl,
   resolveFileAttachmentUrl,
   prepareRevertedMessageAttachments,
+  deriveRewindFileRestore,
   waitForRevertedMessage,
   reconcileMountedTerminalThreadIds,
   resolveComposerInteractionMode,
@@ -7811,6 +7812,18 @@ export default function ChatView(props: ChatViewProps) {
   if (pendingRevert && pendingRevert.routeThreadKey !== routeThreadKey) {
     setPendingRevert(null);
   }
+  const pendingRevertTurnCount = pendingRevert?.turnCount ?? null;
+  const pendingRevertFiles = useMemo(
+    () =>
+      pendingRevertTurnCount === null
+        ? null
+        : deriveRewindFileRestore({
+            checkpoints: serverProjection?.checkpoints ?? [],
+            workspaceFolders: serverProjection?.thread.workspaceFolders,
+            turnCount: pendingRevertTurnCount,
+          }),
+    [pendingRevertTurnCount, serverProjection],
+  );
 
   const onRevertToTurnCount = useCallback(
     async (turnCount: number, messageId: MessageId, restoreFiles?: boolean) => {
@@ -7882,13 +7895,22 @@ export default function ChatView(props: ChatViewProps) {
           );
         }
         const commandId = CommandId.make(randomUUID());
-        await waitForRevertedMessage(routeThreadRef, messageId, turnCount, commandId, async () => {
-          const result = await revertThreadCheckpoint({
-            environmentId,
-            input: { commandId, threadId: activeThread.id, turnCount, restoreFiles },
-          });
-          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-        });
+        // A file failure after the conversation rewound still returns the prompt.
+        const { filesFailure } = await waitForRevertedMessage(
+          routeThreadRef,
+          messageId,
+          turnCount,
+          commandId,
+          restoreFiles,
+          async () => {
+            const result = await revertThreadCheckpoint({
+              environmentId,
+              input: { commandId, threadId: activeThread.id, turnCount, restoreFiles },
+            });
+            if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          },
+        );
+        if (filesFailure !== null) setThreadError(activeThread.id, filesFailure);
         const currentPrompt = store.getComposerDraft(composerDraftTarget)?.prompt ?? "";
         const restoredPrompt = recallableComposerPrompt(message.text);
         const nextPrompt =
@@ -11488,20 +11510,33 @@ export default function ChatView(props: ChatViewProps) {
             <AlertDialogDescription>
               Rewind chat to before this message. Your prompt and attachments return to the
               composer.
+              {pendingRevertFiles?.canRestoreFiles === false
+                ? " Files from before this message weren't fully checkpointed, so they stay as they are."
+                : null}
+              {pendingRevertFiles !== null && pendingRevertFiles.unrestoredFolders.length > 0
+                ? ` Reverting files leaves ${pendingRevertFiles.unrestoredFolders
+                    .map(
+                      (folder) =>
+                        `${folder.label} (${folder.reason === "not-checkpointed" ? "not checkpointed" : "unavailable then"})`,
+                    )
+                    .join(", ")} as they are.`
+                : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (!pendingRevert || pendingRevert.routeThreadKey !== routeThreadKey) return;
-                setPendingRevert(null);
-                void onRevertToTurnCount(pendingRevert.turnCount, pendingRevert.messageId, true);
-              }}
-            >
-              Revert files too
-            </Button>
+            {pendingRevertFiles?.canRestoreFiles === false ? null : (
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  if (!pendingRevert || pendingRevert.routeThreadKey !== routeThreadKey) return;
+                  setPendingRevert(null);
+                  void onRevertToTurnCount(pendingRevert.turnCount, pendingRevert.messageId, true);
+                }}
+              >
+                Revert files too
+              </Button>
+            )}
             <Button
               onClick={() => {
                 if (!pendingRevert || pendingRevert.routeThreadKey !== routeThreadKey) return;

@@ -1,40 +1,68 @@
-import type { OrchestrationV2AppThread, OrchestrationV2CheckpointScope } from "@t3tools/contracts";
-import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2Checkpoint,
+  OrchestrationV2CheckpointPart,
+  OrchestrationV2CheckpointScope,
+} from "@t3tools/contracts";
+import { isWindowsAbsolutePath } from "@t3tools/shared/path";
+import { resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
+import type { CheckpointServiceV2Shape, FileRestoreRefusal } from "./CheckpointService.ts";
+import { checkpointRestoreParts } from "./CheckpointScopeParts.ts";
 import type { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import type * as ProjectStore from "./ProjectStore.ts";
 
-export const SHARED_WORKSPACE_RESTORE_MESSAGE =
-  "File restore requires an isolated worktree. This workspace may contain changes from another thread. Rewind the conversation without restoring files instead.";
+const SHARED_WORKSPACE_RESTORE_REASON =
+  "File restore requires an isolated worktree. This workspace may contain changes from another thread.";
 
-export const MULTI_FOLDER_RESTORE_MESSAGE =
-  "File restore isn't available yet for a thread with several workspace folders. Rewind the conversation without restoring files instead.";
+const CONVERSATION_ONLY = "Rewind the conversation without restoring files instead.";
 
-/**
- * A checkpoint holds one checkout, so a thread whose folder snapshot spans
- * several folders can only rewind its conversation for now.
- */
-export function spansWorkspaceFolders(
-  thread: Pick<OrchestrationV2AppThread, "workspaceFolders">,
-): boolean {
-  return (thread.workspaceFolders?.length ?? 0) > 1;
+export const SHARED_WORKSPACE_RESTORE_MESSAGE = `${SHARED_WORKSPACE_RESTORE_REASON} ${CONVERSATION_ONLY}`;
+
+/** Why a turn's files can't be restored, naming the folders at fault. */
+export function fileRestoreRefusalReason(refusal: FileRestoreRefusal): string {
+  const folders = refusal.folders.join(", ");
+  const named = refusal.folders.length > 0;
+  switch (refusal.reason) {
+    case "not-ready":
+      return `${named ? `Files in ${folders}` : "Files"} weren't checkpointed at that point.`;
+    case "missing-checkout":
+      return `${named ? `The checkout for ${folders}` : "This thread's checkout"} no longer exists.`;
+    case "missing-ref":
+      return `${named ? `The checkpoint for ${folders}` : "That checkpoint"} is no longer available.`;
+    case "shared":
+      return named
+        ? `File restore requires isolated worktrees. ${folders} may contain changes from another thread.`
+        : SHARED_WORKSPACE_RESTORE_REASON;
+  }
 }
 
-// A checkpoint snapshots the whole checkout. Check at command admission and
-// again before provider rollback so a newly shared worktree is rejected too.
-export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpointRestoreIsolated")(
+/** What a client shows when it asks to restore files that can't be. */
+export function fileRestoreRefusalMessage(refusal: FileRestoreRefusal): string {
+  return `${fileRestoreRefusalReason(refusal)} ${CONVERSATION_ONLY}`;
+}
+
+interface RestoreSafetyDependencies {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly projections: ProjectionStoreV2["Service"];
+  readonly projects: ProjectStore.ProjectStoreV2["Service"];
+  readonly path: Path.Path;
+}
+
+/**
+ * Whether restoring `parts` could overwrite work that isn't this thread's. A
+ * part restores a whole checkout, so it must be one of the thread's own
+ * worktrees, and no other thread may work in, above or below it. The thread's
+ * own nested members never conflict with each other.
+ */
+export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolationRefusal")(
   function* (
-    thread: Pick<OrchestrationV2AppThread, "id" | "worktreePath">,
-    scope: Pick<OrchestrationV2CheckpointScope, "cwd">,
-    dependencies: {
-      readonly fileSystem: FileSystem.FileSystem;
-      readonly projections: ProjectionStoreV2["Service"];
-      readonly projects: ProjectStore.ProjectStoreV2["Service"];
-      readonly path: Path.Path;
-    },
+    thread: Pick<OrchestrationV2AppThread, "id" | "worktreePath" | "worktrees">,
+    parts: ReadonlyArray<Pick<OrchestrationV2CheckpointPart, "cwd" | "folders">>,
+    dependencies: RestoreSafetyDependencies,
   ) {
     const { fileSystem, projections, projects, path } = dependencies;
     const contains = (parent: string, child: string) => {
@@ -44,59 +72,120 @@ export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpoi
         (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
       );
     };
-    const worktreePath = thread.worktreePath;
-    let shared = worktreePath == null;
-    if (!shared && worktreePath !== null) {
-      const cwd = yield* fileSystem.realPath(scope.cwd);
-      const worktreeCwd = yield* fileSystem.realPath(worktreePath);
-      shared = cwd !== worktreeCwd;
-      if (!shared) {
-        const shell = yield* projections.getShellSnapshot();
-        const checkedPaths = new Set<string>();
-        for (const otherThread of [...shell.threads, ...shell.archivedThreads]) {
-          if (otherThread.id === thread.id || otherThread.deletedAt !== null) continue;
-          const other = yield* projections.getCheckpointContext(otherThread.id);
-          const providerContext = yield* projections.getThreadProviderContext(otherThread.id);
-          const paths = [
-            otherThread.worktreePath,
-            ...other.checkpointScopes.map((candidate) => candidate.cwd),
-            // A failed turn can leave an errored session with a live event stream.
-            // A session shared across threads keeps the cwd it was opened with,
-            // often another thread's; each turn runs in the thread's own
-            // worktree or project root, which this list already covers.
-            ...providerContext.providerSessions
-              .filter(
-                (session) =>
-                  session.status !== "stopped" &&
-                  !session.capabilities.sessions.supportsMultipleProviderThreadsPerSession,
-              )
-              .map((session) => session.cwd),
-          ].filter((value): value is string => value !== null);
-          if (otherThread.worktreePath === null) {
-            // A thread without a worktree works in its project's checkout.
-            const project = yield* projects.get(otherThread.projectId, { includeDeleted: true });
-            if (Option.isNone(project)) return false;
-            paths.push(threadPrimaryPath(otherThread, project.value));
-          }
-          for (const candidate of paths) {
-            if (checkedPaths.has(candidate)) continue;
-            checkedPaths.add(candidate);
-            const otherCwd = yield* fileSystem
-              .realPath(candidate)
-              .pipe(
-                Effect.catch((error) =>
-                  error.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
-                ),
-              );
-            if (otherCwd !== null && (contains(cwd, otherCwd) || contains(otherCwd, cwd))) {
-              shared = true;
-              break;
-            }
-          }
-          if (shared) break;
+    const existingRealPath = (candidate: string) =>
+      fileSystem
+        .realPath(candidate)
+        .pipe(
+          Effect.catch((error) =>
+            error.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
+          ),
+        );
+    // realPath keeps the caller's casing, and Windows paths ignore it.
+    const pathKey = (real: string) => (isWindowsAbsolutePath(real) ? real.toLowerCase() : real);
+    const refusal = (shared: ReadonlySet<number>): FileRestoreRefusal | undefined =>
+      shared.size === 0
+        ? undefined
+        : {
+            reason: "shared",
+            folders: parts.flatMap((part, index) =>
+              shared.has(index) ? part.folders.map((folder) => folder.label) : [],
+            ),
+          };
+
+    // A thread working in its project's checkout (root mode) shares it.
+    const own = new Set<string>();
+    for (const root of [
+      ...(thread.worktrees ?? []).map((member) => member.path),
+      ...(thread.worktreePath === null ? [] : [thread.worktreePath]),
+    ]) {
+      const real = yield* existingRealPath(root);
+      if (real !== null) own.add(pathKey(real));
+    }
+    const targets: Array<string> = [];
+    const shared = new Set<number>();
+    for (const [index, part] of parts.entries()) {
+      const cwd = yield* fileSystem.realPath(part.cwd);
+      targets.push(cwd);
+      if (!own.has(pathKey(cwd))) shared.add(index);
+    }
+    if (shared.size === parts.length) return refusal(shared);
+
+    const shell = yield* projections.getShellSnapshot();
+    const checkedPaths = new Set<string>();
+    for (const otherThread of [...shell.threads, ...shell.archivedThreads]) {
+      if (otherThread.id === thread.id || otherThread.deletedAt !== null) continue;
+      const other = yield* projections.getCheckpointContext(otherThread.id);
+      const providerContext = yield* projections.getThreadProviderContext(otherThread.id);
+      const paths = [
+        otherThread.worktreePath,
+        ...(otherThread.worktrees ?? []).map((member) => member.path),
+        // Where its latest run checkpoints, part by part. Older runs' places
+        // are history: a later thread may own them now.
+        ...other.checkpointScopes.flatMap((scope) => [
+          scope.cwd,
+          ...(scope.parts?.map((part) => part.cwd) ?? []),
+        ]),
+        // A failed turn can leave an errored session with a live event stream.
+        // A session shared across threads keeps the cwd and extra directories
+        // it was opened with, often another thread's, even this one's; each
+        // turn runs in the thread's own places, which this list already covers.
+        ...providerContext.providerSessions.flatMap((session) =>
+          session.status === "stopped" ||
+          session.capabilities.sessions.supportsMultipleProviderThreadsPerSession
+            ? []
+            : [session.cwd, ...(session.additionalDirectories ?? [])],
+        ),
+      ].filter((value): value is string => value !== null);
+      if (otherThread.worktreePath === null) {
+        // A thread without a worktree works in its project's folders.
+        const project = yield* projects.get(otherThread.projectId, { includeDeleted: true });
+        if (Option.isNone(project)) return refusal(new Set(parts.keys()));
+        const workspaceThread =
+          (otherThread.workspaceFolderCount ?? 0) > 1
+            ? yield* projections.getThread(otherThread.id)
+            : otherThread;
+        for (const folder of resolveThreadWorkspace({
+          thread: workspaceThread,
+          project: project.value,
+        }).folders) {
+          if (folder.effectivePath !== null) paths.push(folder.effectivePath);
         }
       }
+      for (const candidate of paths) {
+        if (checkedPaths.has(candidate)) continue;
+        checkedPaths.add(candidate);
+        const otherCwd = yield* existingRealPath(candidate);
+        if (otherCwd === null) continue;
+        targets.forEach((cwd, index) => {
+          if (contains(cwd, otherCwd) || contains(otherCwd, cwd)) shared.add(index);
+        });
+      }
+      if (shared.size === parts.length) break;
     }
-    return !shared;
+    return refusal(shared);
   },
 );
+
+/**
+ * Why `checkpoint`'s files can't be restored now, or undefined when they can.
+ * File restore is all or nothing: every git part must be ready, its checkout
+ * present with the part's ref, and the checkout this thread's alone. Command
+ * admission asks, and the rollback effect asks again before the provider
+ * rewinds, so a newly shared worktree is refused too.
+ */
+export const fileRestoreRefusal = Effect.fn("orchestrationV2.fileRestoreRefusal")(function* (
+  thread: Pick<OrchestrationV2AppThread, "id" | "worktreePath" | "worktrees">,
+  scope: OrchestrationV2CheckpointScope,
+  checkpoint: OrchestrationV2Checkpoint,
+  dependencies: RestoreSafetyDependencies & {
+    readonly checkpoints: Pick<CheckpointServiceV2Shape, "preflightRestore">;
+  },
+) {
+  const preflight = yield* dependencies.checkpoints.preflightRestore({ scope, checkpoint });
+  if (preflight !== undefined) return preflight;
+  return yield* restoreIsolationRefusal(
+    thread,
+    checkpointRestoreParts(scope, checkpoint),
+    dependencies,
+  );
+});

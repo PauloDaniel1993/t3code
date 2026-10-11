@@ -2732,6 +2732,17 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           (yield* projectionStore.getCheckpointContext(threadId)).checkpoints[0]?.parts,
           parts,
         );
+        // The scope's plan for its latest run, without the per-capture outcome.
+        const scopeParts = parts.map(({ status: _status, ref: _ref, ...part }) => part);
+        yield* sql`
+          UPDATE orchestration_v2_projection_checkpoint_scopes
+          SET payload_json = json_set(payload_json, '$.parts', json(${encodeUnknownJsonString(scopeParts)}))
+          WHERE scope_id = ${scopeId}
+        `;
+        assert.deepEqual(
+          (yield* projectionStore.getCheckpointContext(threadId)).checkpointScopes[0]?.parts,
+          scopeParts,
+        );
         const missing = yield* projectionStore
           .getCheckpointContext(ThreadId.make("thread:checkpoint-context:missing"))
           .pipe(Effect.flip);

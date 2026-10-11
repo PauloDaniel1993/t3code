@@ -66,12 +66,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
-import {
-  isCheckpointRestoreIsolated,
-  MULTI_FOLDER_RESTORE_MESSAGE,
-  SHARED_WORKSPACE_RESTORE_MESSAGE,
-  spansWorkspaceFolders,
-} from "./CheckpointRestoreSafety.ts";
+import { fileRestoreRefusal, fileRestoreRefusalMessage } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { CommandPolicyV2, resolveMessageDispatchIntent } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
@@ -8259,11 +8254,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Checkpoint ${command.checkpointId} was not found.`,
         });
       }
-      if (targetCheckpoint.status !== "ready") {
+      // A conversation-only rewind needs only a turn that wasn't rolled back;
+      // file restore checks readiness below.
+      if (targetCheckpoint.status === "stale") {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Checkpoint ${command.checkpointId} is ${targetCheckpoint.status} and cannot be restored.`,
+          cause: `Checkpoint ${command.checkpointId} is stale and cannot be restored.`,
         });
       }
       const targetScope = projection.checkpointScopes.find(
@@ -8283,20 +8280,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Checkpoint ${command.checkpointId} belongs to scope ${targetScope.id}, not ${command.scopeId}.`,
         });
       }
-      if (command.restoreFiles !== false && spansWorkspaceFolders(projection.thread)) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: MULTI_FOLDER_RESTORE_MESSAGE,
-        });
-      }
       if (command.restoreFiles !== false) {
-        const isolated = yield* isCheckpointRestoreIsolated(projection.thread, targetScope, {
-          projects,
-          path,
-          fileSystem,
-          projections: projectionStore,
-        }).pipe(
+        const refusal = yield* fileRestoreRefusal(
+          projection.thread,
+          targetScope,
+          targetCheckpoint,
+          {
+            checkpoints: checkpointService,
+            projects,
+            path,
+            fileSystem,
+            projections: projectionStore,
+          },
+        ).pipe(
           Effect.mapError(
             (cause) =>
               new OrchestratorDispatchError({
@@ -8306,11 +8302,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
-        if (!isolated)
+        if (refusal !== undefined)
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
-            cause: SHARED_WORKSPACE_RESTORE_MESSAGE,
+            cause: fileRestoreRefusalMessage(refusal),
           });
       }
 
@@ -8419,6 +8415,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
         },
       });
+      // A rollback can give up on files after its conversation was rewound.
+      // The rewound turns' checkpoints must then stop being rewind targets
+      // and capture baselines.
+      const records = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs", "checkpoints"])
+        .pipe(mapDispatchError(command));
+      const rolledBack = new Set(
+        records.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
+      );
+      for (const checkpoint of records.checkpoints) {
+        if (checkpoint.runId === null || checkpoint.status === "stale") continue;
+        if (!rolledBack.has(checkpoint.runId)) continue;
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "checkpoint.captured",
+          threadId: command.threadId,
+          runId: checkpoint.runId,
+          nodeId: checkpoint.nodeId,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: now,
+          payload: { ...checkpoint, status: "stale" },
+        });
+      }
     });
 
   /**

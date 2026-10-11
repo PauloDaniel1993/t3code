@@ -1079,6 +1079,74 @@ it.effect("restores empty checkpoints without changing paths outside the workspa
   }).pipe(Effect.scoped, Effect.provide(GitContractLayer)),
 );
 
+it.effect("restores a part's member folders only, keeping nested checkouts and HEAD", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const driver = yield* GitVcsDriver.makeVcsDriverShape();
+    const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-part-restore-" });
+    const child = path.join(cwd, "app", "child");
+    const git = (args: ReadonlyArray<string>, at = cwd) =>
+      driver.execute({ operation: "part-restore-test", cwd: at, args });
+    const write = (name: string, contents: string) =>
+      Effect.gen(function* () {
+        const file = path.join(cwd, name);
+        yield* fileSystem.makeDirectory(path.dirname(file), { recursive: true });
+        yield* fileSystem.writeFileString(file, contents);
+      });
+    const read = (name: string) => fileSystem.readFileString(path.join(cwd, name));
+    for (const repository of [cwd, child]) {
+      yield* fileSystem.makeDirectory(repository, { recursive: true });
+      yield* git(["init"], repository);
+      yield* git(["config", "user.name", "Test"], repository);
+      yield* git(["config", "user.email", "test@test.com"], repository);
+      yield* git(["config", "core.autocrlf", "false"], repository);
+    }
+    yield* write("app/kept.txt", "original\n");
+    yield* write("outside/file.txt", "original\n");
+    yield* write("app/child/file.txt", "original\n");
+    yield* git(["add", "file.txt"], child);
+    yield* git(["commit", "-m", "child"], child);
+    yield* git(["add", "app/kept.txt", "outside/file.txt"]);
+    yield* git(["commit", "-m", "initial"]);
+    const head = (yield* git(["rev-parse", "HEAD"])).stdout;
+    // `docs` is a member folder created after the checkpoint, `gone` one that
+    // never existed, and the nested checkout is its own part.
+    const pathspecs = [
+      ":(literal)app",
+      ":(literal)docs",
+      ":(literal)gone",
+      ":(exclude,literal)app/child",
+    ];
+    const checkpointRef = CheckpointRef.make("refs/t3/checkpoints/part");
+    yield* driver.checkpoints.captureCheckpoint({ cwd, checkpointRef, pathspecs });
+
+    yield* write("app/kept.txt", "changed\n");
+    yield* write("app/new.txt", "new\n");
+    yield* write("docs/new.txt", "new\n");
+    yield* write("outside/file.txt", "changed\n");
+    yield* write("app/child/file.txt", "changed\n");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.isTrue(
+        yield* driver.checkpoints.restoreCheckpoint({
+          cwd,
+          checkpointRef,
+          pathspecs,
+          fallbackToHead: false,
+        }),
+      );
+      assert.strictEqual(yield* read("app/kept.txt"), "original\n");
+      assert.isFalse(yield* fileSystem.exists(path.join(cwd, "app", "new.txt")));
+      assert.deepEqual(yield* fileSystem.readDirectory(path.join(cwd, "docs")), []);
+      assert.isFalse(yield* fileSystem.exists(path.join(cwd, "gone")));
+      assert.strictEqual(yield* read("outside/file.txt"), "changed\n");
+      assert.strictEqual(yield* read("app/child/file.txt"), "changed\n");
+      assert.strictEqual((yield* git(["rev-parse", "HEAD"])).stdout, head);
+      assert.strictEqual((yield* git(["diff", "--cached", "--name-only"])).stdout, "");
+    }
+  }).pipe(Effect.scoped, Effect.provide(GitContractLayer)),
+);
+
 it.effect("GitVcsDriver forwards execute env to the VCS process", () => {
   let observedEnv: NodeJS.ProcessEnv | undefined;
   let observedAppendTruncationMarker: boolean | undefined;
