@@ -314,7 +314,11 @@ function ProjectPathInput(props: {
 // `pinnedDirectoryName` is the repository folder the clone destination keeps
 // appended to whatever folder the user browses to. The plain add-project flow
 // passes nothing, so it keeps proposing the browsed folder itself.
-function useBrowsePathInput(environment: EnvironmentOption | null, pinnedDirectoryName = "") {
+function useBrowsePathInput(
+  environment: EnvironmentOption | null,
+  pinnedDirectoryName = "",
+  includeWorkspaceFiles = false,
+) {
   const environmentId = environment?.environmentId ?? null;
   const environmentBaseDirectory = environment?.baseDirectory ?? null;
   const clonePathCaseSensitive = !isWindowsPlatform(environment?.platform ?? "");
@@ -363,7 +367,10 @@ function useBrowsePathInput(environment: EnvironmentOption | null, pinnedDirecto
           if (environment && canPreloadBrowsePath(environmentRuntime?.connectionState)) {
             await loadBrowsePath({
               environmentId: environment.environmentId,
-              input: { partialPath: selectedDirectoryPath },
+              input: {
+                partialPath: selectedDirectoryPath,
+                ...(includeWorkspaceFiles ? { includeWorkspaceFiles: true } : {}),
+              },
             });
           }
         },
@@ -380,6 +387,7 @@ function useBrowsePathInput(environment: EnvironmentOption | null, pinnedDirecto
       environment,
       environmentRuntime?.connectionState,
       loadBrowsePath,
+      includeWorkspaceFiles,
       pinnedDirectoryName,
     ],
   );
@@ -1100,8 +1108,11 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
     reportFailure: false,
     refresh: true,
   });
-  const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =
-    useBrowsePathInput(environment);
+  const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } = useBrowsePathInput(
+    environment,
+    "",
+    environment?.workspaceFileProjects === true,
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedProject, setSavedProject] = useState<Project | EnvironmentProject | null>(null);
@@ -1152,8 +1163,6 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
         browse: listing._tag === "Success" ? listing.value : null,
       });
       if (target.kind === "directory") {
-        if (linkExisting)
-          throw new Error("Choose a workspace file to link to the existing project.");
         const result = await createProject(target.path);
         if (result?._tag === "Failure") throw squashAtomCommandFailure(result);
         return;
