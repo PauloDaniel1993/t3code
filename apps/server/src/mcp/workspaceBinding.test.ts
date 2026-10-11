@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { expect, it, vi } from "@effect/vitest";
 import {
   EnvironmentId,
   type OrchestrationV2AppThread,
@@ -18,6 +18,13 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as WorktreeSet from "../orchestration-v2/WorktreeSetService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -29,6 +36,7 @@ import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 
 const decodeReadResult = Schema.decodeEffect(OrchestratorMcpThreadReadResult);
 const encodeReadResult = Schema.encodeEffect(OrchestratorMcpThreadReadResult);
@@ -42,7 +50,7 @@ const scope: McpInvocationScope = {
   threadId,
   providerSessionId: "session:mcp-workspace-binding",
   providerInstanceId: instanceId,
-  capabilities: new Set(["orchestration"]),
+  capabilities: new Set(["orchestration", "worktree"]),
   issuedAt: 1,
 };
 
@@ -184,11 +192,67 @@ const makeHarness = (handoffOnProjectRead = false) =>
       // Exercise the wire encoder too: additive binding fields must survive serialization.
       return (yield* encodeReadResult(result).pipe(Effect.flatMap(decodeReadResult))).thread;
     }).pipe(Effect.provide(layer));
+    const listRefs = vi.fn((_: { readonly cwd: string }) =>
+      Effect.succeed({
+        refs: [],
+        isRepo: true,
+        hasPrimaryRemote: false,
+        nextCursor: null,
+        totalCount: 0,
+      }),
+    );
+    const worktreeLayer = WorktreeMcpService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          folders,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
+          }),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () =>
+              Effect.succeed(
+                Option.some({
+                  id: projectId,
+                  title: project.title,
+                  workspaceRoot: project.workspaceRoot,
+                  workspaceFile: project.workspaceFile,
+                  defaultModelSelection: null,
+                  scripts: [],
+                  createdAt: project.createdAt,
+                  updatedAt: project.updatedAt,
+                  deletedAt: null,
+                }),
+              ),
+          }),
+          Layer.mock(GitWorkflowService.GitWorkflowService)({ listRefs }),
+          Layer.mock(WorkspaceFolderResolver.WorkspaceFolderResolver)({
+            probe: (cwd) =>
+              Effect.succeed({
+                path: cwd,
+                availability: "available",
+                vcs: { checkoutRoot: cwd, checkoutPrefix: "", commonDir: cwd + "/.git" },
+              }),
+          }),
+          Layer.mock(WorktreeSet.WorktreeSetService)({}),
+          Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
+          Layer.mock(ServerSettings.ServerSettingsService)({}),
+          Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
+          NodeServices.layer,
+        ),
+      ),
+    );
+    const list = (folderPath?: string) =>
+      Effect.gen(function* () {
+        const service = yield* WorktreeMcpService.WorktreeMcpService;
+        return yield* service.list(scope, folderPath === undefined ? {} : { folderPath });
+      }).pipe(Effect.provide(worktreeLayer));
     return {
       fs,
       project,
       thread,
       read,
+      list,
+      listRefs,
       primary,
       secondary,
       primaryWorktree,
@@ -196,6 +260,40 @@ const makeHarness = (handoffOnProjectRead = false) =>
       shared,
     };
   });
+
+it.effect(
+  "list uses original folder identities and current availability through the real folder service",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const primary = yield* h.list();
+        expect(primary).toMatchObject({
+          folderPath: h.primary,
+          cwd: h.primaryWorktree,
+          repositoryRoot: h.primaryWorktree,
+        });
+        const secondary = yield* h.list(h.secondary);
+        expect(secondary).toMatchObject({
+          folderPath: h.secondary,
+          cwd: h.secondaryWorktree,
+          repositoryRoot: h.secondaryWorktree,
+        });
+        expect(h.listRefs).toHaveBeenLastCalledWith({ cwd: h.secondaryWorktree });
+        expect(yield* Effect.flip(h.list(h.secondaryWorktree))).toMatchObject({
+          code: "folder_not_found",
+        });
+        expect(yield* Effect.flip(h.list("vscode-remote://host/folder"))).toMatchObject({
+          code: "folder_unavailable",
+        });
+        yield* h.fs.remove(h.secondaryWorktree, { recursive: true });
+        expect(yield* Effect.flip(h.list(h.secondary))).toMatchObject({
+          code: "folder_unavailable",
+        });
+        expect(h.listRefs).toHaveBeenCalledTimes(2);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it.effect(
   "thread reads keep one captured binding when a handoff lands before folder inspection",

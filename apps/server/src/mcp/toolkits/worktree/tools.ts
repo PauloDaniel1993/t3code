@@ -34,7 +34,7 @@ const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
 
 const WorktreeStatusTool = Tool.make("t3_worktree_status", {
   description:
-    "Report this agent thread's whole folder binding: cwd, the workspace file, original folder paths with current availability and effective paths, optional worktree set members, primary worktree path and branch, the project's current primary folder, and the server default for t3_worktree_handoff's startFromOrigin. Call this before t3_worktree_handoff to check whether a handoff is possible or has already happened.",
+    "Report this agent thread's whole folder binding: cwd, the project's currently linked workspaceFile (which may differ from the thread's frozen folders), original folder paths with current availability and effective paths, optional worktree set members, primary worktree path and branch, the project's current primary folder, and the server default for t3_worktree_handoff's startFromOrigin. Call this before t3_worktree_handoff to check whether a handoff is possible or has already happened.",
   // No `parameters`: Tool.make defaults to Tool.EmptyParams, which serializes
   // to a top-level `type: "object"` JSON Schema. An explicit empty
   // Schema.Struct({}) serializes to `anyOf: [object, array]`, which is not a
