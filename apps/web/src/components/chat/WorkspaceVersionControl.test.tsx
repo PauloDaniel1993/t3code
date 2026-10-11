@@ -237,3 +237,47 @@ it("keeps a checkout with a healthy sibling folder and uses the root when its fi
     input: expect.objectContaining({ action: "push", members: ["/api", "/web"] }),
   });
 });
+it("does not treat a nested independent repository as a healthy folder of its unavailable parent", async () => {
+  const child = {
+    ...project.folders[1]!,
+    path: "/web/child",
+    name: "Child",
+    label: "child",
+    vcs: { checkoutRoot: "/web/child" },
+  };
+  const workspace = {
+    ...project,
+    folders: [
+      project.folders[0]!,
+      { ...project.folders[1]!, availability: "unavailable" as const },
+      child,
+    ],
+  };
+  const scope = {
+    ...thread,
+    workspaceFolders: [...thread.workspaceFolders, { ...child, checkoutRoot: "/web/child" }],
+    worktrees: [
+      ...thread.worktrees,
+      { repositoryRoot: "/web/child", path: "/set/web/child", branch: "feature" },
+    ],
+  };
+  fixtures.statuses = [
+    { status: status("feature"), error: false },
+    { status: null, error: false },
+    { status: status("feature"), error: false },
+  ];
+  await render(scope, workspace);
+  expect(fixtures.queries).toHaveBeenCalledWith(environmentId, [
+    "/set/api",
+    null,
+    "/set/web/child",
+  ]);
+  await act(() => button("Push all").props.onClick());
+  await act(async () => {
+    button("Continue").props.onClick();
+  });
+  expect(fixtures.run).toHaveBeenCalledWith({
+    environmentId,
+    input: expect.objectContaining({ members: ["/api", "/web/child"] }),
+  });
+});

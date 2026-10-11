@@ -8,6 +8,7 @@ import {
   workspaceGitCheckouts,
   isCheckoutDrifted,
   isPathWithin,
+  isSamePath,
   type WorkspaceThread,
 } from "@t3tools/shared/workspaceFolders";
 import {
@@ -65,7 +66,12 @@ export function WorkspaceVersionControl(props: {
   const available = checkouts.map((checkout) =>
     rows.some(
       (row) =>
-        row.isGit && row.effectivePath !== null && isPathWithin(checkout.root, row.effectivePath),
+        row.isGit &&
+        (row.label === checkout.label ||
+          (typeof row.checkoutRoot === "string" &&
+            isSamePath(row.checkoutRoot, checkout.repositoryRoot))) &&
+        row.effectivePath !== null &&
+        isPathWithin(checkout.root, row.effectivePath),
     ),
   );
   // The server falls back to the checkout root when its first frozen folder is gone.
