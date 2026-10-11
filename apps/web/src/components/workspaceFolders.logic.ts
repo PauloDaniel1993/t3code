@@ -54,7 +54,7 @@ export function workspaceFolderRows(
           resolved.folder.path ? isSamePath(path, resolved.folder.path) : false,
         ));
     const checkoutRoot =
-      resolved.checkoutRoot !== undefined
+      thread?.workspaceFolders !== undefined || resolved.checkoutRoot !== undefined
         ? resolved.checkoutRoot
         : facts?.vcs === null
           ? null

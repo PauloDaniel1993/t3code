@@ -192,6 +192,7 @@ export default function DiffPanel({
     : activeThread?.worktreePath
       ? undefined
       : activeProject?.repositoryIdentity?.rootPath;
+  const fileWorkspaceRoot = folderTarget?.workspaceRoot ?? activeCwd;
   const serverConfig = useAtomValue(
     serverEnvironment.configValueAtom(activeThread?.environmentId ?? null),
   );
@@ -645,7 +646,7 @@ export default function DiffPanel({
       openDiffFilePrimaryAction({
         threadRef: routeThreadRef,
         filePath,
-        activeCwd,
+        activeCwd: fileWorkspaceRoot,
         repositoryRoot: activeRepositoryRoot,
         folderPath: selectedFolderPath,
         openInEditor: (targetPath) => {
@@ -667,7 +668,13 @@ export default function DiffPanel({
         },
       });
     },
-    [activeCwd, activeRepositoryRoot, openInPreferredEditor, routeThreadRef, selectedFolderPath],
+    [
+      fileWorkspaceRoot,
+      activeRepositoryRoot,
+      openInPreferredEditor,
+      routeThreadRef,
+      selectedFolderPath,
+    ],
   );
   const toggleDiffFileCollapsed = useCallback(
     (fileKey: string) => {
@@ -1135,7 +1142,7 @@ export default function DiffPanel({
                       {
                         environmentId: activeThread?.environmentId ?? null,
                         filePath,
-                        workspaceRoot: activeCwd,
+                        workspaceRoot: fileWorkspaceRoot,
                         repositoryRoot: activeRepositoryRoot,
                       },
                       event,

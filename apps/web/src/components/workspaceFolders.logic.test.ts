@@ -154,6 +154,26 @@ describe("workspace folder presentation", () => {
     });
   });
 
+  it("keeps a folder unavailable at binding outside Git after it recovers", () => {
+    const recovered = {
+      ...project,
+      folders: project.folders!.map((folder) =>
+        folder.path === "/archive"
+          ? { ...folder, availability: "available" as const, vcs: { checkoutRoot: "/archive" } }
+          : folder,
+      ),
+    };
+    const rows = workspaceFolderRows(recovered, thread);
+    expect(rows[3]).toMatchObject({
+      effectivePath: "/archive",
+      checkoutRoot: undefined,
+      isGit: false,
+      unavailable: false,
+    });
+    expect(workspaceRepositoryCount(rows)).toBe(2);
+    expect(workspaceFolderRows(recovered, null)[3]?.isGit).toBe(true);
+  });
+
   it("drafts use the current definition and bound shells use only their count", () => {
     expect(workspaceFolderChipCount(null, project)).toBe(5);
     expect(workspaceFolderChipCount({}, project)).toBe(1);

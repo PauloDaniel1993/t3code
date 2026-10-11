@@ -10588,6 +10588,7 @@ export default function ChatView(props: ChatViewProps) {
     workspaceProject:
       serverConfig?.workspaceFileProjects === true && activeProject ? activeProject : undefined,
     workspaceThread: isServerThread ? actionThread : null,
+    workspaceWorktreePath: actionThread?.worktreePath ?? draftThread?.worktreePath ?? null,
     workspaceSession: serverProjection ? workspaceInstalledSession(serverProjection) : undefined,
     workspaceUnavailableFolderPaths: serverProjection?.runs.at(-1)?.unavailableFolderPaths,
     onOpenFolderChanges: isServerThread ? openFolderChangesFromThreadPanel : undefined,

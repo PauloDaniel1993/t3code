@@ -1,6 +1,7 @@
 import { ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { workspaceFolderDiffTarget, workspaceFolderOwnsDiffPath } from "./workspaceFolderDiff";
+import { resolveDiffPathForWorkspace } from "./diffFileActions";
 
 const project = {
   id: ProjectId.make("project"),
@@ -57,5 +58,47 @@ describe("workspace folder diff scope", () => {
         "/api",
       ),
     ).toBeNull();
+  });
+
+  it("compares symlinked folders in checkout space and opens paths relative to the folder", () => {
+    const linked = {
+      worktreePath: null,
+      workspaceFolders: [
+        {
+          name: "Web",
+          label: "web",
+          path: "/link/web",
+          checkoutRoot: "/real/repo",
+          checkoutPrefix: "apps/web",
+        },
+      ],
+    };
+    const target = workspaceFolderDiffTarget(project, linked, "/link/web")!;
+    expect(target.cwd).toBe("/link/web");
+    expect(target.workspaceRoot).toBe("/real/repo/apps/web");
+    expect(workspaceFolderOwnsDiffPath(target, "apps/web/main.ts")).toBe(true);
+    expect(workspaceFolderOwnsDiffPath(target, "apps/api/main.ts")).toBe(false);
+    expect(
+      resolveDiffPathForWorkspace({
+        filePath: "apps/web/main.ts",
+        workspaceRoot: target.workspaceRoot,
+        repositoryRoot: target.repositoryRoot,
+      }),
+    ).toBe("main.ts");
+  });
+
+  it("preserves unavailable nested ownership in both current checkouts and worktrees", () => {
+    const unavailableNested = {
+      ...project,
+      folders: project.folders.map((folder) =>
+        folder.label === "nested" ? { ...folder, availability: "unavailable" as const } : folder,
+      ),
+    };
+    for (const bound of [thread, { ...thread, worktreePath: null, worktrees: [] }]) {
+      const parent = workspaceFolderDiffTarget(unavailableNested, bound, "/repo/app")!;
+      expect(workspaceFolderOwnsDiffPath(parent, "app/main.ts")).toBe(true);
+      expect(workspaceFolderOwnsDiffPath(parent, "app/nested/deleted.ts")).toBe(false);
+      expect(workspaceFolderDiffTarget(unavailableNested, bound, "/repo/app/nested")).toBeNull();
+    }
   });
 });

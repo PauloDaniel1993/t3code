@@ -54,6 +54,7 @@ export interface ThreadDetailsPanelProps extends Pick<
   workspaceFolders?: ReadonlyArray<ResolvedWorkspaceFolder> | undefined;
   workspaceProject?: WorkspaceFoldersProject | undefined;
   workspaceThread?: WorkspaceThread | null | undefined;
+  workspaceWorktreePath?: string | null | undefined;
   workspaceSession?: OrchestrationV2ProviderSession | undefined;
   workspaceUnavailableFolderPaths?: ReadonlyArray<string> | undefined;
   onOpenFolderChanges?: ((folder: WorkspaceFolderRow) => void) | undefined;
@@ -183,9 +184,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 <BranchToolbarEnvModeSelector
                   displayMode="panel"
                   forceNewWorktree={props.forceNewWorktree ?? false}
-                  envLocked={props.envLocked || props.workspaceThread?.worktreePath != null}
+                  envLocked={props.envLocked || props.workspaceWorktreePath != null}
                   effectiveEnvMode={props.envMode}
-                  activeWorktreePath={props.workspaceThread?.worktreePath ?? null}
+                  activeWorktreePath={props.workspaceWorktreePath ?? null}
                   workspaceRoot={props.gitCwd}
                   repositoryCount={workspaceRepositoryCount(rows)}
                   worktreeDisabledReason={
