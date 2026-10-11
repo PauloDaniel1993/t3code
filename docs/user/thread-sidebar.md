@@ -46,16 +46,19 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 In a project linked to a [VS Code workspace file](./project-settings.md#vs-code-workspace-files),
 a thread with two or more folders shows a folder chip in the sidebar on every client. Open it to
 see the thread's folders, grouped into Git repositories and other folders, with the reason any
-folder is unavailable. The **Workspace** section of thread details lists the same folders, and each
-folder's menu can copy its path, open it in an editor, show its changes, or open a terminal there.
+folder is unavailable. The **Workspace** section of thread details lists the same folders. Each
+folder's menu can copy its path, show its changes, or open a terminal there, and on web and
+desktop open it in an editor. Diffs and file lists name each file with its folder, like
+`api/src/index.ts`.
 
-**New worktree** creates one worktree for each Git repository among the thread's folders, together
-in one directory. Either all of them are created or none is. The primary folder must be in a
-Git repository. The base branch you choose applies to the primary repository; the others start
-from their current branch. When two folders come from the same repository, the second one's branch
-gets the folder's name as a suffix. Folders outside Git are shared rather than copied, and their
-changes aren't checkpointed. On mobile, **Create worktree** in **Branches & worktrees** adds the
-worktrees to an existing thread.
+**New worktree** creates one worktree for each Git checkout among the thread's folders, together
+in one directory; folders inside the same checkout share its worktree. Either all of them are
+created or none is. The primary folder must be in a Git repository. The base branch you choose
+applies to the primary repository; the others start from their current branch. When two folders
+are separate checkouts of the same repository, the second one's branch gets the folder's name as a
+suffix. Folders outside Git are shared rather than copied, and their changes aren't checkpointed.
+On mobile, **Create worktree** in **Branches & worktrees** adds the worktrees to an existing
+thread.
 
 **New thread in this worktree** and the previous worktree reuse all of a thread's worktrees.
 Picking one worktree from the branch picker isolates only the primary folder. Deleting the last

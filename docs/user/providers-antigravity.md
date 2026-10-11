@@ -141,6 +141,6 @@ for eligibility.
 
 ## Multi-root projects
 
-Antigravity can't yet run a thread that uses more than one folder of a
-[multi-root project](./project-settings.md#vs-code-workspace-files). Choose Codex or Claude for those threads.
-Single-folder projects are unaffected.
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), Antigravity can't yet run a
+thread that reaches folders outside its primary folder. Choose Codex or Claude for those threads.
+Other threads are unaffected.

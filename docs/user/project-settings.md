@@ -77,6 +77,7 @@ on each selected environment, and reset returns to the environment's shared list
 `t3.json` actions can be imported there. In a multi-root project with one checkout selected, an
 action can run in a chosen **Workspace folder** instead of the primary folder, and actions can be
 imported from that folder's `t3.json`. The setup action always runs once, in the primary folder.
+Editing actions from an older T3 Code client drops their folder choices.
 
 Settings a repository can also declare in `t3.json`, such as the workspace for new threads,
 resolve in one order: a project override, then the environment setting, then `t3.json`, then the
@@ -99,15 +100,16 @@ the other folders from it. T3 Code reads the file but never changes it, and foll
 To import a file on web and desktop, choose **Add project** in the command palette, then
 **Import workspace file**, or browse to or type the path of a `.code-workspace` file. The desktop
 app can also pick it with **Choose workspace file…**, and onboarding offers **Import workspace
-file**. On mobile, use **Add project → Folder or workspace file**. From a terminal,
-`t3 project add team.code-workspace` registers the file and `t3 app team.code-workspace` opens it
-in the desktop app. Importing a file that is already linked opens its project instead.
+file**. On mobile, use **Add project → Folder or workspace file**. Importing a file that is
+already linked opens its project instead. From a terminal, `t3 project add team.code-workspace`
+registers the file, or names the project that already has it, and `t3 app team.code-workspace`
+opens it in the desktop app.
 
 The primary folder must exist on the environment's machine. If the file lists a remote folder
 first, move a local folder to the top of the file in VS Code. Remote folders further down, such
 as SSH, WSL, or dev container folders, stay listed but are unavailable. A workspace file with one
-folder behaves like a plain project. Projects with several folders are labelled **Multi-root** in
-the sidebar and project pickers.
+folder gets no folder names in its paths and no folder chip. Projects with several folders are
+labelled **Multi-root** in the web sidebar and the mobile project picker.
 
 ### Link, refresh, and unlink
 
@@ -121,7 +123,7 @@ With the project selected, open **Project** to find its **Workspace** rows. On m
   starts. If the file can't be watched, its status says so and Refresh picks up changes.
 - **Relink…** points the project at another workspace file.
 - **Unlink workspace file** turns the project back into a plain project at its primary folder. It
-  fails when another project already uses that folder.
+  fails when a plain project already exists at that folder.
 
 From a terminal, use `t3 project link <project> <file>` and `t3 project unlink <project>`.
 
@@ -135,10 +137,10 @@ A thread keeps the folders its project had when the thread started. Later edits 
 file, a relink, or an unlink only change new threads, so start a new thread to use an updated
 folder list. Threads started before a project was linked keep working in their one folder.
 
-Agents run in the primary folder and can also use the other available folders. Only providers
-that support this can run a thread with more than one available folder: currently Codex and
-Claude. Others show "This provider cannot yet access every workspace folder; choose a supported
-provider." Single-folder projects can use any provider.
+Agents run in the primary folder and can also use the other available folders. A thread that
+reaches available folders outside its primary folder needs a provider that supports this:
+currently Codex and Claude. Other providers are disabled for that thread with the reason. Folders
+inside the primary folder need no extra access, so any provider can run those threads.
 
 A folder that isn't available, for example because it's missing on disk, is shown with the reason
 and skipped. A thread uses it again from its next turn once it's back. If the primary folder is

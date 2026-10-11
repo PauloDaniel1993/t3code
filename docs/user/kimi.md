@@ -23,6 +23,6 @@ irm https://code.kimi.com/kimi-code/install.ps1 | iex
 
 ## Multi-root projects
 
-Kimi can't yet run a thread that uses more than one folder of a
-[multi-root project](./project-settings.md#vs-code-workspace-files). Choose Codex or Claude for those threads.
-Single-folder projects are unaffected.
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), Kimi can't yet run a
+thread that reaches folders outside its primary folder. Choose Codex or Claude for those threads.
+Other threads are unaffected.

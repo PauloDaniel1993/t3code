@@ -551,6 +551,8 @@ function TaskForm({
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
+  const multiRoot =
+    (projects.find((project) => project.id === draft.projectId)?.folders?.length ?? 0) > 1;
   const config = useEnvironmentServerConfig(environmentId);
   const modelOptions = useMemo(() => buildModelOptions(config, null), [config]);
   const upsert = useAtomCommand(serverEnvironment.upsertScheduledTask, {
@@ -778,7 +780,7 @@ function TaskForm({
               disabled={!draft.projectId || saving || dictationPending || environmentUnavailable}
               onPress={() => navigation.navigate("SettingsScheduledTaskBranch")}
             />
-            {projects.find((project) => project.id === draft.projectId)?.workspaceFile != null ? (
+            {multiRoot ? (
               <Text className="px-4 pb-3 text-sm text-foreground-muted">
                 Applies to the primary repository.
               </Text>

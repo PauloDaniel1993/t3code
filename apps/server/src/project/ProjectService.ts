@@ -945,8 +945,8 @@ export const make = Effect.gen(function* () {
   const unlinkWorkspaceFile: ProjectService["Service"]["unlinkWorkspaceFile"] = Effect.fn(
     "ProjectService.unlinkWorkspaceFile",
   )(function* (input) {
-    // Unlinking is the way back to a plain project, so it works with the
-    // feature off and with the file gone. It never touches the disk.
+    // Unlinking is the way back to a plain project, so it works with the file
+    // gone. It never touches the disk.
     return yield* workspaceFileSyncLocks.withLock(
       input.projectId,
       Effect.gen(function* () {

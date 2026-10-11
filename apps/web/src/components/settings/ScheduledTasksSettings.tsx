@@ -775,7 +775,7 @@ function ScheduledTaskEditorDialog({
               <Field
                 label="Base branch"
                 hint={
-                  selectedProject?.workspaceFile != null
+                  (selectedProject?.folders?.length ?? 0) > 1
                     ? "Applies to the primary repository"
                     : undefined
                 }

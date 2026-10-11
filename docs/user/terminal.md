@@ -11,5 +11,5 @@ history. A client can show less scrollback than the server keeps.
 
 A new terminal opens in the thread's primary folder, inside its worktree when it has one. To open
 one in another workspace folder, choose **Open terminal here** from that folder's menu in thread
-details on web and desktop, or **Open terminal in folder** on mobile. A terminal stays in the
-folder it opened in.
+details. On mobile, the terminal screen also offers **Open terminal in folder**. A terminal stays
+in the folder it opened in.
