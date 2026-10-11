@@ -22,10 +22,14 @@ const request = (method, params) =>
 let model = "kimi-live";
 let mode = "yolo";
 let activeSessionId;
+let additionalDirectories = [];
 const statePath = (sessionId) =>
   NodePath.join(process.env.KIMI_CODE_HOME, "sessions", sessionId, "model.json");
 const saveSelection = () =>
-  NodeFS.writeFileSync(statePath(activeSessionId), JSON.stringify({ model, mode }));
+  NodeFS.writeFileSync(
+    statePath(activeSessionId),
+    JSON.stringify({ model, mode, additionalDirectories }),
+  );
 const modelChoices = () => {
   const catalogPath = NodePath.join(process.env.KIMI_CODE_HOME, "models.json");
   return NodeFS.existsSync(catalogPath)
@@ -67,7 +71,11 @@ const setup = (sessionId, resumed = false) => {
   NodeFS.mkdirSync(NodePath.join(sessionDir, "logs"), { recursive: true });
   activeSessionId = sessionId;
   if (resumed && NodeFS.existsSync(statePath(sessionId))) {
-    ({ model, mode } = JSON.parse(NodeFS.readFileSync(statePath(sessionId), "utf8")));
+    ({
+      model,
+      mode,
+      additionalDirectories = [],
+    } = JSON.parse(NodeFS.readFileSync(statePath(sessionId), "utf8")));
   }
   saveSelection();
   NodeFS.appendFileSync(
@@ -94,7 +102,13 @@ lines.on("line", async (line) => {
   const { id, method, params = {} } = message;
   log(method, {
     ...params,
-    ...(method === "session/prompt" ? { modeAtPrompt: mode, modelAtPrompt: model } : {}),
+    ...(method === "session/prompt"
+      ? {
+          modeAtPrompt: mode,
+          modelAtPrompt: model,
+          additionalDirectoriesAtPrompt: additionalDirectories,
+        }
+      : {}),
     ...(method === "initialize"
       ? {
           environment: {
@@ -114,7 +128,12 @@ lines.on("line", async (line) => {
         agentCapabilities: {
           loadSession: true,
           mcpCapabilities: { http: true, sse: false },
-          sessionCapabilities: process.env.T3_KIMI_LOAD_ONLY ? {} : { resume: {} },
+          sessionCapabilities: {
+            ...(process.env.T3_KIMI_LOAD_ONLY ? {} : { resume: {} }),
+            ...(process.env.T3_KIMI_ADDITIONAL_DIRECTORIES
+              ? { additionalDirectories: {}, fork: {} }
+              : {}),
+          },
           promptCapabilities: { image: process.env.T3_KIMI_IMAGE === "1" },
         },
       });
@@ -125,7 +144,16 @@ lines.on("line", async (line) => {
       else reply({});
       break;
     case "session/new":
-      reply(setup("mock-kimi-session"));
+      additionalDirectories = params.additionalDirectories ?? [];
+      if (process.env.T3_KIMI_ADDITIONAL_DIRECTORIES) {
+        NodeFS.mkdirSync(process.env.KIMI_CODE_HOME, { recursive: true });
+        const counterPath = NodePath.join(process.env.KIMI_CODE_HOME, "session-counter");
+        const ordinal = NodeFS.existsSync(counterPath)
+          ? Number(NodeFS.readFileSync(counterPath, "utf8")) + 1
+          : 1;
+        NodeFS.writeFileSync(counterPath, String(ordinal));
+        reply(setup(`mock-kimi-session-${ordinal}`));
+      } else reply(setup("mock-kimi-session"));
       break;
     case "session/resume":
     case "session/load":
