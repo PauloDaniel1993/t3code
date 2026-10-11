@@ -104,7 +104,9 @@ export function projectScriptRuntimeEnv(
           input.project.cwd)
         : (folder.folder.path ?? input.project.cwd),
   };
-  if (input.folderPath != null || (input.worktreePath ?? input.thread?.worktreePath)) {
+  const worktreePath =
+    input.worktreePath === undefined ? input.thread?.worktreePath : input.worktreePath;
+  if (input.folderPath != null || worktreePath) {
     env.T3CODE_WORKTREE_PATH = folder.effectivePath;
   }
   if (input.extraEnv) {

@@ -56,6 +56,12 @@ describe("Action workspace locations", () => {
     });
   });
 
+  it("honors an explicit primary-checkout override for setup launches", () => {
+    const input = { project, thread, worktreePath: null };
+    expect(projectScriptCwd(input)).toBe("/repos/api/src");
+    expect(projectScriptRuntimeEnv(input)).toEqual({ T3CODE_PROJECT_ROOT: "/repos/api/src" });
+  });
+
   it("leaves shared folders in place and keeps extra environment overrides", () => {
     const input = { project, thread, folderPath: "/shared", extraEnv: { CUSTOM: "yes" } };
     expect(projectScriptCwd(input)).toBe("/shared");
