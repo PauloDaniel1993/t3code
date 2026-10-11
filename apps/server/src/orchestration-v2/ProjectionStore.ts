@@ -28,6 +28,7 @@ import type {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  ProjectId,
   ProviderTurnId,
   RunAttemptId,
   RuntimeRequestId,
@@ -160,6 +161,21 @@ export type ProjectionThreadPullRequests = Pick<
   OrchestrationV2AppThread,
   "id" | "projectId" | "settledOverride" | "settledAt" | "pullRequests"
 >;
+
+const ProjectionWorkspaceWorktreeBinding = OrchestrationV2AppThreadJsonSchema.mapFields(
+  ({ id, projectId, branch, worktreePath, workspaceFolders, worktrees }) => ({
+    id,
+    projectId,
+    branch,
+    worktreePath,
+    workspaceFolders,
+    worktrees,
+  }),
+);
+const decodeWorkspaceWorktreeBinding = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ProjectionWorkspaceWorktreeBinding),
+);
+export type ProjectionWorkspaceWorktreeBinding = typeof ProjectionWorkspaceWorktreeBinding.Type;
 
 /** Thread activity needed by settlement, without transcript or fork history. */
 export type ProjectionSettlementCandidate = Pick<
@@ -346,6 +362,13 @@ export interface ProjectionStoreV2Shape {
   readonly getThread: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2AppThread, ProjectionStoreV2Error>;
+  /** Frozen workspace worktrees, including archived owners, without activity or history reads. */
+  readonly getWorkspaceWorktreeBindings: (
+    projectId?: ProjectId,
+  ) => Effect.Effect<ReadonlyArray<ProjectionWorkspaceWorktreeBinding>, ProjectionStoreV2Error>;
+  readonly getProviderThreadOwner: (
+    providerThreadId: ProviderThreadId,
+  ) => Effect.Effect<ThreadId | undefined, ProjectionStoreV2Error>;
   readonly getLimitRecoveryCandidates: (options: {
     readonly now: DateTime.Utc;
     readonly autoResume: boolean;
@@ -5199,6 +5222,34 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
 
+    const getWorkspaceWorktreeBindings: ProjectionStoreV2Shape["getWorkspaceWorktreeBindings"] = (
+      projectId,
+    ) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<PayloadRow>`
+          SELECT payload_json FROM orchestration_v2_projection_threads
+          WHERE deleted_at IS NULL
+            AND json_extract(payload_json, '$.worktreePath') IS NOT NULL
+            AND json_type(payload_json, '$.workspaceFolders') = 'array'
+            ${projectId === undefined ? sql`` : sql`AND project_id = ${projectId}`}
+          ORDER BY updated_at ASC, thread_id ASC
+        `;
+        return yield* Effect.forEach(rows, (row) =>
+          decodeWorkspaceWorktreeBinding(row.payload_json),
+        );
+      }).pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
+
+    const getProviderThreadOwner: ProjectionStoreV2Shape["getProviderThreadOwner"] = (
+      providerThreadId,
+    ) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<{ readonly thread_id: string | null }>`
+          SELECT thread_id FROM orchestration_v2_projection_provider_threads
+          WHERE provider_thread_id = ${providerThreadId}
+        `;
+        return rows[0]?.thread_id == null ? undefined : ThreadId.make(rows[0].thread_id);
+      }).pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
+
     const getThreadsWithPullRequests: ProjectionStoreV2Shape["getThreadsWithPullRequests"] = () =>
       Effect.gen(function* () {
         const rows = yield* sql<PayloadRow>`
@@ -5520,6 +5571,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getShellSnapshot,
       getThreadShell,
       getThread,
+      getWorkspaceWorktreeBindings,
+      getProviderThreadOwner,
       getSettlementCandidates,
       getThreadsWithPullRequests,
       getThreadProjection,
@@ -5629,6 +5682,42 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           }
           return projection.thread;
         }),
+      getWorkspaceWorktreeBindings: (projectId) =>
+        Ref.get(replayState).pipe(
+          Effect.map((state) =>
+            [...state.projections.values()]
+              .map(({ thread }) => thread)
+              .filter(
+                (thread) =>
+                  thread.deletedAt === null &&
+                  thread.worktreePath !== null &&
+                  thread.workspaceFolders !== undefined &&
+                  (projectId === undefined || thread.projectId === projectId),
+              )
+              .toSorted(
+                (left, right) =>
+                  DateTime.toEpochMillis(left.updatedAt) -
+                    DateTime.toEpochMillis(right.updatedAt) || left.id.localeCompare(right.id),
+              )
+              .map(({ id, projectId, branch, worktreePath, workspaceFolders, worktrees }) => ({
+                id,
+                projectId,
+                branch,
+                worktreePath,
+                workspaceFolders,
+                worktrees,
+              })),
+          ),
+        ),
+      getProviderThreadOwner: (providerThreadId) =>
+        Ref.get(replayState).pipe(
+          Effect.map(
+            (state) =>
+              [...state.projections.values()]
+                .flatMap((projection) => projection.providerThreads)
+                .find((thread) => thread.id === providerThreadId)?.appThreadId ?? undefined,
+          ),
+        ),
       getSettlementCandidates: (threadId) =>
         Effect.gen(function* () {
           const projections = (yield* Ref.get(replayState)).projections;
