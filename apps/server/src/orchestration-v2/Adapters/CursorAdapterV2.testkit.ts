@@ -724,6 +724,7 @@ function recordingRuntimePolicy(input: {
     runtimeMode: "full-access",
     interactionMode: input.interactionMode,
     cwd: input.cwd,
+    additionalDirectories: [],
     approvalPolicy: input.override?.approvalPolicy ?? "never",
     sandboxPolicy: input.override?.sandboxPolicy ?? {
       type: "dangerFullAccess",

@@ -122,6 +122,28 @@ describe("ServerProvider", () => {
 
     expect(parsed.models[0]?.isLegacy).toBe(true);
   });
+
+  it("reads absent or unknown workspace folder access as unverified", () => {
+    const snapshot = {
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      models: [],
+    };
+    expect(decodeServerProvider(snapshot)).not.toHaveProperty("workspaceFolderAccess");
+    expect(
+      decodeServerProvider({ ...snapshot, workspaceFolderAccess: "supported" })
+        .workspaceFolderAccess,
+    ).toBe("supported");
+    expect(
+      decodeServerProvider({ ...snapshot, workspaceFolderAccess: "partial" }).workspaceFolderAccess,
+    ).toBeUndefined();
+  });
 });
 
 describe("server config forward compatibility", () => {

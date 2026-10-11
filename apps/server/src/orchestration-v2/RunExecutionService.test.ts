@@ -576,6 +576,7 @@ it.effect("rechecks run ownership immediately before calling the provider", () =
         runtimeMode: "full-access",
         interactionMode: "default",
         cwd: process.cwd(),
+        additionalDirectories: [],
         approvalPolicy: "never",
         sandboxPolicy: {
           type: "readOnly",
@@ -657,6 +658,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: process.cwd(),
+            additionalDirectories: [],
             approvalPolicy: "never",
             sandboxPolicy: {
               type: "readOnly",
@@ -730,6 +732,7 @@ it.effect("refreshes MCP credential liveness before calling the provider", () =>
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: process.cwd(),
+          additionalDirectories: [],
           approvalPolicy: "never",
           sandboxPolicy: {
             type: "readOnly",
@@ -834,6 +837,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: process.cwd(),
+          additionalDirectories: [],
           approvalPolicy: "never",
           sandboxPolicy: {
             type: "readOnly",
@@ -976,6 +980,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: process.cwd(),
+            additionalDirectories: [],
             approvalPolicy: "never",
             sandboxPolicy: {
               type: "readOnly",
@@ -1221,6 +1226,7 @@ it.effect("keeps ingesting owned child events after the root turn terminalizes",
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: process.cwd(),
+          additionalDirectories: [],
           approvalPolicy: "never",
           sandboxPolicy: {
             type: "readOnly",
@@ -1634,6 +1640,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: process.cwd(),
+            additionalDirectories: [],
             approvalPolicy: "never",
             sandboxPolicy: {
               type: "readOnly",
@@ -1850,6 +1857,7 @@ it.effect("drops late root provider-thread writes from a superseded attempt", ()
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: process.cwd(),
+          additionalDirectories: [],
           approvalPolicy: "never",
           sandboxPolicy: {
             type: "readOnly",
@@ -2033,6 +2041,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: process.cwd(),
+            additionalDirectories: [],
             approvalPolicy: "never",
             sandboxPolicy: {
               type: "readOnly",
@@ -2203,6 +2212,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: process.cwd(),
+            additionalDirectories: [],
             approvalPolicy: "never",
             sandboxPolicy: {
               type: "readOnly",
@@ -2443,6 +2453,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: process.cwd(),
+            additionalDirectories: [],
             approvalPolicy: "never",
             sandboxPolicy: {
               type: "readOnly",
@@ -2773,6 +2784,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: process.cwd(),
+            additionalDirectories: [],
             approvalPolicy: "never",
             sandboxPolicy: {
               type: "readOnly",
@@ -3405,6 +3417,7 @@ function captureRootRunTermination(input: {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: process.cwd(),
+          additionalDirectories: [],
           approvalPolicy: "never",
           sandboxPolicy: {
             type: "readOnly",
@@ -3851,6 +3864,7 @@ function runBackgroundItemScenario(
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: process.cwd(),
+          additionalDirectories: [],
           approvalPolicy: "never",
           sandboxPolicy: {
             type: "readOnly",

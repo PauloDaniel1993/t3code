@@ -39,6 +39,7 @@ import {
   resolveDefaultableModelSelection,
   resolveNewTaskModelSelection,
   resolveSelectableModelSelection,
+  restrictModelOptionsToScope,
 } from "../../lib/modelOptions";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -93,6 +94,7 @@ import { canCreateProjectInEnvironment } from "@t3tools/client-runtime/operation
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { type VcsRef } from "@t3tools/client-runtime/state/vcs";
+import { workspaceFolderScope } from "@t3tools/client-runtime/workspace-folder-access";
 import {
   buildHomeProjectScopes,
   sortHomeProjectScopes,
@@ -540,17 +542,23 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     selectedEnvironmentServerConfig,
     storedStickyModelSelection,
   );
+  // A new thread of a linked project works in all its folders, so only a
+  // provider that reaches them all can start it.
   const modelOptions = useMemo(
     () =>
-      buildModelOptions(
-        selectedEnvironmentServerConfig,
-        draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection,
+      restrictModelOptionsToScope(
+        buildModelOptions(
+          selectedEnvironmentServerConfig,
+          draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection,
+        ),
+        workspaceFolderScope({ thread: null, project: selectedProject }),
       ),
     [
       selectedEnvironmentServerConfig,
       draftModelSelection,
       projectDefaultModelSelection,
       stickyModelSelection,
+      selectedProject,
     ],
   );
 

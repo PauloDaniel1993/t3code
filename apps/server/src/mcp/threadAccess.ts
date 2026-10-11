@@ -2,13 +2,17 @@ import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.
 import {
   CommandId,
   OrchestratorMcpFailure,
+  PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
   type ThreadId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as OrchestrationMcp from "./OrchestratorMcpService.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
@@ -17,6 +21,32 @@ export const unavailable = () =>
     code: "orchestration_error",
     message: "The operation could not be completed.",
   });
+
+const isThreadLaunchError = Schema.is(ThreadLaunch.ThreadLaunchError);
+
+/**
+ * A launch refused while validating its workspace, such as a provider that
+ * can't reach every workspace folder, keeps its reason so the agent can act on
+ * it, as over the transport. Anything else is unavailable.
+ */
+export const launchRefusal = (error: unknown) => {
+  const message =
+    isThreadLaunchError(error) && error.operation === "validate-workspace"
+      ? userFacingDispatchErrorMessage(error.cause)
+      : undefined;
+  return message === undefined
+    ? unavailable()
+    : new OrchestratorMcpFailure({ code: "invalid_request", message });
+};
+
+/** A provider switch refused for workspace folder access says so; anything else is unavailable. */
+export const switchRefusal = (error: unknown) =>
+  userFacingDispatchErrorMessage(error) === PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE
+    ? new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+      })
+    : unavailable();
 
 export const readCaller = Effect.fn("mcp.readCaller")(function* () {
   const scope = yield* McpInvocationContext.McpInvocationContext;

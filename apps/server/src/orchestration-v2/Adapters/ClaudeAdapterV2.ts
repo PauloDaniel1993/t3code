@@ -130,6 +130,7 @@ import {
   makeSubagentConversationArtifacts,
   subagentThreadTitle,
 } from "../SubagentProjection.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 export const CLAUDE_PROVIDER = ProviderDriverKind.make("claudeAgent");
 export const CLAUDE_AGENT_SDK_QUERY_PROTOCOL = "claude-agent-sdk.query" as const;
@@ -262,6 +263,7 @@ export const ClaudeProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.claudeAgent,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

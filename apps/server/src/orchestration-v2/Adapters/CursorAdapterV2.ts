@@ -74,6 +74,7 @@ import {
   subagentThreadTitle,
 } from "../SubagentProjection.ts";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 export { cursorSdkModelSelection } from "../../provider/cursorSdkModel.ts";
 
 export const CURSOR_DRIVER_KIND = CursorAgentSdk.CURSOR_PROVIDER;
@@ -171,6 +172,7 @@ export const CursorProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.cursor,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

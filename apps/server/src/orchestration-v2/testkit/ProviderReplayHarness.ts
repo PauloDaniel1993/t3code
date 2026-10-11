@@ -261,6 +261,8 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     // as server startup does after a crash or restart.
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    // Replaces the thread-only runtime policy, for tests of folder scopes.
+    readonly runtimePolicyLayer?: Layer.Layer<RuntimePolicy.RuntimePolicyV2>;
   } = {},
 ): Layer.Layer<
   Orchestrator.OrchestratorV2 | EffectWorker.OrchestrationEffectWorkerV2 | EventSink.EventSinkV2,
@@ -271,11 +273,12 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
   const runtimeLayer =
-    scenario.runtimePolicyOverride === undefined
+    options.runtimePolicyLayer ??
+    (scenario.runtimePolicyOverride === undefined
       ? RuntimePolicy.layer
       : RuntimePolicy.layerWithOverride(scenario.runtimePolicyOverride).pipe(
           Layer.provide(RuntimePolicy.layer),
-        );
+        ));
   const databaseLayer = options.databaseLayer ?? SqlitePersistenceMemory;
   // One queue shared by the adapters, the orchestrator, and the worker, like
   // runtimeLayer.ts; layer memoization keeps it a single instance.

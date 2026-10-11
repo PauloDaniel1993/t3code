@@ -72,6 +72,7 @@ import {
   type RuntimeRequestId,
   type KeybindingCommand,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
   ProviderInteractionMode,
   ProviderDriverKind,
   resolveEnvironmentMachineKind,
@@ -99,6 +100,10 @@ import {
   presentPendingBackgroundWork,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  isProviderEligibleForScope,
+  workspaceFolderScope,
+} from "@t3tools/client-runtime/workspace-folder-access";
 import {
   codexFeedbackMessage,
   parseCodexFeedbackCommand,
@@ -9973,10 +9978,25 @@ export default function ChatView(props: ChatViewProps) {
     composerRef,
   ]);
 
+  // A thread spanning workspace folders runs only on a provider that reaches
+  // them all. A draft takes its project's folders.
+  const serverAppThread = serverProjection?.thread ?? null;
+  const workspaceScope = useMemo(
+    () =>
+      workspaceFolderScope({
+        thread: isServerThread ? (serverAppThread ?? serverThread) : null,
+        project: activeProject,
+      }),
+    [activeProject, isServerThread, serverAppThread, serverThread],
+  );
   const getModelDisabledReason = useCallback(
     (instanceId: ProviderInstanceId, model: string): string | null => {
       if (!activeThread) {
         return null;
+      }
+      const provider = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
+      if (!isProviderEligibleForScope(provider, workspaceScope)) {
+        return PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE;
       }
       const reason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
@@ -9988,7 +10008,13 @@ export default function ChatView(props: ChatViewProps) {
       });
       return reason ? `${reason.description} Start a new thread to use this model.` : null;
     },
-    [activeRuntime, activeThread, providerStatuses, supportsProviderSwitchingViaHandoff],
+    [
+      activeRuntime,
+      activeThread,
+      providerStatuses,
+      supportsProviderSwitchingViaHandoff,
+      workspaceScope,
+    ],
   );
 
   const onProviderModelSelect = useCallback(

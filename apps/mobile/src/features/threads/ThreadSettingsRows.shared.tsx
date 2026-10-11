@@ -81,12 +81,12 @@ export function ModelRowContent(
               <Text className="text-xs text-foreground">Unavailable</Text>
             ) : null}
           </View>
-          {props.option.subtitle ? (
+          {props.option.unavailableReason || props.option.subtitle ? (
             <Text
               className="text-xs text-foreground-muted"
               numberOfLines={props.labelNumberOfLines}
             >
-              {props.option.subtitle}
+              {props.option.unavailableReason ?? props.option.subtitle}
             </Text>
           ) : null}
         </View>

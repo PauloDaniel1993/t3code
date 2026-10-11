@@ -14,6 +14,7 @@ import {
   ContextHandoffId,
   ContextTransferId,
   EventId,
+  ForwardCompatibleOptional,
   IsoDateTime,
   MessageId,
   NodeId,
@@ -55,6 +56,7 @@ import {
   ProviderInteractionMode,
   ProviderRequestKind,
   ProviderUserInputAnswers,
+  ProviderWorkspaceFolderAccess,
   UserInputAttachments,
   UserInputAttachmentAnswerPayload,
   RuntimeMode,
@@ -299,6 +301,8 @@ export const OrchestrationV2RuntimePolicyCapabilities = Schema.Struct({
    * execution is not confined, so sandbox guarantees are reduced.
    */
   enforcement: Schema.Literals(["native", "client-boundary"]),
+  /** Whether the adapter reaches every workspace folder. Absent is "unverified". */
+  workspaceFolderAccess: ForwardCompatibleOptional(ProviderWorkspaceFolderAccess),
 });
 export type OrchestrationV2RuntimePolicyCapabilities =
   typeof OrchestrationV2RuntimePolicyCapabilities.Type;
@@ -763,6 +767,8 @@ export const OrchestrationV2ProviderSession = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   status: Schema.Literals(["starting", "ready", "running", "waiting", "stopped", "error"]),
   cwd: TrimmedNonEmptyString,
+  /** The folders beyond `cwd` the session was given, in order. Absent means none. */
+  additionalDirectories: Schema.optional(Schema.Array(Schema.String)),
   model: Schema.NullOr(TrimmedNonEmptyString),
   capabilities: OrchestrationV2ProviderCapabilities,
   createdAt: Schema.DateTimeUtc,

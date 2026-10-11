@@ -24,6 +24,8 @@ export interface ProviderSessionTransitionState {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspace: string;
+  /** The folders beyond `workspace` the session is, or would be, given. */
+  readonly additionalDirectories: ReadonlyArray<string>;
   readonly capabilities: OrchestrationV2ProviderCapabilities;
 }
 
@@ -54,7 +56,12 @@ export function decideProviderSessionTransition(input: {
 
   const instanceChanged = current.modelSelection.instanceId !== target.modelSelection.instanceId;
   const runtimeChanged = current.runtimeMode !== target.runtimeMode;
-  const workspaceChanged = current.workspace !== target.workspace;
+  const workspaceChanged =
+    current.workspace !== target.workspace ||
+    current.additionalDirectories.length !== target.additionalDirectories.length ||
+    current.additionalDirectories.some(
+      (directory, index) => directory !== target.additionalDirectories[index],
+    );
   const selectionChanged = !modelSelectionsEqual(current.modelSelection, target.modelSelection);
   if (selectionChanged && !instanceChanged) {
     switch (input.selectionTransition?.type) {

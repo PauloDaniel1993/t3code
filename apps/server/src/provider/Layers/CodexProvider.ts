@@ -48,6 +48,7 @@ import {
   type CodexResetCreditsSummary,
 } from "./codexUsageLimits.ts";
 import packageJson from "../../../package.json" with { type: "json" };
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
 
@@ -68,6 +69,7 @@ const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
   reportsContextWindow: true,
+  workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.codex,
 } as const;
 
 export interface CodexAppServerProviderSnapshot {

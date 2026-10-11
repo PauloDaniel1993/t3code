@@ -122,6 +122,7 @@ const runtimePolicy = {
   runtimeMode: "full-access",
   interactionMode: "default",
   cwd: process.cwd(),
+  additionalDirectories: [],
 } satisfies ProviderAdapterV2RuntimePolicy;
 
 function makeProviderSession(input: {
@@ -3438,6 +3439,45 @@ it.effect.each(["missing", "file"] as const)(
         );
       }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
     }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("rejects a missing additional directory before opening a provider session", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const root = yield* fileSystem.makeTempDirectoryScoped();
+    const missing = `${root}/docs`;
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const threadId = ThreadId.make("thread-missing-additional-directory");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({
+            idAllocator,
+            threadId,
+            now: yield* DateTime.now,
+          }),
+        ],
+      });
+      const error = yield* manager
+        .open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, cwd: root, additionalDirectories: [missing] },
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(error, ProviderWorkspaceMissingError);
+      assert.include(error.message, missing);
+      assert.equal((yield* Ref.get(state)).openCount, 0);
+    }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect(

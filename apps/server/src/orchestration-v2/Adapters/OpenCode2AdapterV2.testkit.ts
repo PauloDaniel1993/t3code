@@ -317,6 +317,7 @@ export const openCode2ReplayRuntime = (
         runtimeMode: "full-access",
         interactionMode: "default",
         cwd: "/work/opencode2",
+        additionalDirectories: [],
       },
     });
   }).pipe(

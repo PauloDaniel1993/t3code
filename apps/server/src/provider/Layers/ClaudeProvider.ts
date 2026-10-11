@@ -48,6 +48,7 @@ import {
   formatClaudeVersionUpgradeMessage,
   resolveClaudeModelsForVersion,
 } from "../ClaudeModelCatalog.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -57,6 +58,7 @@ const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
   reportsContextWindow: true,
+  workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.claudeAgent,
 } as const;
 function toTitleCaseWords(value: string): string {
   const parts: Array<string> = [];

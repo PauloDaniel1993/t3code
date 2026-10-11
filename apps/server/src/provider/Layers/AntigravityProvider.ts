@@ -29,6 +29,7 @@ import {
   isCommandMissingCause,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../workspaceFolderAccess.ts";
 
 const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const MAX_WORKSPACE_SNAPSHOTS = 32;
@@ -136,7 +137,11 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const initialDraft = {
     ...buildServerProvider({
-      presentation: { displayName: "Antigravity", showInteractionModeToggle: false },
+      presentation: {
+        displayName: "Antigravity",
+        showInteractionModeToggle: false,
+        workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.antigravity,
+      },
       enabled: settings.enabled,
       checkedAt,
       models: [],

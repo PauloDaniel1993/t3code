@@ -266,6 +266,7 @@ const threadLaunchProvided = threadLaunchServiceLayer.pipe(
       threadManagementProvided,
       commandReceiptStoreProvided,
       idAllocatorLayer,
+      runtimePolicyProvided,
       worktreeSetWithProjectsProvided,
     ),
   ),

@@ -3,6 +3,7 @@ import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread
 import type { EnvironmentThread } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, OrchestrationV2ThreadProjection, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
+import { useMemo } from "react";
 
 import { environmentThreadDetails, useEnvironmentThread } from "./threads";
 import { useThreadSelection } from "./use-thread-selection";
@@ -44,6 +45,29 @@ export function useThreadProjection(target: ThreadDetailTarget): EnvironmentThre
           threadId: target.threadId,
         }),
   );
+}
+
+const EMPTY_APP_THREAD_ATOM = Atom.make<OrchestrationV2ThreadProjection["thread"] | null>(
+  null,
+).pipe(Atom.withLabel("mobile-app-thread:empty"));
+
+/** A thread's detail record alone; updates to its conversation don't rerender the caller. */
+export function useAppThread(
+  target: ThreadDetailTarget,
+): OrchestrationV2ThreadProjection["thread"] | null {
+  const { environmentId, threadId } = target;
+  const atom = useMemo(
+    () =>
+      environmentId === null || threadId === null
+        ? EMPTY_APP_THREAD_ATOM
+        : Atom.make(
+            (get) =>
+              get(environmentThreadDetails.threadAtom({ environmentId, threadId }))?.projection
+                .thread ?? null,
+          ),
+    [environmentId, threadId],
+  );
+  return useAtomValue(atom);
 }
 
 export function useSelectedThreadProjection(): EnvironmentThread | null {

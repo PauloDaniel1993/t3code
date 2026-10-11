@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import type { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import {
   decideProviderSessionTransition,
@@ -44,6 +45,8 @@ export interface ProviderSwitchServiceV2Shape {
       "thread" | "providerSessions" | "providerThreads"
     >;
     readonly targetModelSelection: ModelSelection;
+    /** The target's resolved folder scope; without it the thread's own primary and the installed folders. */
+    readonly targetScope?: Pick<ProviderAdapterV2RuntimePolicy, "cwd" | "additionalDirectories">;
   }) => Effect.Effect<ProviderSwitchPlanV2, ProviderSwitchPlanError>;
 }
 
@@ -67,7 +70,7 @@ export const layer: Layer.Layer<
   Effect.gen(function* () {
     const adapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
     return ProviderSwitchServiceV2.of({
-      plan: ({ projection, targetModelSelection }) =>
+      plan: ({ projection, targetModelSelection, targetScope }) =>
         Effect.gen(function* () {
           const current = projection.thread.modelSelection;
           const instanceChanged = current.instanceId !== targetModelSelection.instanceId;
@@ -97,6 +100,12 @@ export const layer: Layer.Layer<
                 DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
             );
           const currentSession = currentSessions.find(isLiveProviderSession);
+          // A live session's folders are what it was given; with none to
+          // compare, the target's folders change nothing.
+          const installedDirectories =
+            currentSession === undefined
+              ? (targetScope?.additionalDirectories ?? [])
+              : (currentSession.additionalDirectories ?? []);
           // Negotiated capabilities describe the provider, not the dead
           // process; the newest record still reports what the instance
           // supports after its session stops.
@@ -145,6 +154,7 @@ export const layer: Layer.Layer<
                             currentSession?.cwd ??
                             threadPrimaryPath(projection.thread, null) ??
                             "<unresolved-workspace>",
+                          additionalDirectories: installedDirectories,
                           capabilities:
                             negotiatedCapabilities ?? currentInstance.value.capabilities,
                         },
@@ -158,9 +168,12 @@ export const layer: Layer.Layer<
                     runtimeMode: projection.thread.runtimeMode,
                     interactionMode: projection.thread.interactionMode,
                     workspace:
+                      targetScope?.cwd ??
                       threadPrimaryPath(projection.thread, null) ??
                       currentSession?.cwd ??
                       "<unresolved-workspace>",
+                    additionalDirectories:
+                      targetScope?.additionalDirectories ?? installedDirectories,
                     capabilities: targetInstance.value.capabilities,
                     available: targetInstance.value.enabled,
                   },

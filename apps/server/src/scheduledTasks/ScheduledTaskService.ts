@@ -30,6 +30,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
 
@@ -123,6 +124,21 @@ function errorMessage(error: unknown): string {
   if (Cause.isCause(error)) return Cause.pretty(error);
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/**
+ * What a failed run records. A workspace the run can't start in is the user's
+ * to fix, so it records that reason alone, as launches over the transport do.
+ */
+const isThreadLaunchError = Schema.is(ThreadLaunchService.ThreadLaunchError);
+
+function runErrorMessage(cause: Cause.Cause<unknown>): string {
+  const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
+  return (
+    (isThreadLaunchError(failure) && failure.operation === "validate-workspace"
+      ? userFacingDispatchErrorMessage(failure.cause)
+      : undefined) ?? errorMessage(cause)
+  );
 }
 
 const decodeRow = (row: ScheduledTaskRow) =>
@@ -554,7 +570,7 @@ export const layer = Layer.effect(
         const completedAt = yield* localNow;
         const runSucceeded = result._tag === "Success";
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);
-        const lastRunError = runSucceeded ? null : errorMessage(result.cause);
+        const lastRunError = runSucceeded ? null : runErrorMessage(result.cause);
         // Re-read the task so the next run is computed from the schedule as it
         // is *now* (the user may have edited or deleted it while we ran).
         const current = yield* findTask(task.id);

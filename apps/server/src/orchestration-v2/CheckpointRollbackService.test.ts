@@ -78,7 +78,10 @@ it.effect("rejects a non-ready checkpoint before opening a session or restoring 
             }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: resolveRuntimePolicy }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: resolveRuntimePolicy,
+          requireWorkspaceFolderAccess: () => Effect.void,
+        }),
       ),
     ),
   );
@@ -155,7 +158,10 @@ it.effect("rejects a rollback when another provider thread became active", () =>
             }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: resolveRuntimePolicy }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: resolveRuntimePolicy,
+          requireWorkspaceFolderAccess: () => Effect.void,
+        }),
       ),
     ),
   );
@@ -235,7 +241,10 @@ it.effect("rejects a rollback when provider selection changed before execution",
             }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: resolveRuntimePolicy }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: resolveRuntimePolicy,
+          requireWorkspaceFolderAccess: () => Effect.void,
+        }),
       ),
     ),
   );
@@ -310,6 +319,7 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
         }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: () => Effect.succeed({} as never),
+          requireWorkspaceFolderAccess: () => Effect.void,
         }),
       ),
     ),
@@ -333,6 +343,73 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
     );
     assert.equal(error.cause, undefined);
     assert.equal(restore.mock.calls.length, 0);
+  }).pipe(Effect.provide(testLayer));
+});
+
+it.effect("rewinds a provider that can't reach every folder without handing it the others", () => {
+  const threadId = ThreadId.make("thread:rollback-folder-access");
+  const providerThreadId = ProviderThreadId.make("provider-thread:rollback-folder-access");
+  const providerSessionId = ProviderSessionId.make("provider-session:rollback-folder-access");
+  const checkpointId = CheckpointId.make("checkpoint:rollback-folder-access");
+  const scopeId = CheckpointScopeId.make("checkpoint-scope:rollback-folder-access");
+  const providerInstanceId = ProviderInstanceId.make("provider_rollback_folder_access");
+  const projection = {
+    thread: {
+      worktreePath: process.cwd(),
+      activeProviderThreadId: providerThreadId,
+      modelSelection: { instanceId: providerInstanceId, model: "test-model" },
+    },
+    providerThreads: [{ id: providerThreadId, providerSessionId, providerInstanceId }],
+    providerSessions: [],
+    checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: 1 }],
+    checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+    runs: [],
+    attempts: [],
+    providerTurns: [],
+  } as unknown as OrchestrationV2ThreadProjection;
+  const open = vi.fn((_input: { readonly runtimePolicy: unknown }) => Effect.succeed({} as never));
+  const testLayer = checkpointRollbackServiceLayer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(CheckpointService.CheckpointServiceV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({}),
+        IdAllocator.layer,
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadRecords: () => Effect.succeed(projection),
+        }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: () =>
+            Effect.succeed({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: process.cwd(),
+              additionalDirectories: ["/work/lib"],
+            }),
+          requireWorkspaceFolderAccess: () =>
+            Effect.fail(
+              new RuntimePolicy.ProviderWorkspaceFolderAccessError({
+                threadId,
+                providerInstanceId,
+              }),
+            ),
+        }),
+      ),
+    ),
+  );
+
+  return Effect.gen(function* () {
+    const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
+    // The rewind itself fails later for want of a provider turn; only its open matters here.
+    yield* service
+      .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false })
+      .pipe(Effect.flip);
+    assert.deepEqual(open.mock.calls[0]?.[0].runtimePolicy, {
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd: process.cwd(),
+      additionalDirectories: [],
+    });
   }).pipe(Effect.provide(testLayer));
 });
 
@@ -458,7 +535,10 @@ it.effect.each([
                 }),
             } as never),
         }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: () => Effect.succeed({} as never),
+          requireWorkspaceFolderAccess: () => Effect.void,
+        }),
       ),
     ),
   );

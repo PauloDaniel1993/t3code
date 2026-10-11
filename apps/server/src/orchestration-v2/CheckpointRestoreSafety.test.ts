@@ -173,7 +173,10 @@ it.effect.each([
                   }),
               } as never),
           }),
-          Layer.mock(RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
+          Layer.mock(RuntimePolicyV2)({
+            resolve: () => Effect.succeed({} as never),
+            requireWorkspaceFolderAccess: () => Effect.void,
+          }),
         ),
       ),
     );

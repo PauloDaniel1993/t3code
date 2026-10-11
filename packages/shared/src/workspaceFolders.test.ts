@@ -13,6 +13,7 @@ import {
   threadUsingWorktrees,
   threadPrimaryPath,
   toCanonicalPath,
+  workspaceAdditionalDirectories,
   worktreeSetPath,
 } from "./workspaceFolders.ts";
 
@@ -212,6 +213,47 @@ describe("resolveThreadWorkspace", () => {
       "D:\\wt\\s\\Repo",
       "D:\\wt\\s\\Repo\\Docs",
     ]);
+  });
+});
+
+describe("workspaceAdditionalDirectories", () => {
+  it("gives a one-folder scope no extra directories", () => {
+    expect(
+      workspaceAdditionalDirectories(
+        resolveThreadWorkspace({ thread: { worktreePath: "/wt/feature" }, project }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("lists available secondaries where the thread works on them, in snapshot order", () => {
+    expect(
+      workspaceAdditionalDirectories(
+        resolveThreadWorkspace({
+          thread: { worktreePath: "/wt/s/repo/web", workspaceFolders: snapshotFolders, worktrees },
+          project,
+          unavailableFolderPaths: ["/repo/lib"],
+        }),
+      ),
+    ).toEqual(["/wt/s/repo/lib/vendor", "/notes"]);
+  });
+
+  it("leaves out folders inside the primary and repeats of one location", () => {
+    expect(
+      workspaceAdditionalDirectories(
+        resolveThreadWorkspace({
+          thread: {
+            worktreePath: null,
+            workspaceFolders: [
+              { path: "C:\\Work\\Repo", name: "Repo", label: "Repo", checkoutRoot: null },
+              { path: "c:/work/repo/Docs", name: "Docs", label: "Docs", checkoutRoot: null },
+              { path: "D:\\Shared", name: "Shared", label: "Shared", checkoutRoot: null },
+              { path: "d:/shared", name: "shared", label: "shared-2", checkoutRoot: null },
+            ],
+          },
+          project: { workspaceRoot: "C:\\Work\\Repo" },
+        }),
+      ),
+    ).toEqual(["D:\\Shared"]);
   });
 });
 

@@ -1,7 +1,16 @@
 import { Field } from "@base-ui/react/field";
-import type { ModelSelection, ProviderInstanceId, ScopedThreadRef } from "@t3tools/contracts";
+import {
+  type ModelSelection,
+  PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+  type ProviderInstanceId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
+import {
+  isProviderEligibleForScope,
+  workspaceFolderScope,
+} from "@t3tools/client-runtime/workspace-folder-access";
 import { createModelSelection } from "@t3tools/shared/model";
-import { useId, useMemo, useRef, useState } from "react";
+import { useCallback, useId, useMemo, useRef, useState } from "react";
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../modelSelection";
 import {
@@ -91,9 +100,25 @@ export function NewThreadTaskDialog(props: {
     (provider) => provider.instanceId === parent?.modelSelection.instanceId,
   );
   const modeNotice = parent ? getNewThreadTaskModeNotice(parent, parentProvider?.driver) : null;
+  // The task works in its parent's folders, so it needs a provider that reaches them all.
+  const workspaceScope = useMemo(
+    () => workspaceFolderScope({ thread: parent, project: null }),
+    [parent],
+  );
+  const getModelDisabledReason = useCallback(
+    (instanceId: ProviderInstanceId) =>
+      isProviderEligibleForScope(
+        providers.find((provider) => provider.instanceId === instanceId),
+        workspaceScope,
+      )
+        ? null
+        : PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+    [providers, workspaceScope],
+  );
   const problem =
     parentProblem ??
     validateNewThreadTaskRequest(draft, model) ??
+    getModelDisabledReason(model.instanceId) ??
     (!selectedEntry ||
     !isProviderInstancePickerReady(selectedEntry) ||
     !selectedModel ||
@@ -203,6 +228,7 @@ export function NewThreadTaskDialog(props: {
                   modelOptionsByInstance={modelOptionsByInstance}
                   disabled={submitting}
                   isComposerOwned={false}
+                  getModelDisabledReason={getModelDisabledReason}
                   onInstanceModelChange={(instanceId, nextModel) =>
                     setModel(createModelSelection(instanceId, nextModel))
                   }

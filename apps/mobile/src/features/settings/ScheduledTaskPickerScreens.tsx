@@ -1,9 +1,14 @@
 import { useNavigation } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useMemo, useState } from "react";
+import { workspaceFolderScope } from "@t3tools/client-runtime/workspace-folder-access";
 
 import { AppText as Text } from "../../components/AppText";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  groupByProvider,
+  restrictModelOptionsToScope,
+} from "../../lib/modelOptions";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { useDebouncedValue, usePaginatedBranches } from "../../state/queries";
@@ -25,7 +30,24 @@ export function ScheduledTaskModelPickerRouteScreen() {
   const { editor, setEditor } = useScheduledTaskEditor();
   const config = useEnvironmentServerConfig(editor?.environmentId ?? null);
   const selectedModel = editor?.draft.modelSelection ?? null;
-  const models = useMemo(() => buildModelOptions(config, selectedModel), [config, selectedModel]);
+  const projects = useProjects();
+  // A run that launches a thread works in the project's folders, so it needs
+  // a provider that reaches them all.
+  const launchProject =
+    editor?.draft.task?.threadId == null
+      ? (projects.find(
+          (entry) =>
+            entry.environmentId === editor?.environmentId && entry.id === editor.draft.projectId,
+        ) ?? null)
+      : null;
+  const models = useMemo(
+    () =>
+      restrictModelOptionsToScope(
+        buildModelOptions(config, selectedModel),
+        workspaceFolderScope({ thread: null, project: launchProject }),
+      ),
+    [config, selectedModel, launchProject],
+  );
   const providerGroups = useMemo(() => groupByProvider(models), [models]);
   const selectedOption = models.find(
     (option) =>

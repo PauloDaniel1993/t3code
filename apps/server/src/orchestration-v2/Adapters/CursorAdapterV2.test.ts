@@ -700,6 +700,7 @@ describe("CursorAdapterV2", () => {
     const base = {
       interactionMode: "default" as const,
       cwd: "/tmp/cursor-adapter",
+      additionalDirectories: [],
     };
     assert.deepEqual(
       cursorRuntimeAgentPolicy({
@@ -766,7 +767,12 @@ describe("CursorAdapterV2", () => {
           instanceId: ProviderInstanceId.make("cursor"),
           model: "composer-2.5",
         },
-        runtimePolicy: { runtimeMode, interactionMode: "default", cwd: "/workspace" },
+        runtimePolicy: {
+          runtimeMode,
+          interactionMode: "default",
+          cwd: "/workspace",
+          additionalDirectories: [],
+        },
         threadId: ThreadId.make("thread-cursor-setting-sources"),
       });
       assert.deepEqual(options.local?.settingSources, [
@@ -812,6 +818,7 @@ describe("CursorAdapterV2", () => {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: "/workspace",
+          additionalDirectories: [],
         },
         threadId,
       });

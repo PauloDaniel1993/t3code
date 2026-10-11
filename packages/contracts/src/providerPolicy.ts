@@ -31,6 +31,24 @@ export const RuntimeMode = Schema.Literals([
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 
+/**
+ * Whether a provider reaches every folder of a multi-folder workspace, reading
+ * and writing under the thread's runtime mode. "supported" needs a live
+ * read/write test of the adapter; until then it is "unverified". Only a
+ * "supported" provider may run a scope with additional directories. Absent
+ * means "unverified".
+ */
+export const ProviderWorkspaceFolderAccess = Schema.Literals([
+  "supported",
+  "unsupported",
+  "unverified",
+]);
+export type ProviderWorkspaceFolderAccess = typeof ProviderWorkspaceFolderAccess.Type;
+
+/** Why a provider that isn't "supported" can't run a multi-folder scope. */
+export const PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE =
+  "This provider cannot yet access every workspace folder; choose a supported provider.";
+
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";

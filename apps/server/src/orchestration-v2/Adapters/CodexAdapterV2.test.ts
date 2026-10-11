@@ -412,6 +412,7 @@ describe("CodexAdapterV2 runtime policy", () => {
             runtimeMode,
             interactionMode: "default",
             cwd: null,
+            additionalDirectories: [],
           },
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -448,6 +449,7 @@ describe("CodexAdapterV2 runtime policy", () => {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: null,
+          additionalDirectories: [],
           approvalPolicy: "on-request",
           sandboxPolicy: {
             type: "readOnly",
@@ -473,6 +475,7 @@ describe("CodexAdapterV2 runtime policy", () => {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: null,
+          additionalDirectories: [],
         },
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -502,6 +505,7 @@ describe("CodexAdapterV2 runtime policy", () => {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: null,
+          additionalDirectories: [],
         },
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -523,6 +527,7 @@ describe("CodexAdapterV2 runtime policy", () => {
           runtimeMode: "full-access",
           interactionMode: "plan",
           cwd: null,
+          additionalDirectories: [],
         },
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -549,6 +554,7 @@ describe("CodexAdapterV2 runtime policy", () => {
           runtimeMode: "full-access",
           interactionMode: "plan",
           cwd: null,
+          additionalDirectories: [],
         },
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -571,6 +577,7 @@ describe("CodexAdapterV2 runtime policy", () => {
           runtimeMode: "full-access",
           interactionMode: "plan",
           cwd: "/workspace/model-options",
+          additionalDirectories: [],
           reasoningEffort: "low",
         },
         modelSelection: {
@@ -598,6 +605,7 @@ describe("CodexAdapterV2 runtime policy", () => {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: "/workspace/model-options",
+          additionalDirectories: [],
         },
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -633,6 +641,7 @@ describe("CodexAdapterV2 process spawning", () => {
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: "/workspace/thread-codex-mcp",
+            additionalDirectories: [],
           },
         }),
         {

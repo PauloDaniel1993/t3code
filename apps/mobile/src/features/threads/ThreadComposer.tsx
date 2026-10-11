@@ -60,6 +60,7 @@ import {
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject, useThreadShells } from "../../state/entities";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { workspaceFolderScope } from "@t3tools/client-runtime/workspace-folder-access";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
@@ -86,7 +87,9 @@ import {
   buildModelOptions,
   groupByProvider,
   isModelSelectionUnavailable,
+  restrictModelOptionsToScope,
 } from "../../lib/modelOptions";
+import { useAppThread } from "../../state/use-thread-detail";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
@@ -648,9 +651,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const lockedProviderInstanceId = props.canSwitchProvider
     ? undefined
     : currentModelSelection.instanceId;
+  // A thread spanning workspace folders runs only on a provider that reaches
+  // them all; its snapshot is on the thread detail.
+  const appThread = useAppThread({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+  });
+  const workspaceScope = useMemo(
+    () => workspaceFolderScope({ thread: appThread ?? props.selectedThread, project }),
+    [appThread, props.selectedThread, project],
+  );
   const modelOptions = useMemo(
-    () => buildModelOptions(props.serverConfig, currentModelSelection, lockedProviderInstanceId),
-    [props.serverConfig, currentModelSelection, lockedProviderInstanceId],
+    () =>
+      restrictModelOptionsToScope(
+        buildModelOptions(props.serverConfig, currentModelSelection, lockedProviderInstanceId),
+        workspaceScope,
+      ),
+    [props.serverConfig, currentModelSelection, lockedProviderInstanceId, workspaceScope],
   );
   const threadProviderGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
   const currentModelOption =

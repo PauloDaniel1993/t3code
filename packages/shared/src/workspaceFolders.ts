@@ -242,6 +242,27 @@ export function owningFolder<Folder extends { readonly path?: string | null | un
   return owner?.folder;
 }
 
+/**
+ * The directories a run reaches beyond its working directory: each available
+ * non-primary folder where the thread works on it, in snapshot order, once. A
+ * folder inside the primary is already reachable, so it is left out. Empty for
+ * a one-folder scope.
+ */
+export function workspaceAdditionalDirectories(workspace: ThreadWorkspace): ReadonlyArray<string> {
+  const directories: string[] = [];
+  for (const { isPrimary, effectivePath } of workspace.folders) {
+    if (
+      !isPrimary &&
+      effectivePath !== null &&
+      !isPathWithin(workspace.primaryPath, effectivePath) &&
+      !directories.some((directory) => isSamePath(directory, effectivePath))
+    ) {
+      directories.push(effectivePath);
+    }
+  }
+  return directories;
+}
+
 /** Whether `path` is `root` or inside it. Windows paths compare case-insensitively. */
 export function isPathWithin(root: string, path: string): boolean {
   return segmentsBelow(root, path) !== null;

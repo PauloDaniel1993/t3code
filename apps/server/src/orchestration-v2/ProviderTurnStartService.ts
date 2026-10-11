@@ -446,14 +446,24 @@ export const layer: Layer.Layer<
           return;
         }
       }
-      // Until a provider can be given every workspace folder, a run that
-      // reaches more than one fails here, before the provider sees it.
-      if (RuntimePolicy.runSpansWorkspaceFolders(projection.thread, run.unavailableFolderPaths)) {
-        const now = yield* DateTime.now;
-        const accessError = new RuntimePolicy.ProviderWorkspaceFolderAccessError({
+      // The provider opens on the folders the run was admitted with. A scope
+      // that spans workspace folders its provider can't reach fails here,
+      // before the provider sees it, so no resume fallback can drop them.
+      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
+        thread: projection.thread,
+        modelSelection: run.modelSelection,
+        unavailableFolderPaths: run.unavailableFolderPaths,
+      });
+      const folderAccess = yield* Effect.result(
+        runtimePolicy.requireWorkspaceFolderAccess({
           threadId: projection.thread.id,
           providerInstanceId: run.providerInstanceId,
-        });
+          scope: resolvedRuntimePolicy,
+        }),
+      );
+      if (folderAccess._tag === "Failure") {
+        const now = yield* DateTime.now;
+        const accessError = folderAccess.failure;
         yield* settleRunBeforeStart({
           signal: "workspace-folder-access",
           status: "failed",
@@ -532,10 +542,6 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
-      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
-        thread: projection.thread,
-        modelSelection: run.modelSelection,
-      });
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );

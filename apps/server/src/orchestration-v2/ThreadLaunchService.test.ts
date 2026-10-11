@@ -17,11 +17,13 @@ import {
   DEFAULT_SERVER_SETTINGS,
   GitCommandError,
   MessageId,
+  PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
   ScheduledTaskId,
+  type ProviderWorkspaceFolderAccess,
   type ServerProvider,
   ThreadId,
   WorkspaceFileUnavailableError,
@@ -47,6 +49,8 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import type { ProviderInstance } from "../provider/ProviderDriver.ts";
+import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
@@ -57,6 +61,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
@@ -110,6 +115,8 @@ interface HarnessOptions {
   readonly providers?: ReadonlyArray<ServerProvider>;
   /** Links the project to a workspace file, whose new threads bind this snapshot. */
   readonly snapshotWorkspaceFolders?: ProjectService.ProjectService["Service"]["snapshotWorkspaceFolders"];
+  /** What every provider instance's snapshot says of its workspace-folder access. */
+  readonly workspaceFolderAccess?: ProviderWorkspaceFolderAccess;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -216,11 +223,6 @@ function makeHarness(options: HarnessOptions = {}) {
       ),
     ),
   );
-  const launch = ThreadLaunch.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(externalServices, threadManagement, receipts, IdAllocator.layer, worktreeSets),
-    ),
-  );
   const projectedProjects = Layer.mock(ProjectStore.ProjectStoreV2)({
     get: (requestedProjectId) =>
       Effect.succeed(
@@ -244,6 +246,41 @@ function makeHarness(options: HarnessOptions = {}) {
           : Option.none(),
       ),
   });
+  const runtimePolicy = RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        projectedProjects,
+        Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+          getInstance: () =>
+            Effect.succeed({
+              snapshot: {
+                getSnapshot: Effect.succeed(
+                  (options.workspaceFolderAccess === undefined
+                    ? {}
+                    : { workspaceFolderAccess: options.workspaceFolderAccess }) as ServerProvider,
+                ),
+              },
+            } as ProviderInstance),
+          listInstances: Effect.succeed([]),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.never,
+        }),
+      ),
+    ),
+  );
+  const launch = ThreadLaunch.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        externalServices,
+        threadManagement,
+        receipts,
+        IdAllocator.layer,
+        worktreeSets,
+        runtimePolicy,
+      ),
+    ),
+  );
   const titleRegeneration = ThreadTitleRegeneration.layer.pipe(
     Layer.provide(Layer.mergeAll(threadManagement, projectedProjects, externalServices)),
   );
@@ -1124,6 +1161,7 @@ it.effect("binds a new thread of a linked project to its folders when it is crea
   Effect.gen(function* () {
     const harness = makeHarness({
       snapshotWorkspaceFolders: () => Effect.succeed(linkedSnapshot),
+      workspaceFolderAccess: "supported",
     });
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -1137,12 +1175,101 @@ it.effect("binds a new thread of a linked project to its folders when it is crea
 );
 
 it.effect.each([
+  { access: "unverified" as const },
+  { access: "unsupported" as const },
+  { access: undefined },
+])(
+  "refuses a linked launch, creating no thread, on a provider whose folder access is $access",
+  ({ access }) =>
+    Effect.gen(function* () {
+      const harness = makeHarness({
+        snapshotWorkspaceFolders: () => Effect.succeed(linkedSnapshot),
+        ...(access === undefined ? {} : { workspaceFolderAccess: access }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const thread = `thread:launch:linked-${access ?? "unknown"}`;
+        const error = yield* launches
+          .launch(
+            launchInput({
+              command: `command:launch:linked-${access ?? "unknown"}`,
+              thread,
+              message: "Touch both folders",
+            }),
+          )
+          .pipe(Effect.flip);
+        assert.equal(error.operation, "validate-workspace");
+        assert.instanceOf(error.cause, RuntimePolicy.ProviderWorkspaceFolderAccessError);
+        assert.equal(
+          (error.cause as RuntimePolicy.ProviderWorkspaceFolderAccessError).message,
+          PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+        );
+        assert.isNull(yield* threads.getThreadShell(ThreadId.make(thread)));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect("launches on any provider when the other folders were unavailable at binding", () =>
+  Effect.gen(function* () {
+    const unreachable = [linkedSnapshot[0]!, { path: "/docs", name: "docs", label: "docs" }];
+    const harness = makeHarness({
+      snapshotWorkspaceFolders: () => Effect.succeed(unreachable),
+      workspaceFolderAccess: "unverified",
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const launched = yield* launches.launch(
+        launchInput({ command: "command:launch:unreachable", thread: "thread:launch:unreachable" }),
+      );
+      assert.deepEqual(launched.projection.thread.workspaceFolders, unreachable);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("fails a scheduled dispatch into a linked project on an unverified provider", () => {
+  const harness = makeHarness({
+    snapshotWorkspaceFolders: () => Effect.succeed(linkedSnapshot),
+    workspaceFolderAccess: "unverified",
+  });
+  const scheduledTasks = ScheduledTasks.layer.pipe(
+    Layer.provide(Layer.mergeAll(harness.layer, NodeCrypto.layer, Scheduler.layer)),
+  );
+  return Effect.gen(function* () {
+    const tasks = yield* ScheduledTasks.ScheduledTaskService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const { task } = yield* tasks.upsert({
+      id: ScheduledTaskId.make("scheduled-task:linked"),
+      title: "Cross-folder audit",
+      prompt: "Audit both folders.",
+      enabled: false,
+      schedule: { type: "interval", everyMs: 60_000 },
+      projectId,
+      threadId: null,
+      workspaceStrategy: { type: "root" },
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const result = yield* tasks.runNow({ id: task.id });
+    // The run fails before any thread exists, with the reason alone, and the schedule stays.
+    assert.equal(result.task.lastRunStatus, "failed");
+    assert.equal(result.task.lastRunError, PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE);
+    assert.isTrue((yield* tasks.list()).tasks.some((entry) => entry.id === task.id));
+    assert.lengthOf(yield* threads.listProjectThreads({ projectId, includeSubagents: false }), 0);
+  }).pipe(Effect.provide(Layer.mergeAll(harness.layer, scheduledTasks)));
+});
+
+it.effect.each([
   { type: "worktree" as const, baseRef: "main" },
   { type: "existing_worktree" as const, worktreePath: "/repo-worktrees/feature" },
 ])("refuses a $type launch for a linked project until worktree sets land", (workspace) =>
   Effect.gen(function* () {
     const harness = makeHarness({
       snapshotWorkspaceFolders: () => Effect.succeed(linkedSnapshot),
+      workspaceFolderAccess: "supported",
     });
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;

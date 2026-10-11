@@ -16,6 +16,7 @@ import {
   readMutationCaller,
   readThread,
   readWritableThread,
+  switchRefusal,
   unavailable,
 } from "../../threadAccess.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
@@ -188,7 +189,7 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
           commandId: yield* newCommandId(),
           modelSelection: input.modelSelection,
         })
-        .pipe(Effect.mapError(unavailable));
+        .pipe(Effect.mapError(switchRefusal));
       return { sequence: result.sequence };
     }),
   t3_pending_request_list: (input) =>

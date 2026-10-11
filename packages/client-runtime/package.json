@@ -340,6 +340,10 @@
       "types": "./src/threadPullRequestCompatibility.ts",
       "default": "./src/threadPullRequestCompatibility.ts"
     },
+    "./workspace-folder-access": {
+      "types": "./src/workspaceFolderAccess.ts",
+      "default": "./src/workspaceFolderAccess.ts"
+    },
     "./file-preview": {
       "types": "./src/filePreview.ts",
       "default": "./src/filePreview.ts"

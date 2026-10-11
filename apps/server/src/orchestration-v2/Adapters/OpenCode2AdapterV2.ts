@@ -95,6 +95,7 @@ import * as ProviderAdapter from "../ProviderAdapter.ts";
 import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
 import { OPENCODE_PROVIDER, openCodePermissionRequestKind } from "./OpenCodeAdapterV2.ts";
 import { openCodeToolTurnItem } from "./OpenCodeToolItems.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 const OpenCode2ProviderCapabilities = {
   sessions: {
@@ -190,7 +191,10 @@ const OpenCode2ProviderCapabilities = {
     nativeRequestIds: "strong",
   },
   // OpenCode enforces each runtime mode through the session's permission rules.
-  runtimePolicy: { enforcement: "native" },
+  runtimePolicy: {
+    enforcement: "native",
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.opencode2,
+  },
 } satisfies OrchestrationV2ProviderCapabilities;
 
 type EventOf<T extends OpenCodeEvent["type"]> = Extract<OpenCodeEvent, { readonly type: T }>;

@@ -47,6 +47,7 @@ import {
   type AcpAdapterV2Flavor,
   type AcpAdapterV2RuntimeInput,
 } from "./AcpAdapterV2.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 export const ACP_REGISTRY_PROVIDER = ProviderDriverKind.make("acpRegistry");
 export const ACP_REGISTRY_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(ACP_REGISTRY_PROVIDER);
@@ -186,7 +187,13 @@ export function makeAcpRegistryAdapterV2(options: AcpRegistryAdapterV2Options) {
   const isDevin = options.settings.agentId === "devin";
   const flavor: AcpAdapterV2Flavor = {
     driver: ACP_REGISTRY_PROVIDER,
-    capabilities: AcpProviderCapabilitiesV2,
+    capabilities: {
+      ...AcpProviderCapabilitiesV2,
+      runtimePolicy: {
+        ...AcpProviderCapabilitiesV2.runtimePolicy,
+        workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.acpRegistry,
+      },
+    },
     promptFailure: (cause) => acpRegistryPromptFailure(options.settings.agentId, cause),
     // Per-agent exceptions (Mistral Vibe, Devin): see the note above
     // registerMistralVibeAcpExtensions before adding any more.

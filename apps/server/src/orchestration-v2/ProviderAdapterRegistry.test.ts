@@ -257,6 +257,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: "/workspace",
+            additionalDirectories: [],
           },
         })
         .pipe(Effect.flip);
@@ -319,6 +320,7 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: "/workspace",
+          additionalDirectories: [],
         },
       })
       .pipe(Effect.forkChild);

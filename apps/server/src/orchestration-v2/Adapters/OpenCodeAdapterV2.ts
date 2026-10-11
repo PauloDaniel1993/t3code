@@ -79,6 +79,7 @@ import {
 } from "../ProviderAdapterDriver.ts";
 import { makeSubagentChildThread, subagentThreadTitle } from "../SubagentProjection.ts";
 import { openCodeToolTurnItem } from "./OpenCodeToolItems.ts";
+import { WORKSPACE_FOLDER_ACCESS } from "../../provider/workspaceFolderAccess.ts";
 
 export { openCodeToolProjectionKind } from "./OpenCodeToolItems.ts";
 
@@ -211,6 +212,7 @@ const OpenCodeProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.opencode,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
