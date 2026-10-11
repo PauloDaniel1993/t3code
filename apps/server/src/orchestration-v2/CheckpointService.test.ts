@@ -21,6 +21,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as NodeFSP from "node:fs/promises";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as CheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
@@ -528,6 +529,7 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         const mono = path.join(root, "mono");
         const inner = path.join(mono, "a", "inner");
         const notes = path.join(root, "notes");
+        const alias = path.join(root, "deep-alias");
         const write = (file: string, contents: string) =>
           Effect.andThen(
             fileSystem.makeDirectory(path.dirname(file), { recursive: true }),
@@ -555,6 +557,10 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         yield* write(path.join(notes, "n.txt"), "n0");
         const realMono = yield* fileSystem.realPath(mono);
         const realInner = yield* fileSystem.realPath(inner);
+        // Junctions let this directory-alias case run without Windows symlink privileges.
+        yield* Effect.promise(() =>
+          NodeFSP.symlink(path.join(mono, "a", "deep"), alias, "junction"),
+        );
 
         const checkpoints = yield* CheckpointService.CheckpointServiceV2;
         const thread = {
@@ -563,6 +569,7 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
             snapshotFolder(path.join(mono, "a"), "a", realMono, "a"),
             snapshotFolder(path.join(mono, "b"), "b", realMono, "b"),
             snapshotFolder(path.join(mono, "a", "deep"), "deep", realMono, "a/deep"),
+            snapshotFolder(alias, "alias", realMono, "a/deep"),
             snapshotFolder(inner, "inner", realInner),
             snapshotFolder(notes, "notes", null),
           ],
@@ -652,7 +659,7 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
           providerThreadId,
           cwd: path.join(mono, "a"),
           thread,
-          unavailableFolderPaths: [path.join(mono, "a", "deep"), inner],
+          unavailableFolderPaths: [path.join(mono, "a", "deep"), alias, inner],
           createdAt,
         });
         const second = yield* checkpoints.capture({

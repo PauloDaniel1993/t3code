@@ -6,7 +6,15 @@ import { CHECKPOINT_DIFF_MAX_OUTPUT_BYTES } from "../vcs/VcsDriver.ts";
 
 /** Each file belongs to its deepest folder, with nested checkouts excluded too. */
 export function checkpointFolderDiffs(part: OrchestrationV2CheckpointScopePart) {
-  return part.folders.map((folder) => ({
+  // Different snapshot paths can alias the same checkout prefix. The first
+  // folder in snapshot order owns it, just as workspace-file duplicates do.
+  const seen = new Set<string>();
+  const folders = part.folders.filter((folder) => {
+    if (seen.has(folder.relativePath)) return false;
+    seen.add(folder.relativePath);
+    return true;
+  });
+  return folders.map((folder) => ({
     folder,
     relativePath: folder.relativePath,
     srcPrefix: `a/${folder.label}/`,
@@ -14,7 +22,7 @@ export function checkpointFolderDiffs(part: OrchestrationV2CheckpointScopePart) 
     pathspecs: [
       folder.relativePath === "" ? "." : `:(literal)${folder.relativePath}`,
       ...part.pathspecs.filter((pathspec) => pathspec.startsWith(":(exclude,")),
-      ...part.folders.flatMap((other) =>
+      ...folders.flatMap((other) =>
         other.relativePath !== folder.relativePath &&
         (folder.relativePath === "" || other.relativePath.startsWith(`${folder.relativePath}/`))
           ? [`:(exclude,literal)${other.relativePath}`]

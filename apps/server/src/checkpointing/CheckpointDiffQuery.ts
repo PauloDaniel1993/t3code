@@ -168,7 +168,7 @@ export const make = Effect.gen(function* () {
             if (checkpoint.appRunOrdinal === null || checkpoint.appRunOrdinal > input.toTurnCount)
               continue;
             for (const folder of part.folders) {
-              const key = JSON.stringify([part.key, folder.folderPath]);
+              const key = JSON.stringify([part.key, folder.relativePath]);
               if (!firstListings.has(key)) firstListings.set(key, checkpoint);
             }
           }
@@ -187,8 +187,11 @@ export const make = Effect.gen(function* () {
         for (const checkpoint of history) {
           for (const part of checkpoint.parts ?? []) {
             if (part.vcs !== "git" || part.status !== "ready" || part.ref === null) continue;
+            const seen = new Set<string>();
             for (const folder of part.folders) {
-              const key = JSON.stringify([part.key, folder.folderPath]);
+              if (seen.has(folder.relativePath)) continue;
+              seen.add(folder.relativePath);
+              const key = JSON.stringify([part.key, folder.relativePath]);
               const entries = folderHistories.get(key) ?? [];
               entries.push({ checkpoint, part, folder });
               folderHistories.set(key, entries);
@@ -211,7 +214,7 @@ export const make = Effect.gen(function* () {
         const folderPlans = new Map(
           [...ownership].map(([key, part]) => [
             key,
-            new Map(checkpointFolderDiffs(part).map((plan) => [plan.folder.folderPath, plan])),
+            new Map(checkpointFolderDiffs(part).map((plan) => [plan.folder.relativePath, plan])),
           ]),
         );
         const diffInputs: CheckpointStore.DiffCheckpointsInput[] = [];
@@ -222,7 +225,7 @@ export const make = Effect.gen(function* () {
           );
           // A stopped or failed capture can still contain work. Only a folder
           // first listed later in the thread starts after ordinal zero.
-          const first = firstListings.get(JSON.stringify([part.key, folder.folderPath]))!;
+          const first = firstListings.get(JSON.stringify([part.key, folder.relativePath]))!;
           const fromCheckpointRef =
             from?.part.ref ??
             checkpointRefForScopeOrdinal({
@@ -231,7 +234,7 @@ export const make = Effect.gen(function* () {
               partKey: part.key,
             });
           if (fromCheckpointRef === part.ref) continue;
-          const folderDiff = folderPlans.get(part.key)!.get(folder.folderPath)!;
+          const folderDiff = folderPlans.get(part.key)!.get(folder.relativePath)!;
           diffInputs.push({
             cwd: latestCheckouts.get(part.key) ?? part.cwd,
             fromCheckpointRef,

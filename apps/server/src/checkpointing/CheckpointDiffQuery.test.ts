@@ -479,6 +479,44 @@ it.effect("reads old labels and refs through a later checkpoint's checkout locat
   );
 });
 
+it.effect("diffs a checkout prefix once across aliases and retains its earliest baseline", () => {
+  const app = { folderPath: "/source/app", label: "app", relativePath: "app" };
+  const alias = { folderPath: "/links/app", label: "alias", relativePath: "app" };
+  const calls: CheckpointStore.DiffCheckpointsInput[] = [];
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+    const first = yield* query.getFullThreadDiff({ threadId, toTurnCount: 1 });
+    assert.equal(first.diff, "a/app/patch\n");
+    assert.equal(calls.length, 1);
+    calls.length = 0;
+    const second = yield* query.getFullThreadDiff({ threadId, toTurnCount: 2 });
+    assert.equal(second.diff, "a/alias/patch\n");
+    assert.equal(calls.length, 1);
+    assert.equal(
+      calls[0]?.fromCheckpointRef,
+      checkpointRefForScopeOrdinal({
+        scopeId: firstScopeId,
+        ordinalWithinScope: 0,
+      }),
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        projection: Effect.succeed(
+          partsProjection(
+            [part("primary", 1, { folders: [app, alias] })],
+            [part("primary", 2, { folders: [alias] })],
+          ),
+        ),
+        diffCheckpoints: (input) => {
+          calls.push(input);
+          return Effect.succeed(`${input.srcPrefix}patch\n`);
+        },
+      }),
+    ),
+  );
+});
+
 it.effect("shares a UTF-8 byte budget across folders and skips calls after exhaustion", () => {
   const calls: CheckpointStore.DiffCheckpointsInput[] = [];
   const projection = partsProjection([], [part("primary", 2), part("lib", 2), part("third", 2)]);
