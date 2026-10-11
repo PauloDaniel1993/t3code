@@ -4,6 +4,8 @@ import {
   CheckpointScopeId,
   RunId,
   ThreadId,
+  VcsProcessSpawnError,
+  VcsProcessExitError,
   type OrchestrationV2CheckpointPart,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -15,7 +17,7 @@ import type { ProjectionCheckpointContext } from "../orchestration-v2/Projection
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as CheckpointDiffQuery from "./CheckpointDiffQuery.ts";
 import * as CheckpointStore from "./CheckpointStore.ts";
-import { CHECKPOINT_DIFF_MAX_OUTPUT_BYTES } from "./CheckpointFolderDiffs.ts";
+import { CHECKPOINT_DIFF_MAX_OUTPUT_BYTES } from "../vcs/VcsDriver.ts";
 import {
   CheckpointRefUnavailableError,
   CheckpointThreadNotFoundError,
@@ -256,7 +258,7 @@ it.effect("diffs healthy parts of error barriers using each folder's ready endpo
       calls[1]?.fromCheckpointRef,
       checkpointRefForScopeOrdinal({
         scopeId: firstScopeId,
-        ordinalWithinScope: 1,
+        ordinalWithinScope: 0,
         partKey: "lib",
       }),
     );
@@ -344,13 +346,146 @@ it.effect("diffs git secondaries when the primary was never checkpointed", () =>
   );
 });
 
+it.effect("retains healthy patches when a previously ready checkout disappears", () => {
+  const lost = part("lost", 1, {
+    folders: [
+      { folderPath: "/source/lost/a", label: "a", relativePath: "a" },
+      { folderPath: "/source/lost/b", label: "b", relativePath: "b" },
+    ],
+  });
+  const calls: string[] = [];
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+    const result = yield* query.getFullThreadDiff({ threadId, toTurnCount: 2 });
+    assert.equal(result.diff, "healthy patch");
+    assert.deepEqual(calls, ["/checkpoints/lost", "/checkpoints/primary"]);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        projection: Effect.succeed(
+          partsProjection([lost, part("primary", 1)], [part("primary", 2)]),
+        ),
+        diffCheckpoints: (input) => {
+          calls.push(input.cwd);
+          return input.cwd === lost.cwd
+            ? Effect.fail(
+                new VcsProcessSpawnError({
+                  operation: "test.diff",
+                  command: "git",
+                  cwd: input.cwd,
+                  cause: new Error("ENOENT"),
+                }),
+              )
+            : Effect.succeed("healthy patch");
+        },
+      }),
+    ),
+  );
+});
+
+it.effect("includes early interrupted work in the full-thread baseline", () => {
+  const projection = partsProjection([part("primary", 1)], [part("primary", 2)]);
+  const calls: CheckpointStore.DiffCheckpointsInput[] = [];
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+    yield* query.getFullThreadDiff({ threadId, toTurnCount: 2 });
+    assert.equal(
+      calls[0]?.fromCheckpointRef,
+      checkpointRefForScopeOrdinal({
+        scopeId: firstScopeId,
+        ordinalWithinScope: 0,
+      }),
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        projection: Effect.succeed({
+          ...projection,
+          runs: projection.runs.map((run) =>
+            run.id === firstRunId ? { ...run, status: "interrupted" } : run,
+          ),
+        }),
+        diffCheckpoints: (input) => {
+          calls.push(input);
+          return Effect.succeed("early and completed work");
+        },
+      }),
+    ),
+  );
+});
+
+it.effect(
+  "retains a joining folder's patch when another baseline in its checkout is missing",
+  () => {
+    const older = part("primary", 1, {
+      folders: [{ folderPath: "/source/app", label: "app", relativePath: "app" }],
+    });
+    const newer = part("primary", 2, {
+      folders: [...older.folders, { folderPath: "/source/lib", label: "lib", relativePath: "lib" }],
+    });
+    return Effect.gen(function* () {
+      const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+      const result = yield* query.getFullThreadDiff({ threadId, toTurnCount: 2 });
+      assert.equal(result.diff, "joining folder patch");
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          projection: Effect.succeed(partsProjection([older], [newer])),
+          diffCheckpoints: (input) =>
+            input.srcPrefix === "a/app/"
+              ? Effect.fail(
+                  new VcsProcessExitError({
+                    operation: "test.diff",
+                    command: "git",
+                    cwd: input.cwd,
+                    exitCode: 128,
+                    detail: "bad revision: missing baseline",
+                  }),
+                )
+              : Effect.succeed("joining folder patch"),
+        }),
+      ),
+    );
+  },
+);
+
+it.effect("reads old labels and refs through a later checkpoint's checkout location", () => {
+  const calls: CheckpointStore.DiffCheckpointsInput[] = [];
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+    yield* query.getTurnDiff({ threadId, fromTurnCount: 0, toTurnCount: 1 });
+    assert.equal(calls[0]?.cwd, "/recreated/primary");
+    assert.equal(calls[0]?.srcPrefix, "a/old/");
+    assert.equal(calls[0]?.toCheckpointRef, "refs/test/primary/1");
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        projection: Effect.succeed(
+          partsProjection(
+            [
+              part("primary", 1, {
+                folders: [{ folderPath: "/source/primary", label: "old", relativePath: "" }],
+              }),
+            ],
+            [part("primary", 2, { cwd: "/recreated/primary" })],
+          ),
+        ),
+        diffCheckpoints: (input) => {
+          calls.push(input);
+          return Effect.succeed("old labelled patch");
+        },
+      }),
+    ),
+  );
+});
+
 it.effect("shares a UTF-8 byte budget across folders and skips calls after exhaustion", () => {
   const calls: CheckpointStore.DiffCheckpointsInput[] = [];
   const projection = partsProjection([], [part("primary", 2), part("lib", 2), part("third", 2)]);
   return Effect.gen(function* () {
     const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
     const result = yield* query.getFullThreadDiff({ threadId, toTurnCount: 2 });
-    assert.equal(Buffer.byteLength(result.diff, "utf8"), CHECKPOINT_DIFF_MAX_OUTPUT_BYTES);
+    assert.equal(Buffer.byteLength(result.diff, "utf8"), CHECKPOINT_DIFF_MAX_OUTPUT_BYTES - 1);
     assert.deepEqual(
       calls.map((call) => call.maxOutputBytes),
       [CHECKPOINT_DIFF_MAX_OUTPUT_BYTES, CHECKPOINT_DIFF_MAX_OUTPUT_BYTES - 3],
@@ -361,7 +496,9 @@ it.effect("shares a UTF-8 byte budget across folders and skips calls after exhau
         projection: Effect.succeed(projection),
         diffCheckpoints: (input) => {
           calls.push(input);
-          return Effect.succeed(calls.length === 1 ? "€" : "x".repeat(input.maxOutputBytes!));
+          return Effect.succeed(
+            calls.length === 1 ? "€" : `${"x".repeat(input.maxOutputBytes! - 1)}€`,
+          );
         },
       }),
     ),

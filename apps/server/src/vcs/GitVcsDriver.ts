@@ -39,7 +39,6 @@ import {
 } from "./GitVcsDriverCore.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
-import { CHECKPOINT_DIFF_MAX_OUTPUT_BYTES } from "../checkpointing/CheckpointFolderDiffs.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -1254,7 +1253,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           ...(input.pathspecs === undefined ? [] : ["--", ...input.pathspecs]),
         ],
         allowNonZeroExit: true,
-        maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+        maxOutputBytes: input.maxOutputBytes ?? VcsDriver.CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
         outputMode: input.format === "numstat" ? "error" : "truncate",
       });
 

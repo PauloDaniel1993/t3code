@@ -557,22 +557,23 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         const realInner = yield* fileSystem.realPath(inner);
 
         const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+        const thread = {
+          worktreePath: null,
+          workspaceFolders: [
+            snapshotFolder(path.join(mono, "a"), "a", realMono, "a"),
+            snapshotFolder(path.join(mono, "b"), "b", realMono, "b"),
+            snapshotFolder(path.join(mono, "a", "deep"), "deep", realMono, "a/deep"),
+            snapshotFolder(inner, "inner", realInner),
+            snapshotFolder(notes, "notes", null),
+          ],
+        };
         const scope = yield* checkpoints.prepareRootRunScope({
           threadId,
           runId,
           rootNodeId: nodeId,
           providerThreadId,
           cwd: path.join(mono, "a"),
-          thread: {
-            worktreePath: null,
-            workspaceFolders: [
-              snapshotFolder(path.join(mono, "a"), "a", realMono, "a"),
-              snapshotFolder(path.join(mono, "b"), "b", realMono, "b"),
-              snapshotFolder(path.join(mono, "a", "deep"), "deep", realMono, "a/deep"),
-              snapshotFolder(inner, "inner", realInner),
-              snapshotFolder(notes, "notes", null),
-            ],
-          },
+          thread,
           createdAt,
         });
         yield* checkpoints.captureBaseline({ scope, ordinalWithinScope: 0 });
@@ -637,6 +638,64 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
           "diff --git a/deep/own.txt b/deep/own.txt",
           "diff --git a/inner/x.txt b/inner/x.txt",
         ]);
+
+        // The nested member and checkout disappear after their first ready
+        // checkpoints. Neither deletion belongs to the surviving parent.
+        yield* fileSystem.remove(path.join(mono, "a", "deep"), { recursive: true });
+        yield* fileSystem.remove(inner, { recursive: true });
+        yield* write(path.join(mono, "a", "keep.txt"), "a2");
+        const secondRunId = RunId.make("run:checkpoint-parts:2");
+        const secondScope = yield* checkpoints.prepareRootRunScope({
+          threadId,
+          runId: secondRunId,
+          rootNodeId: nodeId,
+          providerThreadId,
+          cwd: path.join(mono, "a"),
+          thread,
+          unavailableFolderPaths: [path.join(mono, "a", "deep"), inner],
+          createdAt,
+        });
+        const second = yield* checkpoints.capture({
+          scope: secondScope,
+          runId: secondRunId,
+          nodeId,
+          ordinalWithinScope: 2,
+          appRunOrdinal: 2,
+          capturedAt: createdAt,
+        });
+        assert.deepStrictEqual(
+          second.files.map((file) => file.path),
+          ["a/keep.txt"],
+        );
+        const secondQuery = yield* CheckpointDiffQuery.make.pipe(
+          Effect.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getCheckpointContext: () =>
+                Effect.succeed({
+                  runs: [
+                    { id: runId, ordinal: 1, status: "completed" },
+                    { id: secondRunId, ordinal: 2, status: "completed" },
+                  ],
+                  checkpointScopes: [secondScope],
+                  checkpoints: [checkpoint, second],
+                }),
+            }),
+          ),
+        );
+        const turn = yield* secondQuery.getTurnDiff({ threadId, fromTurnCount: 1, toTurnCount: 2 });
+        assert.deepStrictEqual(
+          turn.diff.split("\n").filter((line) => line.startsWith("diff --git")),
+          ["diff --git a/a/keep.txt b/a/keep.txt"],
+        );
+        const full = yield* secondQuery.getFullThreadDiff({ threadId, toTurnCount: 2 });
+        assert.deepStrictEqual(
+          full.diff.split("\n").filter((line) => line.startsWith("diff --git")),
+          [
+            "diff --git a/a/keep.txt b/a/keep.txt",
+            "diff --git a/b/new.txt b/b/new.txt",
+            "diff --git a/deep/own.txt b/deep/own.txt",
+          ],
+        );
       }),
   );
   it.effect("drops member folders git ignores or that vanished, instead of failing the part", () =>

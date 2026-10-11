@@ -150,65 +150,90 @@ export const make = Effect.gen(function* () {
       }
 
       if (toCheckpoint.parts !== undefined) {
+        const firstListings = new Map<string, (typeof projection.checkpoints)[number]>();
+        const latestCheckouts = new Map<string, string>();
+        const rolledBackRunIds = new Set(
+          projection.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
+        );
+        for (const checkpoint of projection.checkpoints.toSorted(
+          (left, right) => (left.appRunOrdinal ?? 0) - (right.appRunOrdinal ?? 0),
+        )) {
+          if (
+            checkpoint.status === "stale" ||
+            (checkpoint.runId !== null && rolledBackRunIds.has(checkpoint.runId))
+          )
+            continue;
+          for (const part of checkpoint.parts ?? []) {
+            if (part.vcs === "git") latestCheckouts.set(part.key, part.cwd);
+            if (checkpoint.appRunOrdinal === null || checkpoint.appRunOrdinal > input.toTurnCount)
+              continue;
+            for (const folder of part.folders) {
+              const key = JSON.stringify([part.key, folder.folderPath]);
+              if (!firstListings.has(key)) firstListings.set(key, checkpoint);
+            }
+          }
+        }
         const history = readyCheckpoints
           .filter((checkpoint) => checkpoint.appRunOrdinal! <= input.toTurnCount)
           .toSorted((left, right) => left.appRunOrdinal! - right.appRunOrdinal!);
-        const endpoints = new Map<
+        const folderHistories = new Map<
           string,
-          {
+          Array<{
+            readonly checkpoint: (typeof history)[number];
             readonly part: OrchestrationV2CheckpointPart;
             readonly folder: OrchestrationV2CheckpointFolder;
-          }
+          }>
         >();
         for (const checkpoint of history) {
           for (const part of checkpoint.parts ?? []) {
             if (part.vcs !== "git" || part.status !== "ready" || part.ref === null) continue;
             for (const folder of part.folders) {
-              endpoints.set(JSON.stringify([part.key, folder.folderPath]), {
-                part,
-                folder,
-              });
+              const key = JSON.stringify([part.key, folder.folderPath]);
+              const entries = folderHistories.get(key) ?? [];
+              entries.push({ checkpoint, part, folder });
+              folderHistories.set(key, entries);
             }
           }
         }
 
-        const diffInputs: CheckpointStore.DiffCheckpointsInput[] = [];
-        for (const { part, folder } of endpoints.values()) {
-          const folderHistory = history.flatMap((candidate) => {
-            const candidatePart = candidate.parts?.find(
-              (entry) =>
-                entry.key === part.key &&
-                entry.vcs === "git" &&
-                entry.status === "ready" &&
-                entry.ref !== null &&
-                entry.folders.some((entryFolder) => entryFolder.folderPath === folder.folderPath),
-            );
-            return candidatePart === undefined
-              ? []
-              : [{ checkpoint: candidate, part: candidatePart }];
+        const ownership = new Map<string, OrchestrationV2CheckpointPart>();
+        for (const entries of folderHistories.values()) {
+          const { part, folder } = entries.at(-1)!;
+          const previous = ownership.get(part.key);
+          ownership.set(part.key, {
+            ...part,
+            pathspecs: [],
+            folders: [...(previous?.folders ?? []), folder],
           });
+        }
+        // Plan ownership once per checkout, including older healthy folders
+        // that were unavailable at its latest endpoint.
+        const folderPlans = new Map(
+          [...ownership].map(([key, part]) => [
+            key,
+            new Map(checkpointFolderDiffs(part).map((plan) => [plan.folder.folderPath, plan])),
+          ]),
+        );
+        const diffInputs: CheckpointStore.DiffCheckpointsInput[] = [];
+        for (const folderHistory of folderHistories.values()) {
+          const { part, folder } = folderHistory.at(-1)!;
           const from = folderHistory.findLast(
             (candidate) => candidate.checkpoint.appRunOrdinal! <= input.fromTurnCount,
           );
-          const first = folderHistory[0]!;
+          // A stopped or failed capture can still contain work. Only a folder
+          // first listed later in the thread starts after ordinal zero.
+          const first = firstListings.get(JSON.stringify([part.key, folder.folderPath]))!;
           const fromCheckpointRef =
             from?.part.ref ??
             checkpointRefForScopeOrdinal({
-              scopeId: first.checkpoint.scopeId,
-              ordinalWithinScope: Math.max(0, first.checkpoint.appRunOrdinal! - 1),
+              scopeId: first.scopeId,
+              ordinalWithinScope: Math.max(0, first.appRunOrdinal! - 1),
               partKey: part.key,
             });
           if (fromCheckpointRef === part.ref) continue;
-          // Include older healthy nested folders in ownership even if they were
-          // unavailable at this endpoint, so a parent cannot show them twice.
-          const folders = [...endpoints.values()]
-            .filter((endpoint) => endpoint.part.key === part.key)
-            .map((endpoint) => endpoint.folder);
-          const folderDiff = checkpointFolderDiffs({ ...part, folders }).find(
-            (entry) => entry.folder.folderPath === folder.folderPath,
-          )!;
+          const folderDiff = folderPlans.get(part.key)!.get(folder.folderPath)!;
           diffInputs.push({
-            cwd: part.cwd,
+            cwd: latestCheckouts.get(part.key) ?? part.cwd,
             fromCheckpointRef,
             toCheckpointRef: part.ref!,
             fallbackFromToHead: false,
@@ -216,10 +241,32 @@ export const make = Effect.gen(function* () {
             relativePath: folderDiff.relativePath,
             srcPrefix: folderDiff.srcPrefix,
             dstPrefix: folderDiff.dstPrefix,
-            pathspecs: folderDiff.pathspecs,
+            pathspecs: [
+              ...folderDiff.pathspecs,
+              ...part.pathspecs.filter((pathspec) => pathspec.startsWith(":(exclude,")),
+            ],
           });
         }
-        const diffs = yield* collectCheckpointDiffs(diffInputs, checkpointStore.diffCheckpoints);
+        const failedReads = new Set<string>();
+        const diffs = yield* collectCheckpointDiffs(diffInputs, (diffInput) => {
+          const key = JSON.stringify([
+            diffInput.cwd,
+            diffInput.fromCheckpointRef,
+            diffInput.toCheckpointRef,
+          ]);
+          return failedReads.has(key)
+            ? Effect.succeed("")
+            : checkpointStore.diffCheckpoints(diffInput).pipe(
+                Effect.catch((cause) => {
+                  failedReads.add(key);
+                  return Effect.logWarning("checkpoint part diff unavailable", {
+                    threadId: input.threadId,
+                    cwd: diffInput.cwd,
+                    cause: String(cause),
+                  }).pipe(Effect.as(""));
+                }),
+              );
+        });
         return buildTurnDiffResult(input, diffs.map(({ diff }) => diff).join(""));
       }
 

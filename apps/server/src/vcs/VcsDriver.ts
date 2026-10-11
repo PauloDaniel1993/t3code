@@ -14,6 +14,8 @@ import type {
 import { CheckpointRef } from "@t3tools/contracts";
 import * as VcsProcess from "./VcsProcess.ts";
 
+export const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
+
 export interface VcsCaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
