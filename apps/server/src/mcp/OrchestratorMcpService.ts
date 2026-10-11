@@ -1292,9 +1292,9 @@ const make = Effect.gen(function* () {
         // prompts in the shared project checkout.
         const workspaceStrategy =
           input.workspaceStrategy ??
-          (input.bindToCurrentThread === undefined
+          (existing.threadId === threadId
             ? existing.workspaceStrategy
-            : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread));
+            : scheduledTaskWorkspaceStrategy(threadId !== null));
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,

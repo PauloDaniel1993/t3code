@@ -177,6 +177,13 @@ it.effect("persists unbound strategies, preserves ordinary edits and resets bind
     expect(
       (yield* mcp.updateScheduledTask(scope, { ...input, title: "Edited" })).workspaceStrategy,
     ).toEqual(strategy);
+    expect(
+      (yield* mcp.updateScheduledTask(scope, {
+        ...input,
+        title: "Echoed binding",
+        bindToCurrentThread: false,
+      })).workspaceStrategy,
+    ).toEqual(strategy);
     const root = yield* mcp.updateScheduledTask(scope, {
       ...input,
       workspaceStrategy: { type: "root" },
