@@ -709,6 +709,32 @@ export function isOrchestrationV2WorkActive(
   return status === "pending" || status === "running" || status === "waiting";
 }
 
+/** A workspace folder inside one checkpoint part, with the label it had at capture. */
+export const OrchestrationV2CheckpointFolder = Schema.Struct({
+  /** The folder's original path, its identity. */
+  folderPath: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  /** The folder below the part's cwd, `/`-separated; empty at the cwd itself. */
+  relativePath: Schema.String,
+});
+export type OrchestrationV2CheckpointFolder = typeof OrchestrationV2CheckpointFolder.Type;
+
+/**
+ * One git checkout of a multi-folder checkpoint scope, or one folder outside
+ * git, which is recorded but not checkpointed.
+ */
+export const OrchestrationV2CheckpointScopePart = Schema.Struct({
+  /** "primary" for the part holding the primary folder, else a hash of its source location. */
+  key: TrimmedNonEmptyString,
+  /** The checkout top this run: the member's worktree root in a worktree thread. */
+  cwd: TrimmedNonEmptyString,
+  vcs: Schema.NullOr(Schema.Literal("git")),
+  /** The member folders, then `:(exclude,literal)<path>` for each nested checkout. */
+  pathspecs: Schema.Array(Schema.String),
+  folders: Schema.Array(OrchestrationV2CheckpointFolder),
+});
+export type OrchestrationV2CheckpointScopePart = typeof OrchestrationV2CheckpointScopePart.Type;
+
 export const OrchestrationV2CheckpointScope = Schema.Struct({
   id: CheckpointScopeId,
   threadId: ThreadId,
@@ -719,7 +745,14 @@ export const OrchestrationV2CheckpointScope = Schema.Struct({
   kind: Schema.Literals(["root_run", "subagent", "tool", "provider_thread", "manual"]),
   ordinalWithinParent: NonNegativeInt,
   advancesAppRunCount: Schema.Boolean,
+  /** With parts, the primary part's cwd. */
   cwd: TrimmedNonEmptyString,
+  /**
+   * The latest run's plan for a thread with several workspace folders, primary
+   * part first. Each run rewrites the scope, so history reads the parts each
+   * checkpoint kept, never these. Absent means one part checkpointing `cwd`.
+   */
+  parts: Schema.optional(Schema.Array(OrchestrationV2CheckpointScopePart)),
   createdAt: Schema.DateTimeUtc,
 });
 export type OrchestrationV2CheckpointScope = typeof OrchestrationV2CheckpointScope.Type;
@@ -1145,6 +1178,23 @@ export const OrchestrationV2CheckpointFileSummary = Schema.Struct({
 });
 export type OrchestrationV2CheckpointFileSummary = typeof OrchestrationV2CheckpointFileSummary.Type;
 
+export const OrchestrationV2CheckpointStatus = Schema.Literals([
+  "ready",
+  "missing",
+  "error",
+  "stale",
+]);
+export type OrchestrationV2CheckpointStatus = typeof OrchestrationV2CheckpointStatus.Type;
+
+/** One part as a checkpoint captured it. Its folder table keeps the labels of that turn. */
+export const OrchestrationV2CheckpointPart = Schema.Struct({
+  ...OrchestrationV2CheckpointScopePart.fields,
+  /** Null for a part outside git. */
+  ref: Schema.NullOr(CheckpointRef),
+  status: OrchestrationV2CheckpointStatus,
+});
+export type OrchestrationV2CheckpointPart = typeof OrchestrationV2CheckpointPart.Type;
+
 export const OrchestrationV2Checkpoint = Schema.Struct({
   id: CheckpointId,
   threadId: ThreadId,
@@ -1154,9 +1204,13 @@ export const OrchestrationV2Checkpoint = Schema.Struct({
   parentCheckpointId: Schema.NullOr(CheckpointId),
   ordinalWithinScope: NonNegativeInt,
   appRunOrdinal: Schema.NullOr(PositiveInt),
+  /** With parts, the primary part's ref. */
   ref: CheckpointRef,
-  status: Schema.Literals(["ready", "missing", "error", "stale"]),
+  /** With parts, `error` if any git part errored, else `ready` only when every git part is. */
+  status: OrchestrationV2CheckpointStatus,
   files: Schema.Array(OrchestrationV2CheckpointFileSummary),
+  /** One per part of the scope at capture. Absent means one part checkpointing the scope's cwd. */
+  parts: Schema.optional(Schema.Array(OrchestrationV2CheckpointPart)),
   capturedAt: Schema.DateTimeUtc,
 });
 export type OrchestrationV2Checkpoint = typeof OrchestrationV2Checkpoint.Type;

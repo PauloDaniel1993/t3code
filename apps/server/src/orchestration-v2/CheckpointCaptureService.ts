@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import { checkpointScopeForRun } from "./CheckpointScopeParts.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
@@ -65,8 +66,14 @@ export const layer: Layer.Layer<
       readonly runId: RunId;
       readonly scopeId: CheckpointScopeId;
     }) {
-      const { run, rootNode, scope, providerThread, readyCheckpointOrdinals } =
-        yield* projections.getCheckpointCaptureContext(input.threadId, input);
+      const {
+        run,
+        rootNode,
+        scope,
+        providerThread,
+        readyCheckpointOrdinals,
+        partTurnCheckpointOrdinals,
+      } = yield* projections.getCheckpointCaptureContext(input.threadId, input);
       // A stopped run is already terminal. Its checkpoint is the rollback point
       // for the message after it, so capture leaves its status alone.
       const stopped = run?.status === "interrupted" || run?.status === "cancelled";
@@ -103,25 +110,35 @@ export const layer: Layer.Layer<
         });
       }
 
+      // A run with parts captures what it planned, not the scope row's latest plan.
+      const runScope =
+        scope.parts === undefined
+          ? scope
+          : yield* projections
+              .getThread(input.threadId)
+              .pipe(Effect.map((thread) => checkpointScopeForRun({ scope, thread, run })));
       const capturedAt = yield* DateTime.now;
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
-      const hasReadyCheckpoint = (ordinalWithinScope: number) =>
-        readyCheckpointOrdinals.includes(ordinalWithinScope);
+      // A turn's checkpoint with parts stays even when its barrier failed: its
+      // healthy parts still diff.
+      const keepsCheckpoint = (ordinalWithinScope: number) =>
+        readyCheckpointOrdinals.includes(ordinalWithinScope) ||
+        partTurnCheckpointOrdinals.includes(ordinalWithinScope);
       const threadStartCheckpoint =
-        baselineOrdinalWithinScope === 0 || hasReadyCheckpoint(0)
+        baselineOrdinalWithinScope === 0 || keepsCheckpoint(0)
           ? null
           : yield* checkpoints.materializeBaselineCheckpoint({
-              scope,
+              scope: runScope,
               ordinalWithinScope: 0,
             });
-      const baselineCheckpoint = hasReadyCheckpoint(baselineOrdinalWithinScope)
+      const baselineCheckpoint = keepsCheckpoint(baselineOrdinalWithinScope)
         ? null
         : yield* checkpoints.materializeBaselineCheckpoint({
-            scope,
+            scope: runScope,
             ordinalWithinScope: baselineOrdinalWithinScope,
           });
       const checkpoint = yield* checkpoints.capture({
-        scope,
+        scope: runScope,
         runId: run.id,
         nodeId: rootNode.id,
         ordinalWithinScope: run.ordinal,

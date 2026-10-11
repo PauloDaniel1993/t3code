@@ -6,6 +6,7 @@ import {
   isSamePath,
   orphanedThreadWorktreePaths,
   projectFolders,
+  relativePathWithin,
   resolveThreadWorkspace,
   threadUsingWorktrees,
   threadPrimaryPath,
@@ -243,6 +244,15 @@ describe("isPathWithin", () => {
     expect(isSamePath("/repo/", "/repo")).toBe(true);
     expect(isSamePath("C:\\Repo\\", "c:/repo")).toBe(true);
     expect(isSamePath("/repo/web", "/repo")).toBe(false);
+  });
+});
+
+describe("relativePathWithin", () => {
+  it("spells a path below a root with forward slashes", () => {
+    expect(relativePathWithin("/repo", "/repo/web/src")).toBe("web/src");
+    expect(relativePathWithin("/repo/", "/repo")).toBe("");
+    expect(relativePathWithin("/repo", "/repository")).toBeNull();
+    expect(relativePathWithin("C:\\Repo", "c:\\repo\\Web\\src")).toBe("Web/src");
   });
 });
 

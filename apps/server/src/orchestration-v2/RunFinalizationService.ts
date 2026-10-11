@@ -8,6 +8,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as CheckpointCapture from "./CheckpointCaptureService.ts";
+import { runFolderPaths } from "./CheckpointScopeParts.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 export class RunFinalizationError extends Schema.TaggedError<RunFinalizationError>()(
@@ -63,24 +64,28 @@ const make = Effect.gen(function* () {
           (cause) => new RunFinalizationError({ ...input, operation: "capture-checkpoint", cause }),
         ),
       );
-    const projection = yield* projections
-      .getCheckpointContext(input.threadId)
-      .pipe(
-        Effect.mapError(
-          (cause) => new RunFinalizationError({ ...input, operation: "refresh-workspace", cause }),
-        ),
-      );
-    const cwd = projection.checkpointScopes.find((scope) => scope.id === input.scopeId)?.cwd;
-    if (cwd !== undefined) {
-      yield* observer
-        .refresh({ cwd, threadId: input.threadId, runId: input.runId })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new RunFinalizationError({ ...input, operation: "refresh-workspace", cause }),
-          ),
-        );
-    }
+    const refreshError = (cause: unknown) =>
+      new RunFinalizationError({ ...input, operation: "refresh-workspace", cause });
+    const { run, scope } = yield* projections
+      .getCheckpointCaptureContext(input.threadId, input)
+      .pipe(Effect.mapError(refreshError));
+    if (scope === undefined) return;
+    // A run with parts worked in every folder it could reach.
+    const locations =
+      scope.parts === undefined || run === undefined
+        ? [scope.cwd]
+        : yield* projections.getThread(input.threadId).pipe(
+            Effect.map((thread) => runFolderPaths(thread, run)),
+            Effect.mapError(refreshError),
+          );
+    yield* Effect.forEach(
+      locations,
+      (cwd) =>
+        observer
+          .refresh({ cwd, threadId: input.threadId, runId: input.runId })
+          .pipe(Effect.mapError(refreshError)),
+      { concurrency: 4, discard: true },
+    );
   });
   return RunFinalizationService.of({ finalize });
 });

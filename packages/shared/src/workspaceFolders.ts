@@ -203,6 +203,14 @@ export function isSamePath(left: string, right: string): boolean {
 }
 
 /**
+ * `path` below `root` as `/`-separated segments, empty for `root` itself, as
+ * git pathspecs spell it. Null when `path` lies outside `root`.
+ */
+export function relativePathWithin(root: string, path: string): string | null {
+  return segmentsBelow(root, path)?.join("/") ?? null;
+}
+
+/**
  * Where a folder lives in a thread's worktree set: at the same place below the
  * worktree of the deepest member whose checkout contains it. A folder outside
  * every member's checkout, or already inside a member's worktree, stays put.
