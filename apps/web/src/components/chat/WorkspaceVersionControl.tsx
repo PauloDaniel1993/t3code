@@ -28,6 +28,7 @@ import { type WorkspaceFoldersProject, type WorkspaceFolderRow } from "../worksp
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { workspaceChangedFiles } from "./workspaceVersionControl.logic";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import {
@@ -324,7 +325,9 @@ export function WorkspaceVersionControl(props: {
       <ThreadDetailsControl onClick={() => setBreakdown(!breakdown)} aria-expanded={breakdown}>
         <ChevronRightIcon className={cn("size-3", breakdown && "rotate-90")} />
         <span className="flex-1 text-left">Per-repo breakdown</span>
-        <span className="text-2xs text-muted-foreground">{checkouts.length}</span>
+        <Badge variant="secondary" size="sm">
+          {checkouts.length}
+        </Badge>
       </ThreadDetailsControl>
       {breakdown
         ? checkouts.map((checkout, index) => {
@@ -393,7 +396,10 @@ export function WorkspaceVersionControl(props: {
             )}
           >
             {row.folder.name} ·{" "}
-            {row.unavailable ? `${row.reason} · Unavailable` : "Shared · not checkpointed"}
+            <Badge variant={row.unavailable ? "warning" : "secondary"} size="sm">
+              {row.unavailable ? "Unavailable" : "Shared"}
+            </Badge>{" "}
+            {row.unavailable ? row.reason : "· not checkpointed"}
           </p>
         ))}
       <Dialog
