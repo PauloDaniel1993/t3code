@@ -56,6 +56,7 @@ interface ScannerTestInput {
       "id" | "projectId" | "branch" | "worktreePath" | "workspaceFolders" | "worktrees"
     >
   >;
+  readonly worktreesArchived?: boolean;
   /** Base dir for the test ServerConfig; worktreesDir derives from it. */
   readonly configBaseDir?: string;
   readonly providerInstances?: ContractServerSettings["providerInstances"];
@@ -82,7 +83,11 @@ const makeScannerTestLayer = (input: ScannerTestInput) =>
           input.projects ?? (input.importedWorkspaceRoots ?? []).map(makeProjectShell),
         ),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getShellSnapshot: () => Effect.succeed({ threads: input.worktreeThreads ?? [] } as never),
+          getShellSnapshot: () =>
+            Effect.succeed({
+              threads: input.worktreesArchived ? [] : (input.worktreeThreads ?? []),
+              archivedThreads: input.worktreesArchived ? (input.worktreeThreads ?? []) : [],
+            } as never),
           getThread: (threadId) =>
             Effect.succeed({
               ...input.worktreeThreads?.find((thread) => thread.id === threadId),
@@ -290,108 +295,111 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
-    it.effect("matches mapped worktree folders without rebinding secondary sessions", () =>
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
-        yield* TestClock.setTime(nowMs);
-        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
-        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
-        const repositoryRoot = yield* makeTempDir("t3code-repo-primary-");
-        const secondaryRoot = yield* makeTempDir("t3code-repo-secondary-");
-        const configBaseDir = yield* makeTempDir("t3code-config-");
-        const primary = path.join(repositoryRoot, "subfolder");
-        const primaryMember = path.join(configBaseDir, "worktrees", "set", "primary");
-        const secondaryMember = path.join(configBaseDir, "worktrees", "set", "secondary");
-        const mappedPrimary = path.join(primaryMember, "subfolder");
-        const mappedSecondary = path.join(secondaryMember, "nested");
-        const unknown = path.join(configBaseDir, "worktrees", "unknown");
-        for (const folder of [primary, mappedPrimary, mappedSecondary, unknown]) {
-          yield* fileSystem.makeDirectory(folder, { recursive: true });
-        }
-        const project = {
-          ...makeProjectShell(primary),
-          workspaceFile: path.join(repositoryRoot, "project.code-workspace"),
-          folders: [
-            { path: primary, name: "Primary", label: "primary" },
-            { path: path.join(secondaryRoot, "nested"), name: "Secondary", label: "secondary" },
-          ],
-        };
-        const binding = {
-          branch: "shared",
-          worktreePath: mappedPrimary,
-          workspaceFolders: project.folders.map((folder, index) => ({
-            ...folder,
-            checkoutRoot: index === 0 ? repositoryRoot : secondaryRoot,
-            checkoutPrefix: index === 0 ? "subfolder" : "nested",
-          })),
-          worktrees: [
-            { repositoryRoot, path: primaryMember, branch: "shared" },
-            { repositoryRoot: secondaryRoot, path: secondaryMember, branch: "shared" },
-          ],
-        };
-        for (const [index, cwd] of [mappedPrimary, mappedSecondary, unknown].entries()) {
-          yield* writeTranscript({
-            filePath: path.join(
-              codexHomePath,
-              "sessions",
-              "2026",
-              "08",
-              "24",
-              `rollout-${index}.jsonl`,
-            ),
-            contents: [
-              encodeTranscriptRecord({
-                type: "session_meta",
-                payload: { id: `mapped-${index}`, cwd },
-              }),
-              encodeTranscriptRecord({
-                type: "event_msg",
-                payload: { type: "user_message", message: cwd },
-              }),
-            ].join("\n"),
-            mtimeMs: nowMs,
-          });
-        }
-        yield* Effect.gen(function* () {
-          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
-          const result = yield* scanner.scan;
-          expect(result.candidates).toHaveLength(2);
-          expect(
-            result.candidates.find((candidate) => candidate.path === mappedPrimary),
-          ).toMatchObject({ projectId: project.id, alreadyImported: true });
-          expect(
-            result.candidates.find((candidate) => candidate.path === mappedSecondary),
-          ).toMatchObject({ alreadyImported: false });
-          expect(
-            result.candidates.find((candidate) => candidate.path === mappedSecondary),
-          ).not.toHaveProperty("projectId");
-          expect(yield* scanner.worktreeBinding(project.id, mappedPrimary)).toEqual(
-            Option.some(binding),
-          );
-          expect(yield* scanner.worktreeBinding(project.id, mappedSecondary)).toEqual(
-            Option.none(),
-          );
-          for (const [index, cwd] of [mappedPrimary, mappedSecondary].entries()) {
-            expect(yield* scanner.recentThreads(cwd).pipe(Stream.runCollect)).toMatchObject([
-              { _tag: "Importable", thread: { providerSessionId: `mapped-${index}` } },
-            ]);
+    it.effect.each(["active", "archived"])(
+      "matches mapped worktree folders without rebinding secondary sessions (%s)",
+      (state) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+          yield* TestClock.setTime(nowMs);
+          const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+          const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+          const repositoryRoot = yield* makeTempDir("t3code-repo-primary-");
+          const secondaryRoot = yield* makeTempDir("t3code-repo-secondary-");
+          const configBaseDir = yield* makeTempDir("t3code-config-");
+          const primary = path.join(repositoryRoot, "subfolder");
+          const primaryMember = path.join(configBaseDir, "worktrees", "set", "primary");
+          const secondaryMember = path.join(configBaseDir, "worktrees", "set", "secondary");
+          const mappedPrimary = path.join(primaryMember, "subfolder");
+          const mappedSecondary = path.join(secondaryMember, "nested");
+          const unknown = path.join(configBaseDir, "worktrees", "unknown");
+          for (const folder of [primary, mappedPrimary, mappedSecondary, unknown]) {
+            yield* fileSystem.makeDirectory(folder, { recursive: true });
           }
-        }).pipe(
-          Effect.provide(
-            makeScannerTestLayer({
-              claudeHomePath,
-              codexHomePath,
-              configBaseDir,
-              projects: [project],
-              worktreeThreads: [
-                { id: ThreadId.make("mapped-thread"), projectId: project.id, ...binding },
-              ],
-            }),
-          ),
-        );
-      }),
+          const project = {
+            ...makeProjectShell(primary),
+            workspaceFile: path.join(repositoryRoot, "project.code-workspace"),
+            folders: [
+              { path: primary, name: "Primary", label: "primary" },
+              { path: path.join(secondaryRoot, "nested"), name: "Secondary", label: "secondary" },
+            ],
+          };
+          const binding = {
+            branch: "shared",
+            worktreePath: mappedPrimary,
+            workspaceFolders: project.folders.map((folder, index) => ({
+              ...folder,
+              checkoutRoot: index === 0 ? repositoryRoot : secondaryRoot,
+              checkoutPrefix: index === 0 ? "subfolder" : "nested",
+            })),
+            worktrees: [
+              { repositoryRoot, path: primaryMember, branch: "shared" },
+              { repositoryRoot: secondaryRoot, path: secondaryMember, branch: "shared" },
+            ],
+          };
+          for (const [index, cwd] of [mappedPrimary, mappedSecondary, unknown].entries()) {
+            yield* writeTranscript({
+              filePath: path.join(
+                codexHomePath,
+                "sessions",
+                "2026",
+                "08",
+                "24",
+                `rollout-${index}.jsonl`,
+              ),
+              contents: [
+                encodeTranscriptRecord({
+                  type: "session_meta",
+                  payload: { id: `mapped-${index}`, cwd },
+                }),
+                encodeTranscriptRecord({
+                  type: "event_msg",
+                  payload: { type: "user_message", message: cwd },
+                }),
+              ].join("\n"),
+              mtimeMs: nowMs,
+            });
+          }
+          yield* Effect.gen(function* () {
+            const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+            const result = yield* scanner.scan;
+            expect(result.candidates).toHaveLength(2);
+            expect(
+              result.candidates.find((candidate) => candidate.path === mappedPrimary),
+            ).toMatchObject({ projectId: project.id, alreadyImported: true });
+            expect(
+              result.candidates.find((candidate) => candidate.path === mappedSecondary),
+            ).toMatchObject({ alreadyImported: false });
+            expect(
+              result.candidates.find((candidate) => candidate.path === mappedSecondary),
+            ).not.toHaveProperty("projectId");
+            expect(yield* scanner.worktreeBinding(project.id, mappedPrimary)).toEqual(
+              Option.some(binding),
+            );
+            expect(yield* scanner.worktreeBinding(project.id, mappedSecondary)).toEqual(
+              Option.none(),
+            );
+            for (const [index, cwd] of [mappedPrimary, mappedSecondary].entries()) {
+              expect(yield* scanner.recentThreads(cwd).pipe(Stream.runCollect)).toMatchObject([
+                { _tag: "Importable", thread: { providerSessionId: `mapped-${index}` } },
+              ]);
+            }
+          }).pipe(
+            Effect.provide(
+              makeScannerTestLayer({
+                claudeHomePath,
+                codexHomePath,
+                configBaseDir,
+                projects: [project],
+                worktreesArchived: state === "archived",
+                worktreeThreads: [
+                  { id: ThreadId.make("mapped-thread"), projectId: project.id, ...binding },
+                ],
+              }),
+            ),
+          );
+        }),
     );
 
     it.effect("reads Claude project cwds from transcripts, newest first", () =>

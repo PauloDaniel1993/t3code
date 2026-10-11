@@ -749,7 +749,7 @@ export const make = Effect.gen(function* () {
       }
     }
     const projectsById = new Map(projects.map((project) => [project.id, project]));
-    for (const shell of snapshot.threads) {
+    for (const shell of [...snapshot.threads, ...snapshot.archivedThreads]) {
       const project = projectsById.get(shell.projectId);
       if (project === undefined || shell.worktreePath === null) continue;
       const thread = yield* projections
