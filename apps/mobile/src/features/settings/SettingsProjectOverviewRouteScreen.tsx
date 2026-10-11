@@ -16,6 +16,7 @@ import {
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
+import { ProjectWorkspaceFileSettings } from "./ProjectWorkspaceFileSettings";
 
 export function SettingsProjectOverviewRouteScreen() {
   const insets = useSafeAreaInsets();
@@ -166,6 +167,9 @@ function ProjectOverviewContent(props: {
               <Text className="text-sm leading-normal text-foreground-muted" selectable>
                 {member.workspaceRoot}
               </Text>
+              {environment ? (
+                <ProjectWorkspaceFileSettings project={member} environment={environment} />
+              ) : null}
             </View>
           );
         })}

@@ -450,6 +450,11 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
             >
               {visibleScopes.map((scope, scopeIndex) => {
                 const hasMultipleProjects = scope.projects.length > 1;
+                const workspaceLabel = scope.projects.some(
+                  (project) => project.workspaceFile != null && (project.folders?.length ?? 0) > 1,
+                )
+                  ? "Multi-root · "
+                  : "";
                 const selectionTarget = getProjectScopeSelectionTarget(
                   scope,
                   selectedEnvironmentId,
@@ -461,9 +466,10 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                       key={scope.key}
                       title={scope.title}
                       subtitle={
-                        hasMultipleProjects
+                        workspaceLabel +
+                        (hasMultipleProjects
                           ? `${scope.projects.length} workspaces`
-                          : selectionTarget.workspaceRoot
+                          : selectionTarget.workspaceRoot)
                       }
                       disabled={reservedDestinationProject !== null}
                       onPress={() => void selectProject(selectionTarget)}
@@ -511,9 +517,10 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                           ellipsizeMode="middle"
                           numberOfLines={1}
                         >
-                          {hasMultipleProjects
-                            ? `${scope.projects.length} workspaces`
-                            : selectionTarget.workspaceRoot}
+                          {workspaceLabel +
+                            (hasMultipleProjects
+                              ? `${scope.projects.length} workspaces`
+                              : selectionTarget.workspaceRoot)}
                         </Text>
                       </View>
                       <SymbolView
