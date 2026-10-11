@@ -20,6 +20,7 @@ import {
   getNewProjectPathPreview,
   normalizePastedCloneUrl,
   resolveAddProjectPath,
+  resolveAddProjectKind,
   sortAddProjectProviderSources,
   type AddProjectRemoteSource,
 } from "@t3tools/client-runtime/operations/projects";
@@ -30,11 +31,10 @@ import {
 import {
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
-  filterFilesystemBrowseEntries,
-  getFilesystemBrowsePath,
 } from "@t3tools/client-runtime/state/filesystem";
 import {
   appendBrowsePathSegment,
+  findProjectByWorkspaceFile,
   inferProjectTitleFromPath,
   isWindowsPlatform,
 } from "@t3tools/client-runtime/state/projects";
@@ -43,6 +43,8 @@ import {
   type EnvironmentId,
   type EnvironmentMachineKind,
   ProjectId,
+  type Project,
+  FilesystemBrowseError,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import { CommonActions, StackActions, useNavigation } from "@react-navigation/native";
@@ -53,6 +55,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Order from "effect/Order";
+import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { cn } from "../../lib/cn";
 import { useProjects, useServerConfigs, waitForProject } from "../../state/entities";
@@ -74,6 +77,15 @@ import {
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
 import { resolveAddProjectEnvironment } from "./AddProjectScreen.logic";
+import { ServerPathBrowser as FolderBrowser } from "./ServerPathBrowser";
+import { WorkspaceProjectFolders } from "./WorkspaceProjectFolders";
+import {
+  resolveMobileAddProjectTarget,
+  workspaceFileErrorMessage,
+  workspaceFileMutationOutcome,
+} from "./workspace-file-projects";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 
 interface EnvironmentOption {
   readonly environmentId: EnvironmentId;
@@ -88,7 +100,10 @@ interface EnvironmentOption {
   readonly connectionErrorTraceId: string | null;
   /** Server runs clones in the background and streams progress; older servers block. */
   readonly supportsCloneTracking: boolean;
+  readonly workspaceFileProjects: boolean;
 }
+
+const isFilesystemBrowseError = Schema.is(FilesystemBrowseError);
 
 const environmentOptionOrder = Order.mapInput(
   Order.Struct({
@@ -278,11 +293,14 @@ function ProjectPathInput(props: {
   readonly value: string;
   readonly onChangeText: (value: string) => void;
   readonly onSubmit: () => void;
+  readonly disabled?: boolean;
 }) {
   return (
     <TextInput
       className="h-12 min-h-12 rounded-[24px] px-4 py-0 text-base leading-snug"
       value={props.value}
+      editable={!props.disabled}
+      accessibilityLabel="Project path on environment"
       onChangeText={props.onChangeText}
       autoCapitalize="none"
       autoCorrect={false}
@@ -411,6 +429,7 @@ function useEnvironmentOptions(): ReadonlyArray<EnvironmentOption> {
         connectionError: runtime?.connectionError ?? null,
         connectionErrorTraceId: runtime?.connectionErrorTraceId ?? null,
         supportsCloneTracking: config?.environment.capabilities.projectCloneTracking === true,
+        workspaceFileProjects: config?.workspaceFileProjects === true,
       };
     });
     return Arr.sort(
@@ -609,8 +628,16 @@ export function AddProjectSourceScreen() {
               />
             ) : null}
             <ListRow
-              title="Local folder"
-              subtitle="Browse a folder on disk"
+              title={
+                selectedEnvironment.workspaceFileProjects
+                  ? "Folder or workspace file"
+                  : "Local folder"
+              }
+              subtitle={
+                selectedEnvironment.workspaceFileProjects
+                  ? "Browse on this environment"
+                  : "Browse a folder on disk"
+              }
               icon={
                 <SymbolView
                   name="folder.badge.plus"
@@ -827,103 +854,6 @@ export function AddProjectRepositoryScreen(props: {
         <EmptyEnvironmentState />
       )}
     </AddProjectShell>
-  );
-}
-
-function FolderBrowser(props: {
-  readonly environment: EnvironmentOption;
-  readonly pathInput: string;
-  readonly setPathInput: (path: string) => void;
-  readonly navigateToBrowsePath: (input: {
-    readonly browseDirectoryPath: string;
-    readonly selectedDirectoryName?: string;
-  }) => Promise<boolean>;
-  readonly pinnedDirectoryName?: string;
-}) {
-  const browsePath = useMemo(
-    () => getFilesystemBrowsePath(props.pathInput, props.environment.platform),
-    [props.environment.platform, props.pathInput],
-  );
-  const browseInput = useMemo(
-    () => (browsePath.directoryPath.length > 0 ? { partialPath: browsePath.directoryPath } : null),
-    [browsePath.directoryPath],
-  );
-  const browseState = useEnvironmentQuery(
-    browseInput === null
-      ? null
-      : filesystemEnvironment.browse({
-          environmentId: props.environment.environmentId,
-          input: browseInput,
-        }),
-  );
-  // A pinned repository folder does not exist yet, so filtering the listing by
-  // it would empty the folder picker. Anything the user typed still filters.
-  const pinnedDirectoryName = props.pinnedDirectoryName ?? "";
-  const pinnedDirectoryMatches = isWindowsPlatform(props.environment.platform)
-    ? browsePath.filterQuery.toLowerCase() === pinnedDirectoryName.toLowerCase()
-    : browsePath.filterQuery === pinnedDirectoryName;
-  const browseFilterQuery = pinnedDirectoryMatches ? "" : browsePath.filterQuery;
-  const { visibleEntries: visibleBrowseEntries } = useMemo(
-    () => filterFilesystemBrowseEntries(browseState.data?.entries ?? [], browseFilterQuery),
-    [browseFilterQuery, browseState.data?.entries],
-  );
-
-  return (
-    <>
-      <SectionTitle>Browse folders</SectionTitle>
-      {browseState.error ? <ErrorBanner message={browseState.error} /> : null}
-      <ListSection>
-        {browseState.isPending && browseState.data === null ? (
-          <View className="items-center py-5">
-            <ActivityIndicator colorClassName="accent-icon-muted" />
-          </View>
-        ) : null}
-        {browsePath.canBrowseUp ? (
-          <ListRow
-            title=".."
-            icon={
-              <SymbolView
-                name="arrow.turn.left.up"
-                size={Platform.OS === "android" ? 24 : 17}
-                tintColorClassName="accent-icon-muted"
-                type="monochrome"
-              />
-            }
-            isFirst
-            right={null}
-            onPress={() => {
-              if (browsePath.parentPath) {
-                void props.navigateToBrowsePath({
-                  browseDirectoryPath: browsePath.parentPath,
-                });
-              }
-            }}
-          />
-        ) : null}
-        {visibleBrowseEntries.map((entry, index) => (
-          <ListRow
-            key={entry.fullPath}
-            title={entry.name}
-            icon={
-              <SymbolView
-                name="folder"
-                size={Platform.OS === "android" ? 24 : 17}
-                tintColorClassName="accent-icon-muted"
-                type="monochrome"
-              />
-            }
-            isFirst={index === 0 && !browsePath.canBrowseUp}
-            right={null}
-            onPress={() => {
-              void props.navigateToBrowsePath({
-                browseDirectoryPath: browsePath.directoryPath,
-                selectedDirectoryName: entry.name,
-              });
-            }}
-          />
-        ))}
-      </ListSection>
-    </>
   );
 }
 
@@ -1160,62 +1090,227 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
 export function AddProjectLocalFolderScreen(props: { readonly environmentId?: string | string[] }) {
   const environment = useEnvironmentFromParam(props.environmentId);
   const createProject = useCreateProject(environment);
+  const navigation = useNavigation();
+  const projects = useProjects();
+  const importWorkspaceFile = useAtomCommand(projectEnvironment.importWorkspaceFile, {
+    reportFailure: false,
+  });
+  const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
+  const browse = useAtomQueryRunner(filesystemEnvironment.browse, {
+    reportFailure: false,
+    refresh: true,
+  });
   const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =
     useBrowsePathInput(environment);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [savedProject, setSavedProject] = useState<Project | EnvironmentProject | null>(null);
+  const [linkExisting, setLinkExisting] = useState(false);
+  const [linkProjectId, setLinkProjectId] = useState<ProjectId | null>(null);
+  const enabled = environment?.workspaceFileProjects === true;
+  const workspaceFileInput = enabled && resolveAddProjectKind(pathInput, null) === "workspace-file";
+  const displayedProject =
+    savedProject === null
+      ? null
+      : (projects.find(
+          (project) =>
+            project.environmentId === environment?.environmentId &&
+            project.id === savedProject.id &&
+            project.updatedAt >= savedProject.updatedAt,
+        ) ?? savedProject);
+  const plainProjects = projects.filter(
+    (project) =>
+      project.environmentId === environment?.environmentId && project.workspaceFile == null,
+  );
 
-  const submitPath = useCallback(async () => {
+  const submitPath = async () => {
     if (!environment || isBrowseNavigating || isSubmitting) return;
     setError(null);
-    const resolved = resolveAddProjectPath({
-      rawPath: pathInput,
-      currentProjectCwd: null,
-      platform: environment.platform,
-    });
-    if (!resolved.ok) {
-      setError(resolved.error);
-      return;
-    }
-
     setIsSubmitting(true);
-    const result = await createProject(resolved.path);
-    if (result && AsyncResult.isFailure(result)) {
-      setError(errorMessage(Cause.squash(result.cause)));
+    try {
+      const resolved = resolveAddProjectPath({
+        rawPath: pathInput,
+        platform: environment.platform,
+      });
+      if (!resolved.ok) throw new Error(resolved.error);
+      const listing = await browse({
+        environmentId: environment.environmentId,
+        input: {
+          partialPath: pathInput.trim(),
+          ...(enabled ? { includeWorkspaceFiles: true } : {}),
+        },
+      });
+      if (listing._tag === "Failure") {
+        const failure = squashAtomCommandFailure(listing);
+        if (!isFilesystemBrowseError(failure) || failure.failure !== "read_directory_failed")
+          throw failure;
+      }
+      const target = resolveMobileAddProjectTarget({
+        path: pathInput,
+        platform: environment.platform,
+        workspaceFileProjects: enabled,
+        browse: listing._tag === "Success" ? listing.value : null,
+      });
+      if (target.kind === "directory") {
+        if (linkExisting)
+          throw new Error("Choose a workspace file to link to the existing project.");
+        const result = await createProject(target.path);
+        if (result?._tag === "Failure") throw squashAtomCommandFailure(result);
+        return;
+      }
+      const existing = findProjectByWorkspaceFile(
+        projects.filter((project) => project.environmentId === environment.environmentId),
+        target.path,
+      );
+      if (existing) {
+        setSavedProject(existing);
+        return;
+      }
+      const selected = plainProjects.find((project) => project.id === linkProjectId);
+      if (linkExisting && !selected) throw new Error("Choose an existing project to link.");
+      const result =
+        linkExisting && selected
+          ? await updateProject({
+              environmentId: environment.environmentId,
+              input: { projectId: selected.id, workspaceFilePath: target.path },
+            })
+          : await importWorkspaceFile({
+              environmentId: environment.environmentId,
+              input: { projectId: ProjectId.make(uuidv4()), workspaceFilePath: target.path },
+            });
+      const outcome = workspaceFileMutationOutcome(result, !linkExisting);
+      const project =
+        outcome.project ??
+        (await waitForProject({
+          environmentId: environment.environmentId,
+          projectId: outcome.projectId,
+        }));
+      if (project === null)
+        throw new Error(
+          "The project is saved on the environment but has not reached this device yet. It will appear in the project list once the connection catches up.",
+        );
+      setSavedProject(project);
+    } catch (cause) {
+      setError(workspaceFileErrorMessage(cause));
+    } finally {
+      setIsSubmitting(false);
     }
-    setIsSubmitting(false);
-  }, [createProject, environment, isBrowseNavigating, isSubmitting, pathInput]);
+  };
+  const continueToProject = async () => {
+    if (!environment || !savedProject || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      const project = await waitForProject({
+        environmentId: environment.environmentId,
+        projectId: savedProject.id,
+      });
+      if (project === null)
+        throw new Error(
+          "The project is saved but has not reached this device yet. Try opening it once the connection catches up.",
+        );
+      openNewTaskDraft(navigation, {
+        environmentId: environment.environmentId,
+        projectId: project.id,
+        title: project.title,
+      });
+    } catch (cause) {
+      setError(workspaceFileErrorMessage(cause));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
-    <AddProjectShell title="Local folder">
+    <AddProjectShell title={enabled ? "Folder or workspace file" : "Local folder"}>
       {error ? <ErrorBanner message={error} /> : null}
       {environment ? (
-        <>
-          <ProjectPathInput
-            value={pathInput}
-            onChangeText={setPathInput}
-            onSubmit={() => void submitPath()}
-          />
-          <PrimaryActionButton
-            label="Add project"
-            disabled={isBrowseNavigating || isSubmitting}
-            onPress={() => void submitPath()}
-            loading={isSubmitting}
-          />
-          <FolderBrowser
-            environment={environment}
-            navigateToBrowsePath={navigateToBrowsePath}
-            pathInput={pathInput}
-            setPathInput={setPathInput}
-          />
-        </>
+        savedProject ? (
+          <>
+            <Text className="text-lg font-t3-bold">{displayedProject!.title}</Text>
+            <WorkspaceProjectFolders
+              project={displayedProject!}
+              environmentId={environment.environmentId}
+              enabled={enabled}
+            />
+            <PrimaryActionButton
+              label="Open project"
+              disabled={isSubmitting}
+              loading={isSubmitting}
+              onPress={() => void continueToProject()}
+            />
+          </>
+        ) : (
+          <>
+            <ProjectPathInput
+              value={pathInput}
+              onChangeText={setPathInput}
+              onSubmit={() => void submitPath()}
+              disabled={isSubmitting}
+            />
+            {workspaceFileInput && plainProjects.length > 0 ? (
+              <>
+                <MaterialButton
+                  label={
+                    linkExisting
+                      ? "Import as a new project instead"
+                      : "Link existing project instead"
+                  }
+                  tone="text"
+                  disabled={isSubmitting}
+                  onPress={() => setLinkExisting(!linkExisting)}
+                />
+                {linkExisting ? (
+                  <>
+                    <Text className="text-sm text-foreground-muted">
+                      The workspace file must list the chosen project's folder first. Its title,
+                      settings, and history are kept.
+                    </Text>
+                    <ListSection>
+                      {plainProjects.map((project, index) => (
+                        <ListRow
+                          key={project.id}
+                          title={project.title}
+                          subtitle={project.workspaceRoot}
+                          icon={
+                            <SymbolView
+                              name="folder"
+                              size={20}
+                              tintColorClassName="accent-icon-muted"
+                            />
+                          }
+                          selected={project.id === linkProjectId}
+                          disabled={isSubmitting}
+                          isFirst={index === 0}
+                          onPress={() => setLinkProjectId(project.id)}
+                        />
+                      ))}
+                    </ListSection>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+            <PrimaryActionButton
+              label="Add project"
+              disabled={isBrowseNavigating || isSubmitting}
+              onPress={() => void submitPath()}
+              loading={isSubmitting}
+            />
+            <FolderBrowser
+              environment={environment}
+              navigateToBrowsePath={navigateToBrowsePath}
+              pathInput={pathInput}
+              setPathInput={setPathInput}
+              includeWorkspaceFiles={enabled}
+              disabled={isSubmitting}
+            />
+          </>
+        )
       ) : (
         <EmptyEnvironmentState />
       )}
     </AddProjectShell>
   );
 }
-
 export function AddProjectDestinationScreen(props: {
   readonly environmentId?: string | string[];
   readonly remoteUrl?: string | string[];
