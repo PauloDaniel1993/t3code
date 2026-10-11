@@ -149,9 +149,17 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
   const successTtl = options.successTtl ?? DEFAULT_SUCCESS_TTL;
   const failureTtl = options.failureTtl ?? DEFAULT_FAILURE_TTL;
+  const repositoryIdentityRefreshes = new Set<string>();
 
   const repositoryIdentityCache = yield* Cache.makeWith(
-    (workspaceRoot: string) => Effect.exit(repositoryIdentityResolver.resolve(workspaceRoot)),
+    (workspaceRoot: string) =>
+      Effect.suspend(() =>
+        Effect.exit(
+          repositoryIdentityResolver.resolve(workspaceRoot, {
+            refresh: repositoryIdentityRefreshes.delete(workspaceRoot),
+          }),
+        ),
+      ),
     {
       capacity: cacheCapacity,
       timeToLive: Exit.match({
@@ -200,10 +208,20 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     probe: WorkspaceFolderResolver.WorkspaceFolderProbe,
   ) {
     const previous = publishedFolderFacts.get(probe.path);
+    const checkoutChanged =
+      previous !== undefined && previous.vcs?.checkoutRoot !== probe.vcs?.checkoutRoot;
+    if (checkoutChanged) {
+      // Both this cache and the resolver cache are keyed by folder path. A
+      // folder gaining or leaving a nested checkout changes that path's owner.
+      repositoryIdentityRefreshes.add(probe.path);
+      yield* Cache.invalidate(repositoryIdentityCache, probe.path);
+    }
     publishedFolderFacts.delete(probe.path);
     publishedFolderFacts.set(probe.path, probe);
     if (publishedFolderFacts.size > cacheCapacity) {
-      publishedFolderFacts.delete(publishedFolderFacts.keys().next().value!);
+      const oldest = publishedFolderFacts.keys().next().value!;
+      publishedFolderFacts.delete(oldest);
+      repositoryIdentityRefreshes.delete(oldest);
     }
     if (
       previous !== undefined &&
@@ -214,6 +232,8 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     )
       return;
     yield* PubSub.publish(changes, { folderPath: probe.path });
+    if (checkoutChanged && probe.vcs != null)
+      yield* requestLane(repositoryIdentityLane, probe.path, "repositoryIdentity");
   });
 
   const removePending = (lane: EnrichmentWorkLane, workspaceRoot: string) =>
@@ -249,7 +269,11 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
 
   const resolveRepositoryIdentity = Effect.fn("ProjectEnrichmentService.resolveRepositoryIdentity")(
     function* (workspaceRoot: string) {
-      const repositoryIdentity = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
+      let repositoryIdentity = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
+      // Invalidation can race an in-flight lookup. Its old result is detached
+      // from the cache; finish the replacement before publishing completion.
+      while (repositoryIdentityRefreshes.has(workspaceRoot))
+        repositoryIdentity = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
       yield* logFailure(workspaceRoot, "repositoryIdentity", repositoryIdentity);
       const faviconPath = yield* Cache.getSuccess(faviconCache, workspaceRoot);
       const repositoryIdentityResolved = Exit.isSuccess(repositoryIdentity);
@@ -278,7 +302,17 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   ) => {
     const worker = Queue.take(lane.queue).pipe(
       Effect.flatMap((workspaceRoot) =>
-        resolve(workspaceRoot).pipe(Effect.ensuring(removePending(lane, workspaceRoot))),
+        resolve(workspaceRoot).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              yield* removePending(lane, workspaceRoot);
+              // A checkout change can arrive after completion is published but
+              // before this lane releases its reservation. Do not drop its retry.
+              if (lane === repositoryIdentityLane && repositoryIdentityRefreshes.has(workspaceRoot))
+                yield* requestLane(lane, workspaceRoot, "repositoryIdentity");
+            }),
+          ),
+        ),
       ),
       Effect.forever,
     );
@@ -391,9 +425,9 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         if (Option.isNone(cached)) {
           if (options?.request !== false)
             yield* requestLane(folderLane, folder.path, "workspaceFolder");
-          return folder;
         }
-        const probe = cached.value;
+        const probe = Option.getOrUndefined(cached) ?? publishedFolderFacts.get(folder.path);
+        if (probe === undefined) return folder;
         if (probe.availability === "unavailable") {
           return {
             ...folder,

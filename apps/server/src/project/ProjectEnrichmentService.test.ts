@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ProjectEnrichment from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
@@ -50,6 +51,143 @@ const makeLayer = (
   Layer.effect(ProjectEnrichment.ProjectEnrichmentService, ProjectEnrichment.make(options)).pipe(
     Layer.provide(Layer.merge(metadataLayer, folderResolver)),
   );
+
+it.effect("a new client receives retained folder facts while expired probes refresh", () =>
+  Effect.gen(function* () {
+    const refreshed = yield* Deferred.make<void>();
+    const probes = yield* Ref.make(0);
+    const metadata = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: () => Effect.succeed(null),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      const folders = [{ path: "/work/app", name: "app", label: "app" }];
+      yield* service.probeFolders(["/work/app"]);
+      yield* TestClock.adjust("30 seconds");
+      const completions = yield* service.subscribeChanges;
+      yield* service.request("/work/app");
+      yield* PubSub.take(completions);
+      yield* TestClock.adjust("31 seconds");
+      // The folder expired before the primary identity. A newly subscribing
+      // client must get facts even if the refresh has no changes to publish.
+      yield* service.subscribeChanges;
+      assert.isTrue((yield* service.peek("/work/app")).repositoryIdentityResolved);
+      assert.deepEqual(yield* service.getAvailableFolders(folders), [
+        { ...folders[0]!, availability: "available", vcs: null },
+      ]);
+      yield* Deferred.await(refreshed);
+    }).pipe(
+      Effect.provide(
+        makeLayer(
+          metadata,
+          {},
+          folderResolverLayer((path) =>
+            Ref.updateAndGet(probes, (count) => count + 1).pipe(
+              Effect.tap((count) =>
+                count === 2 ? Deferred.succeed(refreshed, undefined) : Effect.void,
+              ),
+              Effect.as({ path, availability: "available", vcs: null }),
+            ),
+          ),
+        ),
+      ),
+    );
+  }),
+);
+
+const checkCheckoutChange = (background: boolean) =>
+  Effect.gen(function* () {
+    const checkout = yield* Ref.make("/work");
+    const identityCalls = yield* Ref.make<ReadonlyArray<boolean>>([]);
+    const releaseNewIdentity = yield* Deferred.make<void>();
+    let resolverCheckout = "/work";
+    const metadata = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (_path, options) =>
+          Effect.gen(function* () {
+            yield* Ref.update(identityCalls, (calls) => [...calls, options?.refresh === true]);
+            if (options?.refresh) resolverCheckout = yield* Ref.get(checkout);
+            if (resolverCheckout === "/work/lib") yield* Deferred.await(releaseNewIdentity);
+            return identity(resolverCheckout);
+          }),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      const changes = yield* service.subscribeChanges;
+      const folders = [
+        { path: "/work/app", name: "app", label: "app" },
+        { path: "/work/lib", name: "lib", label: "lib" },
+      ];
+      yield* service.probeFolders(["/work/lib"]);
+      yield* PubSub.take(changes);
+      yield* TestClock.adjust("30 seconds");
+      yield* service.getAvailableFolders(folders);
+      let change = yield* PubSub.take(changes);
+      while (!("workspaceRoot" in change) || change.workspaceRoot !== "/work/lib")
+        change = yield* PubSub.take(changes);
+      assert.equal(
+        (yield* service.getAvailableFolders(folders, { request: false }))[1]?.vcs
+          ?.repositoryIdentity?.rootPath,
+        "/work",
+      );
+
+      yield* Ref.set(checkout, "/work/lib");
+      if (background) {
+        yield* TestClock.adjust("31 seconds");
+        // Identity is still warm; only the folder needs probing.
+        yield* service.getAvailableFolders(folders);
+      } else {
+        yield* service.probeFolders(["/work/lib"]);
+      }
+      change = yield* PubSub.take(changes);
+      while (!("folderPath" in change) || change.folderPath !== "/work/lib")
+        change = yield* PubSub.take(changes);
+      assert.deepEqual((yield* service.getAvailableFolders(folders, { request: false }))[1]?.vcs, {
+        checkoutRoot: "/work/lib",
+      });
+      yield* Deferred.succeed(releaseNewIdentity, undefined);
+      change = yield* PubSub.take(changes);
+      while (!("workspaceRoot" in change) || change.workspaceRoot !== "/work/lib")
+        change = yield* PubSub.take(changes);
+      assert.deepEqual((yield* service.getAvailableFolders(folders, { request: false }))[1]?.vcs, {
+        checkoutRoot: "/work/lib",
+        repositoryIdentity: identity("/work/lib"),
+      });
+      assert.include(yield* Ref.get(identityCalls), true);
+    }).pipe(
+      Effect.provide(
+        makeLayer(
+          metadata,
+          {},
+          folderResolverLayer((path) =>
+            Ref.get(checkout).pipe(
+              Effect.map((checkoutRoot) => ({
+                path,
+                availability: "available",
+                vcs: { checkoutRoot, checkoutPrefix: "", commonDir: `${checkoutRoot}/.git` },
+              })),
+            ),
+          ),
+        ),
+      ),
+    );
+  });
+
+it.effect("checkout changes replace secondary identities after Refresh probes", () =>
+  checkCheckoutChange(false),
+);
+it.effect("checkout changes replace secondary identities after background probes", () =>
+  checkCheckoutChange(true),
+);
 
 it.effect("publishes changed file health and folder probes to every subscriber, once", () =>
   Effect.gen(function* () {
