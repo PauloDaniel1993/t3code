@@ -34,6 +34,7 @@ import {
 } from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
+import type { WorkspaceFileContext } from "~/components/files/workspaceFiles";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
@@ -51,6 +52,7 @@ import { resolveThreadRouteTarget } from "~/threadRoutes";
 
 import "./starMap.css";
 import { StarMapTicketDetail } from "./StarMapTicketDetail";
+import { starMapTaskSourcePath } from "./StarMapSurface.logic";
 import {
   boundsFromPoints,
   clampCamera,
@@ -92,10 +94,10 @@ import {
 export interface StarMapPanelProps {
   readonly environmentId: EnvironmentId;
   /**
-   * Root the server reads `.plan` from. Callers pass the thread's
-   * `threadPrimaryPath`, the same root ticket relative paths resolve against.
+   * The chosen folder's effective path, where the server reads `.plan` and ticket files.
    */
   readonly cwd: string;
+  readonly workspace?: WorkspaceFileContext | undefined;
 }
 
 function ticketStatusText(node: WayfinderNode): string {
@@ -398,7 +400,24 @@ export default function StarMapPanel(props: StarMapPanelProps) {
           message: {
             messageId: newMessageId(),
             role: "user",
-            text: buildStartTicketsAsTasksPrompt(selectedMap, tickets),
+            text: buildStartTicketsAsTasksPrompt(
+              {
+                ...selectedMap,
+                mapRelativePath: starMapTaskSourcePath(
+                  selectedMap.mapRelativePath,
+                  props.cwd,
+                  props.workspace,
+                ),
+              },
+              tickets.map((ticket) => ({
+                ...ticket,
+                relativePath: starMapTaskSourcePath(
+                  ticket.relativePath,
+                  props.cwd,
+                  props.workspace,
+                ),
+              })),
+            ),
             attachments: [],
           },
           runtimeMode: thread.runtimeMode,
@@ -880,6 +899,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
               <StarMapTicketDetail
                 environmentId={props.environmentId}
                 cwd={props.cwd}
+                workspace={props.workspace}
                 graph={graph}
                 node={detailNode}
                 threadRef={threadRef}

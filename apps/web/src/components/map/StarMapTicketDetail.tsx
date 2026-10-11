@@ -4,17 +4,20 @@ import { useId } from "react";
 
 import ChatMarkdown from "~/components/ChatMarkdown";
 import { useProjectFileQuery } from "~/components/files/projectFilesQueryState";
+import type { WorkspaceFileContext } from "~/components/files/workspaceFiles";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { useNewThreadTaskAvailability } from "~/hooks/useNewThreadTaskAvailability";
 import { useRightPanelStore } from "~/rightPanelStore";
 
 import { openStarMapTicketAsTask } from "./StarMapTicketDetail.logic";
+import { starMapFileTarget, starMapTaskSourcePath } from "./StarMapSurface.logic";
 import type { StarMapGraph, StarMapGraphNode } from "./starMapGraph";
 
 export interface StarMapTicketDetailProps {
   readonly environmentId: EnvironmentId;
   readonly cwd: string;
+  readonly workspace?: WorkspaceFileContext | undefined;
   readonly graph: StarMapGraph;
   readonly node: StarMapGraphNode;
   /** Current thread's panel scope; the open-as-file action hides without it. */
@@ -73,14 +76,21 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
     //      a wayfinder-specific variant would fork behaviour users already
     //      learned.
     // The action is explicit and user-initiated — it never fires silently.
-    useRightPanelStore.getState().openFile(props.threadRef, node.relativePath);
+    const target = starMapFileTarget(node.relativePath, props.cwd, props.workspace);
+    if (target === null) return;
+    useRightPanelStore
+      .getState()
+      .openFile(props.threadRef, target.path, undefined, target.folderPath);
   };
 
   const openAsTask = () => {
     if (props.threadRef === null || taskUnavailable !== null) return;
     openStarMapTicketAsTask({
       threadRef: props.threadRef,
-      node,
+      node: {
+        ...node,
+        relativePath: starMapTaskSourcePath(node.relativePath, props.cwd, props.workspace),
+      },
       contents: fileQuery.data?.contents ?? null,
       truncated: fileQuery.data?.truncated ?? false,
     });

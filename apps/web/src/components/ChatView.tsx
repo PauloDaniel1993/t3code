@@ -10489,7 +10489,11 @@ export default function ChatView(props: ChatViewProps) {
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
     ) : renderedRightPanelSurface?.kind === "map" && activeProject && activeWorkspaceRoot ? (
-      <StarMapSurface environmentId={activeProject.environmentId} cwd={activeWorkspaceRoot} />
+      <StarMapSurface
+        environmentId={activeProject.environmentId}
+        cwd={activeWorkspaceRoot}
+        workspace={fileWorkspace}
+      />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
         <DevicePanel
