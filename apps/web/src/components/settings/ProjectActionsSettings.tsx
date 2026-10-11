@@ -4,6 +4,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { projectFolders } from "@t3tools/shared/workspaceFolders";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useT3ProjectFileState } from "../../hooks/useT3ProjectFileScripts";
@@ -17,6 +18,7 @@ import {
   type ProjectScriptEditorRequest,
 } from "../projectScriptEditor";
 import { Button } from "../ui/button";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
   Menu,
   MenuGroup,
@@ -52,7 +54,9 @@ export function ProjectActionsSettings() {
     (candidate) =>
       JSON.stringify(candidate.settings.defaultProjectScripts) !== JSON.stringify(scripts),
   );
-  const [request, setRequest] = useState<ProjectScriptEditorRequest | null>(null);
+  const [request, setRequest] = useState<
+    (ProjectScriptEditorRequest & { folderScopeOwner: string | undefined }) | null
+  >(null);
   const memberById = new Map(
     isProjectScope ? scope.members.map((member) => [member.id, member]) : [],
   );
@@ -86,11 +90,40 @@ export function ProjectActionsSettings() {
   );
 
   // A project's t3.json can declare actions to import. Read it from the
-  // representative checkout; the imported action still fans out.
+  // representative checkout. Folder identities are environment-local, so
+  // selecting a secondary folder requires one selected environment.
   const representativeMember = target?.projectId ? memberById.get(target.projectId) : undefined;
+  const folderScopeOwner = representativeMember
+    ? `${representativeMember.environmentId}:${representativeMember.id}`
+    : undefined;
+  const canUseFolderScope =
+    isProjectScope &&
+    scope.environmentId !== null &&
+    scope.members.length === 1 &&
+    targets.length === 1;
+  const folders =
+    representativeMember &&
+    representativeConfig?.workspaceFileProjects === true &&
+    canUseFolderScope
+      ? projectFolders(representativeMember).map((folder) => ({
+          ...folder,
+          availability: representativeMember.folders?.find((entry) => entry.path === folder.path)
+            ?.availability,
+        }))
+      : [];
+  const [importFolder, setImportFolder] = useState<{ projectKey: string; path: string } | null>(
+    null,
+  );
+  const importFolderPath =
+    canUseFolderScope && importFolder?.projectKey === representativeMember?.physicalProjectKey
+      ? importFolder?.path
+      : undefined;
+  const selectedImportFolder = folders.find((folder) => folder.path === importFolderPath);
   const t3File = useT3ProjectFileState(
     representativeMember?.environmentId ?? EnvironmentId.make("none"),
-    representativeMember?.workspaceRoot ?? null,
+    importFolderPath === undefined
+      ? (representativeMember?.workspaceRoot ?? null)
+      : (selectedImportFolder?.path ?? null),
   );
   const importableScripts = useMemo(
     () =>
@@ -98,11 +131,12 @@ export function ProjectActionsSettings() {
         (fileScript) =>
           !scripts.some(
             (script) =>
-              script.command === fileScript.command ||
-              script.name.toLowerCase() === fileScript.name.toLowerCase(),
+              script.folderPath === importFolderPath &&
+              (script.command === fileScript.command ||
+                script.name.toLowerCase() === fileScript.name.toLowerCase()),
           ),
       ),
-    [scripts, t3File.scripts],
+    [importFolderPath, scripts, t3File.scripts],
   );
   const importFileScript = useCallback(
     async (fileScript: T3ProjectFileScript) => {
@@ -110,23 +144,29 @@ export function ProjectActionsSettings() {
         name: fileScript.name,
         command: fileScript.command,
         icon: fileScript.icon ?? "play",
-        runOnWorktreeCreate: fileScript.runOnWorktreeCreate ?? false,
-        waitForSetup: fileScript.runOnWorktreeCreate === true && fileScript.async === false,
+        runOnWorktreeCreate:
+          importFolderPath === undefined && (fileScript.runOnWorktreeCreate ?? false),
+        waitForSetup:
+          importFolderPath === undefined &&
+          fileScript.runOnWorktreeCreate === true &&
+          fileScript.async === false,
         keybinding: null,
         previewUrl: fileScript.previewUrl ?? null,
         autoOpenPreview: fileScript.previewUrl ? (fileScript.autoOpenPreview ?? false) : false,
+        folderPath: importFolderPath ?? null,
       };
       const result = await submit(null, payload);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         setRequest({
           scriptId: null,
+          folderScopeOwner,
           initial: payload,
           error: error instanceof Error ? error.message : "Failed to import action.",
         });
       }
     },
-    [submit],
+    [folderScopeOwner, importFolderPath, submit],
   );
 
   return (
@@ -140,6 +180,41 @@ export function ProjectActionsSettings() {
         onResetOverride={() => void persist(() => null)}
         control={
           <div className="flex flex-wrap items-center gap-1.5">
+            {folders.length > 1 || importFolderPath !== undefined ? (
+              <Select
+                value={importFolderPath ?? ""}
+                onValueChange={(value) =>
+                  setImportFolder(
+                    value && representativeMember
+                      ? { projectKey: representativeMember.physicalProjectKey, path: value }
+                      : null,
+                  )
+                }
+              >
+                <SelectTrigger size="sm" aria-label="Import actions from folder">
+                  <SelectValue>
+                    {selectedImportFolder?.label ??
+                      (importFolderPath ? "Unavailable folder" : "Primary folder")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  <SelectItem value="">Primary folder</SelectItem>
+                  {folders.slice(1).map((folder) => (
+                    <SelectItem
+                      key={folder.path ?? folder.label}
+                      value={folder.path ?? folder.label}
+                      disabled={
+                        !folder.path ||
+                        representativeMember?.folders?.find((entry) => entry.path === folder.path)
+                          ?.availability === "unavailable"
+                      }
+                    >
+                      {folder.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : null}
             {importableScripts.length > 0 ? (
               <Menu>
                 <MenuTrigger
@@ -185,7 +260,13 @@ export function ProjectActionsSettings() {
               size="xs"
               variant="outline"
               disabled={saving || targets.length === 0}
-              onClick={() => setRequest({ scriptId: null, initial: EMPTY_PROJECT_SCRIPT_INPUT })}
+              onClick={() =>
+                setRequest({
+                  scriptId: null,
+                  initial: EMPTY_PROJECT_SCRIPT_INPUT,
+                  folderScopeOwner,
+                })
+              }
             >
               <PlusIcon className="size-3.5" />
               Add action
@@ -201,9 +282,12 @@ export function ProjectActionsSettings() {
       ) : (
         <ProjectActionsList
           scripts={scripts}
+          folders={folders}
           keybindings={keybindings}
           disabled={saving}
-          onEdit={(script) => setRequest(editorRequestForScript(script, keybindings))}
+          onEdit={(script) =>
+            setRequest({ ...editorRequestForScript(script, keybindings), folderScopeOwner })
+          }
         />
       )}
       {t3File.status === "invalid" ? (
@@ -216,7 +300,18 @@ export function ProjectActionsSettings() {
       <ProjectScriptEditorDialog
         request={request}
         scripts={scripts}
-        onSubmit={submit}
+        folders={folders}
+        onSubmit={(id, input) => {
+          if (
+            input.folderPath &&
+            (!canUseFolderScope || request?.folderScopeOwner !== folderScopeOwner)
+          ) {
+            return Promise.reject(
+              new Error("Choose one checkout before saving an action with a folder scope."),
+            );
+          }
+          return submit(id, input);
+        }}
         onDelete={(id) =>
           void persist((current) => current.filter((script) => script.id !== id), id, null)
         }

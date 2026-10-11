@@ -5,6 +5,7 @@ import {
   type ProjectScript,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { isSamePath } from "@t3tools/shared/workspaceFolders";
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
 export interface ProjectScriptInput {
@@ -15,6 +16,7 @@ export interface ProjectScriptInput {
   readonly waitForSetup: boolean;
   readonly previewUrl: Exclude<ProjectScript["previewUrl"], undefined> | null;
   readonly autoOpenPreview: boolean;
+  readonly folderPath?: string | null;
 }
 
 export function buildProjectScript(id: string, input: ProjectScriptInput): ProjectScript {
@@ -24,6 +26,7 @@ export function buildProjectScript(id: string, input: ProjectScriptInput): Proje
     command: input.command,
     icon: input.icon,
     runOnWorktreeCreate: input.runOnWorktreeCreate,
+    ...(!input.runOnWorktreeCreate && input.folderPath ? { folderPath: input.folderPath } : {}),
     ...(input.runOnWorktreeCreate && input.waitForSetup ? { async: false } : {}),
     ...(input.previewUrl === null
       ? {}
@@ -32,6 +35,11 @@ export function buildProjectScript(id: string, input: ProjectScriptInput): Proje
           autoOpenPreview: input.autoOpenPreview,
         }),
   };
+}
+
+/** A pending terminal's cwd is unknown, so an Action must allocate its own terminal. */
+export function canReuseProjectScriptTerminal(existingCwd: string | undefined, cwd: string) {
+  return existingCwd !== undefined && isSamePath(existingCwd, cwd);
 }
 
 function normalizeScriptId(value: string): string {

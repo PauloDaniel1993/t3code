@@ -75,6 +75,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
     : null;
   const downloadFilename = buildProposedPlanMarkdownFilename(planMarkdown);
   const saveContents = normalizePlanMarkdownForExport(planMarkdown);
+  const saveCwd = cwd ?? workspaceRoot;
 
   const handleDownload = () => {
     downloadPlanAsTextFile(downloadFilename, saveContents);
@@ -85,7 +86,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   };
 
   const openSaveDialog = () => {
-    if (!workspaceRoot) {
+    if (!saveCwd) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -101,7 +102,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
 
   const handleSaveToWorkspace = () => {
     const relativePath = savePath.trim();
-    if (!workspaceRoot) {
+    if (!saveCwd) {
       return;
     }
     if (!relativePath) {
@@ -117,7 +118,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
       const result = await writeProjectFile({
         environmentId,
         input: {
-          cwd: workspaceRoot,
+          cwd: saveCwd,
           relativePath,
           contents: saveContents,
         },
@@ -165,7 +166,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
               {isCopied ? "Copied!" : "Copy to clipboard"}
             </MenuItem>
             <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
-            <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>
+            <MenuItem onClick={openSaveDialog} disabled={!saveCwd || isSavingToWorkspace}>
               Save to workspace
             </MenuItem>
           </MenuPopup>
@@ -222,7 +223,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
           <DialogHeader>
             <DialogTitle>Save plan to workspace</DialogTitle>
             <DialogDescription>
-              Enter a path relative to <code>{workspaceRoot ?? "the workspace"}</code>.
+              Enter a path relative to <code>{saveCwd ?? "the workspace"}</code>.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>

@@ -58,6 +58,7 @@ interface ProjectScriptsControlProps {
   scripts: ReadonlyArray<ProjectScript>;
   /** Scripts declared in the project's checked-in t3.json, offered for import. */
   fileScripts?: ReadonlyArray<T3ProjectFileScript>;
+  folders?: Parameters<typeof ProjectScriptEditorDialog>[0]["folders"];
   keybindings: ResolvedKeybindingsConfig;
   preferredScriptId?: string | null;
   onRunScript: (script: ProjectScript) => void;
@@ -75,6 +76,7 @@ export default function ProjectScriptsControl({
   onRequestMenuClose,
   scripts,
   fileScripts = NO_FILE_SCRIPTS,
+  folders,
   keybindings,
   preferredScriptId = null,
   onRunScript,
@@ -108,8 +110,9 @@ export default function ProjectScriptsControl({
         (fileScript) =>
           !scripts.some(
             (script) =>
-              script.command === fileScript.command ||
-              script.name.toLowerCase() === fileScript.name.toLowerCase(),
+              script.folderPath === undefined &&
+              (script.command === fileScript.command ||
+                script.name.toLowerCase() === fileScript.name.toLowerCase()),
           ),
       ),
     [fileScripts, scripts],
@@ -194,6 +197,13 @@ export default function ProjectScriptsControl({
             <ScriptIcon icon={script.icon} className="size-4" />
             <MenuItemLabel>
               {script.runOnWorktreeCreate ? `${script.name} (setup)` : script.name}
+              {script.folderPath ? (
+                <span className="ml-1 text-muted-foreground">
+                  ·{" "}
+                  {folders?.find((folder) => folder.path === script.folderPath)?.label ??
+                    script.folderPath}
+                </span>
+              ) : null}
             </MenuItemLabel>
             <span className="relative ms-auto flex h-6 min-w-6 items-center justify-end">
               {shortcutLabel &&
@@ -461,6 +471,7 @@ export default function ProjectScriptsControl({
       <ProjectScriptEditorDialog
         request={editorRequest}
         scripts={scripts}
+        folders={folders}
         onSubmit={submitScript}
         onDelete={(scriptId) => void onDeleteScript(scriptId)}
         onClose={() => setEditorRequest(null)}

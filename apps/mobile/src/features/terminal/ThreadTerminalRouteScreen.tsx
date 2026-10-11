@@ -1,5 +1,11 @@
 import { DEFAULT_TERMINAL_ID, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { type KnownTerminalSession } from "@t3tools/client-runtime/state/terminal";
+import { projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
+import {
+  resolveThreadWorkspace,
+  threadPrimaryPath,
+  type ResolvedWorkspaceFolder,
+} from "@t3tools/shared/workspaceFolders";
 import { SymbolView } from "../../components/AppSymbol";
 import { ScreenHeader } from "../../components/ScreenHeader";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -59,6 +65,7 @@ import {
 } from "./terminalBufferReplay";
 import {
   resolveTerminalOpenLocation,
+  stagePendingTerminalLaunch,
   takePendingTerminalLaunch,
   type PendingTerminalLaunch,
 } from "./terminalLaunchContext";
@@ -92,6 +99,8 @@ function TerminalHeader(props: {
   readonly onDecreaseFontSize: () => void;
   readonly onIncreaseFontSize: () => void;
   readonly onOpenNewTerminal: () => void;
+  readonly workspaceFolders: ReadonlyArray<ResolvedWorkspaceFolder>;
+  readonly onOpenTerminalHere: (folderPath: string) => void;
   readonly onSelectTerminal: (terminalId: string) => void;
 }) {
   return (
@@ -154,6 +163,24 @@ function TerminalHeader(props: {
                     subtitle: `Start another shell in ${basename(props.workspaceRoot) ?? "this workspace"}`,
                     onPress: props.onOpenNewTerminal,
                   },
+                  ...(props.workspaceFolders.length > 1
+                    ? [
+                        {
+                          id: "terminal-folder",
+                          title: "Open terminal in folder",
+                          icon: "folder",
+                          items: props.workspaceFolders.map((folder) => ({
+                            id: `terminal-folder:${folder.label}`,
+                            title: folder.label,
+                            subtitle: folder.isPrimary ? "Primary folder" : undefined,
+                            disabled: folder.effectivePath === null || !folder.folder.path,
+                            onPress: () => {
+                              if (folder.folder.path) props.onOpenTerminalHere(folder.folder.path);
+                            },
+                          })),
+                        },
+                      ]
+                    : []),
                 ],
               },
             ]
@@ -371,12 +398,14 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
       workspaceRoot: selectedThreadProject.workspaceRoot,
       threadShellWorktreePath: selectedThread.worktreePath ?? null,
       threadDetailWorktreePath: selectedThreadDetailWorktreePath,
+      thread: selectedThreadDetail?.projection.thread ?? selectedThread,
     });
   }, [
     activeKnownSession?.state.summary,
     pendingLaunch,
     selectedThread,
     selectedThreadDetailWorktreePath,
+    selectedThreadDetail,
     selectedThreadProject?.workspaceRoot,
   ]);
   const [initialLaunchLocationEntry, setInitialLaunchLocationEntry] = useState(() => ({
@@ -1073,6 +1102,74 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
     );
   }, [navigation, selectedThread, terminalId, terminalMenuSessions]);
 
+  const workspaceFolders = useMemo(
+    () =>
+      selectedThreadProject && selectedThread && selectedThreadDetail
+        ? resolveThreadWorkspace({
+            project: selectedThreadProject,
+            thread: selectedThreadDetail.projection.thread,
+          }).folders
+        : [],
+    [selectedThread, selectedThreadDetail, selectedThreadProject],
+  );
+  const handleOpenTerminalHere = useCallback(
+    (folderPath: string) => {
+      if (!selectedThread || !selectedThreadProject) return;
+      try {
+        const thread = selectedThreadDetail?.projection.thread ?? selectedThread;
+        const location = resolveTerminalOpenLocation({
+          terminalLocation: null,
+          activeSessionLocation: null,
+          workspaceRoot: selectedThreadProject.workspaceRoot,
+          threadShellWorktreePath: selectedThread.worktreePath,
+          threadDetailWorktreePath: selectedThreadDetailWorktreePath,
+          thread,
+          folderPath,
+        });
+        const nextId = nextOpenTerminalId({
+          listedTerminalIds: terminalMenuSessions.map((session) => session.terminalId),
+          activeRouteTerminalId: terminalId,
+        });
+        stagePendingTerminalLaunch({
+          target: {
+            environmentId: selectedThread.environmentId,
+            threadId: selectedThread.id,
+            terminalId: nextId,
+          },
+          launch: {
+            ...location,
+            env: projectScriptRuntimeEnv({
+              project: { cwd: selectedThreadProject.workspaceRoot },
+              thread,
+              folderPath,
+            }),
+          },
+        });
+        navigation.dispatch(
+          StackActions.replace("ThreadTerminal", {
+            environmentId: String(selectedThread.environmentId),
+            threadId: String(selectedThread.id),
+            terminalId: nextId,
+          }),
+        );
+      } catch (error) {
+        Alert.alert(
+          "Folder unavailable",
+          error instanceof Error ? error.message : "Could not open the folder.",
+        );
+      }
+    },
+    [
+      navigation,
+      selectedThread,
+      selectedThreadDetail,
+      selectedThreadDetailWorktreePath,
+      selectedThreadProject,
+      terminalId,
+      terminalMenuSessions,
+    ],
+  );
+
   const handleDecreaseFontSize = useCallback(() => {
     setTerminalFontSize(stepTerminalFontSize(fontSize, -1));
   }, [fontSize, setTerminalFontSize]);
@@ -1196,7 +1293,17 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
           status: terminal.status,
           hasRunningSubprocess: terminal.hasRunningSubprocess,
         }}
-        workspaceRoot={selectedThreadProject.workspaceRoot}
+        workspaceRoot={threadPrimaryPath(
+          selectedThreadDetail?.projection.thread ?? selectedThread,
+          selectedThreadProject,
+        )}
+        workspaceFolders={
+          routeEnvironmentId &&
+          serverConfigs.get(routeEnvironmentId)?.workspaceFileProjects === true
+            ? workspaceFolders
+            : []
+        }
+        onOpenTerminalHere={handleOpenTerminalHere}
         onCloseTerminal={handleCloseTerminal}
         onDecreaseFontSize={handleDecreaseFontSize}
         onIncreaseFontSize={handleIncreaseFontSize}

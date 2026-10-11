@@ -12,6 +12,7 @@ import { ProjectId } from "./baseSchemas.ts";
 import { OrchestrationProjectShell } from "./orchestrationProject.ts";
 
 import {
+  ProjectScript,
   ProjectFaviconPath,
   ProjectIconOverride,
   ProjectReadFileError,
@@ -29,6 +30,24 @@ import {
   ProjectWriteFileInput,
   WorkspaceScopeError,
 } from "./project.ts";
+
+const decodeProjectScript = Schema.decodeUnknownSync(ProjectScript);
+const encodeProjectScript = Schema.encodeSync(ProjectScript);
+describe("Action folder scope", () => {
+  const script = {
+    id: "test",
+    name: "Test",
+    command: "vp test",
+    icon: "test",
+    runOnWorktreeCreate: false,
+  };
+  it("preserves old scripts and round-trips an original folder identity", () => {
+    expect(decodeProjectScript(script)).not.toHaveProperty("folderPath");
+    const scoped = decodeProjectScript({ ...script, folderPath: "C:\\repos\\ui" });
+    expect(encodeProjectScript(scoped)).toHaveProperty("folderPath", "C:\\repos\\ui");
+    expect(() => decodeProjectScript({ ...script, folderPath: " " })).toThrow();
+  });
+});
 
 const decodeProjectCreatePayload = Schema.decodeUnknownSync(ProjectCreatePayload);
 const decodeProjectUpdatePayload = Schema.decodeUnknownSync(ProjectUpdatePayload);

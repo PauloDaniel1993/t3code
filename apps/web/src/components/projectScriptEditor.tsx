@@ -54,6 +54,7 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Switch } from "./ui/switch";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { Textarea } from "./ui/textarea";
 
 const SCRIPT_ICONS: Array<{ id: ProjectScriptIcon; label: string }> = [
@@ -64,6 +65,7 @@ const SCRIPT_ICONS: Array<{ id: ProjectScriptIcon; label: string }> = [
   { id: "build", label: "Build" },
   { id: "debug", label: "Debug" },
 ];
+const NO_FOLDERS = [] as const;
 
 export function ScriptIcon({
   icon,
@@ -92,6 +94,7 @@ export interface NewProjectScriptInput {
   previewUrl: string | null;
   /** When true, automatically open the preview panel pointed at `previewUrl`. */
   autoOpenPreview: boolean;
+  folderPath?: string | null;
 }
 
 export type ProjectScriptActionResult = AtomCommandResult<void, unknown>;
@@ -130,6 +133,7 @@ export function editorRequestForScript(
       keybinding: keybindingValueForCommand(keybindings, commandForProjectScript(script.id)),
       previewUrl: script.previewUrl ?? null,
       autoOpenPreview: script.autoOpenPreview ?? false,
+      folderPath: script.folderPath ?? null,
     },
   };
 }
@@ -142,6 +146,7 @@ export function editorRequestForScript(
 export function ProjectScriptEditorDialog({
   request,
   scripts,
+  folders = NO_FOLDERS,
   onSubmit,
   onDelete,
   onClose,
@@ -149,6 +154,13 @@ export function ProjectScriptEditorDialog({
   request: ProjectScriptEditorRequest | null;
   /** Existing scripts, used to derive a unique id for new scripts. */
   scripts: ReadonlyArray<ProjectScript>;
+  folders?:
+    | ReadonlyArray<{
+        readonly path?: string | undefined;
+        readonly label: string;
+        readonly availability?: "available" | "unavailable" | undefined;
+      }>
+    | undefined;
   onSubmit: (
     scriptId: string | null,
     input: NewProjectScriptInput,
@@ -166,6 +178,7 @@ export function ProjectScriptEditorDialog({
   const [keybinding, setKeybinding] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
   const [autoOpenPreview, setAutoOpenPreview] = useState(false);
+  const [folderPath, setFolderPath] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [savingRequest, setSavingRequest] = useState<ProjectScriptEditorRequest | null>(null);
@@ -197,6 +210,7 @@ export function ProjectScriptEditorDialog({
     setKeybinding(request.initial.keybinding ?? "");
     setPreviewUrl(request.initial.previewUrl ?? "");
     setAutoOpenPreview(request.initial.autoOpenPreview);
+    setFolderPath(request.initial.folderPath ?? null);
     setValidationError(request.error ?? null);
     setSavingRequest(null);
   }, [request]);
@@ -257,6 +271,7 @@ export function ProjectScriptEditorDialog({
         keybinding: keybindingRule?.key ?? null,
         previewUrl: trimmedPreviewUrl.length > 0 ? trimmedPreviewUrl : null,
         autoOpenPreview: trimmedPreviewUrl.length > 0 ? autoOpenPreview : false,
+        folderPath: runOnWorktreeCreate ? null : folderPath,
       } satisfies NewProjectScriptInput;
     } catch (error) {
       setValidationError(error instanceof Error ? error.message : "Failed to save action.");
@@ -384,6 +399,41 @@ export function ProjectScriptEditorDialog({
                     onChange={(event) => setCommand(event.target.value)}
                   />
                 </div>
+                {folders.length > 1 || folderPath !== null ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="script-folder">Workspace folder</Label>
+                    <Select
+                      value={runOnWorktreeCreate ? "" : (folderPath ?? "")}
+                      onValueChange={(value) => setFolderPath(value || null)}
+                      disabled={runOnWorktreeCreate}
+                    >
+                      <SelectTrigger id="script-folder">
+                        <SelectValue>
+                          {runOnWorktreeCreate || folderPath === null
+                            ? "Primary folder"
+                            : (folders.find((folder) => folder.path === folderPath)?.label ??
+                              `Unavailable folder: ${folderPath}`)}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup>
+                        <SelectItem value="">Primary folder</SelectItem>
+                        {folders.map((folder) => (
+                          <SelectItem
+                            key={folder.path ?? folder.label}
+                            value={folder.path ?? folder.label}
+                            disabled={!folder.path || folder.availability === "unavailable"}
+                          >
+                            {folder.label}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Setup runs once in the primary folder. Other actions use this folder in the
+                      thread's workspace.
+                    </p>
+                  </div>
+                ) : null}
                 <div className="space-y-1.5">
                   <Label htmlFor="script-preview-url">Preview URL (optional)</Label>
                   <Input
