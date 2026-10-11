@@ -1,4 +1,6 @@
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
+import type { EditorWorkspace } from "@t3tools/client-runtime/editor-target";
+import { useEditorTarget } from "./useEditorTarget";
 import {
   buildRemoteOpenUrl,
   EditorId,
@@ -204,6 +206,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   keybindings,
   availableEditors,
   openInCwd,
+  editorWorkspace,
   presentation = "toolbar",
   compact = false,
   enableShortcut = true,
@@ -213,6 +216,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
+  editorWorkspace?: EditorWorkspace | undefined;
   presentation?: "toolbar" | "menu";
   compact?: boolean;
   enableShortcut?: boolean;
@@ -222,6 +226,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   const ActionGroup = isPanel ? "div" : Group;
   const panelAnchorRef = useRef<HTMLDivElement | null>(null);
   const openInEditorMutation = useAtomCommand(shellEnvironment.openInEditor, "open in editor");
+  const resolveTarget = useEditorTarget(environmentId, editorWorkspace);
   const remote = useRemoteOpenState(environmentId);
   const remoteCapableEditors = useRemoteCapableEditors();
   const [remoteHintSeen, markRemoteHintSeen] = useRemoteOpenHint();
@@ -237,16 +242,18 @@ export const OpenInPicker = memo(function OpenInPicker({
   const primaryOption = options.find(({ value }) => value === preferredEditor) ?? null;
 
   const openInEditor = useCallback(
-    (editorId: EditorId | null) => {
+    async (editorId: EditorId | null) => {
       if (!openInCwd) return;
       const editor = editorId ?? preferredEditor;
       if (!editor) return;
       if (remote.mode === "remote-unavailable") return;
+      const target = await resolveTarget(openInCwd, editor);
+      if (target === null) return;
       if (remote.mode === "remote-links") {
         const url = buildRemoteOpenUrl({
           editor,
           host: remote.host.host,
-          absolutePath: openInCwd,
+          absolutePath: target,
         });
         if (url === undefined) return;
         // Only record hint-seen/preferred when the shell actually accepted
@@ -261,7 +268,7 @@ export const OpenInPicker = memo(function OpenInPicker({
       const result = openInEditorMutation({
         environmentId,
         input: {
-          cwd: openInCwd,
+          cwd: target,
           editor,
         },
       });
@@ -274,6 +281,7 @@ export const OpenInPicker = memo(function OpenInPicker({
       openInCwd,
       openInEditorMutation,
       preferredEditor,
+      resolveTarget,
       remote,
       setPreferredEditor,
     ],

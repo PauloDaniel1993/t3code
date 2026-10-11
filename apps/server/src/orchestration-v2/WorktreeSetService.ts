@@ -8,6 +8,7 @@ import {
   type ProjectId,
   ThreadId,
   VcsThreadWorktreesError,
+  WorkspaceFolderEntry,
   type WorktreeSetupStageStatus,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName, sanitizeBranchFragment } from "@t3tools/shared/git";
@@ -225,6 +226,10 @@ export class WorktreeSetService extends Context.Service<
       readonly branch: string;
       readonly members?: ReadonlyArray<string> | undefined;
     }) => Effect.Effect<ReadonlyArray<WorktreeLocation>, VcsThreadWorktreesError | GitCommandError>;
+    /** Rewrites the editor workspace from the frozen folders at their current places in the set. */
+    readonly editorWorkspaceFile: (
+      threadId: ThreadId,
+    ) => Effect.Effect<string, VcsThreadWorktreesError>;
     /**
      * Removes every worktree of a thread, deepest first, then what the set
      * leaves behind in its session directory, and returns the worktrees it
@@ -240,6 +245,12 @@ export class WorktreeSetService extends Context.Service<
 
 const failure = (threadId: ThreadId, detail: string, cause?: unknown) =>
   new VcsThreadWorktreesError({ threadId, detail, ...(cause === undefined ? {} : { cause }) });
+
+const encodeEditorWorkspace = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ folders: Schema.Array(WorkspaceFolderEntry) }), {
+    space: 2,
+  }),
+);
 
 // A backslash separates segments only in Windows paths.
 const depth = (path: string) =>
@@ -988,6 +999,108 @@ const make = Effect.gen(function* () {
       ? `${session}.code-workspace`
       : path.join(session, `${path.basename(session)}.code-workspace`);
 
+  const primaryWorktreeRoot = Effect.fn("WorktreeSetService.primaryWorktreeRoot")(function* (
+    cwd: string,
+  ) {
+    const probe = yield* folderResolver.probe(cwd, { vcs: true });
+    if (probe.vcs == null) return undefined;
+    // Git's prefix measures physical depth. Preserve a lexical root only
+    // when it resolves to the same checkout; subfolder aliases need the real root.
+    const root = probe.vcs.checkoutPrefix
+      .split("/")
+      .filter(Boolean)
+      .reduce((root) => path.dirname(root), path.resolve(cwd));
+    const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => undefined));
+    return realRoot !== undefined && isSamePath(realRoot, probe.vcs.checkoutRoot)
+      ? root
+      : probe.vcs.checkoutRoot;
+  });
+
+  const isLinkedWorkspaceFile = Effect.fn("WorktreeSetService.isLinkedWorkspaceFile")(function* (
+    target: string,
+    sources: Iterable<string>,
+  ) {
+    const targetPath = yield* fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => target));
+    for (const source of sources) {
+      const sourcePath = yield* fileSystem
+        .realPath(source)
+        .pipe(Effect.orElseSucceed(() => source));
+      if (isSamePath(target, source) || isSamePath(targetPath, sourcePath)) return true;
+    }
+    return false;
+  });
+
+  const editorWorkspaceFile: WorktreeSetService["Service"]["editorWorkspaceFile"] = Effect.fn(
+    "WorktreeSetService.editorWorkspaceFile",
+  )(function* (threadId) {
+    const fail = (detail: string, cause?: unknown) => failure(threadId, detail, cause);
+    const thread = yield* projections
+      .getThread(threadId)
+      .pipe(Effect.mapError((cause) => fail("Could not read the thread.", cause)));
+    if (
+      thread.deletedAt !== null ||
+      thread.worktreePath === null ||
+      thread.workspaceFolders === undefined ||
+      thread.workspaceFolders.length === 0
+    ) {
+      return yield* fail("This thread has no workspace folders in a worktree.");
+    }
+    let members: ReadonlyArray<WorktreeLocation> = thread.worktrees ?? [];
+    if (members.length === 0) {
+      // Picking a single worktree isolates only the primary. Find its checkout
+      // root so a subfolder cwd cannot put the generated file inside git.
+      const root = yield* primaryWorktreeRoot(thread.worktreePath);
+      if (root === undefined) {
+        return yield* fail("The primary worktree is unavailable.");
+      }
+      members = [
+        {
+          repositoryRoot:
+            thread.workspaceFolders[0]!.checkoutRoot ?? thread.workspaceFolders[0]!.path!,
+          path: root,
+        },
+      ];
+    }
+    const session =
+      members.length === 1 ? members[0]!.path : commonAncestor(members.map(({ path }) => path));
+    if (session === undefined) {
+      return yield* fail("The thread's worktrees have no session directory.");
+    }
+    const target = editorWorkspaceFilePath(session, members);
+    const project = yield* projects
+      .getById(thread.projectId, { includeDeleted: true })
+      .pipe(Effect.mapError((cause) => fail("Could not read the thread's project.", cause)));
+    const projectShells = yield* projects
+      .listShells()
+      .pipe(Effect.mapError((cause) => fail("Could not read the linked projects.", cause)));
+    const sources = new Set([
+      ...(Option.isSome(project) && project.value.workspaceFile != null
+        ? [project.value.workspaceFile]
+        : []),
+      ...projectShells.flatMap((project) =>
+        project.workspaceFile == null ? [] : [project.workspaceFile],
+      ),
+    ]);
+    if (yield* isLinkedWorkspaceFile(target, sources)) {
+      return yield* fail("The generated editor workspace would overwrite the linked source file.");
+    }
+    const primaryPath = thread.worktreePath;
+    const folders = thread.workspaceFolders.map((folder, index) => ({
+      name: folder.name,
+      ...(folder.uri === undefined
+        ? { path: index === 0 ? primaryPath : snapshotFolderPath(folder, thread.worktrees ?? []) }
+        : { uri: folder.uri }),
+    }));
+    yield* fileSystem
+      .writeFileString(target, `${encodeEditorWorkspace({ folders })}\n`)
+      .pipe(
+        Effect.mapError((cause) =>
+          fail(`Could not write the editor workspace file at ${target}.`, cause),
+        ),
+      );
+    return target;
+  });
+
   /**
    * What a removed set leaves in T3's worktrees directory: the generated
    * editor workspace file, and the directories git made on the way to each
@@ -995,6 +1108,7 @@ const make = Effect.gen(function* () {
    */
   const removeSessionLeftovers = Effect.fn("WorktreeSetService.removeSessionLeftovers")(function* (
     members: ReadonlyArray<WorktreeLocation>,
+    sourceFiles: ReadonlyArray<string>,
   ) {
     const session =
       members.length === 1 ? members[0]!.path : commonAncestor(members.map(({ path }) => path));
@@ -1005,9 +1119,10 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
-    yield* fileSystem
-      .remove(editorWorkspaceFilePath(session, members), { force: true })
-      .pipe(Effect.ignore);
+    const target = editorWorkspaceFilePath(session, members);
+    if (!(yield* isLinkedWorkspaceFile(target, sourceFiles))) {
+      yield* fileSystem.remove(target, { force: true }).pipe(Effect.ignore);
+    }
     const directories = new Set<string>();
     for (const member of members) {
       let directory = path.dirname(member.path);
@@ -1044,10 +1159,11 @@ const make = Effect.gen(function* () {
         if (Option.isNone(project)) {
           return yield* fail("The thread's project no longer exists.");
         }
+        const root = yield* primaryWorktreeRoot(thread.worktreePath);
         members = [
           {
             repositoryRoot: thread.workspaceFolders?.[0]?.path ?? project.value.workspaceRoot,
-            path: thread.worktreePath,
+            path: root ?? thread.worktreePath,
           },
         ];
       }
@@ -1109,7 +1225,12 @@ const make = Effect.gen(function* () {
           ...(input.force === undefined ? {} : { force: input.force }),
         });
       }
-      yield* removeSessionLeftovers(members);
+      yield* removeSessionLeftovers(
+        members,
+        projectShells.flatMap((project) =>
+          project.workspaceFile == null ? [] : [project.workspaceFile],
+        ),
+      );
       return ordered;
     },
   );
@@ -1124,6 +1245,7 @@ const make = Effect.gen(function* () {
     resolveForReuse,
     createForThread,
     switchBranch,
+    editorWorkspaceFile,
     remove,
   });
 });
