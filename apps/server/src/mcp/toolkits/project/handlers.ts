@@ -6,11 +6,15 @@ import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
+import { expectedProjectMutationFailure } from "../../../project/ProjectMutation.ts";
+import { projectFolders } from "@t3tools/shared/workspaceFolders";
+import type { Project as ProjectRecord } from "@t3tools/contracts";
 import { newCommandId, readCaller, readMutationCaller, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
 function projectFailure(error: Project.ProjectServiceError) {
-  if (error._tag === "ProjectOperationError") return unavailable();
+  const detail = expectedProjectMutationFailure(error);
+  if (detail === undefined) return unavailable();
   const message =
     error._tag === "ProjectNotFoundError"
       ? "The project was not found."
@@ -19,7 +23,16 @@ function projectFailure(error: Project.ProjectServiceError) {
         : error._tag === "ProjectNotEmptyError"
           ? "The project is not empty; force=true is required to delete it."
           : error.message;
-  return new OrchestratorMcpFailure({ code: "invalid_request", message });
+  return new OrchestratorMcpFailure({ ...detail, code: "invalid_request", message });
+}
+
+/** MCP inventories include a plain project's derived folder without enlarging client shells. */
+function projectResult(project: ProjectRecord) {
+  return {
+    ...project,
+    workspaceFile: project.workspaceFile ?? null,
+    folders: projectFolders(project),
+  };
 }
 
 const access = Effect.gen(function* () {
@@ -124,7 +137,10 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
       const rows = snapshot.projects.filter((project) => project.deletedAt === null);
       const start = input.cursor ?? 0,
         end = start + (input.limit ?? 20);
-      return { projects: rows.slice(start, end), nextCursor: end < rows.length ? end : null };
+      return {
+        projects: rows.slice(start, end).map(projectResult),
+        nextCursor: end < rows.length ? end : null,
+      };
     }),
   t3_project_read: (input) =>
     Effect.gen(function* () {
@@ -135,11 +151,37 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
           code: "invalid_request",
           message: "The project was not found.",
         });
-      return result.value;
+      return projectResult(result.value);
     }),
-  t3_project_create: ({ workspaceRoot, ...input }) =>
+  t3_project_create: ({ workspaceRoot, workspaceFilePath, ...input }) =>
     Effect.gen(function* () {
       const projects = yield* mutation;
+      if (workspaceFilePath !== undefined) {
+        if (
+          workspaceRoot !== undefined ||
+          input.createWorkspaceRootIfMissing !== undefined ||
+          input.scripts !== undefined ||
+          input.defaultModelSelection !== undefined
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "File mode accepts only workspaceFilePath and an optional title.",
+          });
+        const commandId = yield* newCommandId();
+        return yield* projects
+          .importWorkspaceFile({
+            workspaceFilePath,
+            ...(input.title === undefined ? {} : { title: input.title }),
+            commandId,
+            projectId: ProjectId.make(commandId),
+          })
+          .pipe(Effect.mapError(projectFailure), Effect.map(projectResult));
+      }
+      if (input.title === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "A title is required unless workspaceFilePath is supplied.",
+        });
       if (workspaceRoot === undefined) {
         // Project creation records no model default (only an update does), so
         // reject what this mode would otherwise drop silently.
@@ -171,28 +213,34 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
             ),
           );
         return {
-          ...project,
+          ...projectResult(project),
           ...(created.commitError === undefined ? {} : { commitError: created.commitError }),
         };
       }
       const commandId = yield* newCommandId();
       return yield* projects
-        .create({ ...input, workspaceRoot, commandId, projectId: ProjectId.make(commandId) })
-        .pipe(Effect.mapError(projectFailure));
+        .create({
+          ...input,
+          title: input.title,
+          workspaceRoot,
+          commandId,
+          projectId: ProjectId.make(commandId),
+        })
+        .pipe(Effect.mapError(projectFailure), Effect.map(projectResult));
     }),
   t3_project_update: (input) =>
     Effect.gen(function* () {
       const projects = yield* mutation;
       return yield* projects
         .update({ ...input, commandId: yield* newCommandId() })
-        .pipe(Effect.mapError(projectFailure));
+        .pipe(Effect.mapError(projectFailure), Effect.map(projectResult));
     }),
   t3_project_delete: (input) =>
     Effect.gen(function* () {
       const projects = yield* mutation;
       return yield* projects
         .delete({ ...input, commandId: yield* newCommandId() })
-        .pipe(Effect.mapError(projectFailure));
+        .pipe(Effect.mapError(projectFailure), Effect.map(projectResult));
     }),
   t3_project_clone: (input) =>
     Effect.gen(function* () {

@@ -11,6 +11,8 @@ import {
   ProviderInteractionMode,
   Project,
   ProjectCreatePayload,
+  ProjectImportWorkspaceFilePayload,
+  ProjectWorkspaceFolder,
   ProjectUpdatePayload,
   ProjectId,
   OrchestratorMcpFailure,
@@ -29,8 +31,14 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
+const ProjectResult = Schema.Struct({
+  ...Project.fields,
+  workspaceFile: Schema.NullOr(TrimmedNonEmptyString),
+  folders: Schema.Array(ProjectWorkspaceFolder),
+});
+
 const shared = {
-  success: Project,
+  success: ProjectResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
   dependencies: [
@@ -43,13 +51,13 @@ const shared = {
 const ProjectListTool = Tool.make("t3_project_list", {
   ...shared,
   description:
-    "List registered projects in this environment. Pages use the current project snapshot and may shift between calls.",
+    "List registered projects in this environment, one row per project, including the linked workspaceFile (null for plain projects) and ordered folders with available folder facts. workspaceRoot is the primary folder. Pages use the current project snapshot and may shift between calls.",
   parameters: Schema.Struct({
     cursor: Schema.optional(NonNegativeInt),
     limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
   }),
   success: Schema.Struct({
-    projects: Schema.Array(Project),
+    projects: Schema.Array(ProjectResult),
     nextCursor: Schema.NullOr(NonNegativeInt),
   }),
 })
@@ -58,7 +66,7 @@ const ProjectListTool = Tool.make("t3_project_list", {
 const ProjectReadTool = Tool.make("t3_project_read", {
   ...shared,
   description:
-    "Read a registered project in this environment, including its workspace and saved scripts.",
+    "Read a registered project in this environment, including its saved scripts, linked workspaceFile (null for plain projects), ordered folders with availability and repository facts when known, and workspaceFileStatus when available. workspaceRoot is the primary folder. Reading also works when folders are unavailable.",
   parameters: Schema.Struct({ projectId: ProjectId }),
 })
   .annotate(Tool.Readonly, true)
@@ -66,18 +74,20 @@ const ProjectReadTool = Tool.make("t3_project_read", {
 const ProjectCreateTool = Tool.make("t3_project_create", {
   ...shared,
   description:
-    "Register a project directory through the existing project service. Set createWorkspaceRootIfMissing to create a directory. Omit workspaceRoot to start a new project from just its title: the app makes a Git repository for it in its own projects folder, with a README, an icon, and a first commit (commitError says why a commit failed; the project exists either way). Each call creates a new request; an existing registered workspace is rejected. Clone separately with t3_project_clone when needed.",
+    "Import a VS Code .code-workspace file using workspaceFilePath, a path on this environment's server, when workspace-file projects are enabled. File mode accepts only workspaceFilePath and optional title (defaults to the filename), and never creates directories or repositories. Otherwise register workspaceRoot with a required title; set createWorkspaceRootIfMissing to create the directory. Omit both paths to start a new project from just its required title: the app makes a Git repository in its own projects folder, with a README, an icon, and a first commit (commitError says why a commit failed; the project exists either way). Results include workspaceFile and ordered folders; workspaceRoot is the primary folder. Each call creates a new request; an existing registered file or plain directory is rejected with conflictingProjectId. Clone separately with t3_project_clone when needed.",
   parameters: Schema.Struct({
     ...ProjectCreatePayload.fields,
+    title: ProjectImportWorkspaceFilePayload.fields.title,
     workspaceRoot: Schema.optional(ProjectCreatePayload.fields.workspaceRoot),
+    workspaceFilePath: Schema.optional(ProjectImportWorkspaceFilePayload.fields.workspaceFilePath),
   }),
-  success: Schema.Struct({ ...Project.fields, commitError: Schema.optional(Schema.String) }),
+  success: Schema.Struct({ ...ProjectResult.fields, commitError: Schema.optional(Schema.String) }),
   dependencies: [...shared.dependencies, ManagedProjectFolders.ManagedProjectFolders],
 }).annotate(Tool.Destructive, true);
 const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
   description:
-    "Update a registered project's settings. Omitted fields are preserved. Uses the same project service as the app.",
+    "Update a registered project's settings. Omitted fields are preserved. Send workspaceFilePath on its own to link a plain project (the file's first folder must match workspaceRoot), relink to a different file, or unlink with null. Sending the project's current workspaceFile path is Refresh: reread the file, reprobe folders, and restart its watch. Refresh succeeds for a broken or missing file, preserving saved folders and returning diagnostics in workspaceFileStatus. Linking, relinking and refreshing require workspace-file projects to be enabled. Unlink keeps the stored primary folder, history and thread bindings, and may conflict with a plain project at that folder. A linked project's workspaceRoot cannot be edited directly. Results include workspaceFile and ordered folders; workspaceRoot follows the file's primary folder. Uses the same project service as the app.",
   parameters: Schema.Struct({ projectId: ProjectId, ...ProjectUpdatePayload.fields }),
 }).annotate(Tool.Destructive, true);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {
