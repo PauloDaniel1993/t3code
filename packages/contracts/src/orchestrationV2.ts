@@ -1899,6 +1899,8 @@ export const OrchestrationV2ShellStreamItem = Schema.Union([
      * snapshots. Older clients ignore the field.
      */
     resolvedRepositoryIdentityRoots: Schema.optionalKey(Schema.Array(Schema.String)),
+    /** Linked projects whose folder facts or workspace-file status changed in this refresh. */
+    enrichedProjectIds: Schema.optionalKey(Schema.Array(ProjectId)),
   }),
   Schema.Struct({
     kind: Schema.Literal("project.updated"),

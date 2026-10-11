@@ -178,10 +178,12 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           ? mergeShellSnapshotProjects(
               Option.getOrNull(next.snapshot),
               item.snapshot,
-              item.resolvedRepositoryIdentityRoots === undefined
+              item.resolvedRepositoryIdentityRoots === undefined &&
+                item.enrichedProjectIds === undefined
                 ? undefined
                 : {
-                    resolvedRepositoryIdentityRoots: item.resolvedRepositoryIdentityRoots,
+                    resolvedRepositoryIdentityRoots: item.resolvedRepositoryIdentityRoots ?? [],
+                    enrichedProjectIds: item.enrichedProjectIds ?? [],
                   },
             )
           : Option.match(next.snapshot, {

@@ -1,8 +1,10 @@
-import type {
-  ProjectId,
-  ProjectWorkspaceFolder,
-  RepositoryIdentity,
-  WorkspaceFileStatus,
+import {
+  type ProjectId,
+  type OrchestrationProjectShell,
+  type ProjectWorkspaceFolder,
+  type RepositoryIdentity,
+  type WorkspaceFileStatus,
+  WorkspaceFileStatus as WorkspaceFileStatusSchema,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -15,6 +17,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
@@ -36,11 +39,16 @@ export interface ProjectEnrichment {
   readonly repositoryIdentityResolved: boolean;
 }
 
-export interface ProjectEnrichmentChange {
-  readonly workspaceRoot: string;
-  readonly enrichment: ProjectEnrichment;
-  readonly repositoryIdentityResolved: boolean;
-}
+export type ProjectEnrichmentChange =
+  | {
+      readonly workspaceRoot: string;
+      readonly enrichment: ProjectEnrichment;
+      readonly repositoryIdentityResolved: boolean;
+    }
+  | { readonly folderPath: string }
+  | { readonly projectId: ProjectId };
+
+const sameWorkspaceFileStatus = Schema.toEquivalence(Schema.UndefinedOr(WorkspaceFileStatusSchema));
 
 export interface ProjectEnrichmentServiceOptions {
   readonly cacheCapacity?: number;
@@ -75,7 +83,16 @@ export class ProjectEnrichmentService extends Context.Service<
      */
     readonly getAvailableFolders: (
       folders: ReadonlyArray<ProjectWorkspaceFolder>,
+      options?: { readonly request?: boolean },
     ) => Effect.Effect<ReadonlyArray<ProjectWorkspaceFolder>>;
+    /** Hydrate shell metadata without awaiting filesystem work. Refreshes can opt out of requests. */
+    readonly enrichShell: (
+      shell: OrchestrationProjectShell,
+      options?: { readonly request?: boolean },
+    ) => Effect.Effect<{
+      readonly project: OrchestrationProjectShell;
+      readonly repositoryIdentityResolved: boolean;
+    }>;
     /** A linked project's workspace-file sync health; undefined until its file is read. */
     readonly getWorkspaceFileStatus: (
       projectId: ProjectId,
@@ -132,9 +149,17 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
   const successTtl = options.successTtl ?? DEFAULT_SUCCESS_TTL;
   const failureTtl = options.failureTtl ?? DEFAULT_FAILURE_TTL;
+  const repositoryIdentityRefreshes = new Set<string>();
 
   const repositoryIdentityCache = yield* Cache.makeWith(
-    (workspaceRoot: string) => Effect.exit(repositoryIdentityResolver.resolve(workspaceRoot)),
+    (workspaceRoot: string) =>
+      Effect.suspend(() =>
+        Effect.exit(
+          repositoryIdentityResolver.resolve(workspaceRoot, {
+            refresh: repositoryIdentityRefreshes.delete(workspaceRoot),
+          }),
+        ),
+      ),
     {
       capacity: cacheCapacity,
       timeToLive: Exit.match({
@@ -177,6 +202,42 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     PubSub.sliding<ProjectEnrichmentChange>(256),
     (pubsub) => PubSub.shutdown(pubsub),
   );
+  // Keep the last published facts across TTL expiry, bounded like the display cache.
+  const publishedFolderFacts = new Map<string, WorkspaceFolderResolver.WorkspaceFolderProbe>();
+  const publishFolderFacts = Effect.fn("ProjectEnrichmentService.publishFolderFacts")(function* (
+    probe: WorkspaceFolderResolver.WorkspaceFolderProbe,
+  ) {
+    const previous = publishedFolderFacts.get(probe.path);
+    const checkoutChanged =
+      previous === undefined
+        ? yield* Cache.has(repositoryIdentityCache, probe.path)
+        : previous.vcs?.checkoutRoot !== probe.vcs?.checkoutRoot;
+    if (checkoutChanged) {
+      // Both this cache and the resolver cache are keyed by folder path. A
+      // folder gaining or leaving a nested checkout changes that path's owner.
+      // If its previous probe was evicted, a warm identity still needs checking.
+      repositoryIdentityRefreshes.add(probe.path);
+      yield* Cache.invalidate(repositoryIdentityCache, probe.path);
+    }
+    publishedFolderFacts.delete(probe.path);
+    publishedFolderFacts.set(probe.path, probe);
+    if (publishedFolderFacts.size > cacheCapacity) {
+      const oldest = publishedFolderFacts.keys().next().value!;
+      publishedFolderFacts.delete(oldest);
+      repositoryIdentityRefreshes.delete(oldest);
+    }
+    if (
+      previous !== undefined &&
+      previous.availability === probe.availability &&
+      previous.unavailableReason === probe.unavailableReason &&
+      previous.vcs?.checkoutRoot === probe.vcs?.checkoutRoot &&
+      (previous.vcs === null) === (probe.vcs === null)
+    )
+      return;
+    yield* PubSub.publish(changes, { folderPath: probe.path });
+    if (checkoutChanged && probe.vcs != null)
+      yield* requestLane(repositoryIdentityLane, probe.path, "repositoryIdentity");
+  });
 
   const removePending = (lane: EnrichmentWorkLane, workspaceRoot: string) =>
     Ref.update(lane.pendingRoots, (current) => {
@@ -211,7 +272,11 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
 
   const resolveRepositoryIdentity = Effect.fn("ProjectEnrichmentService.resolveRepositoryIdentity")(
     function* (workspaceRoot: string) {
-      const repositoryIdentity = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
+      let repositoryIdentity = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
+      // Invalidation can race an in-flight lookup. Its old result is detached
+      // from the cache; finish the replacement before publishing completion.
+      while (repositoryIdentityRefreshes.has(workspaceRoot))
+        repositoryIdentity = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
       yield* logFailure(workspaceRoot, "repositoryIdentity", repositoryIdentity);
       const faviconPath = yield* Cache.getSuccess(faviconCache, workspaceRoot);
       const repositoryIdentityResolved = Exit.isSuccess(repositoryIdentity);
@@ -240,7 +305,17 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   ) => {
     const worker = Queue.take(lane.queue).pipe(
       Effect.flatMap((workspaceRoot) =>
-        resolve(workspaceRoot).pipe(Effect.ensuring(removePending(lane, workspaceRoot))),
+        resolve(workspaceRoot).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              yield* removePending(lane, workspaceRoot);
+              // A checkout change can arrive after completion is published but
+              // before this lane releases its reservation. Do not drop its retry.
+              if (lane === repositoryIdentityLane && repositoryIdentityRefreshes.has(workspaceRoot))
+                yield* requestLane(lane, workspaceRoot, "repositoryIdentity");
+            }),
+          ),
+        ),
       ),
       Effect.forever,
     );
@@ -248,15 +323,6 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
       discard: true,
     });
   };
-  yield* Effect.all(
-    [
-      startWorkers(repositoryIdentityLane, resolveRepositoryIdentity),
-      startWorkers(faviconLane, resolveFavicon),
-      startWorkers(folderLane, (path) => Cache.get(folderCache, path).pipe(Effect.asVoid)),
-    ],
-    { concurrency: "unbounded", discard: true },
-  );
-
   const requestLane = Effect.fn("ProjectEnrichmentService.requestLane")(function* (
     lane: EnrichmentWorkLane,
     workspaceRoot: string,
@@ -324,6 +390,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         (path) =>
           folderResolver.probe(path, { vcs: true }).pipe(
             Effect.tap((probe) => Cache.set(folderCache, path, probe)),
+            Effect.tap(publishFolderFacts),
             Effect.map((probe) => [path, probe] as const),
           ),
         { concurrency: FOLDER_PROBE_CONCURRENCY },
@@ -335,16 +402,16 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   // A folder's own repository identity, cached by folder path like a root's.
   const availableRepositoryIdentity = Effect.fn(
     "ProjectEnrichmentService.availableRepositoryIdentity",
-  )(function* (path: string) {
+  )(function* (path: string, request = true) {
     const cached = yield* Cache.getSuccess(repositoryIdentityCache, path);
     if (isSuccessfullyResolved(cached)) return availableValue(cached);
-    yield* requestLane(repositoryIdentityLane, path, "repositoryIdentity");
+    if (request) yield* requestLane(repositoryIdentityLane, path, "repositoryIdentity");
     return undefined;
   });
 
   const getAvailableFolders: ProjectEnrichmentService["Service"]["getAvailableFolders"] = Effect.fn(
     "ProjectEnrichmentService.getAvailableFolders",
-  )(function* (folders) {
+  )(function* (folders, options) {
     return yield* Effect.forEach(folders, (folder, index) =>
       Effect.gen(function* (): Effect.fn.Return<ProjectWorkspaceFolder> {
         if (folder.path === undefined) {
@@ -359,10 +426,11 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         }
         const cached = yield* Cache.getSuccess(folderCache, folder.path);
         if (Option.isNone(cached)) {
-          yield* requestLane(folderLane, folder.path, "workspaceFolder");
-          return folder;
+          if (options?.request !== false)
+            yield* requestLane(folderLane, folder.path, "workspaceFolder");
         }
-        const probe = cached.value;
+        const probe = Option.getOrUndefined(cached) ?? publishedFolderFacts.get(folder.path);
+        if (probe === undefined) return folder;
         if (probe.availability === "unavailable") {
           return {
             ...folder,
@@ -381,7 +449,9 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         }
         // The primary's identity is the project's own `repositoryIdentity`.
         const repositoryIdentity =
-          index === 0 ? undefined : yield* availableRepositoryIdentity(folder.path);
+          index === 0
+            ? undefined
+            : yield* availableRepositoryIdentity(folder.path, options?.request !== false);
         return {
           ...folder,
           availability: "available",
@@ -402,12 +472,39 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     projectId,
     status,
   ) =>
-    Ref.update(workspaceFileStatuses, (current) => {
-      const next = new Map(current);
-      if (status === undefined) next.delete(projectId);
-      else next.set(projectId, status);
-      return next;
+    Effect.gen(function* () {
+      const changed = yield* Ref.modify(workspaceFileStatuses, (current) => {
+        if (sameWorkspaceFileStatus(current.get(projectId), status))
+          return [false, current] as const;
+        const next = new Map(current);
+        if (status === undefined) next.delete(projectId);
+        else next.set(projectId, status);
+        return [true, next] as const;
+      });
+      if (changed) yield* PubSub.publish(changes, { projectId });
     });
+
+  const enrichShell: ProjectEnrichmentService["Service"]["enrichShell"] = Effect.fn(
+    "ProjectEnrichmentService.enrichShell",
+  )(function* (shell, options) {
+    const enrichment = yield* options?.request === false
+      ? peek(shell.workspaceRoot)
+      : getAvailable(shell.workspaceRoot);
+    const workspaceFileStatus = shell.workspaceFile
+      ? yield* getWorkspaceFileStatus(shell.id)
+      : undefined;
+    return {
+      project: {
+        ...shell,
+        repositoryIdentity: enrichment.repositoryIdentity,
+        ...(shell.workspaceFile && shell.folders !== undefined
+          ? { folders: yield* getAvailableFolders(shell.folders, options) }
+          : {}),
+        ...(workspaceFileStatus === undefined ? {} : { workspaceFileStatus }),
+      },
+      repositoryIdentityResolved: enrichment.repositoryIdentityResolved,
+    };
+  });
 
   const invalidate: ProjectEnrichmentService["Service"]["invalidate"] = Effect.fn(
     "ProjectEnrichmentService.invalidate",
@@ -426,12 +523,31 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     );
   });
 
+  yield* Effect.all(
+    [
+      startWorkers(repositoryIdentityLane, resolveRepositoryIdentity),
+      startWorkers(faviconLane, resolveFavicon),
+      startWorkers(
+        folderLane,
+        Effect.fn("ProjectEnrichmentService.resolveFolder")(function* (path) {
+          const probe = yield* Cache.get(folderCache, path);
+          // A cold shell cannot request the secondary's identity until its git
+          // probe completes. Schedule it here; refresh-frame hydration only peeks.
+          if (probe.vcs != null) yield* availableRepositoryIdentity(path);
+          yield* publishFolderFacts(probe);
+        }),
+      ),
+    ],
+    { concurrency: "unbounded", discard: true },
+  );
+
   return ProjectEnrichmentService.of({
     peek,
     request,
     getAvailable,
     probeFolders,
     getAvailableFolders,
+    enrichShell,
     getWorkspaceFileStatus,
     setWorkspaceFileStatus,
     invalidate,

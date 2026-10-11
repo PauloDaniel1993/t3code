@@ -639,15 +639,7 @@ const enrichProjectShells = Effect.fn("ws.orchestrationV2.enrichProjectShells")(
           // loadSnapshot, so later identity completions push refreshed
           // shells for multi-env grouping without blocking the initial
           // snapshot or completion marker on slow git probes.
-          projectEnrichment.getAvailable(project.workspaceRoot).pipe(
-            Effect.map((enrichment) => ({
-              project: {
-                ...project,
-                repositoryIdentity: enrichment.repositoryIdentity,
-              },
-              repositoryIdentityResolved: enrichment.repositoryIdentityResolved,
-            })),
-          ),
+          projectEnrichment.enrichShell(project),
         { concurrency: 16 },
       ).pipe(
         Effect.map((enriched) => ({
@@ -655,6 +647,9 @@ const enrichProjectShells = Effect.fn("ws.orchestrationV2.enrichProjectShells")(
           resolvedRepositoryIdentityRoots: enriched
             .filter((entry) => entry.repositoryIdentityResolved)
             .map((entry) => entry.project.workspaceRoot),
+          enrichedProjectIds: enriched
+            .filter((entry) => entry.project.workspaceFile)
+            .map((entry) => entry.project.id),
         })),
       ),
     ),
@@ -877,6 +872,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             archivedThreads: [],
           } as OrchestrationV2ShellSnapshot,
           resolvedRepositoryIdentityRoots: enriched.resolvedRepositoryIdentityRoots,
+          enrichedProjectIds: enriched.enrichedProjectIds,
         };
       },
     );
@@ -895,6 +891,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       return {
         snapshot: { ...base, projects: enriched.projects } as OrchestrationV2ShellSnapshot,
         resolvedRepositoryIdentityRoots: enriched.resolvedRepositoryIdentityRoots,
+        enrichedProjectIds: enriched.enrichedProjectIds,
       };
     });
     const projectItem = Effect.fn("ws.orchestrationV2.projectShellItem")(function* (
@@ -961,7 +958,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       );
 
     const enrichmentRefreshes = Stream.fromSubscription(enrichmentChanges).pipe(
-      Stream.filter((change) => change.repositoryIdentityResolved),
+      Stream.filter((change) => !("workspaceRoot" in change) || change.repositoryIdentityResolved),
       Stream.groupedWithin(64, Duration.millis(25)),
       // Build the refresh from the identities the changes carry. Re-enriching
       // every project here re-requested each expired root, whose resolution
@@ -970,16 +967,56 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       Stream.mapEffect((changes) =>
         Effect.gen(function* () {
           const identities = new Map(
-            Array.from(changes, (change) => [
-              change.workspaceRoot,
-              change.enrichment.repositoryIdentity,
-            ]),
+            Array.from(changes).flatMap((change) =>
+              "workspaceRoot" in change
+                ? [[change.workspaceRoot, change.enrichment.repositoryIdentity] as const]
+                : [],
+            ),
+          );
+          const folderPaths = new Set(
+            Array.from(changes).flatMap((change) =>
+              "folderPath" in change
+                ? [change.folderPath]
+                : "workspaceRoot" in change
+                  ? [change.workspaceRoot]
+                  : [],
+            ),
+          );
+          const projectIds = new Set(
+            Array.from(changes).flatMap((change) =>
+              "projectId" in change ? [change.projectId] : [],
+            ),
           );
           const snapshotSequence = yield* applicationEvents.latestApplicationSequence;
-          const changedProjects = (yield* projects.listShells()).flatMap((project) =>
-            identities.has(project.workspaceRoot)
-              ? [{ ...project, repositoryIdentity: identities.get(project.workspaceRoot) ?? null }]
-              : [],
+          const shells = yield* projects.listShells();
+          const enrichedProjectIds = shells
+            .filter(
+              (project) =>
+                project.workspaceFile &&
+                (projectIds.has(project.id) ||
+                  project.folders?.some(
+                    (folder) => folder.path !== undefined && folderPaths.has(folder.path),
+                  )),
+            )
+            .map((project) => project.id);
+          const enrichedIds = new Set(enrichedProjectIds);
+          const changedProjects = yield* Effect.forEach(
+            shells.filter(
+              (project) => identities.has(project.workspaceRoot) || enrichedIds.has(project.id),
+            ),
+            (project) =>
+              Effect.gen(function* () {
+                const hydrated = enrichedIds.has(project.id)
+                  ? (yield* projectEnrichment.enrichShell(project, { request: false })).project
+                  : project;
+                return identities.has(project.workspaceRoot)
+                  ? {
+                      ...hydrated,
+                      repositoryIdentity: identities.get(project.workspaceRoot) ?? null,
+                    }
+                  : hydrated;
+              }),
+            { concurrency: 16 },
           );
           return shellStreamItemFromEnrichmentRefresh({
             snapshot: {
@@ -989,10 +1026,12 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
               threads: [],
               archivedThreads: [],
             } as OrchestrationV2ShellSnapshot,
-            changes: Array.from(changes),
+            changes: Array.from(identities.keys(), (workspaceRoot) => ({ workspaceRoot })),
+            enrichedProjectIds,
           });
         }),
       ),
+      Stream.filter((item) => item.snapshot.projects.length > 0),
     );
 
     // Always attach the enrichment subscription before the first load so
@@ -1018,21 +1057,25 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     const initialSnapshotItems = (loaded: {
       readonly snapshot: OrchestrationV2ShellSnapshot;
       readonly resolvedRepositoryIdentityRoots: ReadonlyArray<string>;
+      readonly enrichedProjectIds: ReadonlyArray<ProjectId>;
     }) =>
       rpcInitialItems(
         shellStreamItemsFromInitialSnapshot({
           snapshot: loaded.snapshot,
           resolvedRepositoryIdentityRoots: loaded.resolvedRepositoryIdentityRoots,
+          enrichedProjectIds: loaded.enrichedProjectIds,
         }),
       );
     const initialEnrichmentItems = (loaded: {
       readonly snapshot: OrchestrationV2ShellSnapshot;
       readonly resolvedRepositoryIdentityRoots: ReadonlyArray<string>;
+      readonly enrichedProjectIds: ReadonlyArray<ProjectId>;
     }) =>
       rpcInitialItems(
         shellStreamItemsFromResumeSnapshot({
           snapshot: loaded.snapshot,
           resolvedRepositoryIdentityRoots: loaded.resolvedRepositoryIdentityRoots,
+          enrichedProjectIds: loaded.enrichedProjectIds,
         }),
       );
     // Initial unmarked (+ optional same-load marked) always drains first.

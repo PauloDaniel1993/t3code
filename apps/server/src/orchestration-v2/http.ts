@@ -81,13 +81,8 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             // Use immediately available enrichment only. Awaiting git-backed
             // identity resolution can exceed the client shell-snapshot budget
             // (ProcessRunner allows probes up to one minute). Background workers
-            // plus the WS enrichment subscription fill in repositoryIdentity.
-            projectEnrichment.getAvailable(project.workspaceRoot).pipe(
-              Effect.map((enrichment) => ({
-                ...project,
-                repositoryIdentity: enrichment.repositoryIdentity,
-              })),
-            ),
+            // plus the WS enrichment subscription fill in unresolved facts.
+            projectEnrichment.enrichShell(project).pipe(Effect.map((enriched) => enriched.project)),
           { concurrency: 16 },
         ),
     );
