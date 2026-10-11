@@ -445,6 +445,8 @@ const finalizeWorkspaceFileAsset = Effect.fn("AssetAccess.finalizeWorkspaceFileA
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
   readonly workspaceRoot?: string;
+  /** A canonical-path resource's path inside `workspaceRoot`, as its folder resolved it. */
+  readonly relativePath?: string;
   readonly projectFaviconPath?: string;
   /** The project's clone has not landed, so its icon is reported missing without a lookup. */
   readonly projectCheckoutPending?: boolean;
@@ -485,8 +487,11 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       imageDimensions = finalized.imageDimensions;
       break;
     }
-    case "workspace-file": {
-      if (!input.workspaceRoot) {
+    case "workspace-file":
+    case "workspace-scope-file": {
+      const requestedPath =
+        input.resource._tag === "workspace-file" ? input.resource.path : input.relativePath;
+      if (!input.workspaceRoot || requestedPath === undefined) {
         return yield* new AssetWorkspaceContextNotFoundError({
           resource: input.resource,
         });
@@ -502,7 +507,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       );
       const finalized = yield* finalizeWorkspaceFileAsset({
         workspaceRoot,
-        requestedPath: input.resource.path,
+        requestedPath,
         resource: input.resource,
         expiresAt,
       });

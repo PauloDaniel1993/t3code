@@ -21,7 +21,7 @@ import type {
   ProjectEntry,
   ProjectEntryKind,
   ProjectListEntriesResult,
-  ProjectSearchContentsInput,
+  ProjectSearchContentsCwdInput,
   ProjectSearchContentsResult,
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
@@ -118,7 +118,7 @@ export class WorkspaceSearchIndex extends Context.Service<
       imageOnly?: boolean,
     ) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceSearchIndexSearchFailed>;
     readonly searchContents: (
-      input: Omit<ProjectSearchContentsInput, "cwd">,
+      input: Omit<ProjectSearchContentsCwdInput, "cwd">,
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceSearchIndexSearchFailed>;
     readonly refresh: () => Effect.Effect<
       void,
@@ -233,7 +233,7 @@ function codePointBefore(line: string, index: number): string | undefined {
   return codePointAt(line, previousIndex);
 }
 
-function buildContentSearchQuery(input: Omit<ProjectSearchContentsInput, "cwd">): {
+function buildContentSearchQuery(input: Omit<ProjectSearchContentsCwdInput, "cwd">): {
   readonly searchQuery: string;
   readonly regexMode: boolean;
 } {

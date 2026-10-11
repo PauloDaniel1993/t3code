@@ -5,11 +5,14 @@ import {
   isPathWithin,
   isSamePath,
   orphanedThreadWorktreePaths,
+  owningFolder,
+  parseCanonicalPath,
   projectFolders,
   relativePathWithin,
   resolveThreadWorkspace,
   threadUsingWorktrees,
   threadPrimaryPath,
+  toCanonicalPath,
   worktreeSetPath,
 } from "./workspaceFolders.ts";
 
@@ -220,6 +223,57 @@ describe("worktreeSetPath", () => {
       "/repo/.worktrees/feature/web",
     );
     expect(worktreeSetPath("/repo/web", members)).toBe("/repo/.worktrees/feature/web");
+  });
+});
+
+describe("canonical paths", () => {
+  const app = { label: "app" };
+  const api = { label: "api" };
+
+  it("prefix the folder label only when the scope has several folders", () => {
+    expect(toCanonicalPath(api, "src/main.ts", 2)).toBe("api/src/main.ts");
+    expect(toCanonicalPath(api, "", 2)).toBe("api");
+    expect(toCanonicalPath(api, "src/main.ts", 1)).toBe("src/main.ts");
+  });
+
+  it("split a prefixed path into its folder and the path inside it", () => {
+    expect(parseCanonicalPath("api/src/main.ts", [app, api])).toEqual({
+      folder: api,
+      relativePath: "src/main.ts",
+    });
+    expect(parseCanonicalPath("api", [app, api])).toEqual({ folder: api, relativePath: "" });
+    expect(parseCanonicalPath("web/index.ts", [app, api])).toBeNull();
+    expect(parseCanonicalPath("", [app, api])).toBeNull();
+  });
+
+  it("never read a one-folder path's first segment as a label", () => {
+    expect(parseCanonicalPath("api/src/main.ts", [app])).toEqual({
+      folder: app,
+      relativePath: "api/src/main.ts",
+    });
+  });
+});
+
+describe("owningFolder", () => {
+  it("picks the deepest folder containing the path, then the earliest", () => {
+    const outer = { path: "/repo", id: "outer" };
+    const inner = { path: "/repo/packages/api", id: "inner" };
+    const twin = { path: "/repo/packages/api", id: "twin" };
+    const remote = { id: "remote" };
+    const folders: ReadonlyArray<{ readonly path?: string; readonly id: string }> = [
+      outer,
+      remote,
+      twin,
+      inner,
+    ];
+    expect(owningFolder("/repo/packages/api/src/main.ts", folders)?.id).toBe("twin");
+    expect(owningFolder("/repo/packages/web/main.ts", folders)?.id).toBe("outer");
+    expect(owningFolder("/elsewhere/main.ts", folders)).toBeUndefined();
+  });
+
+  it("compares Windows paths case-insensitively", () => {
+    const folders = [{ path: "C:\\Repo" }, { path: "C:\\Repo\\Lib" }];
+    expect(owningFolder("c:\\repo\\lib\\x.ts", folders)).toBe(folders[1]);
   });
 });
 

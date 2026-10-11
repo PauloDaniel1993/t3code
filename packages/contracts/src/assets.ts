@@ -6,7 +6,7 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
 } from "./chatAttachment.ts";
-import { ProjectFaviconPath } from "./project.ts";
+import { ProjectFaviconPath, WorkspaceScope } from "./project.ts";
 import { ToolActivityNativeAppReference } from "./providerRuntime.ts";
 
 const ASSET_PATH_MAX_LENGTH = 1024;
@@ -21,6 +21,13 @@ export const AssetResource = Schema.Union([
   // workspace; a relative one resolves against the thread's workspace.
   Schema.TaggedStruct("media-file", {
     threadId: ThreadId,
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  }),
+  // A workspace file by canonical path in a project's or thread's folders. The
+  // folder's identity is part of the resource, so a renamed or reordered folder
+  // never serves another folder's file from the same key.
+  Schema.TaggedStruct("workspace-scope-file", {
+    scope: Schema.Struct({ ...WorkspaceScope.fields, folderPath: TrimmedNonEmptyString }),
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
   }),
   // A workspace file named by a draft that has no thread yet. The draft names

@@ -1,13 +1,28 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { AttachmentCreateUploadUrlInput } from "./assets.ts";
+import { AssetResource, AttachmentCreateUploadUrlInput } from "./assets.ts";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "./chatAttachment.ts";
 
 const isUploadInput = Schema.is(AttachmentCreateUploadUrlInput);
+const isAssetResource = Schema.is(AssetResource);
+
+describe("AssetResource", () => {
+  it("keys a canonical-path workspace file by its folder identity", () => {
+    const resource = {
+      _tag: "workspace-scope-file",
+      scope: { projectId: "project-1", threadId: "thread-1", folderPath: "/srv/api" },
+      path: "api/assets/chart.png",
+    };
+    expect(isAssetResource(resource)).toBe(true);
+    expect(
+      isAssetResource({ ...resource, scope: { projectId: "project-1", threadId: "thread-1" } }),
+    ).toBe(false);
+  });
+});
 
 const uploadInput = {
   name: "screenshot.png",

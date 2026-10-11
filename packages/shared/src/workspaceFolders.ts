@@ -192,6 +192,56 @@ export function resolveThreadWorkspace(input: {
   };
 }
 
+/**
+ * A file's canonical workspace path: `<label>/<relative path>` when the scope
+ * has several folders, and the bare relative path when it has one, so a
+ * one-folder workspace reads like a plain project. The folder itself is its
+ * label. Relative paths use `/`.
+ */
+export function toCanonicalPath(
+  folder: { readonly label: string },
+  relativePath: string,
+  folderCount: number,
+): string {
+  if (folderCount <= 1) return relativePath;
+  return relativePath === "" ? folder.label : `${folder.label}/${relativePath}`;
+}
+
+/**
+ * Split a canonical path into its folder and the path inside it, by the
+ * scope's folder table. A one-folder scope has no prefix, so a primary
+ * subdirectory named like a label is never misread. Null when no folder has
+ * the path's label, including the scope root `""` of several folders.
+ */
+export function parseCanonicalPath<Folder extends { readonly label: string }>(
+  canonicalPath: string,
+  folders: ReadonlyArray<Folder>,
+): { readonly folder: Folder; readonly relativePath: string } | null {
+  if (folders.length === 1) return { folder: folders[0]!, relativePath: canonicalPath };
+  const separator = canonicalPath.indexOf("/");
+  const label = separator === -1 ? canonicalPath : canonicalPath.slice(0, separator);
+  const folder = folders.find((candidate) => candidate.label === label);
+  if (folder === undefined) return null;
+  return { folder, relativePath: separator === -1 ? "" : canonicalPath.slice(separator + 1) };
+}
+
+/**
+ * The folder a server path belongs to: the deepest folder containing it, the
+ * earliest in workspace order on a tie. Folders without a path own nothing.
+ */
+export function owningFolder<Folder extends { readonly path?: string | null | undefined }>(
+  path: string,
+  folders: ReadonlyArray<Folder>,
+): Folder | undefined {
+  let owner: { readonly folder: Folder; readonly depth: number } | undefined;
+  for (const folder of folders) {
+    if (folder.path == null || !isPathWithin(folder.path, path)) continue;
+    const depth = pathSegments(folder.path, isWindowsAbsolutePath(folder.path)).length;
+    if (owner === undefined || depth > owner.depth) owner = { folder, depth };
+  }
+  return owner?.folder;
+}
+
 /** Whether `path` is `root` or inside it. Windows paths compare case-insensitively. */
 export function isPathWithin(root: string, path: string): boolean {
   return segmentsBelow(root, path) !== null;

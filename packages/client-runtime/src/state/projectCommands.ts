@@ -122,7 +122,11 @@ export function createProjectEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "serial",
         key: ({ environmentId, input }) =>
-          JSON.stringify([environmentId, input.cwd, input.relativePath]),
+          JSON.stringify(
+            "scope" in input
+              ? [environmentId, input.scope.projectId, input.scope.threadId ?? null, input.path]
+              : [environmentId, input.cwd, input.relativePath],
+          ),
       },
     }),
   };
