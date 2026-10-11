@@ -103,4 +103,17 @@ describe("workspace combined changes", () => {
     ]);
     expect(files.map((file) => file.canonicalPath)).toEqual(["main.ts"]);
   });
+  it("includes the primary's separately picked worktree without moving the other repository", () => {
+    const picked = {
+      ...thread,
+      worktreePath: "/picked",
+      worktrees: undefined,
+      workspaceFolders: [thread.workspaceFolders[0]!, thread.workspaceFolders[2]!],
+    };
+    const files = workspaceChangedFiles(project, picked, workspaceFolderRows(project, picked), [
+      status(["main.ts"]),
+      status(["src/api.ts"]),
+    ]);
+    expect(files.map((file) => file.canonicalPath)).toEqual(["app/main.ts", "api/src/api.ts"]);
+  });
 });

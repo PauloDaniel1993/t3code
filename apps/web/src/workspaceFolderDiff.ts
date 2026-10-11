@@ -1,5 +1,6 @@
 import {
   isSamePath,
+  isPathWithin,
   owningFolder,
   snapshotFolderCheckoutLocation,
   worktreeSetPath,
@@ -24,17 +25,26 @@ export function workspaceFolderDiffTarget(
     (folder) => folder.folder.path && isSamePath(folder.folder.path, folderPath),
   );
   if (!row?.isGit || !row.effectivePath || !row.checkoutRoot) return null;
+  const worktreePath = thread.worktreePath;
+  const pickedPrimary =
+    worktreePath !== null &&
+    thread.workspaceFolders !== undefined &&
+    !(thread.worktrees ?? []).some((member) => isPathWithin(member.path, worktreePath))
+      ? worktreePath
+      : null;
   // Ownership remains frozen even when a nested folder is currently unavailable.
   // Git paths and symlinked folders must meet in the snapshot's real checkout space.
-  const owners = thread.workspaceFolders?.map((folder) => ({
+  const owners = thread.workspaceFolders?.map((folder, index) => ({
     label: folder.label,
     path:
-      folder.path === undefined
-        ? null
-        : worktreeSetPath(
-            snapshotFolderCheckoutLocation(folder) ?? folder.path,
-            thread.worktrees ?? [],
-          ),
+      index === 0 && pickedPrimary !== null
+        ? pickedPrimary
+        : folder.path === undefined
+          ? null
+          : worktreeSetPath(
+              snapshotFolderCheckoutLocation(folder) ?? folder.path,
+              thread.worktrees ?? [],
+            ),
   })) ?? [{ label: row.label, path: row.effectivePath }];
   const workspaceRoot =
     owners.find((folder) => folder.label === row.label)?.path ?? row.effectivePath;
@@ -44,9 +54,11 @@ export function workspaceFolderDiffTarget(
     workspaceRoot,
     cwd: row.effectivePath,
     repositoryRoot:
-      thread.workspaceFolders === undefined && thread.worktreePath !== null
-        ? thread.worktreePath
-        : worktreeSetPath(row.checkoutRoot, thread.worktrees ?? []),
+      row.isPrimary && pickedPrimary !== null
+        ? pickedPrimary
+        : thread.workspaceFolders === undefined && thread.worktreePath !== null
+          ? thread.worktreePath
+          : worktreeSetPath(row.checkoutRoot, thread.worktrees ?? []),
   };
 }
 

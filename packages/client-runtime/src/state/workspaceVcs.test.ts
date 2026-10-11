@@ -24,6 +24,9 @@ describe("workspace branch presentation", () => {
       drifted: 1,
       hint: "1/2 drifted",
     });
+    expect(workspaceBranchState(members, [status("release"), status("feature-api")])).toMatchObject(
+      { branch: "feature", drifted: 1 },
+    );
   });
   it("waits for all member branches before presenting agreement", () => {
     expect(

@@ -7,6 +7,7 @@ import type {
 import {
   workspaceGitCheckouts,
   isCheckoutDrifted,
+  isPathWithin,
   type WorkspaceThread,
 } from "@t3tools/shared/workspaceFolders";
 import {
@@ -61,12 +62,20 @@ export function WorkspaceVersionControl(props: {
   };
   const checkouts = workspaceGitCheckouts(thread, props.project);
   const available = checkouts.map((checkout) =>
-    rows.some((row) => row.label === checkout.label && !row.unavailable),
+    rows.some(
+      (row) =>
+        row.isGit && row.effectivePath !== null && isPathWithin(checkout.root, row.effectivePath),
+    ),
   );
-  const statuses = useWorkspaceStatuses(
-    environmentId,
-    checkouts.map((checkout, index) => (available[index] ? checkout.cwd : null)),
+  // The server falls back to the checkout root when its first frozen folder is gone.
+  const statusCwds = checkouts.map((checkout, index) =>
+    !available[index]
+      ? null
+      : rows.find((row) => row.label === checkout.label)?.effectivePath !== null
+        ? checkout.cwd
+        : checkout.root,
   );
+  const statuses = useWorkspaceStatuses(environmentId, statusCwds);
   const branch = workspaceBranchState(
     checkouts,
     statuses.map((query) => query.status),
@@ -289,10 +298,10 @@ export function WorkspaceVersionControl(props: {
       ) : null}
       {busy ? (
         <div role="status" className="px-2 py-1 text-2xs">
-          {checkouts.map((checkout) =>
-            progress[checkout.cwd] ? (
+          {checkouts.map((checkout, index) =>
+            progress[statusCwds[index] ?? checkout.cwd] ? (
               <p key={checkout.repositoryRoot}>
-                {checkout.label}: {progress[checkout.cwd]}
+                {checkout.label}: {progress[statusCwds[index] ?? checkout.cwd]}
               </p>
             ) : null,
           )}
@@ -344,7 +353,7 @@ export function WorkspaceVersionControl(props: {
                 </p>
                 {available[index] && props.thread ? (
                   <GitActionsControl
-                    gitCwd={checkout.cwd}
+                    gitCwd={statusCwds[index] ?? checkout.cwd}
                     activeThreadRef={threadRef}
                     displayMode="panel"
                     compact

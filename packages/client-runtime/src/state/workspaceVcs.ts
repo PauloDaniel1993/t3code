@@ -67,7 +67,9 @@ export function workspaceBranchState(
     drifted,
     complete,
     mixed,
-    branch: mixed ? "Mixed branches" : (statuses[0]?.refName ?? "Detached HEAD"),
+    branch: mixed
+      ? "Mixed branches"
+      : (checkouts[0]?.expectedBranch ?? statuses[0]?.refName ?? "Detached HEAD"),
     hint: !complete
       ? null
       : drifted > 0

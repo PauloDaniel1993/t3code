@@ -3,7 +3,7 @@ import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
 import { act, createElement, type ReactNode } from "react";
 import { create, type ReactTestRenderer, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { workspaceFolderRows } from "../workspaceFolders.logic";
+import { workspaceFolderRows, type WorkspaceFoldersProject } from "../workspaceFolders.logic";
 import { WorkspaceVersionControl } from "./WorkspaceVersionControl";
 
 const fixtures = vi.hoisted(() => ({
@@ -11,8 +11,14 @@ const fixtures = vi.hoisted(() => ({
   run: vi.fn(),
   switchBranch: vi.fn(),
   openLink: vi.fn(),
+  queries: vi.fn(),
 }));
-vi.mock("../../state/workspaceVcs", () => ({ useWorkspaceStatuses: () => fixtures.statuses }));
+vi.mock("../../state/workspaceVcs", () => ({
+  useWorkspaceStatuses: (...args: unknown[]) => {
+    fixtures.queries(...args);
+    return fixtures.statuses;
+  },
+}));
 vi.mock("../../state/vcs", () => ({
   vcsEnvironment: { runWorkspaceAction: "run", switchWorktreeSetBranch: "switch" },
 }));
@@ -95,15 +101,18 @@ const nodeText = (node: ReactTestInstance | string): string =>
   typeof node === "string" ? node : node.children.map(nodeText).join("");
 const button = (label: string) =>
   renderer.root.findAllByType("button").find((node) => nodeText(node) === label)!;
-const render = async (scope: WorkspaceThread = thread) => {
+const render = async (
+  scope: WorkspaceThread = thread,
+  workspace: WorkspaceFoldersProject = project,
+) => {
   await act(() => {
     renderer = create(
       <WorkspaceVersionControl
         environmentId={environmentId}
         threadId={threadId}
-        project={project}
+        project={workspace}
         thread={scope}
-        rows={workspaceFolderRows(project, scope)}
+        rows={workspaceFolderRows(workspace, scope)}
       />,
     );
   });
@@ -190,4 +199,41 @@ it("allows batches on Mixed branches in current-checkout threads", async () => {
   expect(text()).toContain("Mixed branches");
   expect(button("Commit all").props.disabled).toBe(false);
   expect(text()).not.toContain("Batch actions paused");
+});
+it("keeps a checkout with a healthy sibling folder and uses the root when its first folder disappears", async () => {
+  const missing = { ...project.folders[1]!, path: "/web/missing" };
+  const healthy = { ...missing, path: "/web/healthy", name: "Healthy", label: "healthy" };
+  const scope = {
+    ...thread,
+    workspaceFolders: [
+      thread.workspaceFolders[0]!,
+      { ...missing, checkoutRoot: "/web" },
+      { ...healthy, checkoutRoot: "/web" },
+    ],
+  };
+  const workspace = {
+    ...project,
+    folders: [project.folders[0]!, { ...missing, availability: "unavailable" as const }, healthy],
+  };
+  const webStatus = status("feature-web");
+  fixtures.statuses[1]!.status = {
+    ...webStatus,
+    workingTree: {
+      ...webStatus.workingTree,
+      files: [{ path: "healthy/fix.ts", insertions: 1, deletions: 0 }],
+    },
+  };
+  await render(scope, workspace);
+  expect(fixtures.queries).toHaveBeenCalledWith(environmentId, ["/set/api", "/set/web"]);
+  expect(button("Push all").props.disabled).toBe(false);
+  await act(() => button("2 files changed across 2 repos+2 −0").props.onClick());
+  expect(text()).toContain("healthy/fix.ts");
+  await act(() => button("Push all").props.onClick());
+  await act(async () => {
+    button("Continue").props.onClick();
+  });
+  expect(fixtures.run).toHaveBeenCalledWith({
+    environmentId,
+    input: expect.objectContaining({ action: "push", members: ["/api", "/web"] }),
+  });
 });
