@@ -47,6 +47,8 @@ import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
 import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
+import { ThreadWorkspaceFoldersSheet } from "./features/threads/ThreadWorkspaceFolders";
+import { WorkspaceChangesSheet } from "./features/threads/git/WorkspaceChangesSheet";
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
@@ -545,6 +547,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "SettingsLegal",
   "SettingsSheet",
   "ThreadAgents",
+  "ThreadWorkspaceFolders",
   "ThreadQueue",
   "ThreadReviewComment",
   "ThreadDevicePreview",
@@ -778,6 +781,20 @@ const RootStackConfig = createNativeStackNavigator({
         sheetAllowedDetents: [0.5, 0.9],
         sheetGrabberVisible: true,
       },
+    }),
+    ThreadWorkspaceFolders: createNativeStackScreen({
+      screen: ThreadWorkspaceFoldersSheet,
+      options: {
+        ...FORM_SHEET_PRESENTATION_OPTIONS,
+        title: "Workspace folders",
+        sheetAllowedDetents: [0.65, 0.95],
+        sheetGrabberVisible: true,
+      },
+    }),
+    WorkspaceChanges: createNativeStackScreen({
+      screen: WorkspaceChangesSheet,
+      linking: `${THREAD_LINKING_PREFIX}/workspace-changes`,
+      options: { ...SOLID_HEADER_OPTIONS, title: "Workspace changes" },
     }),
     GitOverview: createNativeStackScreen({
       screen: GitOverviewSheet,
