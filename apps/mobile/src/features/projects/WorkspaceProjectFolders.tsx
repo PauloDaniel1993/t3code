@@ -29,7 +29,7 @@ export function WorkspaceProjectFolders(props: {
               : `Workspace file ${status.state}`
             : "Checking workspace file…"}
         {status?.liveDetection === false
-          ? " Live detection unavailable. Refresh to check for changes."
+          ? " · Live detection unavailable. Refresh to check for changes."
           : ""}
       </Text>
       {status?.diagnostics.map((diagnostic) => (

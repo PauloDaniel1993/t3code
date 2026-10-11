@@ -5,12 +5,12 @@ import {
 import { isWindowsPlatform } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useMemo } from "react";
-import { ActivityIndicator, Pressable, View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
+import { ActivityIndicator, Platform, View } from "react-native";
 import { SymbolView } from "../../components/AppSymbol";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { filesystemEnvironment } from "../../state/filesystem";
 import { useEnvironmentQuery } from "../../state/query";
+import { ListRow, ListSection, SectionTitle } from "./AddProjectList";
 
 /** Browses the selected environment's filesystem; files are selected without navigation. */
 export function ServerPathBrowser(props: {
@@ -55,35 +55,52 @@ export function ServerPathBrowser(props: {
     caseSensitive,
   ).visibleEntries;
   return (
-    <View className="gap-3">
-      <Text className="text-sm font-t3-medium text-foreground-muted">
+    <>
+      <SectionTitle>
         {props.includeWorkspaceFiles ? "Browse folders and workspace files" : "Browse folders"}
-      </Text>
+      </SectionTitle>
       {browseState.error ? <ErrorBanner message={browseState.error} /> : null}
-      <View className="overflow-hidden rounded-[24px] bg-grouped-card">
+      <ListSection>
         {browseState.isPending && browseState.data === null ? (
-          <ActivityIndicator className="py-5" colorClassName="accent-icon-muted" />
+          <View className="items-center py-5">
+            <ActivityIndicator colorClassName="accent-icon-muted" />
+          </View>
         ) : null}
         {browsePath.canBrowseUp ? (
-          <Pressable
-            accessibilityRole="button"
+          <ListRow
+            title=".."
+            icon={
+              <SymbolView
+                name="arrow.turn.left.up"
+                size={Platform.OS === "android" ? 24 : 17}
+                tintColorClassName="accent-icon-muted"
+                type="monochrome"
+              />
+            }
+            isFirst
+            right={null}
             disabled={props.disabled}
-            className="px-4 py-4 active:opacity-70"
             onPress={() => {
               if (browsePath.parentPath)
                 void props.navigateToBrowsePath({ browseDirectoryPath: browsePath.parentPath });
             }}
-          >
-            <Text>..</Text>
-          </Pressable>
+          />
         ) : null}
-        {entries.map((entry) => (
-          <Pressable
+        {entries.map((entry, index) => (
+          <ListRow
             key={entry.fullPath}
-            accessibilityRole="button"
-            accessibilityLabel={`${entry.kind === "workspace-file" ? "Select workspace file" : "Browse folder"} ${entry.name}`}
+            title={entry.name}
+            icon={
+              <SymbolView
+                name={entry.kind === "workspace-file" ? "doc" : "folder"}
+                size={Platform.OS === "android" ? 24 : 17}
+                tintColorClassName="accent-icon-muted"
+                type="monochrome"
+              />
+            }
+            isFirst={index === 0 && !browsePath.canBrowseUp}
+            right={null}
             disabled={props.disabled}
-            className="flex-row items-center gap-3 border-t border-border-subtle px-4 py-4 active:opacity-70 disabled:opacity-45"
             onPress={() => {
               if (entry.kind === "workspace-file") props.setPathInput(entry.fullPath);
               else
@@ -92,17 +109,9 @@ export function ServerPathBrowser(props: {
                   selectedDirectoryName: entry.name,
                 });
             }}
-          >
-            <SymbolView
-              name={entry.kind === "workspace-file" ? "doc" : "folder"}
-              size={20}
-              tintColorClassName="accent-icon-muted"
-              type="monochrome"
-            />
-            <Text className="min-w-0 flex-1 text-base font-t3-medium">{entry.name}</Text>
-          </Pressable>
+          />
         ))}
-      </View>
-    </View>
+      </ListSection>
+    </>
   );
 }

@@ -1,4 +1,3 @@
-import { MaterialListRow } from "../../components/MaterialListRow";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
 import { MaterialButton } from "../../components/MaterialButton";
@@ -38,6 +37,8 @@ import {
   inferProjectTitleFromPath,
   isWindowsPlatform,
 } from "@t3tools/client-runtime/state/projects";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   CommandId,
   type EnvironmentId,
@@ -57,7 +58,6 @@ import * as Cause from "effect/Cause";
 import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { cn } from "../../lib/cn";
 import { useProjects, useServerConfigs, waitForProject } from "../../state/entities";
 import { filesystemEnvironment } from "../../state/filesystem";
 import { projectEnvironment } from "../../state/projects";
@@ -76,6 +76,7 @@ import {
   useRemoteEnvironmentRuntime,
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
+import { ListRow, ListSection, SectionTitle } from "./AddProjectList";
 import { resolveAddProjectEnvironment } from "./AddProjectScreen.logic";
 import { ServerPathBrowser as FolderBrowser } from "./ServerPathBrowser";
 import { WorkspaceProjectFolders } from "./WorkspaceProjectFolders";
@@ -84,8 +85,6 @@ import {
   workspaceFileErrorMessage,
   workspaceFileMutationOutcome,
 } from "./workspace-file-projects";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 
 interface EnvironmentOption {
   readonly environmentId: EnvironmentId;
@@ -145,20 +144,6 @@ function sourceFromParam(value: string | string[] | undefined): AddProjectRemote
   return "url";
 }
 
-function SectionTitle(props: { readonly children: string }) {
-  return (
-    <Text
-      className={
-        Platform.OS === "android"
-          ? "px-4 text-sm font-t3-medium text-primary-text"
-          : "px-1 text-2xs font-t3-bold tracking-[0.7px] uppercase text-foreground-muted"
-      }
-    >
-      {props.children}
-    </Text>
-  );
-}
-
 function AddProjectShell(props: { readonly children: ReactNode; readonly title: string }) {
   const insets = useSafeAreaInsets();
 
@@ -182,88 +167,6 @@ function AddProjectShell(props: { readonly children: ReactNode; readonly title: 
         {props.children}
       </ScrollView>
     </SettingsScreen>
-  );
-}
-
-function ListSection(props: { readonly children: ReactNode }) {
-  return (
-    <View
-      className={
-        Platform.OS === "android"
-          ? "overflow-hidden rounded-[28px] bg-grouped-card"
-          : "overflow-hidden rounded-[24px] bg-grouped-card"
-      }
-    >
-      {props.children}
-    </View>
-  );
-}
-
-function ListRow(props: {
-  readonly title: string;
-  readonly subtitle?: string | null;
-  readonly icon: ReactNode;
-  readonly disabled?: boolean;
-  readonly selected?: boolean;
-  readonly isFirst?: boolean;
-  readonly right?: ReactNode;
-  readonly onPress?: () => void;
-}) {
-  if (Platform.OS === "android") {
-    return (
-      <MaterialListRow
-        className="bg-grouped-card"
-        title={props.title}
-        subtitle={props.subtitle}
-        leading={props.icon}
-        trailing={props.right}
-        disabled={props.disabled}
-        onPress={props.onPress}
-        accessibilityRole={props.selected !== undefined ? "radio" : "button"}
-        accessibilityState={props.selected !== undefined ? { checked: props.selected } : undefined}
-      />
-    );
-  }
-  return (
-    <Pressable
-      disabled={props.disabled}
-      onPress={props.onPress}
-      className={cn(
-        "bg-grouped-card px-3.5 py-2.5 active:opacity-70",
-        !props.isFirst && "border-t border-border-subtle",
-        props.disabled && "opacity-[0.45]",
-      )}
-    >
-      <View className="flex-row items-center gap-3">
-        <View
-          className={
-            props.selected
-              ? "h-7 w-7 items-center justify-center rounded-full bg-primary"
-              : "h-7 w-7 items-center justify-center"
-          }
-        >
-          {props.icon}
-        </View>
-        <View className="flex-1 gap-0.5">
-          <Text className="text-base leading-snug font-t3-bold">{props.title}</Text>
-          {props.subtitle ? (
-            <Text className="text-sm leading-snug text-foreground-muted" numberOfLines={2}>
-              {props.subtitle}
-            </Text>
-          ) : null}
-        </View>
-        {"right" in props ? (
-          props.right
-        ) : !props.disabled ? (
-          <SymbolView
-            name="chevron.right"
-            size={13}
-            tintColorClassName="accent-chevron"
-            type="monochrome"
-          />
-        ) : null}
-      </View>
-    </Pressable>
   );
 }
 
@@ -1144,6 +1047,11 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
         platform: environment.platform,
       });
       if (!resolved.ok) throw new Error(resolved.error);
+      if (resolveAddProjectKind(pathInput, null) === "directory") {
+        const result = await createProject(resolved.path);
+        if (result?._tag === "Failure") throw squashAtomCommandFailure(result);
+        return;
+      }
       const listing = await browse({
         environmentId: environment.environmentId,
         input: {
@@ -1163,6 +1071,8 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
         browse: listing._tag === "Success" ? listing.value : null,
       });
       if (target.kind === "directory") {
+        if (linkExisting && workspaceFileInput)
+          throw new Error("The selected path is a folder. Choose a workspace file to link.");
         const result = await createProject(target.path);
         if (result?._tag === "Failure") throw squashAtomCommandFailure(result);
         return;
