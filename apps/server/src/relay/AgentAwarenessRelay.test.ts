@@ -260,6 +260,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
       snapshot: Effect.succeed({ projects: [] } as never),
       getShell: unused,
       listShells: unused,
+      listProjectsUsingFolder: unused,
       getById: () =>
         Effect.succeed(
           Option.some({

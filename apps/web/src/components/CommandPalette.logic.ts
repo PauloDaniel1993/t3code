@@ -467,8 +467,9 @@ export function buildBrowseGroups(input: {
   canBrowseUp: boolean;
   upIcon: ReactNode;
   directoryIcon: ReactNode;
+  workspaceFileIcon?: ReactNode;
   browseUp: () => void | Promise<void>;
-  browseTo: (name: string) => void | Promise<void>;
+  browseTo: (name: string, kind?: "directory" | "workspace-file") => void | Promise<void>;
 }): CommandPaletteGroup[] {
   const items: CommandPaletteActionItem[] = [];
 
@@ -492,15 +493,26 @@ export function buildBrowseGroups(input: {
       value: `browse:${entry.fullPath}`,
       searchTerms: [input.browseQuery, entry.fullPath, entry.name],
       title: entry.name,
-      icon: input.directoryIcon,
+      icon:
+        entry.kind === "workspace-file"
+          ? (input.workspaceFileIcon ?? input.directoryIcon)
+          : input.directoryIcon,
       keepOpen: true,
       run: async () => {
-        await input.browseTo(entry.name);
+        await input.browseTo(entry.name, entry.kind ?? "directory");
       },
     });
   }
 
-  return [{ value: "directories", label: "Directories", items }];
+  return [
+    {
+      value: "directories",
+      label: input.browseEntries.some((entry) => entry.kind === "workspace-file")
+        ? "Folders and workspace files"
+        : "Directories",
+      items,
+    },
+  ];
 }
 
 export function filterPinnedBrowseEntries(input: {

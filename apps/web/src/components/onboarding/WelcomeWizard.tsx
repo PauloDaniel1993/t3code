@@ -60,6 +60,7 @@ import { useEnvironments, usePrimaryEnvironment } from "../../state/environments
 import { isOnboardingRelayEnvironment } from "../../onboarding/targetEnvironment.logic";
 import { useProjectScans } from "../../onboarding/useProjectScans";
 import { projectEnvironment } from "../../state/projects";
+import { WorkspaceFileImportDialog } from "../WorkspaceFileImportDialog";
 import { serverEnvironment } from "../../state/server";
 import { terminalEnvironment } from "../../state/terminal";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -1154,6 +1155,8 @@ function ImportStep({
   const importWarningRef = useRef("");
   const importedThreadCountRef = useRef(0);
   const [landingProject, setLandingProject] = useState<ScopedProjectRef | null>(null);
+  const [workspaceFileEnvironmentId, setWorkspaceFileEnvironmentId] =
+    useState<EnvironmentId | null>(null);
   // Keep project creation attempts separate from completed history imports so both can retry.
   const importedProjectsRef = useRef(new Map<string, ScopedProjectRef>());
   const projectsWithImportedHistoryRef = useRef(new Map<string, ScopedProjectRef>());
@@ -1341,30 +1344,44 @@ function ImportStep({
     finishAfterImport();
   };
 
-  if (scans.every((scan) => scan.data === null) && scans.some((scan) => scan.isPending)) {
-    return (
-      <div className="flex h-full min-h-40 flex-col">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Your projects</h1>
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 py-6">
-          <Spinner size="lg" tone="muted" />
-          <p className="text-center text-sm text-muted-foreground">
-            Looking for projects from Claude Code and Codex…
-          </p>
-        </div>
-        <div className="flex justify-end">
-          <Button variant="ghost-muted" onClick={() => void onDone()}>
-            Do not import projects
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <StepShell
       title="Choose your projects"
       description="Import projects and conversations from your selected computers."
     >
+      <div className="flex flex-wrap gap-2">
+        {scans
+          .filter(
+            (scan) =>
+              environments.find((environment) => environment.environmentId === scan.environmentId)
+                ?.serverConfig?.workspaceFileProjects === true,
+          )
+          .map((scan) => (
+            <Button
+              key={scan.environmentId}
+              variant="outline"
+              size="sm"
+              disabled={isImporting}
+              onClick={() => setWorkspaceFileEnvironmentId(scan.environmentId)}
+            >
+              Import workspace file
+              {scans.length > 1
+                ? ` · ${environments.find((environment) => environment.environmentId === scan.environmentId)?.label ?? "Environment"}`
+                : ""}
+            </Button>
+          ))}
+      </div>
+      {workspaceFileEnvironmentId ? (
+        <WorkspaceFileImportDialog
+          environmentId={workspaceFileEnvironmentId}
+          onOpenChange={(open) => {
+            if (!open) setWorkspaceFileEnvironmentId(null);
+          }}
+          onImported={async (ref) => {
+            await onDone(ref);
+          }}
+        />
+      ) : null}
       {candidates.length > 0 ? (
         <div className="mt-5 flex items-center justify-between gap-3 text-xs text-muted-foreground">
           <span role="status">

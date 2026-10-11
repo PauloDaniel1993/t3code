@@ -168,9 +168,13 @@ export function inferProjectTitleFromPath(value: string): string {
   return segments.findLast(Boolean) ?? normalized;
 }
 
-export function appendBrowsePathSegment(currentPath: string, segment: string): string {
+export function appendBrowsePathSegment(
+  currentPath: string,
+  segment: string,
+  kind: "directory" | "workspace-file" = "directory",
+): string {
   const separator = preferredPathSeparator(currentPath);
-  return `${getBrowseDirectoryPath(currentPath)}${segment}${separator}`;
+  return `${getBrowseDirectoryPath(currentPath)}${segment}${kind === "directory" ? separator : ""}`;
 }
 
 export function getBrowseLeafPathSegment(currentPath: string): string {

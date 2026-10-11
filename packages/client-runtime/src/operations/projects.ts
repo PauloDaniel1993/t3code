@@ -2,6 +2,7 @@ import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
 import type {
   CommandId,
   EnvironmentId,
+  FilesystemBrowseEntry,
   ProjectMutation,
   ProjectId,
   SourceControlDiscoveryResult,
@@ -20,6 +21,7 @@ import {
   inferProjectTitleFromPath,
   isExplicitRelativeProjectPath,
   isUnsupportedWindowsProjectPath,
+  normalizeProjectPathForComparison,
   resolveProjectPathForDispatch,
 } from "../state/projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
@@ -334,6 +336,58 @@ export function findExistingAddProject(input: {
       input.path,
     ) ?? null
   );
+}
+
+/** The server's entry kind wins over the suffix hint, including workspace-named directories. */
+export function resolveAddProjectKind(
+  path: string,
+  entry: FilesystemBrowseEntry | null | undefined,
+  existingDirectory = false,
+): "directory" | "workspace-file" {
+  if (existingDirectory) return "directory";
+  return (
+    entry?.kind ??
+    (entry
+      ? "directory"
+      : /\.code-workspace[/\\]*$/i.test(path.trim())
+        ? "workspace-file"
+        : "directory")
+  );
+}
+
+type FolderProject = {
+  readonly workspaceRoot: string;
+  readonly folders?: ReadonlyArray<{ readonly path?: string | undefined }> | undefined;
+};
+
+/** Folder overlap is informational; a plain project can coexist with a linked project. */
+export function listProjectsUsingFolder<T extends FolderProject>(
+  projects: ReadonlyArray<T>,
+  path: string,
+): T[] {
+  return projects.filter((project) =>
+    (project.folders ?? [{ path: project.workspaceRoot }]).some(
+      (folder) =>
+        folder.path !== undefined &&
+        normalizeProjectPathForComparison(folder.path) === normalizeProjectPathForComparison(path),
+    ),
+  );
+}
+
+/** Lists each overlapping local folder once, including secondary folders. */
+export function listProjectFolderOverlaps<T extends FolderProject>(
+  projects: ReadonlyArray<T>,
+  project: FolderProject,
+) {
+  const seen = new Set<string>();
+  return (project.folders ?? [{ path: project.workspaceRoot }]).flatMap((folder) => {
+    if (folder.path === undefined) return [];
+    const key = normalizeProjectPathForComparison(folder.path);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const overlapping = listProjectsUsingFolder(projects, folder.path);
+    return overlapping.length ? [{ path: folder.path, projects: overlapping }] : [];
+  });
 }
 
 export function buildProjectCreateCommand(input: {

@@ -1,7 +1,36 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { FilesystemBrowseError } from "./filesystem.ts";
+import {
+  FilesystemBrowseError,
+  FilesystemBrowseInput,
+  FilesystemBrowseResult,
+} from "./filesystem.ts";
+const decodeBrowseInput = Schema.decodeUnknownSync(FilesystemBrowseInput);
+const decodeBrowseResult = Schema.decodeUnknownSync(FilesystemBrowseResult);
+
+describe("workspace file browse compatibility", () => {
+  it("decodes older directory-only peers and opt-in file entries", () => {
+    const decode = decodeBrowseResult;
+    expect(
+      decode({ parentPath: "/", entries: [{ name: "repo", fullPath: "/repo" }] }).entries[0]?.kind,
+    ).toBeUndefined();
+    expect(
+      decode({
+        parentPath: "/",
+        entries: [
+          { name: "team.code-workspace", fullPath: "/team.code-workspace", kind: "workspace-file" },
+        ],
+      }).entries[0]?.kind,
+    ).toBe("workspace-file");
+    expect(
+      decodeBrowseInput({
+        partialPath: "/",
+        includeWorkspaceFiles: true,
+      }).includeWorkspaceFiles,
+    ).toBe(true);
+  });
+});
 
 describe("FilesystemBrowseError", () => {
   it("derives a stable message from browse context while retaining the cause", () => {

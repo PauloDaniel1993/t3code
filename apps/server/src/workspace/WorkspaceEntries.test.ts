@@ -734,6 +734,46 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
   });
 
   describe("browse", () => {
+    it.effect(
+      "opts into immediate workspace files without parsing and preserves directory kinds",
+      () =>
+        Effect.gen(function* () {
+          const entries = yield* WorkspaceEntries.WorkspaceEntries;
+          const path = yield* Path.Path;
+          const cwd = yield* makeTempDir();
+          yield* writeTextFile(cwd, "team.CODE-WORKSPACE", "invalid JSON is still listed");
+          yield* writeTextFile(cwd, "directory.code-workspace/child.code-workspace");
+          yield* writeTextFile(cwd, "notes.json");
+          const partialPath = yield* appendSeparator(cwd);
+          expect((yield* entries.browse({ partialPath })).entries).toEqual([
+            {
+              name: "directory.code-workspace",
+              fullPath: path.join(cwd, "directory.code-workspace"),
+            },
+          ]);
+          expect(
+            (yield* entries.browse({ partialPath, includeWorkspaceFiles: true })).entries,
+          ).toEqual([
+            {
+              name: "directory.code-workspace",
+              fullPath: path.join(cwd, "directory.code-workspace"),
+              kind: "directory",
+            },
+            {
+              name: "team.CODE-WORKSPACE",
+              fullPath: path.join(cwd, "team.CODE-WORKSPACE"),
+              kind: "workspace-file",
+            },
+          ]);
+          expect(
+            (yield* entries.browse({
+              partialPath: path.join(cwd, "TE"),
+              includeWorkspaceFiles: true,
+            })).entries,
+          ).toHaveLength(1);
+        }),
+    );
+
     it.effect("returns matching directories and excludes files", () =>
       Effect.gen(function* () {
         const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
