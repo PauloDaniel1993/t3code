@@ -43,6 +43,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
@@ -53,6 +54,7 @@ import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "../../provider/Layers/ProviderEventLoggers.ts";
+import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as Orchestrator from "../Orchestrator.ts";
@@ -1736,6 +1738,118 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         firstTerminal: Deferred.await(firstTerminal),
       };
     });
+
+  it.effect("records recovered and removed folders on consecutive turns in one runtime", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "native-workspace-scope-reuse";
+      const scopes = [[], ["/workspace/other"], []] as const;
+      const terminalEvents = yield* Queue.unbounded<void>();
+      const scopeEvents =
+        yield* Queue.unbounded<
+          Extract<ProviderAdapterV2Event, { type: "provider_session.updated" }>
+        >();
+      const entries = scopes.flatMap((additionalDirectories, index) => {
+        const nativeTurnId = `scope-turn-${index}`;
+        const folderInventory = buildWorkspaceFolderInventory({
+          cwd: "/workspace",
+          additionalDirectories,
+        });
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId,
+          prompt: "Check the current workspace",
+        });
+        return [
+          ...(index === 0 ? preamble : preamble.slice(5)).map((entry) => {
+            if (
+              entry.type === "runtime_exit" ||
+              entry.label !== "turn/start" ||
+              !Predicate.isObject(entry.frame)
+            )
+              return entry;
+            return {
+              ...entry,
+              frame: {
+                ...entry.frame,
+                id: 3 + index,
+                ...(entry.type === "expect_outbound"
+                  ? {
+                      params: {
+                        threadId: nativeThreadId,
+                        input: [{ type: "text", text: "Check the current workspace" }],
+                        cwd: "/workspace",
+                        model: "gpt-5.4",
+                        approvalPolicy: "on-request",
+                        approvalsReviewer: "user",
+                        sandboxPolicy: {
+                          type: "workspaceWrite",
+                          writableRoots: additionalDirectories,
+                        },
+                        summary: "detailed",
+                        ...(folderInventory === undefined
+                          ? {}
+                          : {
+                              additionalContext: {
+                                workspace_folders: { kind: "application", value: folderInventory },
+                              },
+                            }),
+                      },
+                    }
+                  : {}),
+              },
+            };
+          }),
+          {
+            type: "emit_inbound" as const,
+            label: "turn/completed",
+            frame: {
+              method: "turn/completed",
+              params: {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+              },
+            },
+          },
+        ];
+      });
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({ scenario: "workspace-scope-reuse", entries }),
+        (event) => {
+          if (event.type === "turn.terminal") return Queue.offer(terminalEvents, undefined);
+          if (event.type === "provider_session.updated") return Queue.offer(scopeEvents, event);
+          return Effect.void;
+        },
+      );
+      const originalSession = harness.runtime.providerSession;
+      const snapshots: Array<
+        Extract<ProviderAdapterV2Event, { type: "provider_session.updated" }>
+      > = [];
+      for (const [index, additionalDirectories] of scopes.entries()) {
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`scope-attempt-${index}`),
+            text: "Check the current workspace",
+          }),
+          runtimePolicy: {
+            ...CODEX_TEST_RUNTIME_POLICY,
+            runtimeMode: "auto-accept-edits",
+            additionalDirectories,
+          },
+        });
+        yield* Queue.take(terminalEvents);
+        assert.deepEqual(originalSession.additionalDirectories, additionalDirectories);
+        if (index > 0) {
+          const event = yield* Queue.take(scopeEvents);
+          snapshots.push(event);
+          assert.deepEqual(event.providerSession.additionalDirectories, additionalDirectories);
+        }
+      }
+      assert.deepEqual(snapshots[0]?.providerSession.additionalDirectories, scopes[1]);
+    }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
 
   it.effect.each(["supported", "unsupported", "invalid"] as const)(
     "delivers native history with %s app-server protocol",

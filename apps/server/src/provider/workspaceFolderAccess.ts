@@ -7,7 +7,7 @@ import type { ProviderWorkspaceFolderAccess } from "@t3tools/contracts";
  * and edits a file in an extra folder after start, resume and fork.
  */
 export const WORKSPACE_FOLDER_ACCESS = {
-  codex: "unverified",
+  codex: "supported",
   claudeAgent: "unverified",
   cursor: "unverified",
   kimi: "unverified",
