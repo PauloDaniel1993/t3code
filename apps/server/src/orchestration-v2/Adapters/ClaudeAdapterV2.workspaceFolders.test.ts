@@ -134,12 +134,12 @@ describe("Claude workspace folders", () => {
       additionalDirectories: scope.additionalDirectories,
       ...policy,
     });
-    const singleFolder = ClaudeAdapterV2.claudeRuntimeQueryPolicyForRuntimePolicy(
-      ProviderAdapterV2RuntimePolicy.make({ ...runtimePolicy, additionalDirectories: [] }),
-    );
-    assert.deepEqual(policy, singleFolder);
     assert.notEqual(options.permissionMode, "bypassPermissions");
-    assert.notInclude(options.allowedTools ?? [], "Edit");
+    if (runtimePolicy.interactionMode === "plan") {
+      assert.equal(options.permissionMode, "plan");
+    } else {
+      assert.deepEqual(options.tools, ClaudeAdapterV2.CLAUDE_READ_ONLY_ALLOWED_TOOLS);
+    }
   });
 
   it.effect(

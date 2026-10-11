@@ -884,7 +884,8 @@ export function makeClaudeQueryOptions(input: {
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
-      // Resumes must render the current folder inventory, including clearing it.
+      // Every session can gain or lose folders later, even if it starts with one.
+      // Render the current inventory on resume instead of keeping the first prompt.
       snapshot: false,
       append:
         buildRuntimeInstructions({ harness: "Claude Code" }) +
@@ -6987,8 +6988,8 @@ export function makeClaudeAdapterV2(
             ),
           };
           yield* Ref.set(queryContext, context);
-          // Session-manager wrappers copy the runtime. Keep their session metadata
-          // current as well, and emit a snapshot so queued updates retain their scope.
+          // Runtime wrappers share this session object. Update it in place and
+          // emit a snapshot so queued updates retain their installed scope.
           Object.assign(session, {
             cwd: turnInput.runtimePolicy.cwd ?? process.cwd(),
             additionalDirectories: [...turnInput.runtimePolicy.additionalDirectories],
