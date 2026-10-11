@@ -8,7 +8,7 @@ import type { ProviderWorkspaceFolderAccess } from "@t3tools/contracts";
  */
 export const WORKSPACE_FOLDER_ACCESS = {
   codex: "unverified",
-  claudeAgent: "unverified",
+  claudeAgent: "supported",
   cursor: "unverified",
   kimi: "unverified",
   // Registry agents stay unverified even when they advertise extra directories.
