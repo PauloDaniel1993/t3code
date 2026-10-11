@@ -96,6 +96,38 @@ describe("AcpSessionRuntime", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("retains explicit attachment grants while workspace folders are cleared", () =>
+    Effect.gen(function* () {
+      const requests: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+      const attachmentDirectory = NodePath.join(process.cwd(), "attachments");
+      const runtime = yield* AcpSessionRuntime.make({
+        ...mockRuntimeOptions,
+        additionalDirectories: [],
+        additionalDirectoryGrants: [attachmentDirectory],
+        requestLogger: (event) =>
+          Effect.sync(() => {
+            requests.push(event);
+          }),
+      });
+      const started = yield* runtime.start();
+      yield* runtime.loadSession(started.sessionId, { additionalDirectories: [] });
+      const error = yield* runtime
+        .loadSession(started.sessionId, {
+          additionalDirectories: [NodePath.join(process.cwd(), "extra")],
+        })
+        .pipe(Effect.flip);
+      expect(error.message).toContain("does not advertise additional workspace directory access");
+      const payloads = requests.filter(
+        (event) =>
+          event.status === "started" && ["session/new", "session/load"].includes(event.method),
+      );
+      expect(payloads.map((event) => event.payload)).toEqual([
+        expect.objectContaining({ additionalDirectories: [attachmentDirectory] }),
+        expect.objectContaining({ additionalDirectories: [attachmentDirectory] }),
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect.each(["session/new", "session/resume"] as const)(
     "buffers root metadata while %s startup is still pending",
     (setupMethod) =>

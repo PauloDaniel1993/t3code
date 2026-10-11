@@ -276,11 +276,15 @@ function makeProviderAdapter(
         }
         const now = yield* DateTime.now;
         const events = yield* Queue.unbounded<ProviderAdapterV2Event, Cause.Done>();
-        const session = makeProviderSession({
-          providerSessionId: input.providerSessionId,
-          now,
-          ...(options.capabilities === undefined ? {} : { capabilities: options.capabilities }),
-        });
+        const session = {
+          ...makeProviderSession({
+            providerSessionId: input.providerSessionId,
+            now,
+            ...(options.capabilities === undefined ? {} : { capabilities: options.capabilities }),
+          }),
+          cwd: input.runtimePolicy.cwd ?? process.cwd(),
+          additionalDirectories: input.runtimePolicy.additionalDirectories,
+        };
         yield* Ref.update(state, (current) => {
           const eventQueues = new Map(current.eventQueues);
           eventQueues.set(String(input.providerSessionId), events);
@@ -288,6 +292,7 @@ function makeProviderAdapter(
             ...current,
             openCount: current.openCount + 1,
             eventQueues,
+            additionalDirectories: input.runtimePolicy.additionalDirectories,
           };
         });
         yield* Effect.addFinalizer(() =>
@@ -732,6 +737,44 @@ it.effect(
         Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000, adapter: fixture.adapter })),
       );
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
+);
+
+it.effect("ProviderSessionManagerV2 exposes the newly installed workspace scope after resume", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-provider-session-manager-workspace-scope");
+      const fileSystem = yield* FileSystem.FileSystem;
+      const extraDirectory = yield* fileSystem.makeTempDirectoryScoped();
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const runtime = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy: { ...runtimePolicy, additionalDirectories: [extraDirectory] },
+      });
+      assert.deepEqual(runtime.providerSession.additionalDirectories, [extraDirectory]);
+      yield* runtime.resumeThread({
+        threadId,
+        providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+        runtimePolicy,
+      });
+      assert.deepEqual(runtime.providerSession.additionalDirectories, []);
+      const cached = Option.getOrThrow(yield* manager.get(providerSessionId));
+      assert.deepEqual(cached.providerSession.additionalDirectories, []);
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+    }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("ProviderSessionManagerV2 opens independent sessions concurrently", () =>

@@ -128,6 +128,8 @@ export interface AcpSessionRuntimeOptions {
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   /** Extra workspace roots the agent may read and write besides `cwd`. */
   readonly additionalDirectories?: ReadonlyArray<string>;
+  /** Provider-specific explicit grants, such as Antigravity's attachment directory. */
+  readonly additionalDirectoryGrants?: ReadonlyArray<string>;
   /** Transforms provider stdout before protocol parsing and protocol logging. */
   readonly transformStdout?: EffectAcpClient.AcpClientOptions["transformStdout"];
   /** Normalizes provider-specific fields before notification queues or runtime state retain them. */
@@ -2225,15 +2227,18 @@ export const make = (
       activationOptions?: AcpSessionActivationOptions,
     ) {
       const directories = activationOptions?.additionalDirectories ?? options.additionalDirectories;
+      const grants = options.additionalDirectoryGrants ?? [];
       if (initialized.agentCapabilities?.sessionCapabilities?.additionalDirectories == null) {
         if (directories !== undefined && directories.length > 0) {
           return yield* EffectAcpErrors.AcpRequestError.invalidParams(
             "ACP agent does not advertise additional workspace directory access.",
           );
         }
-        return {};
+        return grants.length === 0 ? {} : { additionalDirectories: grants };
       }
-      return directories === undefined ? {} : { additionalDirectories: directories };
+      return directories === undefined && grants.length === 0
+        ? {}
+        : { additionalDirectories: [...new Set([...(directories ?? []), ...grants])] };
     });
 
     const startOnce = Effect.gen(function* () {
