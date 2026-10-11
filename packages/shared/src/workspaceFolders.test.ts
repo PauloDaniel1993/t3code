@@ -2,14 +2,17 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   allocateFolderLabels,
+  hasOwnChanges,
   isPathWithin,
   isSamePath,
+  nestedPathPrefixes,
   orphanedThreadWorktreePaths,
   owningFolder,
   parseCanonicalPath,
   projectFolders,
   relativePathWithin,
   resolveThreadWorkspace,
+  snapshotFolderPath,
   threadUsingWorktrees,
   threadPrimaryPath,
   toCanonicalPath,
@@ -257,6 +260,34 @@ describe("workspaceAdditionalDirectories", () => {
   });
 });
 
+describe("snapshotFolderPath", () => {
+  const members = [{ repositoryRoot: "/real/repo", path: "/wt/s", branch: "b" }];
+
+  it("maps a folder through its checkout, so a symlinked path still finds its member", () => {
+    expect(
+      snapshotFolderPath(
+        {
+          path: "/link/repo/web",
+          checkoutRoot: "/real/repo",
+          checkoutPrefix: "apps/web",
+        },
+        members,
+      ),
+    ).toBe("/wt/s/apps/web");
+  });
+
+  it("leaves a folder outside every member, or outside git, at its own path", () => {
+    expect(
+      snapshotFolderPath(
+        { path: "/link/other", checkoutRoot: "/real/other", checkoutPrefix: "" },
+        members,
+      ),
+    ).toBe("/link/other");
+    expect(snapshotFolderPath({ path: "/notes", checkoutRoot: null }, members)).toBe("/notes");
+    expect(snapshotFolderPath({ checkoutRoot: null }, members)).toBeUndefined();
+  });
+});
+
 describe("worktreeSetPath", () => {
   it("leaves a folder that already lies in a member's worktree where it is", () => {
     // A worktree kept inside its own repository, bound before the project was linked.
@@ -397,6 +428,36 @@ describe("orphanedThreadWorktreePaths", () => {
         "a",
       ),
     ).toEqual([]);
+  });
+
+  it("names nothing while another thread works in a worktree holding a member", () => {
+    const threads = [
+      thread("child", "/worktrees/s/api", [set[1]!]),
+      // Picked only the parent's worktree, which holds the nested member's files.
+      thread("parent", "/worktrees/s"),
+    ];
+    expect(orphanedThreadWorktreePaths(threads, "child")).toEqual([]);
+  });
+
+  it("names the place of each nested path as its parent's status spells it", () => {
+    expect(
+      nestedPathPrefixes("/worktrees/s", ["/worktrees/s", "/worktrees/s/libs/api", "/other"]),
+    ).toEqual(["libs/api/"]);
+    expect(nestedPathPrefixes("C:\\Worktrees\\S", ["c:\\worktrees\\s\\API"])).toEqual(["API/"]);
+  });
+
+  it("counts a worktree's own changes, not its nested members' directories", () => {
+    const status = (paths: ReadonlyArray<string>) => ({
+      hasWorkingTreeChanges: true,
+      workingTree: { files: paths.map((path) => ({ path })) },
+    });
+    expect(hasOwnChanges(status(["libs/api/"]), ["libs/api/"])).toBe(false);
+    expect(hasOwnChanges(status(["libs/api/", "README.md"]), ["libs/api/"])).toBe(true);
+    // A change git reported without a path still counts.
+    expect(hasOwnChanges(status([]), [])).toBe(true);
+    expect(
+      hasOwnChanges({ hasWorkingTreeChanges: false, workingTree: { files: [] } }, ["libs/api/"]),
+    ).toBe(false);
   });
 
   it("names the other thread that blocks removal", () => {

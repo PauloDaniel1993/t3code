@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { buildTemporaryWorktreeBranchName, isTemporaryWorktreeBranch } from "@t3tools/shared/git";
 import {
+  isSamePath,
   resolveThreadWorkspace,
   threadPrimaryPath,
   workspaceAdditionalDirectories,
@@ -141,9 +142,6 @@ export class ThreadLaunchService extends Context.Service<
 >()("t3/orchestration-v2/ThreadLaunchService") {}
 
 const isThreadLaunchError = Schema.is(ThreadLaunchError);
-
-const LINKED_PROJECT_WORKTREES_UNSUPPORTED =
-  "Worktrees aren't supported yet for projects linked to a workspace file. Start the thread in the project's folders.";
 
 function failureDetail(error: unknown): string {
   if (isThreadLaunchError(error)) {
@@ -296,6 +294,18 @@ const make = Effect.gen(function* () {
         input.workspaceStrategy.type === "existing_worktree"
           ? input.workspaceStrategy.worktreePath
           : null;
+      const { thread } = yield* threads
+        .getThreadRecords(threadId, [])
+        .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      // The set the thread is bound to: one this launch creates, or one it
+      // was created to reuse.
+      let set: WorktreeSet.WorktreeSet | null =
+        worktreePath !== null &&
+        thread.worktrees !== undefined &&
+        thread.worktreePath !== null &&
+        isSamePath(thread.worktreePath, worktreePath)
+          ? { members: thread.worktrees, primaryFolder: thread.workspaceFolders?.[0] }
+          : null;
       if (input.workspaceStrategy.type === "worktree") {
         if (runId !== null) {
           yield* threads
@@ -309,22 +319,23 @@ const make = Effect.gen(function* () {
             .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }
         const strategy = input.workspaceStrategy;
+        const plan = yield* worktreeSets
+          .plan({
+            thread,
+            projectRoot: project.workspaceRoot,
+            baseRef: strategy.baseRef,
+            branch: branch!,
+            startFromOrigin: strategy.startFromOrigin === true,
+          })
+          .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
         // Only the creation stays interruptible: once it returns, the set is
         // recorded for rollback before a cancel can land.
-        const set = yield* Effect.uninterruptibleMask((restore) =>
+        set = yield* Effect.uninterruptibleMask((restore) =>
           restore(
-            worktreeSets.create(
-              {
-                cwd: project.workspaceRoot,
-                baseRef: strategy.baseRef,
-                branch: branch!,
-                startFromOrigin: strategy.startFromOrigin === true,
-              },
-              {
-                stage: (stage, status) => setupTracker.stageStatus(threadId, stage, status),
-                checkoutPercent: (percent) => setupTracker.stage(threadId, "checkout", { percent }),
-              },
-            ),
+            worktreeSets.create(plan, {
+              stage: (stage, status) => setupTracker.stageStatus(threadId, stage, status),
+              checkout: (progress) => setupTracker.stage(threadId, "checkout", progress),
+            }),
           ).pipe(
             Effect.tap((created) =>
               Effect.sync(() => {
@@ -333,22 +344,32 @@ const make = Effect.gen(function* () {
             ),
           ),
         ).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-        // Plain projects keep today's binding: the worktree root, no tuple.
-        worktreePath = set.members[0]!.path;
-        branch = set.members[0]!.branch;
+        ({ worktreePath, branch } = WorktreeSet.worktreeSetBinding(set));
         yield* setupTracker.update(threadId, (snapshot) => ({ ...snapshot, worktreePath, branch }));
       }
 
       bindStarted = true;
-      yield* threads
-        .dispatch({
-          type: "thread.metadata.update",
-          commandId: CommandId.make(`${input.commandId}:workspace`),
-          threadId,
-          branch,
-          worktreePath,
-        })
-        .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      const boundSet = set;
+      if (boundSet === null) {
+        yield* threads
+          .dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${input.commandId}:workspace`),
+            threadId,
+            branch,
+            worktreePath,
+          })
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      } else {
+        // Plain projects keep today's binding: the worktree root, no tuple.
+        ({ worktreePath, branch } = yield* worktreeSets
+          .bind({
+            commandId: CommandId.make(`${input.commandId}:workspace`),
+            threadId,
+            set: boundSet,
+          })
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId))));
+      }
       bound = true;
 
       // Rename temporary branches (server-invented above, or sent by clients
@@ -363,35 +384,49 @@ const make = Effect.gen(function* () {
       ) {
         const oldBranch = branch;
         const worktreeCwd = worktreePath;
-        renameFiber = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
-          Effect.flatMap(({ branch: newBranch, exactName }) =>
-            git.renameBranch({
+        const commandId = CommandId.make(`${input.commandId}:branch-rename`);
+        const renameAndBind = Effect.fn("ThreadLaunchService.renameAndBind")(function* (
+          newBranch: string,
+          exactName: boolean,
+        ) {
+          if (boundSet === null) {
+            const renamed = yield* git.renameBranch({
               cwd: worktreeCwd,
               oldBranch,
               newBranch,
               ...(exactName ? { exactName: true } : {}),
-            }),
-          ),
-          // A cancel rolls the set back under the name its branch has now.
-          Effect.tap((renamed) =>
-            Effect.sync(() => {
-              if (createdSet === null) return;
-              createdSet = {
-                members: createdSet.members.map((member, index) =>
-                  index === 0 ? { ...member, branch: renamed.branch } : member,
-                ),
-              };
-            }),
-          ),
-          Effect.flatMap((renamed) =>
-            threads.dispatch({
+            });
+            yield* threads.dispatch({
               type: "thread.metadata.update",
-              commandId: CommandId.make(`${input.commandId}:branch-rename`),
+              commandId,
               threadId,
               branch: renamed.branch,
               worktreePath: worktreeCwd,
-            }),
-          ),
+              // A thread the user moved meanwhile stays where it went.
+              expectedWorktreePath: worktreeCwd,
+            });
+            return;
+          }
+          const renamed = yield* worktreeSets
+            .renameBranch(boundSet, { branch: newBranch, exactName })
+            .pipe(
+              // A cancel rolls the set back under the names its branches have now.
+              Effect.tap((renamedSet) =>
+                Effect.sync(() => {
+                  if (createdSet !== null) createdSet = renamedSet;
+                }),
+              ),
+              Effect.uninterruptible,
+            );
+          yield* worktreeSets.bind({
+            commandId,
+            threadId,
+            set: renamed,
+            expectedWorktreePath: worktreeCwd,
+          });
+        });
+        renameFiber = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
+          Effect.flatMap(({ branch: newBranch, exactName }) => renameAndBind(newBranch, exactName)),
           Effect.catchCause((cause) =>
             Effect.logWarning("Thread worktree branch rename failed", {
               commandId: input.commandId,
@@ -404,7 +439,10 @@ const make = Effect.gen(function* () {
         );
       }
 
-      const cwd = threadPrimaryPath({ worktreePath }, project);
+      const cwd = threadPrimaryPath(
+        { worktreePath, workspaceFolders: thread.workspaceFolders },
+        project,
+      );
       if (runId !== null) {
         yield* threads
           .dispatch({
@@ -421,7 +459,8 @@ const make = Effect.gen(function* () {
         .runForThread({
           threadId,
           projectId: input.projectId,
-          projectCwd: project.workspaceRoot,
+          // A thread's own primary folder, which a later relink never moves.
+          projectCwd: thread.workspaceFolders?.[0]?.path ?? project.workspaceRoot,
           worktreePath: cwd,
           ...(tracked
             ? {
@@ -639,11 +678,6 @@ const make = Effect.gen(function* () {
           "update-thread",
         )("Reusing an existing thread requires a thread id.");
       }
-      // A linked project's threads work in its folders until worktree sets land.
-      if (project.workspaceFile != null && input.workspaceStrategy.type !== "root") {
-        return yield* mapError(input, "validate-workspace")(LINKED_PROJECT_WORKTREES_UNSUPPORTED);
-      }
-
       const launchReceipt = yield* readReceipt(input, input.commandId);
       return yield* Effect.gen(function* () {
         // A retried launch has no client-supplied id to replay against, so
@@ -702,13 +736,31 @@ const make = Effect.gen(function* () {
                 },
               )
             : input.workspaceStrategy;
-        const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
         // A new thread of a linked project binds its folders at creation. A
         // retry replays the create it already made.
+        const bindsFolders = input.reuseExistingThread !== true && Option.isNone(launchReceipt);
+        // One reusing a worktree takes the whole set from the newest thread
+        // working there, with the folders it was bound for. Without one, only
+        // the primary works in that worktree.
+        const reused =
+          bindsFolders &&
+          project.workspaceFile != null &&
+          input.workspaceStrategy.type === "existing_worktree" &&
+          initialWorktreePath !== null
+            ? Option.getOrUndefined(
+                yield* worktreeSets
+                  .resolveForReuse({
+                    projectId: input.projectId,
+                    worktreePath: initialWorktreePath,
+                  })
+                  .pipe(Effect.mapError(mapError(input, "resolve-project", candidateThreadId))),
+              )
+            : undefined;
         const workspaceFolders =
-          input.reuseExistingThread === true || Option.isSome(launchReceipt)
+          reused?.workspaceFolders ??
+          (!bindsFolders
             ? undefined
             : yield* projects.snapshotWorkspaceFolders(input.projectId).pipe(
                 // Only a workspace problem is the user's to fix; the rest is ours.
@@ -722,10 +774,10 @@ const make = Effect.gen(function* () {
                     candidateThreadId,
                   )(cause),
                 ),
-              );
+              ));
         // A new thread spanning workspace folders starts only with a provider
-        // that reaches them all. The snapshot was just probed, so a folder it
-        // gave no checkout root is unavailable now.
+        // that reaches them all. A folder the snapshot gave no checkout root
+        // was unavailable when it was taken.
         if (workspaceFolders !== undefined) {
           yield* runtimePolicy
             .requireWorkspaceFolderAccess({
@@ -734,7 +786,11 @@ const make = Effect.gen(function* () {
               scope: {
                 additionalDirectories: workspaceAdditionalDirectories(
                   resolveThreadWorkspace({
-                    thread: { worktreePath: initialWorktreePath, workspaceFolders },
+                    thread: {
+                      worktreePath: initialWorktreePath,
+                      workspaceFolders,
+                      ...(reused === undefined ? {} : { worktrees: reused.worktrees }),
+                    },
                     project,
                     unavailableFolderPaths: workspaceFolders.flatMap((folder) =>
                       folder.path !== undefined && folder.checkoutRoot === undefined
@@ -747,6 +803,7 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.mapError(mapError(input, "validate-workspace", candidateThreadId)));
         }
+        const initialBranch = reused?.worktrees[0]?.branch ?? workspaceStrategy.branch ?? null;
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({
@@ -767,6 +824,7 @@ const make = Effect.gen(function* () {
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
                 ...(workspaceFolders === undefined ? {} : { workspaceFolders }),
+                ...(reused === undefined ? {} : { worktrees: reused.worktrees }),
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),

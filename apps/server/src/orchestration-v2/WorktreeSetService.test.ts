@@ -2,10 +2,14 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   GitCommandError,
+  type OrchestrationV2Command,
+  type OrchestrationV2ThreadWorkspaceFolder,
   type OrchestrationV2ThreadWorktree,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import { allocateFolderLabels } from "@t3tools/shared/workspaceFolders";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -17,11 +21,13 @@ import * as Path from "effect/Path";
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as WorktreeSet from "./WorktreeSetService.ts";
 
-const GitLayer = GitVcsDriver.layer.pipe(
+const GitLayer = Layer.mergeAll(GitVcsDriver.layer, WorkspaceFolderResolver.layer).pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-set-test-" })),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -35,7 +41,11 @@ interface ThreadRecord {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly worktrees?: ReadonlyArray<OrchestrationV2ThreadWorktree>;
+  readonly workspaceFolders?: ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder>;
+  readonly createdAt?: DateTime.Utc;
 }
+
+type MetadataUpdate = Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }>;
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -50,12 +60,15 @@ const git = (cwd: string, args: ReadonlyArray<string>) =>
   });
 
 /** A repository with one commit; `files` are committed relative to its root. */
-const makeRepo = (name: string, files: ReadonlyArray<string> = ["README.md"]) =>
+const makeRepo = (name: string, files: ReadonlyArray<string> = ["README.md"], parent?: string) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const driver = yield* GitVcsDriver.GitVcsDriver;
-    const root = path.join(yield* fileSystem.makeTempDirectoryScoped({ prefix: "wts-" }), name);
+    const root = path.join(
+      parent ?? (yield* fileSystem.makeTempDirectoryScoped({ prefix: "wts-" })),
+      name,
+    );
     yield* fileSystem.makeDirectory(root, { recursive: true });
     yield* driver.initRepo({ cwd: root });
     yield* git(root, ["config", "user.email", "test@test.com"]);
@@ -66,23 +79,52 @@ const makeRepo = (name: string, files: ReadonlyArray<string> = ["README.md"]) =>
     }
     yield* git(root, ["add", "."]);
     yield* git(root, ["commit", "-m", "initial commit"]);
-    return { root, branch: yield* git(root, ["branch", "--show-current"]) };
+    return {
+      root: yield* fileSystem.realPath(root),
+      branch: yield* git(root, ["branch", "--show-current"]),
+    };
+  });
+
+/** A thread's folder snapshot of `folders`, probed as binding probes them. */
+const snapshotOf = (folders: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const resolver = yield* WorkspaceFolderResolver.WorkspaceFolderResolver;
+    const path = yield* Path.Path;
+    const labelled = allocateFolderLabels(
+      folders.map((folder) => ({ path: folder, name: path.basename(folder) })),
+    );
+    return yield* Effect.forEach(labelled, (folder) =>
+      resolver.probe(folder.path!, { vcs: true }).pipe(
+        Effect.map((probe): OrchestrationV2ThreadWorkspaceFolder => ({
+          ...folder,
+          ...(probe.vcs == null
+            ? { checkoutRoot: null }
+            : { checkoutRoot: probe.vcs.checkoutRoot, checkoutPrefix: probe.vcs.checkoutPrefix }),
+        })),
+      ),
+    );
   });
 
 /**
  * The coordinator over real git. GitWorkflowService only checks that a cwd is a
  * repository before routing these calls to the driver; `git` replaces calls to
- * inject failures.
+ * inject failures. Bindings land in `dispatched`.
  */
 const withCoordinator = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   input: {
     readonly projectRoot?: string;
     readonly thread?: ThreadRecord & { readonly deletedAt?: string };
+    readonly threads?: ReadonlyArray<ThreadRecord>;
     readonly activeThreads?: ReadonlyArray<ThreadRecord>;
     readonly archivedThreads?: ReadonlyArray<ThreadRecord>;
-    readonly projects?: ReadonlyArray<{ readonly title: string; readonly workspaceRoot: string }>;
+    readonly projects?: ReadonlyArray<{
+      readonly title: string;
+      readonly workspaceRoot: string;
+      readonly folders?: ReadonlyArray<{ readonly path: string; readonly name: string }>;
+    }>;
     readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+    readonly dispatched?: Array<MetadataUpdate>;
   } = {},
 ) =>
   effect.pipe(
@@ -102,6 +144,23 @@ const withCoordinator = <A, E, R>(
                   removeWorktree: driver.removeWorktree,
                   pruneWorktrees: driver.pruneWorktrees,
                   deleteLocalBranch: driver.deleteLocalBranch,
+                  listLocalBranchNames: driver.listLocalBranchNames,
+                  renameBranch: driver.renameBranch,
+                  switchRef: (switchInput) => Effect.scoped(driver.switchRef(switchInput)),
+                  invalidateLocalStatus: () => Effect.void,
+                  localStatus: (statusInput) =>
+                    driver.statusDetailsLocal(statusInput.cwd).pipe(
+                      Effect.map(
+                        (status) =>
+                          ({
+                            isRepo: status.isRepo,
+                            refName: status.branch,
+                            hasWorkingTreeChanges: status.hasWorkingTreeChanges,
+                            workingTree: status.workingTree,
+                          }) as never,
+                      ),
+                      Effect.orDie,
+                    ),
                   ...input.git,
                 });
               }),
@@ -117,13 +176,33 @@ const withCoordinator = <A, E, R>(
             }),
             // Shaped like the store: archived threads come in `archivedThreads`.
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
-              getThread: () => Effect.succeed({ projectId, ...input.thread } as never),
+              getThread: (id) =>
+                Effect.succeed({
+                  projectId,
+                  deletedAt: null,
+                  archivedAt: null,
+                  ...(input.threads?.find((thread) => thread.id === id) ?? input.thread),
+                } as never),
               getShellSnapshot: (options) =>
                 Effect.succeed({
-                  threads: options?.location === "archive" ? [] : (input.activeThreads ?? []),
+                  threads:
+                    options?.location === "archive"
+                      ? []
+                      : (input.activeThreads ?? []).map((thread) => ({
+                          projectId,
+                          deletedAt: null,
+                          ...thread,
+                        })),
                   archivedThreads:
                     options?.location === "active" ? [] : (input.archivedThreads ?? []),
                 } as never),
+            }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  if (command.type === "thread.metadata.update") input.dispatched?.push(command);
+                  return { sequence: 1, storedEvents: [] } as never;
+                }),
             }),
           ),
         ),
@@ -131,13 +210,36 @@ const withCoordinator = <A, E, R>(
     ),
   );
 
-const noProgress: WorktreeSet.WorktreeSetProgress = {
-  stage: () => Effect.void,
-  checkoutPercent: () => Effect.void,
-};
+const noProgress = WorktreeSet.noWorktreeSetProgress;
 
 const branchExists = (cwd: string, branch: string) =>
   git(cwd, ["branch", "--list", branch]).pipe(Effect.map((listed) => listed !== ""));
+
+/** Plans and creates a set for a thread. */
+const createSet = (input: {
+  readonly workspaceFolders?: ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder>;
+  readonly projectRoot?: string;
+  readonly baseRef: string;
+  readonly branch: string;
+  readonly startFromOrigin?: boolean;
+  readonly progress?: WorktreeSet.WorktreeSetProgress;
+}) =>
+  Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+    worktreeSets
+      .plan({
+        thread: {
+          id: threadId,
+          ...(input.workspaceFolders === undefined
+            ? {}
+            : { workspaceFolders: input.workspaceFolders }),
+        },
+        projectRoot: input.projectRoot ?? input.workspaceFolders?.[0]?.path ?? "/unused",
+        baseRef: input.baseRef,
+        branch: input.branch,
+        startFromOrigin: input.startFromOrigin ?? false,
+      })
+      .pipe(Effect.flatMap((plan) => worktreeSets.create(plan, input.progress ?? noProgress))),
+  );
 
 it.effect("creates a one-member set exactly where a lone worktree lives", () =>
   Effect.gen(function* () {
@@ -147,26 +249,26 @@ it.effect("creates a one-member set exactly where a lone worktree lives", () =>
     const stages: Array<string> = [];
 
     const set = yield* withCoordinator(
-      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
-        worktreeSets.create(
-          {
-            cwd: repo.root,
-            baseRef: repo.branch,
-            branch: "feature/one",
-            startFromOrigin: true,
-          },
-          {
-            stage: (stage, status) => Effect.sync(() => void stages.push(`${stage}:${status}`)),
-            checkoutPercent: () => Effect.void,
-          },
-        ),
-      ),
+      createSet({
+        projectRoot: repo.root,
+        baseRef: repo.branch,
+        branch: "feature/one",
+        startFromOrigin: true,
+        progress: {
+          stage: (stage, status) => Effect.sync(() => void stages.push(`${stage}:${status}`)),
+          checkout: () => Effect.void,
+        },
+      }),
     );
 
     const worktreePath = path.join(config.worktreesDir, "app", "feature-one");
     assert.deepEqual(set.members, [
       { repositoryRoot: repo.root, path: worktreePath, branch: "feature/one" },
     ]);
+    assert.deepEqual(WorktreeSet.worktreeSetBinding(set), {
+      branch: "feature/one",
+      worktreePath,
+    });
     assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "feature/one");
     // No origin remote: the fetch is skipped rather than failing the launch.
     assert.deepEqual(stages, ["fetch:skipped", "checkout:running", "checkout:done"]);
@@ -182,24 +284,336 @@ it.effect("keeps a subfolder project's worktree at the worktree root", () =>
     const projectRoot = path.join(repo.root, "packages", "app");
 
     const set = yield* withCoordinator(
-      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
-        worktreeSets.create(
-          {
-            cwd: projectRoot,
-            baseRef: repo.branch,
-            branch: "sub",
-            startFromOrigin: false,
-          },
-          noProgress,
-        ),
-      ),
+      createSet({ projectRoot, baseRef: repo.branch, branch: "sub" }),
     );
 
     // Today's binding: the member is the worktree root, not the mapped subfolder.
     const worktreePath = path.join(config.worktreesDir, "app", "sub");
     assert.equal(set.members[0]?.path, worktreePath);
+    assert.equal(WorktreeSet.worktreeSetBinding(set).worktreePath, worktreePath);
     assert.equal((yield* fileSystem.stat(path.join(worktreePath, ".git"))).type, "File");
     assert.isTrue(yield* fileSystem.exists(path.join(worktreePath, "packages", "app", "index.ts")));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("maps every folder of one checkout into a single worktree", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const repo = yield* makeRepo("mono", ["apps/web/index.ts", "apps/api/index.ts"]);
+    const workspaceFolders = yield* snapshotOf([
+      path.join(repo.root, "apps", "web"),
+      path.join(repo.root, "apps", "api"),
+    ]);
+
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders, baseRef: repo.branch, branch: "feature/mono" }),
+    );
+
+    const session = path.join(config.worktreesDir, "web", "feature-mono");
+    assert.deepEqual(set.members, [
+      { repositoryRoot: repo.root, path: session, branch: "feature/mono" },
+    ]);
+    // A linked project's thread works at its primary folder's place in the set.
+    assert.deepEqual(WorktreeSet.worktreeSetBinding(set), {
+      branch: "feature/mono",
+      worktreePath: path.join(session, "apps", "web"),
+      worktrees: set.members,
+    });
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+/**
+ * A parent repository holding an independent repository it ignores and a
+ * submodule, each listed as a workspace folder.
+ */
+const makeNestedWorkspace = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const parent = yield* makeRepo("parent", ["apps/web/index.ts"]);
+  yield* fileSystem.writeFileString(path.join(parent.root, ".gitignore"), "libs/\n");
+  yield* git(parent.root, ["add", ".gitignore"]);
+  yield* git(parent.root, ["commit", "-m", "ignore nested repositories"]);
+  const child = yield* makeRepo("child", ["src/index.ts"], path.join(parent.root, "libs"));
+  const submodule = yield* makeRepo("vendored");
+  yield* git(parent.root, [
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    submodule.root,
+    "mods/vendored",
+  ]);
+  yield* git(parent.root, ["commit", "-m", "add submodule"]);
+  return { parent, child, submodule };
+});
+
+it.effect(
+  "nests an independent repository's worktree in its parent's and lets a submodule ride",
+  () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      const { parent, child } = yield* makeNestedWorkspace;
+      const workspaceFolders = yield* snapshotOf([
+        path.join(parent.root, "apps", "web"),
+        child.root,
+        path.join(parent.root, "mods", "vendored"),
+      ]);
+
+      const set = yield* withCoordinator(
+        createSet({ workspaceFolders, baseRef: parent.branch, branch: "feature/nested" }),
+      );
+
+      const session = path.join(config.worktreesDir, "web", "feature-nested");
+      assert.deepEqual(set.members, [
+        { repositoryRoot: parent.root, path: session, branch: "feature/nested" },
+        {
+          repositoryRoot: child.root,
+          path: path.join(session, "libs", "child"),
+          branch: "feature/nested",
+        },
+      ]);
+      assert.equal(
+        yield* git(path.join(session, "libs", "child"), ["branch", "--show-current"]),
+        "feature/nested",
+      );
+      // The submodule isn't a member: its folder lies in the parent's worktree.
+      assert.equal(
+        WorktreeSet.worktreeSetBinding(set).worktreePath,
+        path.join(session, "apps", "web"),
+      );
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("makes a submodule its own member when its superproject isn't one", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const outer = yield* makeRepo("outer", ["README.md"]);
+    yield* fileSystem.writeFileString(path.join(outer.root, ".gitignore"), "nested/\n");
+    yield* git(outer.root, ["add", ".gitignore"]);
+    yield* git(outer.root, ["commit", "-m", "ignore the nested repository"]);
+    // An independent repository the outer one ignores, holding a submodule.
+    const nested = yield* makeRepo("nested", ["README.md"], outer.root);
+    const vendored = yield* makeRepo("vendored");
+    yield* git(nested.root, [
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "add",
+      vendored.root,
+      "vendor",
+    ]);
+    yield* git(nested.root, ["commit", "-m", "add submodule"]);
+    const vendor = yield* fileSystem.realPath(path.join(nested.root, "vendor"));
+    const workspaceFolders = yield* snapshotOf([outer.root, vendor]);
+
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders, baseRef: outer.branch, branch: "feature/vendor" }),
+    );
+
+    const session = path.join(config.worktreesDir, "outer", "feature-vendor");
+    assert.deepEqual(
+      set.members.map((member) => [member.repositoryRoot, member.path]),
+      [
+        [outer.root, session],
+        [vendor, path.join(session, "nested", "vendor")],
+      ],
+    );
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("creates a primary nested inside another member after that member", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const { parent, child } = yield* makeNestedWorkspace;
+    const workspaceFolders = yield* snapshotOf([child.root, parent.root]);
+    const created: Array<string> = [];
+
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders, baseRef: child.branch, branch: "feature/inner" }),
+      {
+        git: {
+          createWorktree: (input, options) =>
+            driver
+              .createWorktree(input, options)
+              .pipe(Effect.tap(() => Effect.sync(() => void created.push(input.cwd)))),
+        },
+      },
+    );
+
+    const session = path.join(config.worktreesDir, "child", "feature-inner");
+    // The primary's member comes first in the set, but its parent was created first.
+    assert.deepEqual(
+      set.members.map((member) => member.repositoryRoot),
+      [child.root, parent.root],
+    );
+    assert.deepEqual(created, [parent.root, child.root]);
+    assert.equal(
+      WorktreeSet.worktreeSetBinding(set).worktreePath,
+      path.join(session, "libs", "child"),
+    );
+    assert.equal(
+      yield* git(path.join(session, "libs", "child"), ["branch", "--show-current"]),
+      "feature/inner",
+    );
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+/** Two sibling repositories, a second checkout of the first, and a snapshot of all three. */
+const makeSiblingWorkspace = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "wts-" });
+  const api = yield* makeRepo("api", ["README.md"], workspace);
+  const web = yield* makeRepo("web", ["README.md"], workspace);
+  const release = path.join(workspace, "api-release");
+  yield* git(api.root, ["worktree", "add", "-b", "release", release]);
+  const workspaceFolders = yield* snapshotOf([api.root, web.root, release]);
+  return { api, web, release: yield* fileSystem.realPath(release), workspaceFolders };
+});
+
+it.effect("mirrors sibling repositories and names a second checkout of one repository apart", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const { api, web, release, workspaceFolders } = yield* makeSiblingWorkspace;
+
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders, baseRef: api.branch, branch: "feature/shared" }),
+    );
+
+    const session = path.join(config.worktreesDir, "api", "feature-shared");
+    assert.deepEqual(set.members, [
+      { repositoryRoot: api.root, path: path.join(session, "api"), branch: "feature/shared" },
+      { repositoryRoot: web.root, path: path.join(session, "web"), branch: "feature/shared" },
+      {
+        repositoryRoot: release,
+        path: path.join(session, "api-release"),
+        branch: "feature/shared-api-release",
+      },
+    ]);
+    // The second checkout started from what it had checked out.
+    assert.equal(
+      yield* git(path.join(session, "api-release"), ["rev-parse", "HEAD"]),
+      yield* git(release, ["rev-parse", "HEAD"]),
+    );
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("fails before creating anything when a name is taken in any member", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
+    yield* git(web.root, ["branch", "feature/taken"]);
+
+    const error = yield* withCoordinator(
+      createSet({ workspaceFolders, baseRef: api.branch, branch: "feature/taken" }),
+    ).pipe(Effect.flip);
+
+    assert.equal(error._tag, "VcsThreadWorktreesError");
+    assert.include(error.message, web.root);
+    assert.isFalse(
+      yield* fileSystem.exists(path.join(config.worktreesDir, "api", "feature-taken")),
+    );
+    assert.isFalse(yield* branchExists(api.root, "feature/taken"));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("removes the members it created and their branches when a later one fails", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
+
+    const error = yield* withCoordinator(
+      createSet({ workspaceFolders, baseRef: api.branch, branch: "feature/doomed" }),
+      {
+        git: {
+          createWorktree: (input, options) =>
+            input.cwd === web.root
+              ? Effect.fail(
+                  new GitCommandError({
+                    operation: "GitVcsDriver.createWorktree",
+                    command: "git",
+                    cwd: input.cwd,
+                    detail: "disk full",
+                  }),
+                )
+              : driver.createWorktree(input, options),
+        },
+      },
+    ).pipe(Effect.flip);
+
+    assert.equal(error.detail, "disk full");
+    const session = path.join(config.worktreesDir, "api", "feature-doomed");
+    assert.isFalse(yield* fileSystem.exists(path.join(session, "api")));
+    assert.isFalse(yield* branchExists(api.root, "feature/doomed"));
+    assert.isFalse(yield* branchExists(web.root, "feature/doomed"));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("renames every member together, and reverts them all when one rename fails", () =>
+  Effect.gen(function* () {
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const { api, web, release, workspaceFolders } = yield* makeSiblingWorkspace;
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders, baseRef: api.branch, branch: "t3code/abcd1234" }),
+    );
+    const branchesOf = (renamed: WorktreeSet.WorktreeSet) =>
+      Effect.forEach(renamed.members, (member) => git(member.path, ["branch", "--show-current"]));
+    const rename = (failIn?: string) =>
+      withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+          worktreeSets.renameBranch(set, { branch: "feature/login", exactName: false }),
+        ),
+        {
+          git: {
+            renameBranch: (input) =>
+              input.cwd === failIn && input.newBranch !== input.oldBranch
+                ? Effect.fail(
+                    new GitCommandError({
+                      operation: "GitVcsDriver.renameBranch",
+                      command: "git",
+                      cwd: input.cwd,
+                      detail: "rename refused",
+                    }),
+                  )
+                : driver.renameBranch(input),
+          },
+        },
+      );
+
+    // The web member fails after the api member was renamed.
+    yield* rename(set.members[1]!.path).pipe(Effect.flip);
+    assert.deepEqual(yield* branchesOf(set), [
+      "t3code/abcd1234",
+      "t3code/abcd1234",
+      "t3code/abcd1234-api-release",
+    ]);
+
+    // Taken in one repository, so the whole set moves to the next free name.
+    yield* git(web.root, ["branch", "feature/login"]);
+    const renamed = yield* rename();
+    assert.deepEqual(
+      renamed.members.map((member) => member.branch),
+      ["feature/login-1", "feature/login-1", "feature/login-1-api-release"],
+    );
+    assert.deepEqual(yield* branchesOf(renamed), [
+      "feature/login-1",
+      "feature/login-1",
+      "feature/login-1-api-release",
+    ]);
+    assert.isTrue(yield* branchExists(api.root, "feature/login-1-api-release"));
+    assert.equal(renamed.members[2]?.repositoryRoot, release);
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
@@ -211,17 +625,7 @@ it.effect("removes a claimed worktree and deletes its branch when creation then 
     let claimedPath: string | null = null;
 
     const error = yield* withCoordinator(
-      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
-        worktreeSets.create(
-          {
-            cwd: repo.root,
-            baseRef: repo.branch,
-            branch: "doomed",
-            startFromOrigin: false,
-          },
-          noProgress,
-        ),
-      ).pipe(Effect.flip),
+      createSet({ projectRoot: repo.root, baseRef: repo.branch, branch: "doomed" }),
       {
         git: {
           createWorktree: (input, options) =>
@@ -244,12 +648,88 @@ it.effect("removes a claimed worktree and deletes its branch when creation then 
             ),
         },
       },
-    );
+    ).pipe(Effect.flip);
 
     assert.equal(error.detail, "could not lock config file");
     assert.isNotNull(claimedPath);
     assert.isFalse(yield* fileSystem.exists(claimedPath!));
     assert.isFalse(yield* branchExists(repo.root, "doomed"));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("deletes the branch a failed add made before it could claim the worktree", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const repo = yield* makeRepo("app");
+    // Something else took the place after the plan checked it.
+    const place = path.join(config.worktreesDir, "app", "late");
+
+    const error = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+        worktreeSets
+          .plan({
+            thread: { id: threadId },
+            projectRoot: repo.root,
+            baseRef: repo.branch,
+            branch: "late",
+            startFromOrigin: false,
+          })
+          .pipe(
+            Effect.tap(() =>
+              fileSystem
+                .makeDirectory(place, { recursive: true })
+                .pipe(Effect.andThen(fileSystem.writeFileString(path.join(place, "x"), "x"))),
+            ),
+            Effect.flatMap((plan) => worktreeSets.create(plan, noProgress)),
+          ),
+      ),
+    ).pipe(Effect.flip);
+
+    assert.equal(error._tag, "GitCommandError");
+    assert.isFalse(yield* branchExists(repo.root, "late"));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("keeps a branch with work that appeared after the plan when the add fails", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const repo = yield* makeRepo("app");
+    const elsewhere = path.join(
+      yield* fileSystem.makeTempDirectoryScoped({ prefix: "wts-" }),
+      "elsewhere",
+    );
+
+    const error = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+        worktreeSets
+          .plan({
+            thread: { id: threadId },
+            projectRoot: repo.root,
+            baseRef: repo.branch,
+            branch: "raced",
+            startFromOrigin: false,
+          })
+          .pipe(
+            // Another operation takes the name and commits on it meanwhile.
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                yield* git(repo.root, ["worktree", "add", "-b", "raced", elsewhere]);
+                yield* fileSystem.writeFileString(path.join(elsewhere, "work.txt"), "work\n");
+                yield* git(elsewhere, ["add", "."]);
+                yield* git(elsewhere, ["commit", "-m", "work"]);
+                yield* git(repo.root, ["worktree", "remove", elsewhere]);
+              }),
+            ),
+            Effect.flatMap((plan) => worktreeSets.create(plan, noProgress)),
+          ),
+      ),
+    ).pipe(Effect.flip);
+
+    assert.equal(error._tag, "GitCommandError");
+    assert.isTrue(yield* branchExists(repo.root, "raced"));
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
@@ -262,18 +742,11 @@ it.effect("removes a claimed worktree and deletes its branch when creation is in
 
     yield* withCoordinator(
       Effect.gen(function* () {
-        const worktreeSets = yield* WorktreeSet.WorktreeSetService;
-        const fiber = yield* worktreeSets
-          .create(
-            {
-              cwd: repo.root,
-              baseRef: repo.branch,
-              branch: "cancelled",
-              startFromOrigin: false,
-            },
-            noProgress,
-          )
-          .pipe(Effect.forkChild);
+        const fiber = yield* createSet({
+          projectRoot: repo.root,
+          baseRef: repo.branch,
+          branch: "cancelled",
+        }).pipe(Effect.forkChild);
         const claimedPath = yield* Deferred.await(claimed);
         yield* Fiber.interrupt(fiber);
         assert.isFalse(yield* fileSystem.exists(claimedPath));
@@ -303,22 +776,16 @@ it.effect("removes a worktree whose checkout was interrupted before it was claim
 
     yield* withCoordinator(
       Effect.gen(function* () {
-        const worktreeSets = yield* WorktreeSet.WorktreeSetService;
-        const fiber = yield* worktreeSets
-          .create(
-            {
-              cwd: repo.root,
-              baseRef: repo.branch,
-              branch: "mid-checkout",
-              startFromOrigin: false,
-            },
-            {
-              stage: () => Effect.void,
-              // Fires from git's progress output, while `git worktree add` runs.
-              checkoutPercent: () => Deferred.succeed(checkingOut, undefined).pipe(Effect.asVoid),
-            },
-          )
-          .pipe(Effect.forkChild);
+        const fiber = yield* createSet({
+          projectRoot: repo.root,
+          baseRef: repo.branch,
+          branch: "mid-checkout",
+          progress: {
+            stage: () => Effect.void,
+            // Fires from git's progress output, while `git worktree add` runs.
+            checkout: () => Deferred.succeed(checkingOut, undefined).pipe(Effect.asVoid),
+          },
+        }).pipe(Effect.forkChild);
         yield* Deferred.await(checkingOut);
         yield* Fiber.interrupt(fiber);
       }),
@@ -326,6 +793,151 @@ it.effect("removes a worktree whose checkout was interrupted before it was claim
 
     assert.isFalse(yield* fileSystem.exists(path.join(config.worktreesDir, "app", "mid-checkout")));
     assert.isFalse(yield* branchExists(repo.root, "mid-checkout"));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("creates and binds a set for a thread that works in place", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
+    const dispatched: Array<MetadataUpdate> = [];
+
+    const binding = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+        worktreeSets.createForThread({ threadId, baseRef: api.branch, branch: "feature/later" }),
+      ),
+      {
+        projectRoot: api.root,
+        thread: {
+          id: threadId,
+          title: "In place",
+          branch: null,
+          worktreePath: null,
+          workspaceFolders: workspaceFolders.slice(0, 2),
+        },
+        dispatched,
+      },
+    );
+
+    const session = path.join(config.worktreesDir, "api", "feature-later");
+    const worktrees = [
+      { repositoryRoot: api.root, path: path.join(session, "api"), branch: "feature/later" },
+      { repositoryRoot: web.root, path: path.join(session, "web"), branch: "feature/later" },
+    ];
+    assert.deepEqual(binding, {
+      branch: "feature/later",
+      worktreePath: path.join(session, "api"),
+      worktrees,
+    });
+    assert.equal(dispatched.length, 1);
+    assert.deepInclude(dispatched[0], {
+      branch: "feature/later",
+      worktreePath: path.join(session, "api"),
+      worktrees,
+      // A binding that landed meanwhile wins over this one.
+      expectedWorktreePath: null,
+    });
+    assert.equal(
+      yield* git(path.join(session, "web"), ["branch", "--show-current"]),
+      "feature/later",
+    );
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("switches a set's members to a branch, each under its own name, and records it", () =>
+  Effect.gen(function* () {
+    const { api, web, release, workspaceFolders } = yield* makeSiblingWorkspace;
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders, baseRef: api.branch, branch: "feature/one" }),
+    );
+    for (const [cwd, branch] of [
+      [api.root, "feature/two"],
+      [web.root, "feature/two"],
+      [release, "feature/two-api-release"],
+    ] as const) {
+      yield* git(cwd, ["branch", branch]);
+    }
+    const binding = WorktreeSet.worktreeSetBinding(set);
+    const thread = {
+      id: threadId,
+      title: "Set",
+      branch: binding.branch,
+      worktreePath: binding.worktreePath,
+      worktrees: set.members,
+      workspaceFolders,
+    };
+    const switchTo = (branch: string, members?: ReadonlyArray<string>) => {
+      const dispatched: Array<MetadataUpdate> = [];
+      return withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+          worktreeSets.switchBranch({ threadId, branch, ...(members ? { members } : {}) }),
+        ),
+        { thread, dispatched },
+      ).pipe(Effect.map((switched) => ({ switched, dispatched })));
+    };
+    const checkedOut = Effect.forEach(set.members, (member) =>
+      git(member.path, ["branch", "--show-current"]),
+    );
+
+    const all = yield* switchTo("feature/two");
+    assert.deepEqual(yield* checkedOut, ["feature/two", "feature/two", "feature/two-api-release"]);
+    assert.deepEqual(
+      all.dispatched[0]?.worktrees?.map((member) => member.branch),
+      ["feature/two", "feature/two", "feature/two-api-release"],
+    );
+    assert.equal(all.dispatched[0]?.branch, "feature/two");
+
+    // A writer that moved the thread meanwhile wins over the recorded branches.
+    assert.equal(all.dispatched[0]?.expectedWorktreePath, binding.worktreePath);
+
+    // Switching one repository back to the set's branch leaves the others.
+    const back = yield* switchTo("feature/one", [web.root]);
+    assert.deepEqual(
+      back.switched.map((member) => member.repositoryRoot),
+      [web.root],
+    );
+    assert.deepEqual(yield* checkedOut, ["feature/two", "feature/one", "feature/two-api-release"]);
+
+    // "Switch back" may also name the member's own expected branch.
+    yield* git(set.members[2]!.path, ["checkout", "-b", "drifted"]);
+    yield* switchTo("feature/one-api-release", [release]);
+    assert.equal(
+      yield* git(set.members[2]!.path, ["branch", "--show-current"]),
+      "feature/one-api-release",
+    );
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("reuses the set of the newest thread whose primary works in a worktree", () =>
+  Effect.gen(function* () {
+    const folders = [{ path: "/repo", name: "repo", label: "repo", checkoutRoot: "/repo" }];
+    const older = {
+      id: ThreadId.make("thread:older"),
+      title: "Older",
+      branch: "a",
+      worktreePath: "/wt/s",
+      worktrees: [{ repositoryRoot: "/repo", path: "/wt/s", branch: "a" }],
+      workspaceFolders: folders,
+      createdAt: DateTime.makeUnsafe("2026-10-01T00:00:00.000Z"),
+    };
+    const newer = {
+      ...older,
+      id: ThreadId.make("thread:newer"),
+      branch: "b",
+      worktrees: [{ repositoryRoot: "/repo", path: "/wt/s", branch: "b" }],
+      createdAt: DateTime.makeUnsafe("2026-10-02T00:00:00.000Z"),
+    };
+    const resolve = (worktreePath: string) =>
+      withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+          worktreeSets.resolveForReuse({ projectId, worktreePath }),
+        ),
+        { activeThreads: [older, newer], threads: [older, newer] },
+      );
+
+    assert.deepEqual(Option.getOrUndefined(yield* resolve("/wt/s"))?.worktrees, newer.worktrees);
+    assert.isTrue(Option.isNone(yield* resolve("/wt/elsewhere")));
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
@@ -559,6 +1171,33 @@ it.effect("removes nothing while a project lives in one of its worktrees", () =>
     assert.equal(error._tag, "VcsThreadWorktreesError");
     assert.include(error.message, '"Child checkout"');
     assert.isTrue(yield* fileSystem.exists(childMember.path));
+
+    // So do a linked project's other folders.
+    const linked = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+        worktreeSets.remove({ threadId, force: true }),
+      ).pipe(Effect.flip),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          branch: parentMember.branch,
+          worktreePath: parentMember.path,
+          worktrees: [parentMember, childMember],
+        },
+        projects: [
+          {
+            title: "Workspace",
+            workspaceRoot: "/elsewhere",
+            folders: [
+              { path: "/elsewhere", name: "elsewhere" },
+              { path: childMember.path, name: "child" },
+            ],
+          },
+        ],
+      },
+    );
+    assert.include(linked.message, '"Workspace"');
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
@@ -591,5 +1230,77 @@ it.effect("removes nested members deepest first, each from its own checkout", ()
     );
     assert.isFalse(yield* fileSystem.exists(childMember.path));
     assert.isFalse(yield* fileSystem.exists(parentMember.path));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("removes no member without force while any member has changes", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { api, workspaceFolders } = yield* makeSiblingWorkspace;
+    const set = yield* withCoordinator(
+      createSet({
+        workspaceFolders: workspaceFolders.slice(0, 2),
+        baseRef: api.branch,
+        branch: "dirty",
+      }),
+    );
+    yield* fileSystem.writeFileString(path.join(set.members[1]!.path, "draft.txt"), "draft\n");
+
+    const error = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+        worktreeSets.remove({ threadId }),
+      ).pipe(Effect.flip),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          branch: "dirty",
+          worktreePath: set.members[0]!.path,
+          worktrees: set.members,
+        },
+      },
+    );
+
+    assert.equal(error._tag, "VcsThreadWorktreesError");
+    assert.include(error.message, set.members[1]!.path);
+    for (const member of set.members) assert.isTrue(yield* fileSystem.exists(member.path));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("removes a set's editor workspace file and its emptied session directory", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
+    const set = yield* withCoordinator(
+      createSet({
+        workspaceFolders: workspaceFolders.slice(0, 2),
+        baseRef: api.branch,
+        branch: "done",
+      }),
+    );
+    const session = path.join(config.worktreesDir, "api", "done");
+    yield* fileSystem.writeFileString(path.join(session, "done.code-workspace"), "{}\n");
+
+    yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (worktreeSets) =>
+        worktreeSets.remove({ threadId }),
+      ),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          branch: "done",
+          worktreePath: set.members[0]!.path,
+          worktrees: set.members,
+        },
+      },
+    );
+
+    assert.isFalse(yield* fileSystem.exists(session));
+    // The repositories and their branches stay.
+    assert.isTrue(yield* branchExists(web.root, "done"));
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
