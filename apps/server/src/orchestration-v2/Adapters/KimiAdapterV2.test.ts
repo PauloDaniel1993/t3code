@@ -210,8 +210,12 @@ it.layer(testLayer, { excludeTestServices: true })("Kimi V2 adapter", (it) => {
         h.policy.additionalDirectories,
         [],
       ]);
-      expect(JSON.stringify(prompts[0]?.params.prompt)).toContain("<workspace_folders>");
-      expect(JSON.stringify(prompts[1]?.params.prompt)).not.toContain("<workspace_folders>");
+      const inventoryBlock = expect.objectContaining({
+        type: "text",
+        text: expect.stringContaining("<workspace_folders>"),
+      });
+      expect(prompts[0]?.params.prompt).toEqual(expect.arrayContaining([inventoryBlock]));
+      expect(prompts[1]?.params.prompt).not.toEqual(expect.arrayContaining([inventoryBlock]));
     }).pipe(Effect.scoped),
   );
 

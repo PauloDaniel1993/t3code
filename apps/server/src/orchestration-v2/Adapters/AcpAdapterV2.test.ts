@@ -9,7 +9,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import {
   CheckpointId,
   GrokSettings,
@@ -749,8 +749,16 @@ describe("AcpAdapterV2", () => {
         const prompts = requests.filter(
           (event) => event.status === "started" && event.method === "session/prompt",
         );
-        assert.include(JSON.stringify(prompts[0]?.payload), "<workspace_folders>");
-        assert.notInclude(JSON.stringify(prompts[1]?.payload), "<workspace_folders>");
+        const inventoryPrompt = expect.objectContaining({
+          prompt: expect.arrayContaining([
+            expect.objectContaining({
+              type: "text",
+              text: expect.stringContaining("<workspace_folders>"),
+            }),
+          ]),
+        });
+        expect(prompts[0]?.payload).toEqual(inventoryPrompt);
+        expect(prompts[1]?.payload).not.toEqual(inventoryPrompt);
       }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
