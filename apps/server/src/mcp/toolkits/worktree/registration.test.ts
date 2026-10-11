@@ -15,6 +15,9 @@ import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectStore from "../../../orchestration-v2/ProjectStore.ts";
+import * as WorkspaceFolderFiles from "../../../workspace/WorkspaceFolderFiles.ts";
+import * as WorkspaceFolderResolver from "../../../project/WorkspaceFolderResolver.ts";
 import * as WorktreeSet from "../../../orchestration-v2/WorktreeSetService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
@@ -27,6 +30,9 @@ import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 
 const StubServicesLive = Layer.mergeAll(
+  Layer.mock(ProjectStore.ProjectStoreV2)({}),
+  Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
+  Layer.mock(WorkspaceFolderResolver.WorkspaceFolderResolver)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(DeviceService.DeviceService)({}),

@@ -38,6 +38,7 @@ import {
 } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { WorkspaceFileDiagnostic } from "./project.ts";
+import { WorkspaceMcpBinding } from "./workspaceMcp.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
   description: "Complete task or message text for the target agent.",
@@ -341,6 +342,7 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
+  ...WorkspaceMcpBinding.fields,
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
@@ -583,6 +585,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "task_not_found",
       "task_not_cancellable",
       "thread_not_found",
+      "folder_not_found",
+      "folder_unavailable",
       "run_not_found",
       "thread_not_sendable",
       "thread_not_interruptible",

@@ -19,6 +19,9 @@ import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
+import * as Option from "effect/Option";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-orchestrator-detail");
@@ -121,6 +124,31 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: (id) =>
+            Effect.succeed(
+              Option.some({
+                projectId: id,
+                workspaceRoot: "/repo/project",
+                workspaceFile: null,
+              } as ProjectStore.ProjectRow),
+            ),
+        }),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
+          resolveScope: () =>
+            Effect.succeed({
+              folders: [
+                {
+                  folder: { path: "/repo/project", name: "project" },
+                  label: "project",
+                  effectivePath: "/repo/project",
+                  isPrimary: true,
+                  checkoutRoot: undefined,
+                },
+              ],
+              selected: [],
+            }),
+        }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
@@ -174,6 +202,31 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: (id) =>
+            Effect.succeed(
+              Option.some({
+                projectId: id,
+                workspaceRoot: "/repo/project",
+                workspaceFile: null,
+              } as ProjectStore.ProjectRow),
+            ),
+        }),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
+          resolveScope: () =>
+            Effect.succeed({
+              folders: [
+                {
+                  folder: { path: "/repo/project", name: "project" },
+                  label: "project",
+                  effectivePath: "/repo/project",
+                  isPrimary: true,
+                  checkoutRoot: undefined,
+                },
+              ],
+              selected: [],
+            }),
+        }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
@@ -284,6 +337,31 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: (id) =>
+            Effect.succeed(
+              Option.some({
+                projectId: id,
+                workspaceRoot: "/repo/project",
+                workspaceFile: null,
+              } as ProjectStore.ProjectRow),
+            ),
+        }),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
+          resolveScope: () =>
+            Effect.succeed({
+              folders: [
+                {
+                  folder: { path: "/repo/project", name: "project" },
+                  label: "project",
+                  effectivePath: "/repo/project",
+                  isPrimary: true,
+                  checkoutRoot: undefined,
+                },
+              ],
+              selected: [],
+            }),
+        }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) => {
@@ -403,6 +481,31 @@ it("readThread reaches a thread the user attached as context, but not one an age
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: (id) =>
+            Effect.succeed(
+              Option.some({
+                projectId: id,
+                workspaceRoot: "/repo/project",
+                workspaceFile: null,
+              } as ProjectStore.ProjectRow),
+            ),
+        }),
+        Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
+          resolveScope: () =>
+            Effect.succeed({
+              folders: [
+                {
+                  folder: { path: "/repo/project", name: "project" },
+                  label: "project",
+                  effectivePath: "/repo/project",
+                  isPrimary: true,
+                  checkoutRoot: undefined,
+                },
+              ],
+              selected: [],
+            }),
+        }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) => {
             if (threadId === parentThreadId) return Effect.succeed(parentProjection);

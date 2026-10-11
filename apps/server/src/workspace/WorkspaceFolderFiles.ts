@@ -79,6 +79,8 @@ export class WorkspaceFolderFiles extends Context.Service<
   {
     readonly resolveScope: (
       scope: WorkspaceScope,
+      /** Use an already captured binding, then check its folders' current availability. */
+      capturedFolders?: ReadonlyArray<ResolvedWorkspaceFolder>,
     ) => Effect.Effect<ResolvedWorkspaceScope, WorkspaceScopeError>;
     /**
      * Resolve a canonical path to one available folder, checking only that
@@ -278,8 +280,8 @@ const make = Effect.gen(function* () {
 
   const resolveScope: WorkspaceFolderFiles["Service"]["resolveScope"] = Effect.fn(
     "WorkspaceFolderFiles.resolveScope",
-  )(function* (scope) {
-    const loaded = yield* loadFolders(scope);
+  )(function* (scope, capturedFolders) {
+    const loaded = capturedFolders ?? (yield* loadFolders(scope));
     // File requests aren't tied to a run, so availability is checked now: a
     // folder is available while its effective path is a directory.
     const folders = yield* Effect.forEach(

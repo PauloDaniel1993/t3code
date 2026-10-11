@@ -28,6 +28,8 @@ import { ServerConfig } from "../../config.ts";
 import { layer as idAllocatorLayer } from "../../orchestration-v2/IdAllocator.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../../orchestration-v2/ProviderAdapter.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import * as WorkspaceFolderFiles from "../../workspace/WorkspaceFolderFiles.ts";
 import { OrchestratorMcpService, layer as mcpLayer } from "../../mcp/OrchestratorMcpService.ts";
 import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
@@ -208,6 +210,8 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
               mcpLayer.pipe(
                 Layer.provide(
                   Layer.mergeAll(
+                    Layer.mock(ProjectStore.ProjectStoreV2)({}),
+                    Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
                     Layer.mock(ProviderRegistry)({
                       getProviders: restarted.snapshot.getSnapshot.pipe(
                         Effect.map((snapshot) => [snapshot]),
