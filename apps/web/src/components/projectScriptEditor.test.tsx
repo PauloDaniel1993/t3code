@@ -32,6 +32,13 @@ vi.mock("./ui/popover", () => ({
   PopoverTrigger: "button",
 }));
 vi.mock("./ui/switch", () => ({ Switch: "input" }));
+vi.mock("./ui/select", () => ({
+  Select: "select",
+  SelectTrigger: "button",
+  SelectValue: "span",
+  SelectPopup: "div",
+  SelectItem: "option",
+}));
 vi.mock("./ui/textarea", () => ({ Textarea: "textarea" }));
 
 import {
@@ -107,6 +114,30 @@ afterEach(async () => {
 });
 
 describe("project action editor save lifecycle", () => {
+  it("preserves a stale folder identity while editing and lets the user clear it", async () => {
+    onSubmit.mockResolvedValue(AsyncResult.success(undefined));
+    const scoped = request("test-ui");
+    scoped.initial.folderPath = "/removed-ui";
+    open(scoped);
+    await act(async () => {
+      await submit();
+    });
+    expect(onSubmit).toHaveBeenLastCalledWith(
+      "test-ui",
+      expect.objectContaining({ folderPath: "/removed-ui" }),
+    );
+    open({ ...scoped });
+    act(() => {
+      renderer!.root.findByType("select").props.onValueChange("");
+    });
+    await act(async () => {
+      await submit();
+    });
+    expect(onSubmit).toHaveBeenLastCalledWith(
+      "test-ui",
+      expect.objectContaining({ folderPath: null }),
+    );
+  });
   it("blocks repeated submits and edits until the current save completes", async () => {
     const save = deferredSave();
     onSubmit.mockReturnValue(save.promise);

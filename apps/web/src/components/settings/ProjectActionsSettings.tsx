@@ -4,6 +4,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { projectFolders } from "@t3tools/shared/workspaceFolders";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useT3ProjectFileState } from "../../hooks/useT3ProjectFileScripts";
@@ -17,6 +18,7 @@ import {
   type ProjectScriptEditorRequest,
 } from "../projectScriptEditor";
 import { Button } from "../ui/button";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
   Menu,
   MenuGroup,
@@ -86,11 +88,32 @@ export function ProjectActionsSettings() {
   );
 
   // A project's t3.json can declare actions to import. Read it from the
-  // representative checkout; the imported action still fans out.
+  // representative checkout. Folder identities are environment-local, so
+  // selecting a secondary folder requires one selected environment.
   const representativeMember = target?.projectId ? memberById.get(target.projectId) : undefined;
+  const folders =
+    representativeMember &&
+    representativeConfig?.workspaceFileProjects === true &&
+    targets.length === 1
+      ? projectFolders(representativeMember).map((folder) => ({
+          ...folder,
+          availability: representativeMember.folders?.find((entry) => entry.path === folder.path)
+            ?.availability,
+        }))
+      : [];
+  const [importFolder, setImportFolder] = useState<{ projectKey: string; path: string } | null>(
+    null,
+  );
+  const importFolderPath =
+    targets.length === 1 && importFolder?.projectKey === representativeMember?.physicalProjectKey
+      ? importFolder?.path
+      : undefined;
+  const selectedImportFolder = folders.find((folder) => folder.path === importFolderPath);
   const t3File = useT3ProjectFileState(
     representativeMember?.environmentId ?? EnvironmentId.make("none"),
-    representativeMember?.workspaceRoot ?? null,
+    importFolderPath === undefined
+      ? (representativeMember?.workspaceRoot ?? null)
+      : (selectedImportFolder?.path ?? null),
   );
   const importableScripts = useMemo(
     () =>
@@ -98,11 +121,12 @@ export function ProjectActionsSettings() {
         (fileScript) =>
           !scripts.some(
             (script) =>
-              script.command === fileScript.command ||
-              script.name.toLowerCase() === fileScript.name.toLowerCase(),
+              script.folderPath === importFolderPath &&
+              (script.command === fileScript.command ||
+                script.name.toLowerCase() === fileScript.name.toLowerCase()),
           ),
       ),
-    [scripts, t3File.scripts],
+    [importFolderPath, scripts, t3File.scripts],
   );
   const importFileScript = useCallback(
     async (fileScript: T3ProjectFileScript) => {
@@ -110,11 +134,16 @@ export function ProjectActionsSettings() {
         name: fileScript.name,
         command: fileScript.command,
         icon: fileScript.icon ?? "play",
-        runOnWorktreeCreate: fileScript.runOnWorktreeCreate ?? false,
-        waitForSetup: fileScript.runOnWorktreeCreate === true && fileScript.async === false,
+        runOnWorktreeCreate:
+          importFolderPath === undefined && (fileScript.runOnWorktreeCreate ?? false),
+        waitForSetup:
+          importFolderPath === undefined &&
+          fileScript.runOnWorktreeCreate === true &&
+          fileScript.async === false,
         keybinding: null,
         previewUrl: fileScript.previewUrl ?? null,
         autoOpenPreview: fileScript.previewUrl ? (fileScript.autoOpenPreview ?? false) : false,
+        folderPath: importFolderPath ?? null,
       };
       const result = await submit(null, payload);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -126,7 +155,7 @@ export function ProjectActionsSettings() {
         });
       }
     },
-    [submit],
+    [importFolderPath, submit],
   );
 
   return (
@@ -140,6 +169,41 @@ export function ProjectActionsSettings() {
         onResetOverride={() => void persist(() => null)}
         control={
           <div className="flex flex-wrap items-center gap-1.5">
+            {folders.length > 1 || importFolderPath !== undefined ? (
+              <Select
+                value={importFolderPath ?? ""}
+                onValueChange={(value) =>
+                  setImportFolder(
+                    value && representativeMember
+                      ? { projectKey: representativeMember.physicalProjectKey, path: value }
+                      : null,
+                  )
+                }
+              >
+                <SelectTrigger size="sm" aria-label="Import actions from folder">
+                  <SelectValue>
+                    {selectedImportFolder?.label ??
+                      (importFolderPath ? "Unavailable folder" : "Primary folder")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  <SelectItem value="">Primary folder</SelectItem>
+                  {folders.map((folder) => (
+                    <SelectItem
+                      key={folder.path ?? folder.label}
+                      value={folder.path ?? folder.label}
+                      disabled={
+                        !folder.path ||
+                        representativeMember?.folders?.find((entry) => entry.path === folder.path)
+                          ?.availability === "unavailable"
+                      }
+                    >
+                      {folder.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : null}
             {importableScripts.length > 0 ? (
               <Menu>
                 <MenuTrigger
@@ -201,6 +265,7 @@ export function ProjectActionsSettings() {
       ) : (
         <ProjectActionsList
           scripts={scripts}
+          folders={folders}
           keybindings={keybindings}
           disabled={saving}
           onEdit={(script) => setRequest(editorRequestForScript(script, keybindings))}
@@ -216,6 +281,7 @@ export function ProjectActionsSettings() {
       <ProjectScriptEditorDialog
         request={request}
         scripts={scripts}
+        folders={folders}
         onSubmit={submit}
         onDelete={(id) =>
           void persist((current) => current.filter((script) => script.id !== id), id, null)

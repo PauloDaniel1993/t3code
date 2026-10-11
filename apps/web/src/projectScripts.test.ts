@@ -16,6 +16,25 @@ import {
 } from "./projectScripts";
 
 describe("projectScripts helpers", () => {
+  it("keeps a chosen folder on actions and clears it for primary-only setup", () => {
+    const input = {
+      name: "Test UI",
+      command: "vp test",
+      icon: "test",
+      runOnWorktreeCreate: false,
+      waitForSetup: false,
+      previewUrl: null,
+      autoOpenPreview: false,
+      folderPath: "/repos/ui",
+    } as const;
+    expect(buildProjectScript("test-ui", input).folderPath).toBe("/repos/ui");
+    expect(buildProjectScript("setup", { ...input, runOnWorktreeCreate: true })).not.toHaveProperty(
+      "folderPath",
+    );
+    expect(buildProjectScript("test-ui", { ...input, folderPath: null })).not.toHaveProperty(
+      "folderPath",
+    );
+  });
   it("builds scripts with preview settings", () => {
     expect(
       buildProjectScript("dev", {

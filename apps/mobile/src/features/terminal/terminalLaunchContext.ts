@@ -1,5 +1,6 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
+import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
+import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 
 interface TerminalLocationLike {
   readonly cwd: string;
@@ -60,6 +61,8 @@ export function resolveTerminalOpenLocation(input: {
   readonly terminalLocation: TerminalLocationLike | null;
   readonly activeSessionLocation: TerminalLocationLike | null;
   readonly workspaceRoot: string;
+  readonly thread?: WorkspaceThread | undefined;
+  readonly folderPath?: string | undefined;
   readonly threadShellWorktreePath: string | null;
   readonly threadDetailWorktreePath: string | null;
 }): {
@@ -71,17 +74,19 @@ export function resolveTerminalOpenLocation(input: {
     threadDetailWorktreePath: input.threadDetailWorktreePath,
   });
 
+  const existing = input.terminalLocation ?? input.activeSessionLocation;
+  if (existing) return { cwd: existing.cwd, worktreePath: existing.worktreePath };
+  const cwd = projectScriptCwd({
+    project: { cwd: input.workspaceRoot },
+    thread: input.thread,
+    worktreePath: preferredThreadWorktreePath,
+    folderPath: input.folderPath,
+  });
   return {
-    cwd:
-      input.terminalLocation?.cwd ??
-      input.activeSessionLocation?.cwd ??
-      threadPrimaryPath(
-        { worktreePath: preferredThreadWorktreePath },
-        { workspaceRoot: input.workspaceRoot },
-      ),
+    cwd,
     worktreePath:
-      input.terminalLocation?.worktreePath ??
-      input.activeSessionLocation?.worktreePath ??
-      preferredThreadWorktreePath,
+      input.folderPath !== undefined && preferredThreadWorktreePath !== null
+        ? cwd
+        : preferredThreadWorktreePath,
   };
 }

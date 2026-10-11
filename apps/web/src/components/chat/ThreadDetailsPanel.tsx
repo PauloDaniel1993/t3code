@@ -5,7 +5,8 @@ import type {
   ResolvedKeybindingsConfig,
   ThreadId,
 } from "@t3tools/contracts";
-import { AlertTriangleIcon, XIcon } from "lucide-react";
+import { AlertTriangleIcon, EllipsisIcon, TerminalIcon, XIcon } from "lucide-react";
+import type { ResolvedWorkspaceFolder } from "@t3tools/shared/workspaceFolders";
 
 import type { DraftId } from "../../composerDraftStore";
 import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
@@ -18,6 +19,8 @@ import ProjectScriptsControl, {
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
 import { Button } from "../ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
@@ -41,6 +44,8 @@ export interface ThreadDetailsPanelProps extends Pick<
   draftId?: DraftId;
   activeProjectName: string | undefined;
   activeProjectScripts: ReadonlyArray<ProjectScript> | undefined;
+  workspaceFolders?: ReadonlyArray<ResolvedWorkspaceFolder> | undefined;
+  onOpenTerminalHere?: (folderPath: string) => void;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
@@ -154,6 +159,51 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 <BranchToolbar layout="panel" panelSection="workspace" {...branchToolbarProps} />
               ) : null}
 
+              {props.workspaceFolders && props.workspaceFolders.length > 1 ? (
+                <div className="px-2 py-1">
+                  {props.workspaceFolders.map((folder) => (
+                    <div key={folder.label} className="flex items-center justify-between gap-2">
+                      <Tooltip>
+                        <TooltipTrigger render={<span className="truncate text-xs" />}>
+                          {folder.label}
+                          {folder.isPrimary ? " · Primary" : ""}
+                        </TooltipTrigger>
+                        <TooltipPopup>{folder.effectivePath ?? folder.folder.uri}</TooltipPopup>
+                      </Tooltip>
+                      <Menu>
+                        <MenuTrigger
+                          render={
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              aria-label={`Actions for ${folder.label}`}
+                            />
+                          }
+                        >
+                          <EllipsisIcon className="size-3.5" />
+                        </MenuTrigger>
+                        <MenuPopup>
+                          <MenuItem
+                            disabled={
+                              folder.effectivePath === null ||
+                              !folder.folder.path ||
+                              !props.onOpenTerminalHere
+                            }
+                            onClick={() => {
+                              if (folder.folder.path)
+                                props.onOpenTerminalHere?.(folder.folder.path);
+                            }}
+                          >
+                            <TerminalIcon className="size-4" />
+                            Open terminal here
+                          </MenuItem>
+                        </MenuPopup>
+                      </Menu>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
               {density !== "essential" && props.showOpenInPicker ? (
                 <OpenInPicker
                   environmentId={props.environmentId}
@@ -168,6 +218,11 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 <ProjectScriptsControl
                   displayMode="panel"
                   scripts={props.activeProjectScripts}
+                  folders={props.workspaceFolders?.map((folder) => ({
+                    path: folder.folder.path,
+                    label: folder.label,
+                    availability: folder.effectivePath === null ? "unavailable" : "available",
+                  }))}
                   fileScripts={fileScripts}
                   keybindings={props.keybindings}
                   preferredScriptId={props.preferredScriptId}

@@ -8,11 +8,13 @@ import { SettingsRow } from "./settingsLayout";
 
 export function ProjectActionsList({
   scripts,
+  folders,
   keybindings,
   disabled,
   onEdit,
 }: {
   scripts: readonly ProjectScript[];
+  folders: readonly { readonly path?: string | undefined; readonly label: string }[];
   keybindings: ResolvedKeybindingsConfig;
   disabled: boolean;
   onEdit: (script: ProjectScript) => void;
@@ -45,7 +47,17 @@ export function ProjectActionsList({
             ) : null}
           </span>
         }
-        description={<code className="block max-w-full truncate font-mono">{script.command}</code>}
+        description={
+          <>
+            {script.folderPath ? (
+              <span className="block truncate">
+                {folders.find((folder) => folder.path === script.folderPath)?.label ??
+                  `Unavailable folder: ${script.folderPath}`}
+              </span>
+            ) : null}
+            <code className="block max-w-full truncate font-mono">{script.command}</code>
+          </>
+        }
         control={
           <>
             {shortcutLabel ? (
