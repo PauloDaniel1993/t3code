@@ -257,6 +257,10 @@ export class ProjectService extends Context.Service<
       options?: { readonly includeDeleted?: boolean },
     ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
+    /** Active projects that use exactly this folder, including linked secondaries. */
+    readonly listProjectsUsingFolder: (
+      folderPath: string,
+    ) => Effect.Effect<ReadonlyArray<Project>, ProjectOperationError>;
     /**
      * An active project's shell with its immediately available repository
      * identity; missing identity resolves in the background.
@@ -1328,6 +1332,24 @@ export const make = Effect.gen(function* () {
     } satisfies ProjectSnapshot;
   });
 
+  const listProjectsUsingFolder: ProjectService["Service"]["listProjectsUsingFolder"] = Effect.fn(
+    "ProjectService.listProjectsUsingFolder",
+  )(function* (folderPath) {
+    const rows = yield* projects
+      .list()
+      .pipe(
+        Effect.mapError(
+          (cause) => new ProjectOperationError({ operation: "list-projects", cause }),
+        ),
+      );
+    const matches = rows.filter((row) =>
+      (row.folders ?? [{ path: row.workspaceRoot }]).some(
+        (folder) => folder.path !== undefined && isSamePath(folder.path, folderPath),
+      ),
+    );
+    return yield* Effect.forEach(matches, hydrate, { concurrency: 8 });
+  });
+
   return ProjectService.of({
     create,
     bootstrap,
@@ -1342,6 +1364,7 @@ export const make = Effect.gen(function* () {
     getById,
     getByWorkspaceRoot,
     snapshot,
+    listProjectsUsingFolder,
     getShell,
     listShells,
   });

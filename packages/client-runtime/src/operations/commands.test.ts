@@ -149,6 +149,37 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("V2 environment commands", () => {
+  it.effect("keeps link, relink, refresh and unlink on the project mutation transport", () =>
+    Effect.gen(function* () {
+      const projects: ProjectMutation[] = [];
+      const supervisor = yield* makeSupervisor({ commands: [], projects });
+      for (const workspaceFilePath of [
+        "/work/team.code-workspace",
+        "/new/team.code-workspace",
+        "/new/team.code-workspace",
+        null,
+      ]) {
+        yield* updateProject({ projectId: ProjectId.make("project-1"), workspaceFilePath }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+      }
+      expect(
+        projects.map((mutation) =>
+          mutation.type === "project.update" ? mutation.workspaceFilePath : undefined,
+        ),
+      ).toEqual([
+        "/work/team.code-workspace",
+        "/new/team.code-workspace",
+        "/new/team.code-workspace",
+        null,
+      ]);
+      expect(
+        projects.every(
+          (mutation) => mutation.type === "project.update" && !("workspaceRoot" in mutation),
+        ),
+      ).toBe(true);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
   it.effect("routes projects through the event-sourced project transport", () =>
     Effect.gen(function* () {
       const projects: ProjectMutation[] = [];

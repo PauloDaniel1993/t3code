@@ -420,6 +420,38 @@ it.layer(dependencies(true))("ProjectService workspace files", (it) => {
     }),
   );
 
+  it.effect("lists active projects sharing a primary or secondary folder", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const dir = yield* workspace(["app", "lib"]);
+      const linked = yield* service.importWorkspaceFile({
+        commandId: commandId("overlap-file"),
+        projectId: ProjectId.make("project:overlap-file"),
+        workspaceFilePath: yield* dir.writeFile("overlap.code-workspace", ["app", "lib"]),
+      });
+      const plain = yield* service.create({
+        commandId: commandId("overlap-folder"),
+        projectId: ProjectId.make("project:overlap-folder"),
+        title: "Library",
+        workspaceRoot: dir.at("lib"),
+      });
+      assert.deepEqual(
+        (yield* service.listProjectsUsingFolder(dir.at("lib"))).map((project) => project.id),
+        [linked.id, plain.id],
+      );
+      assert.deepEqual(
+        (yield* service.listProjectsUsingFolder(dir.at("app"))).map((project) => project.id),
+        [linked.id],
+      );
+      assert.deepEqual(yield* service.listProjectsUsingFolder(dir.at("lib/child")), []);
+      yield* service.delete({ commandId: commandId("overlap-delete"), projectId: plain.id });
+      assert.deepEqual(
+        (yield* service.listProjectsUsingFolder(dir.at("lib"))).map((project) => project.id),
+        [linked.id],
+      );
+    }),
+  );
+
   it.effect("rejects a file it can't use without creating anything", () =>
     Effect.gen(function* () {
       const service = yield* ProjectService.make;

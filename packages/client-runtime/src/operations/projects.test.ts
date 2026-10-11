@@ -19,11 +19,48 @@ import {
   getDefaultCloneUrl,
   normalizePastedCloneUrl,
   resolveAddProjectPath,
+  resolveAddProjectKind,
+  listProjectsUsingFolder,
   sortAddProjectProviderSources,
 } from "./projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
 
 describe("add project shared logic", () => {
+  it("routes by server kind, with a file hint only for a missing entry", () => {
+    const path = "/work/team.code-workspace";
+    expect(
+      resolveAddProjectKind(path, {
+        name: "team.code-workspace",
+        fullPath: path,
+        kind: "directory",
+      }),
+    ).toBe("directory");
+    expect(resolveAddProjectKind(path, { name: "team.code-workspace", fullPath: path })).toBe(
+      "directory",
+    );
+    expect(
+      resolveAddProjectKind(path, {
+        name: "team.code-workspace",
+        fullPath: path,
+        kind: "workspace-file",
+      }),
+    ).toBe("workspace-file");
+    expect(resolveAddProjectKind("/missing/TEAM.CODE-WORKSPACE", null)).toBe("workspace-file");
+    expect(resolveAddProjectKind("/missing/folder", null)).toBe("directory");
+  });
+
+  it("finds plain and linked projects using a folder without treating descendants as overlaps", () => {
+    const plain = { workspaceRoot: "C:/Work/API" };
+    const linked = {
+      workspaceRoot: "C:/Work/UI",
+      folders: [{ path: "C:/Work/UI" }, { path: "C:/Work/API" }, {}],
+    };
+    const nested = { workspaceRoot: "C:/Work/API/nested" };
+    expect(listProjectsUsingFolder([plain, linked, nested], "c:/work/api/")).toEqual([
+      plain,
+      linked,
+    ]);
+  });
   it("only allows project creation in connected environments", () => {
     expect(canCreateProjectInEnvironment("connected")).toBe(true);
     expect(canCreateProjectInEnvironment("available")).toBe(false);

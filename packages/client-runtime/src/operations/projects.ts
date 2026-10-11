@@ -2,6 +2,7 @@ import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
 import type {
   CommandId,
   EnvironmentId,
+  FilesystemBrowseEntry,
   ProjectMutation,
   ProjectId,
   SourceControlDiscoveryResult,
@@ -20,6 +21,7 @@ import {
   inferProjectTitleFromPath,
   isExplicitRelativeProjectPath,
   isUnsupportedWindowsProjectPath,
+  normalizeProjectPathForComparison,
   resolveProjectPathForDispatch,
 } from "../state/projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
@@ -333,6 +335,37 @@ export function findExistingAddProject(input: {
       input.projects.filter((project) => project.environmentId === input.environmentId),
       input.path,
     ) ?? null
+  );
+}
+
+/** The server's entry kind wins over the suffix hint, including workspace-named directories. */
+export function resolveAddProjectKind(
+  path: string,
+  entry: FilesystemBrowseEntry | null | undefined,
+): "directory" | "workspace-file" {
+  return (
+    entry?.kind ??
+    (entry
+      ? "directory"
+      : /\.code-workspace[/\\]*$/i.test(path.trim())
+        ? "workspace-file"
+        : "directory")
+  );
+}
+
+/** Folder overlap is informational; a plain project can coexist with a linked project. */
+export function listProjectsUsingFolder<
+  T extends {
+    readonly workspaceRoot: string;
+    readonly folders?: ReadonlyArray<{ readonly path?: string | undefined }> | undefined;
+  },
+>(projects: ReadonlyArray<T>, path: string): T[] {
+  return projects.filter((project) =>
+    (project.folders ?? [{ path: project.workspaceRoot }]).some(
+      (folder) =>
+        folder.path !== undefined &&
+        normalizeProjectPathForComparison(folder.path) === normalizeProjectPathForComparison(path),
+    ),
   );
 }
 

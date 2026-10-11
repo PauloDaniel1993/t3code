@@ -19,6 +19,14 @@ import {
 } from "./projectPaths";
 
 describe("projectPaths", () => {
+  it("keeps workspace-file selections free of trailing separators", () => {
+    expect(appendBrowsePathSegment("/repo/", "team.code-workspace", "workspace-file")).toBe(
+      "/repo/team.code-workspace",
+    );
+    expect(appendBrowsePathSegment("C:\\Work\\", "team.code-workspace", "workspace-file")).toBe(
+      "C:\\Work\\team.code-workspace",
+    );
+  });
   it("matches workspace file identity for drive paths and UNC without changing POSIX case", () => {
     const drive = { id: "drive", workspaceFile: "C:/Team Space/team.code-workspace" };
     const unc = { id: "unc", workspaceFile: "\\\\server\\share\\Team Space\\team.code-workspace" };

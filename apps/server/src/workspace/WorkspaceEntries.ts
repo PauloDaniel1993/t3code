@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 
 import type {
   FilesystemBrowseInput,
+  FilesystemBrowseEntry,
   FilesystemBrowseResult,
   ProjectEntry,
   ProjectListEntriesCwdInput,
@@ -211,16 +212,24 @@ export const make = Effect.gen(function* () {
 
       const showHidden = endsWithSeparator || prefix.startsWith(".");
       const lowerPrefix = prefix.toLowerCase();
-      const entries: Array<{ readonly name: string; readonly fullPath: string }> = [];
+      const entries: Array<FilesystemBrowseEntry> = [];
       for (const dirent of dirents) {
+        const isDirectory = dirent.isDirectory();
+        const isWorkspaceFile =
+          input.includeWorkspaceFiles === true &&
+          dirent.isFile() &&
+          /\.code-workspace$/i.test(dirent.name);
         if (
-          dirent.isDirectory() &&
+          (isDirectory || isWorkspaceFile) &&
           dirent.name.toLowerCase().startsWith(lowerPrefix) &&
           (showHidden || !dirent.name.startsWith("."))
         ) {
           entries.push({
             name: dirent.name,
             fullPath: path.join(parentPath, dirent.name),
+            ...(input.includeWorkspaceFiles
+              ? { kind: isDirectory ? ("directory" as const) : ("workspace-file" as const) }
+              : {}),
           });
         }
       }

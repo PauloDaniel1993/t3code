@@ -188,6 +188,7 @@ function makeHarness(options: HarnessOptions = {}) {
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
+      listProjectsUsingFolder: () => Effect.die("unused"),
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
       createWorktree,

@@ -57,6 +57,7 @@ export interface ImportWorkspaceFileProjectInput extends CommandMetadata {
 
 export interface UpdateProjectInput extends CommandMetadata {
   readonly projectId: ProjectId;
+  readonly workspaceFilePath?: string | null;
   readonly title?: string;
   readonly workspaceRoot?: string;
   readonly defaultModelSelection?: ModelSelection | null;
@@ -355,6 +356,9 @@ export const updateProject = Effect.fn("EnvironmentCommands.updateProject")(func
     projectId: input.projectId,
     ...(input.title === undefined ? {} : { title: input.title }),
     ...(input.workspaceRoot === undefined ? {} : { workspaceRoot: input.workspaceRoot }),
+    ...(input.workspaceFilePath === undefined
+      ? {}
+      : { workspaceFilePath: input.workspaceFilePath }),
     ...(input.defaultModelSelection === undefined
       ? {}
       : { defaultModelSelection: input.defaultModelSelection }),

@@ -733,7 +733,7 @@ describe("buildBrowseGroups", () => {
     });
     await Promise.resolve();
 
-    expect(browseTo).toHaveBeenCalledWith("Downloads");
+    expect(browseTo).toHaveBeenCalledWith("Downloads", "directory");
     expect(actionSettled).toBe(false);
 
     finishNavigation?.();

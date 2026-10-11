@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   projects: [] as Array<{ id: string; environmentId: string; workspaceRoot: string }>,
 }));
 vi.mock("../../state/agentSessions", () => ({ agentSessionImport: "import" }));
+vi.mock("../WorkspaceFileImportDialog", () => ({ WorkspaceFileImportDialog: () => null }));
 vi.mock("../../state/projects", () => ({ projectEnvironment: { create: "create" } }));
 vi.mock("../../state/use-atom-command", () => ({
   useAtomCommand: (command: string) =>
