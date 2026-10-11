@@ -1,6 +1,7 @@
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
+import { WorkspaceFoldersChip } from "./WorkspaceFoldersChip";
 import { Spinner } from "~/components/ui/spinner";
 import {
   ArchiveIcon,
@@ -804,6 +805,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           )}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <WorkspaceFoldersChip
+            projectRef={{ environmentId: thread.environmentId, projectId: thread.projectId }}
+            threadRef={threadRef}
+            workspaceFolderCount={thread.workspaceFolderCount}
+            onOpenThread={(ref) => {
+              void navigateToThread(ref);
+            }}
+          />
           {discoveredPorts.length > 0 && (
             <Tooltip>
               <TooltipTrigger

@@ -43,6 +43,8 @@ interface BranchToolbarEnvModeSelectorProps {
   previousWorktreeLabel?: string | null;
   previousWorktreeBranch?: string | null;
   onUsePreviousWorktree?: () => void;
+  repositoryCount?: number | undefined;
+  worktreeDisabledReason?: string | undefined;
 }
 
 export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSelector({
@@ -56,24 +58,50 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   previousWorktreeLabel,
   previousWorktreeBranch = null,
   onUsePreviousWorktree,
+  repositoryCount,
+  worktreeDisabledReason,
 }: BranchToolbarEnvModeSelectorProps) {
   const workspacePath = displayMode === "panel" ? (activeWorktreePath ?? workspaceRoot) : null;
   const workspaceDisplayName = resolveWorkspaceDisplayName(workspacePath);
   const workspaceKind = activeWorktreePath ? "Worktree" : "Project folder";
+  const groupedLabel =
+    repositoryCount === undefined
+      ? undefined
+      : worktreeDisabledReason &&
+          !activeWorktreePath &&
+          (effectiveEnvMode === "worktree" || forceNewWorktree)
+        ? "Worktree unavailable"
+        : `${activeWorktreePath ? "Worktree" : effectiveEnvMode === "worktree" || forceNewWorktree ? "New worktree" : "Current checkout"} · ${repositoryCount} ${repositoryCount === 1 ? "repo" : "repos"}`;
   const composerFloatingLayerProps = useComposerMenuProps();
   const showPreviousWorktree = Boolean(previousWorktreeLabel && onUsePreviousWorktree);
   const envModeItems = useMemo(
     () => [
       {
         value: "local",
-        label: workspaceDisplayName ?? resolveCurrentWorkspaceLabel(activeWorktreePath),
+        label:
+          groupedLabel && effectiveEnvMode === "local"
+            ? groupedLabel
+            : (workspaceDisplayName ?? resolveCurrentWorkspaceLabel(activeWorktreePath)),
       },
-      { value: "worktree", label: resolveEnvModeLabel("worktree") },
+      {
+        value: "worktree",
+        label:
+          groupedLabel && effectiveEnvMode === "worktree"
+            ? groupedLabel
+            : resolveEnvModeLabel("worktree"),
+      },
       ...(showPreviousWorktree && previousWorktreeLabel
         ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
         : []),
     ],
-    [activeWorktreePath, previousWorktreeLabel, showPreviousWorktree, workspaceDisplayName],
+    [
+      activeWorktreePath,
+      previousWorktreeLabel,
+      showPreviousWorktree,
+      workspaceDisplayName,
+      groupedLabel,
+      effectiveEnvMode,
+    ],
   );
 
   const handleWorkspaceContextMenu = (event: ReactMouseEvent) => {
@@ -142,12 +170,13 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
           />
         )}
         <ComposerContextLabel displayMode={displayMode}>
-          {forceNewWorktree
-            ? resolveEnvModeLabel("worktree")
-            : (workspaceDisplayName ??
-              resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode))}
+          {groupedLabel ??
+            (forceNewWorktree
+              ? resolveEnvModeLabel("worktree")
+              : (workspaceDisplayName ??
+                resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)))}
         </ComposerContextLabel>
-        {displayMode === "panel" ? (
+        {displayMode === "panel" && repositoryCount === undefined ? (
           <span className="shrink-0 text-3xs font-normal text-muted-foreground/70">
             {forceNewWorktree ? "Worktree" : workspaceKind}
           </span>
@@ -176,6 +205,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
           onUsePreviousWorktree?.();
           return;
         }
+        if (value === "worktree" && worktreeDisabledReason) return;
         onEnvModeChange(value as EnvMode);
       }}
       items={envModeItems}
@@ -210,14 +240,15 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
           <ComposerContextLabel displayMode={displayMode}>
             <SelectValue />
           </ComposerContextLabel>
-          {displayMode === "panel" ? (
+          {displayMode === "panel" && repositoryCount === undefined ? (
             <span className="shrink-0 text-3xs font-normal text-muted-foreground/70">
               {effectiveEnvMode === "worktree" && !activeWorktreePath ? "Create" : workspaceKind}
             </span>
           ) : null}
         </TooltipTrigger>
         <TooltipPopup side={displayMode === "panel" ? "left" : undefined}>
-          {workspacePath ??
+          {worktreeDisabledReason ??
+            workspacePath ??
             (effectiveEnvMode === "worktree"
               ? resolveEnvModeLabel("worktree")
               : resolveCurrentWorkspaceLabel(activeWorktreePath))}
@@ -246,12 +277,15 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
               {resolveCurrentWorkspaceLabel(activeWorktreePath)}
             </span>
           </SelectItem>
-          <SelectItem value="worktree">
+          <SelectItem value="worktree" disabled={worktreeDisabledReason !== undefined}>
             <span className="inline-flex items-center gap-1.5">
               <FolderGit2Icon className="size-3" />
               {resolveEnvModeLabel("worktree")}
             </span>
           </SelectItem>
+          {worktreeDisabledReason ? (
+            <p className="px-3 py-1 text-2xs text-muted-foreground">{worktreeDisabledReason}</p>
+          ) : null}
           {showPreviousWorktree && previousWorktreeLabel ? (
             <SelectItem value={PREVIOUS_WORKTREE_SELECT_VALUE}>
               <PreviousWorktreeItemContent branch={previousWorktreeBranch} />

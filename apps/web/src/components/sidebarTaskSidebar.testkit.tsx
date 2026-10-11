@@ -178,6 +178,7 @@ vi.mock("./Sidebar.motion", () => ({
 vi.mock("./chat/ThreadContextDragGhost", () => ({ ThreadContextDragGhost: () => null }));
 vi.mock("./chat/ProviderInstanceIcon", () => ({ ProviderInstanceIcon: () => null }));
 vi.mock("./ProjectFavicon", () => ({ ProjectFavicon: () => null }));
+vi.mock("./WorkspaceFoldersChip", () => ({ WorkspaceFoldersChip: () => null }));
 vi.mock("./ui/sidebar", () => ({
   useSidebar: () => ({ isMobile: false, setOpenMobile: noop }),
   SidebarContent: ({ fixedHeader, children }: { fixedHeader: ReactNode; children: ReactNode }) => (
