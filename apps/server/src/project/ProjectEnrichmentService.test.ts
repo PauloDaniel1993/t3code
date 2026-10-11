@@ -624,6 +624,7 @@ it.effect("serves folder facts once probed, and probes missing ones in the backg
         { path: "/work/gone", name: "gone", label: "gone" },
         { uri: "vscode-remote://ssh-remote+devbox/srv/api", name: "api", label: "api" },
       ];
+      const changes = yield* service.subscribeChanges;
 
       // Nothing is probed yet: facts stay absent, but a remote folder needs no probe.
       const unprobed = yield* service.getAvailableFolders(folders);
@@ -641,7 +642,6 @@ it.effect("serves folder facts once probed, and probes missing ones in the backg
         ["available", "available", "unavailable"],
       );
       // A probed git folder asks for its own identity; wait for that to land.
-      const changes = yield* service.subscribeChanges;
       yield* service.getAvailableFolders(folders);
       let change = yield* PubSub.take(changes);
       while (!("workspaceRoot" in change) || change.workspaceRoot !== "/work/lib")

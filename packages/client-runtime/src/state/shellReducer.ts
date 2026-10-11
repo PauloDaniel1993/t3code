@@ -21,7 +21,12 @@ function mergeFolderFacts(
   primary: boolean,
 ): ProjectWorkspaceFolder {
   const availability = next.availability ?? previous?.availability;
-  const vcs = next.vcs === undefined ? previous?.vcs : next.vcs;
+  const vcs =
+    next.vcs === undefined
+      ? next.availability === "unavailable"
+        ? undefined
+        : previous?.vcs
+      : next.vcs;
   const repositoryIdentity =
     vcs != null && !primary
       ? vcs.repositoryIdentity === undefined

@@ -1031,6 +1031,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
           });
         }),
       ),
+      Stream.filter((item) => item.snapshot.projects.length > 0),
     );
 
     // Always attach the enrichment subscription before the first load so

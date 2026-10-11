@@ -46,6 +46,47 @@ const linkedProject: OrchestrationProjectShell = {
 };
 
 describe("workspace folder enrichment", () => {
+  it("clears stale VCS facts when a folder becomes unavailable and restores them on recovery", () => {
+    const missing: OrchestrationProjectShell = {
+      ...linkedProject,
+      folders: [
+        linkedProject.folders![0]!,
+        {
+          path: "/workspace/lib",
+          name: "lib",
+          label: "lib",
+          availability: "unavailable",
+          unavailableReason: "missing",
+        },
+      ],
+    };
+    const options = { resolvedRepositoryIdentityRoots: [], enrichedProjectIds: [linkedProject.id] };
+    const unavailable = mergeShellSnapshotProjects(
+      { ...v2ShellSnapshot, projects: [linkedProject] },
+      { ...v2ShellSnapshot, projects: [missing] },
+      options,
+    );
+    expect(unavailable.projects[0]?.folders?.[1]?.vcs).toBeUndefined();
+    const recovered = mergeShellSnapshotProjects(
+      unavailable,
+      {
+        ...v2ShellSnapshot,
+        projects: [
+          {
+            ...linkedProject,
+            folders: linkedProject.folders!.map((folder) => ({
+              ...folder,
+              availability: "available",
+            })),
+          },
+        ],
+      },
+      options,
+    );
+    expect(recovered.projects[0]?.folders?.[1]?.vcs?.repositoryIdentity).toEqual(otherIdentity);
+    expect(recovered.projects[0]?.folders?.[1]?.unavailableReason).toBeUndefined();
+  });
+
   it("delivers file failure and recovery by id without changing structure or sequence", () => {
     const plain = { ...v2Project, id: ProjectId.make("plain-at-same-root") };
     let current = {
