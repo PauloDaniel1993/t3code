@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { EventId, ProjectId, type WorkspaceFolderEntry } from "@t3tools/contracts";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -89,7 +90,7 @@ const deleteProject = (projectId: ProjectId) =>
   });
 
 describe("ReviewService", () => {
-  it.effect("rejects diff preview cwd outside the configured workspace roots", () =>
+  it.effect("rejects diff preview cwd outside every registered location", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
@@ -145,7 +146,7 @@ describe("ReviewService", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("allows diff preview cwd inside the configured workspace root", () =>
+  it.effect("allows diff preview cwd inside the server's launch directory", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
@@ -263,6 +264,38 @@ describe("ReviewService", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect.skipIf(!symlinksSupported)("compares project folders by where symlinks lead", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const launchRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-launch-" });
+      const realRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-real-" });
+      const linksRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-links-" });
+      const outsideRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-outside-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      const registeredRoot = path.join(linksRoot, "project");
+      const escape = path.join(realRoot, "escape");
+      yield* fs.symlink(realRoot, registeredRoot);
+      yield* fs.symlink(outsideRoot, escape);
+      const detectCalls: Array<{ readonly cwd: string }> = [];
+
+      const [result, escapeError] = yield* Effect.gen(function* () {
+        yield* addProject({ id: "linked-root", workspaceRoot: registeredRoot });
+        const review = yield* ReviewService.ReviewService;
+        return [
+          yield* review.getDiffPreview({ cwd: realRoot }),
+          yield* review.getDiffPreview({ cwd: escape }).pipe(Effect.flip),
+        ] as const;
+      }).pipe(Effect.provide(makeLayer({ workspaceRoot: launchRoot, baseDir, detectCalls })));
+
+      // The project is registered through a link to where the diff runs.
+      assert.strictEqual(result.cwd, realRoot);
+      // A link inside the folder that leads out of it grants nothing.
+      assert.strictEqual(escapeError._tag, "VcsRepositoryDetectionError");
+      assert.deepStrictEqual(detectCalls, [{ cwd: realRoot }]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("allows diff previews inside the worktrees directory", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -287,6 +320,7 @@ describe("ReviewService", () => {
   it.effect("rejects deleted projects' folders and paths no project registers", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const launchRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-launch-" });
       const activeRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-active-" });
       const deletedRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-deleted-" });
@@ -296,6 +330,8 @@ describe("ReviewService", () => {
 
       const errors = yield* Effect.gen(function* () {
         yield* addProject({ id: "active", workspaceRoot: activeRoot });
+        // A folder that can't be resolved, like one on an unplugged drive, grants nothing.
+        yield* addProject({ id: "unplugged", workspaceRoot: path.join(activeRoot, "missing") });
         yield* deleteProject(yield* addProject({ id: "deleted", workspaceRoot: deletedRoot }));
         const review = yield* ReviewService.ReviewService;
         return yield* Effect.forEach([deletedRoot, unrelatedRoot], (cwd) =>

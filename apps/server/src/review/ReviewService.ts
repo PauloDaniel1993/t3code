@@ -62,9 +62,13 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  // Every folder of every active project, primary first. A folder that can't be
-  // resolved right now is unavailable and grants nothing.
-  const projectFolderRoots = Effect.fn("ReviewService.projectFolderRoots")(function* (cwd: string) {
+  // Whether a canonical path lies in a folder of an active project. A canonical
+  // path below a folder as written is inside it, so folders are resolved only
+  // when none matches that way. A folder that can't be resolved grants nothing.
+  const isInProjectFolder = Effect.fn("ReviewService.isInProjectFolder")(function* (
+    candidate: string,
+    cwd: string,
+  ) {
     const projects = yield* projectStore.list().pipe(
       Effect.mapError(
         (cause) =>
@@ -77,14 +81,19 @@ export const make = Effect.gen(function* () {
       ),
     );
     const folderPaths = projects.flatMap((project) =>
-      projectFolders(project).flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
+      projectFolders(project).flatMap((folder) =>
+        folder.path === undefined ? [] : [path.resolve(folder.path)],
+      ),
     );
+    if (folderPaths.some((folderPath) => isPathWithin(folderPath, candidate))) {
+      return true;
+    }
     const roots = yield* Effect.forEach(
       folderPaths,
-      (folderPath) => fileSystem.realPath(path.resolve(folderPath)).pipe(Effect.option),
+      (folderPath) => fileSystem.realPath(folderPath).pipe(Effect.option),
       { concurrency: "unbounded" },
     );
-    return roots.flatMap((root) => (Option.isSome(root) ? [root.value] : []));
+    return roots.some((root) => Option.isSome(root) && isPathWithin(root.value, candidate));
   });
 
   /**
@@ -104,8 +113,7 @@ export const make = Effect.gen(function* () {
       return;
     }
 
-    const folderRoots = yield* projectFolderRoots(cwd);
-    if (folderRoots.some((root) => isPathWithin(root, candidate))) {
+    if (yield* isInProjectFolder(candidate, cwd)) {
       return;
     }
 
