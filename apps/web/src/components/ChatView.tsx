@@ -447,6 +447,7 @@ import {
 } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel, type ThreadDetailsPanelProps } from "./chat/ThreadDetailsPanel";
+import { workspaceInstalledSession, type WorkspaceFolderRow } from "./workspaceFolders.logic";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   type EnvironmentOption,
@@ -5133,6 +5134,17 @@ export default function ChatView(props: ChatViewProps) {
   const openChangesFromThreadPanel = useCallback(() => {
     addDiffSurface();
   }, [addDiffSurface]);
+  const openFolderChangesFromThreadPanel = useCallback(
+    (folder: WorkspaceFolderRow) => {
+      if (!activeThreadRef || !isServerThread || !folder.folder.path) return;
+      useDiffPanelStore
+        .getState()
+        .selectWorkspaceFolder(activeThreadRef, folder.folder.path, folder.label);
+      useRightPanelStore.getState().open(activeThreadRef, "diff");
+      onDiffPanelOpen?.();
+    },
+    [activeThreadRef, isServerThread, onDiffPanelOpen],
+  );
   const addFilesSurface = useCallback(() => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
@@ -10573,6 +10585,12 @@ export default function ChatView(props: ChatViewProps) {
     activeProjectScripts: activeProject ? activeProjectScripts : undefined,
     workspaceFolders:
       serverConfig?.workspaceFileProjects === true ? actionWorkspace?.folders : undefined,
+    workspaceProject:
+      serverConfig?.workspaceFileProjects === true && activeProject ? activeProject : undefined,
+    workspaceThread: isServerThread ? actionThread : null,
+    workspaceSession: serverProjection ? workspaceInstalledSession(serverProjection) : undefined,
+    workspaceUnavailableFolderPaths: serverProjection?.runs.at(-1)?.unavailableFolderPaths,
+    onOpenFolderChanges: isServerThread ? openFolderChangesFromThreadPanel : undefined,
     onOpenTerminalHere: openTerminalInFolder,
     preferredScriptId: activeProject
       ? (lastInvokedScriptByProjectId[activeProject.id] ?? null)

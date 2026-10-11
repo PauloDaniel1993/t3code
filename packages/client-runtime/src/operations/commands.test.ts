@@ -236,6 +236,35 @@ describe("V2 environment commands", () => {
       ]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
+  it.effect(
+    "forwards workspace-file refresh, relink and unlink without changing folder paths",
+    () =>
+      Effect.gen(function* () {
+        const projects: ProjectMutation[] = [];
+        const supervisor = yield* makeSupervisor({ commands: [], projects });
+        const projectId = ProjectId.make("linked");
+        for (const workspaceFilePath of [
+          "/repo/team.code-workspace",
+          "/repo/relinked.code-workspace",
+          null,
+        ]) {
+          yield* updateProject({ projectId, workspaceFilePath }).pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          );
+        }
+        expect(
+          projects.map((mutation) =>
+            mutation.type === "project.update"
+              ? { file: mutation.workspaceFilePath, root: mutation.workspaceRoot }
+              : null,
+          ),
+        ).toEqual([
+          { file: "/repo/team.code-workspace", root: undefined },
+          { file: "/repo/relinked.code-workspace", root: undefined },
+          { file: null, root: undefined },
+        ]);
+      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
 
   it.effect("preserves caller command ids for idempotent V2 commands", () =>
     Effect.gen(function* () {

@@ -11,6 +11,23 @@ const THREAD_REF = scopeThreadRef(
 );
 
 describe("openDiffFilePrimaryAction", () => {
+  it("preserves secondary folder ownership in the file viewer", () => {
+    openDiffFilePrimaryAction({
+      threadRef: THREAD_REF,
+      filePath: "src/index.ts",
+      activeCwd: "/set-api",
+      repositoryRoot: "/set-api",
+      folderPath: "/api",
+      openInEditor: vi.fn(),
+    });
+    const panel = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      THREAD_REF,
+    );
+    expect(panel.surfaces).toContainEqual(
+      expect.objectContaining({ kind: "file", relativePath: "src/index.ts", folderPath: "/api" }),
+    );
+  });
   beforeEach(() => {
     useRightPanelStore.setState({ byThreadKey: {}, threadPanelVisibilityByThreadKey: {} });
   });

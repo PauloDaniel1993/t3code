@@ -7,6 +7,16 @@ import { selectThreadDiffPanelSelection, useDiffPanelStore } from "./diffPanelSt
 const THREAD_REF = scopeThreadRef(EnvironmentId.make("environment-1"), ThreadId.make("thread-1"));
 
 describe("diffPanelStore", () => {
+  it("clears a folder pin when returning to ordinary changes", () => {
+    useDiffPanelStore.getState().selectWorkspaceFolder(THREAD_REF, "/api", "api");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({ kind: "unstaged", folderPath: "/api", folderLabel: "api" });
+    useDiffPanelStore.getState().selectGitScope(THREAD_REF, "unstaged");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({ kind: "unstaged" });
+  });
   beforeEach(() =>
     useDiffPanelStore.setState({
       byThreadKey: {},

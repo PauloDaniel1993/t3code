@@ -1,4 +1,5 @@
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
+import { WorkspaceFoldersChip } from "./WorkspaceFoldersChip";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
 import { setThreadChangeRequestSnapshot } from "./ThreadStatusIndicators";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
@@ -54,6 +55,7 @@ import {
 import {
   type EnvironmentMachineKind,
   type ScopedThreadRef,
+  type ScopedProjectRef,
   type ThreadId,
 } from "@t3tools/contracts";
 
@@ -832,6 +834,7 @@ function SidebarSectionHeader(props: {
 const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   draftId: DraftId;
   composer: ComposerThreadDraftState;
+  projectRef: ScopedProjectRef;
   project: ProjectFaviconProject | null;
   projectDisplayName: string | null;
   isActive: boolean;
@@ -908,6 +911,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
             <span className="min-w-0 flex-1 truncate text-xs font-medium text-secondary-label">
               {props.projectDisplayName}
             </span>
+            <WorkspaceFoldersChip projectRef={props.projectRef} />
             <span className="ml-auto flex h-5 min-w-5 shrink-0 items-center justify-end">
               <Tooltip>
                 <TooltipTrigger
@@ -1040,6 +1044,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
             key={draftId}
             draftId={draftId}
             composer={composer}
+            projectRef={{ environmentId: session.environmentId, projectId: session.projectId }}
             project={props.projectByKey.get(projectKey) ?? null}
             projectDisplayName={props.projectDisplayNameByKey.get(projectKey) ?? null}
             isActive={draftId === props.routeDraftId}
@@ -1686,6 +1691,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       openThreadKey={props.taskOpenThreadKey}
     />
   ) : null;
+  const workspaceFoldersChip = (
+    <WorkspaceFoldersChip
+      projectRef={{ environmentId: thread.environmentId, projectId: thread.projectId }}
+      threadRef={threadRef}
+      workspaceFolderCount={thread.workspaceFolderCount}
+      onOpenThread={onThreadActivate}
+    />
+  );
 
   // Stacks show their layer count; multiple unrelated links show their total count.
   // Either opens the thread's pull requests tab; a single PR link opens that PR and still
@@ -1820,6 +1833,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {pinIndicator}
             {terminalStatusIcon}
             {/* Ticket 32: slim parent task count. */}
+            {workspaceFoldersChip}
             {taskDisclosure}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
@@ -2143,6 +2157,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               )}
               {terminalStatusIcon}
               {/* Ticket 32: slim parent task count. */}
+              {workspaceFoldersChip}
               {taskDisclosure}
               {prBadge}
               {diff ? (

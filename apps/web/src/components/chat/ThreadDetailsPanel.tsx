@@ -2,16 +2,18 @@ import type {
   EditorId,
   EnvironmentId,
   ProjectScript,
+  OrchestrationV2ProviderSession,
   ResolvedKeybindingsConfig,
   ThreadId,
 } from "@t3tools/contracts";
-import { AlertTriangleIcon, EllipsisIcon, TerminalIcon, XIcon } from "lucide-react";
-import type { ResolvedWorkspaceFolder } from "@t3tools/shared/workspaceFolders";
+import { AlertTriangleIcon, XIcon } from "lucide-react";
+import type { ResolvedWorkspaceFolder, WorkspaceThread } from "@t3tools/shared/workspaceFolders";
 
 import type { DraftId } from "../../composerDraftStore";
 import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
 import type { EnvMode, EnvironmentOption } from "../BranchToolbar.logic";
 import { BranchToolbar } from "../BranchToolbar";
+import { BranchToolbarEnvModeSelector } from "../BranchToolbarEnvModeSelector";
 import { BranchToolbarEnvironmentSelector } from "../BranchToolbarEnvironmentSelector";
 import GitActionsControl from "../GitActionsControl";
 import ProjectScriptsControl, {
@@ -19,8 +21,13 @@ import ProjectScriptsControl, {
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import {
+  workspaceFolderRows,
+  workspaceRepositoryCount,
+  type WorkspaceFoldersProject,
+  type WorkspaceFolderRow,
+} from "../workspaceFolders.logic";
+import { ThreadWorkspaceFolders } from "./ThreadWorkspaceFolders";
 import type { ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
@@ -45,6 +52,11 @@ export interface ThreadDetailsPanelProps extends Pick<
   activeProjectName: string | undefined;
   activeProjectScripts: ReadonlyArray<ProjectScript> | undefined;
   workspaceFolders?: ReadonlyArray<ResolvedWorkspaceFolder> | undefined;
+  workspaceProject?: WorkspaceFoldersProject | undefined;
+  workspaceThread?: WorkspaceThread | null | undefined;
+  workspaceSession?: OrchestrationV2ProviderSession | undefined;
+  workspaceUnavailableFolderPaths?: ReadonlyArray<string> | undefined;
+  onOpenFolderChanges?: ((folder: WorkspaceFolderRow) => void) | undefined;
   onOpenTerminalHere?: (folderPath: string) => void;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
@@ -79,6 +91,18 @@ export interface ThreadDetailsPanelProps extends Pick<
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
+  const showWorkspaceFolders =
+    props.workspaceProject !== undefined &&
+    (props.workspaceProject.workspaceFile != null ||
+      props.workspaceThread?.workspaceFolders !== undefined);
+  const rows =
+    showWorkspaceFolders && props.workspaceProject
+      ? workspaceFolderRows(
+          props.workspaceProject,
+          props.workspaceThread ?? null,
+          props.workspaceUnavailableFolderPaths,
+        )
+      : [];
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
     props.activeProjectScripts ? props.gitCwd : null,
@@ -155,53 +179,38 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {density === "full" ? (
+              {showWorkspaceFolders ? (
+                <BranchToolbarEnvModeSelector
+                  displayMode="panel"
+                  forceNewWorktree={props.forceNewWorktree ?? false}
+                  envLocked={props.envLocked || props.workspaceThread?.worktreePath != null}
+                  effectiveEnvMode={props.envMode}
+                  activeWorktreePath={props.workspaceThread?.worktreePath ?? null}
+                  workspaceRoot={props.gitCwd}
+                  repositoryCount={workspaceRepositoryCount(rows)}
+                  worktreeDisabledReason={
+                    rows[0]?.isGit
+                      ? undefined
+                      : "The primary folder must be an available Git repository to use worktrees."
+                  }
+                  onEnvModeChange={props.onEnvModeChange}
+                />
+              ) : density === "full" ? (
                 <BranchToolbar layout="panel" panelSection="workspace" {...branchToolbarProps} />
               ) : null}
 
-              {props.workspaceFolders && props.workspaceFolders.length > 1 ? (
-                <div className="px-2 py-1">
-                  {props.workspaceFolders.map((folder) => (
-                    <div key={folder.label} className="flex items-center justify-between gap-2">
-                      <Tooltip>
-                        <TooltipTrigger render={<span className="truncate text-xs" />}>
-                          {folder.label}
-                          {folder.isPrimary ? " · Primary" : ""}
-                        </TooltipTrigger>
-                        <TooltipPopup>{folder.effectivePath ?? folder.folder.uri}</TooltipPopup>
-                      </Tooltip>
-                      <Menu>
-                        <MenuTrigger
-                          render={
-                            <Button
-                              variant="ghost"
-                              size="icon-xs"
-                              aria-label={`Actions for ${folder.label}`}
-                            />
-                          }
-                        >
-                          <EllipsisIcon className="size-3.5" />
-                        </MenuTrigger>
-                        <MenuPopup>
-                          <MenuItem
-                            disabled={
-                              folder.effectivePath === null ||
-                              !folder.folder.path ||
-                              !props.onOpenTerminalHere
-                            }
-                            onClick={() => {
-                              if (folder.folder.path)
-                                props.onOpenTerminalHere?.(folder.folder.path);
-                            }}
-                          >
-                            <TerminalIcon className="size-4" />
-                            Open terminal here
-                          </MenuItem>
-                        </MenuPopup>
-                      </Menu>
-                    </div>
-                  ))}
-                </div>
+              {showWorkspaceFolders && props.workspaceProject ? (
+                <ThreadWorkspaceFolders
+                  environmentId={props.environmentId}
+                  project={props.workspaceProject}
+                  thread={props.workspaceThread ?? null}
+                  session={props.workspaceSession}
+                  unavailableFolderPaths={props.workspaceUnavailableFolderPaths}
+                  availableEditors={props.availableEditors}
+                  keybindings={props.keybindings}
+                  onShowChanges={props.onOpenFolderChanges}
+                  onOpenTerminalHere={props.onOpenTerminalHere}
+                />
               ) : null}
 
               {density !== "essential" && props.showOpenInPicker ? (

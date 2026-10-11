@@ -30,6 +30,7 @@ import { useOpenInPreferredEditor } from "../editorPreferences";
 import { useFileContextMenuHandler } from "../fileContextMenu";
 import { type DraftId } from "../composerDraftStore";
 import { openDiffFilePrimaryAction } from "../diffFileActions";
+import { workspaceFolderDiffTarget, workspaceFolderOwnsDiffPath } from "../workspaceFolderDiff";
 import { useCheckpointDiff } from "~/lib/checkpointDiffState";
 import { cn } from "~/lib/utils";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../diffPanelStore";
@@ -43,6 +44,7 @@ import {
   getRenderablePatch,
   resolveDiffThemeName,
   resolveFileDiffPath,
+  resolveFileDiffPreviousPath,
 } from "../lib/diffRendering";
 import { PREFERRED_HIGHLIGHTER } from "../lib/syntaxHighlighting";
 import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../lib/diffCollapse";
@@ -166,10 +168,30 @@ export default function DiffPanel({
         }
       : null,
   );
-  const activeCwd = threadPrimaryPath(activeThread, activeProject) ?? undefined;
-  const activeRepositoryRoot = activeThread?.worktreePath
-    ? undefined
-    : activeProject?.repositoryIdentity?.rootPath;
+  const diffSelection = useDiffPanelStore((state) =>
+    selectThreadDiffPanelSelection(state.byThreadKey, routeThreadRef),
+  );
+  const selectedFolderPath =
+    diffSelection.kind === "unstaged" ? diffSelection.folderPath : undefined;
+  const folderTarget = useMemo(
+    () =>
+      selectedFolderPath && activeProject && activeThreadProjection
+        ? workspaceFolderDiffTarget(
+            activeProject,
+            activeThreadProjection.thread,
+            selectedFolderPath,
+          )
+        : null,
+    [activeProject, activeThreadProjection, selectedFolderPath],
+  );
+  const activeCwd = selectedFolderPath
+    ? folderTarget?.cwd
+    : (threadPrimaryPath(activeThread, activeProject) ?? undefined);
+  const activeRepositoryRoot = selectedFolderPath
+    ? folderTarget?.repositoryRoot
+    : activeThread?.worktreePath
+      ? undefined
+      : activeProject?.repositoryIdentity?.rootPath;
   const serverConfig = useAtomValue(
     serverEnvironment.configValueAtom(activeThread?.environmentId ?? null),
   );
@@ -186,9 +208,6 @@ export default function DiffPanel({
           input: { cwd: activeCwd },
         })
       : null,
-  );
-  const diffSelection = useDiffPanelStore((state) =>
-    selectThreadDiffPanelSelection(state.byThreadKey, routeThreadRef),
   );
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
   const { turnDiffSummaries, inferredCheckpointTurnCountByRunId } =
@@ -234,14 +253,14 @@ export default function DiffPanel({
   const selectedScopeLabel =
     selectedRunId === null
       ? selectedGitScope === "unstaged"
-        ? "Working tree"
+        ? `Working tree${folderTarget ? ` · ${folderTarget.row.label}` : ""}`
         : "Branch changes"
       : selectedTurn?.runId === latestTurn?.runId
         ? "Latest turn"
         : `Turn ${selectedCheckpointTurnCount ?? "?"}`;
   const reviewSectionId = selectedTurn ? `turn:${selectedTurn.runId}` : selectedGitScope;
   const collapseScopeKey = routeThreadRef
-    ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${reviewSectionId}`
+    ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${reviewSectionId}:${selectedFolderPath ?? ""}`
     : null;
   const codeViewMountKey = `${collapseScopeKey ?? reviewSectionId}:${codeViewRevision}`;
   const reviewSectionTitle = selectedTurn
@@ -284,6 +303,7 @@ export default function DiffPanel({
   );
   const shouldRetryBranchDiffAtEnvironmentCwd =
     selectedRunId === null &&
+    !selectedFolderPath &&
     primaryBranchDiffPreview.error?.includes("configured workspace root") === true &&
     serverConfig?.cwd !== undefined &&
     serverConfig.cwd !== activeCwd;
@@ -308,9 +328,27 @@ export default function DiffPanel({
     ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}`
     : null;
 
-  const selectedGitSource = branchDiffPreview.data?.sources.find(
-    (source) => source.kind === (selectedGitScope === "unstaged" ? "working-tree" : "branch-range"),
-  );
+  const selectedGitSource = useMemo(() => {
+    const source = branchDiffPreview.data?.sources.find(
+      (candidate) =>
+        candidate.kind === (selectedGitScope === "unstaged" ? "working-tree" : "branch-range"),
+    );
+    return source && folderTarget
+      ? {
+          ...source,
+          ...(source.files
+            ? {
+                files: source.files.filter(
+                  (file) =>
+                    workspaceFolderOwnsDiffPath(folderTarget, file.path) ||
+                    (file.previousPath !== null &&
+                      workspaceFolderOwnsDiffPath(folderTarget, file.previousPath)),
+                ),
+              }
+            : {}),
+        }
+      : source;
+  }, [branchDiffPreview.data, folderTarget, selectedGitScope]);
   const refreshPreviewQuery = branchDiffPreview.refresh;
   const refreshDiffFromUserAction = refreshPreviewQuery;
 
@@ -391,7 +429,12 @@ export default function DiffPanel({
   const isLoadingSelectedPatch = selectedTurn
     ? activeCheckpointDiff.isPending
     : branchDiffPreview.isPending;
-  const selectedPatchError = selectedTurn ? activeCheckpointDiff.error : branchDiffPreview.error;
+  const selectedPatchError =
+    selectedFolderPath && !folderTarget
+      ? "This workspace folder is unavailable for changes."
+      : selectedTurn
+        ? activeCheckpointDiff.error
+        : branchDiffPreview.error;
   const hasResolvedPatch = typeof selectedPatch === "string";
   const hasNoNetChanges = hasResolvedPatch && selectedPatch.trim().length === 0;
   const lazySource =
@@ -406,6 +449,31 @@ export default function DiffPanel({
             compactPartialHunkOffsets: selectedRunId === null,
           }),
     [lazySource, resolvedTheme, selectedPatch, selectedRunId],
+  );
+  const folderPatch = useMemo(
+    () =>
+      renderablePatch?.kind === "files" && folderTarget
+        ? {
+            ...renderablePatch,
+            files: renderablePatch.files.filter(
+              (file) =>
+                workspaceFolderOwnsDiffPath(folderTarget, resolveFileDiffPath(file)) ||
+                workspaceFolderOwnsDiffPath(folderTarget, resolveFileDiffPreviousPath(file)),
+            ),
+            sourceFiles: renderablePatch.sourceFiles.filter(
+              (file) =>
+                workspaceFolderOwnsDiffPath(folderTarget, resolveFileDiffPath(file)) ||
+                workspaceFolderOwnsDiffPath(folderTarget, resolveFileDiffPreviousPath(file)),
+            ),
+          }
+        : renderablePatch?.kind === "raw" && folderTarget
+          ? {
+              ...renderablePatch,
+              text: "",
+              reason: "This diff cannot be narrowed to a workspace folder.",
+            }
+          : renderablePatch,
+    [folderTarget, renderablePatch],
   );
   const fileStats = useMemo(
     () => new Map(lazySource?.files?.map((file) => [file.path, file])),
@@ -431,7 +499,7 @@ export default function DiffPanel({
     revision: branchDiffPreview.data
       ? DateTime.formatIso(branchDiffPreview.data.generatedAt)
       : undefined,
-    preview: renderablePatch,
+    preview: folderPatch,
   });
   const refreshBranchDiffPreview = refreshPreviewQuery;
 
@@ -579,6 +647,7 @@ export default function DiffPanel({
         filePath,
         activeCwd,
         repositoryRoot: activeRepositoryRoot,
+        folderPath: selectedFolderPath,
         openInEditor: (targetPath) => {
           void (async () => {
             const result = await openInPreferredEditor(targetPath);
@@ -598,7 +667,7 @@ export default function DiffPanel({
         },
       });
     },
-    [activeCwd, activeRepositoryRoot, openInPreferredEditor, routeThreadRef],
+    [activeCwd, activeRepositoryRoot, openInPreferredEditor, routeThreadRef, selectedFolderPath],
   );
   const toggleDiffFileCollapsed = useCallback(
     (fileKey: string) => {
@@ -993,12 +1062,12 @@ export default function DiffPanel({
                 {selectedGitSource?.files ? " Totals include all changes." : ""}
               </p>
             )}
-            {selectedPatchError && !renderablePatch && (
+            {selectedPatchError && !folderPatch && (
               <div className="px-3">
                 <p className="mb-2 text-2xs text-error/80">{selectedPatchError}</p>
               </div>
             )}
-            {!renderablePatch && !lazySource ? (
+            {!folderPatch && !lazySource ? (
               isLoadingSelectedPatch ? (
                 <DiffPanelLoadingState
                   label={
@@ -1018,7 +1087,7 @@ export default function DiffPanel({
                   </p>
                 </div>
               )
-            ) : lazySource || renderablePatch?.kind === "files" ? (
+            ) : lazySource || folderPatch?.kind === "files" ? (
               <div className="flex min-h-0 flex-1 overflow-hidden">
                 <div
                   className="min-h-0 min-w-0 flex-1"
@@ -1178,7 +1247,7 @@ export default function DiffPanel({
               <div className="min-h-0 flex-1 overflow-auto p-2">
                 <div className="space-y-2">
                   <p className="text-2xs text-muted-foreground/75">
-                    {renderablePatch?.kind === "raw" ? renderablePatch.reason : null}
+                    {folderPatch?.kind === "raw" ? folderPatch.reason : null}
                   </p>
                   <pre
                     className={cn(
@@ -1188,7 +1257,7 @@ export default function DiffPanel({
                         : "overflow-auto",
                     )}
                   >
-                    {renderablePatch?.kind === "raw" ? renderablePatch.text : null}
+                    {folderPatch?.kind === "raw" ? folderPatch.text : null}
                   </pre>
                 </div>
               </div>
