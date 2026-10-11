@@ -3499,6 +3499,12 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "vcs" },
           ),
+        [WS_METHODS.vcsEditorWorkspaceFile]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsEditorWorkspaceFile,
+            worktreeSets.editorWorkspaceFile(input.threadId),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateRef,

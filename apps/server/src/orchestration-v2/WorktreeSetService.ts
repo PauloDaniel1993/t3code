@@ -8,6 +8,7 @@ import {
   type ProjectId,
   ThreadId,
   VcsThreadWorktreesError,
+  WorkspaceFolderEntry,
   type WorktreeSetupStageStatus,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName, sanitizeBranchFragment } from "@t3tools/shared/git";
@@ -225,6 +226,10 @@ export class WorktreeSetService extends Context.Service<
       readonly branch: string;
       readonly members?: ReadonlyArray<string> | undefined;
     }) => Effect.Effect<ReadonlyArray<WorktreeLocation>, VcsThreadWorktreesError | GitCommandError>;
+    /** Rewrites the editor workspace from the frozen folders at their current places in the set. */
+    readonly editorWorkspaceFile: (
+      threadId: ThreadId,
+    ) => Effect.Effect<string, VcsThreadWorktreesError>;
     /**
      * Removes every worktree of a thread, deepest first, then what the set
      * leaves behind in its session directory, and returns the worktrees it
@@ -240,6 +245,12 @@ export class WorktreeSetService extends Context.Service<
 
 const failure = (threadId: ThreadId, detail: string, cause?: unknown) =>
   new VcsThreadWorktreesError({ threadId, detail, ...(cause === undefined ? {} : { cause }) });
+
+const encodeEditorWorkspace = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ folders: Schema.Array(WorkspaceFolderEntry) }), {
+    space: 2,
+  }),
+);
 
 // A backslash separates segments only in Windows paths.
 const depth = (path: string) =>
@@ -988,6 +999,60 @@ const make = Effect.gen(function* () {
       ? `${session}.code-workspace`
       : path.join(session, `${path.basename(session)}.code-workspace`);
 
+  const editorWorkspaceFile: WorktreeSetService["Service"]["editorWorkspaceFile"] = Effect.fn(
+    "WorktreeSetService.editorWorkspaceFile",
+  )(function* (threadId) {
+    const fail = (detail: string, cause?: unknown) => failure(threadId, detail, cause);
+    const thread = yield* projections
+      .getThread(threadId)
+      .pipe(Effect.mapError((cause) => fail("Could not read the thread.", cause)));
+    if (
+      thread.deletedAt !== null ||
+      thread.worktreePath === null ||
+      thread.workspaceFolders === undefined ||
+      thread.workspaceFolders.length === 0
+    ) {
+      return yield* fail("This thread has no workspace folders in a worktree.");
+    }
+    let members: ReadonlyArray<WorktreeLocation> = thread.worktrees ?? [];
+    if (members.length === 0) {
+      // Picking a single worktree isolates only the primary. Find its checkout
+      // root so a subfolder cwd cannot put the generated file inside git.
+      const probe = yield* folderResolver.probe(thread.worktreePath, { vcs: true });
+      if (probe.vcs == null) {
+        return yield* fail("The primary worktree is unavailable.");
+      }
+      members = [
+        {
+          repositoryRoot:
+            thread.workspaceFolders[0]!.checkoutRoot ?? thread.workspaceFolders[0]!.path!,
+          path: probe.vcs.checkoutRoot,
+        },
+      ];
+    }
+    const session =
+      members.length === 1 ? members[0]!.path : commonAncestor(members.map(({ path }) => path));
+    if (session === undefined) {
+      return yield* fail("The thread's worktrees have no session directory.");
+    }
+    const target = editorWorkspaceFilePath(session, members);
+    const primaryPath = thread.worktreePath;
+    const folders = thread.workspaceFolders.map((folder, index) => ({
+      name: folder.name,
+      ...(folder.uri === undefined
+        ? { path: index === 0 ? primaryPath : snapshotFolderPath(folder, thread.worktrees ?? []) }
+        : { uri: folder.uri }),
+    }));
+    yield* fileSystem
+      .writeFileString(target, `${encodeEditorWorkspace({ folders })}\n`)
+      .pipe(
+        Effect.mapError((cause) =>
+          fail(`Could not write the editor workspace file at ${target}.`, cause),
+        ),
+      );
+    return target;
+  });
+
   /**
    * What a removed set leaves in T3's worktrees directory: the generated
    * editor workspace file, and the directories git made on the way to each
@@ -1124,6 +1189,7 @@ const make = Effect.gen(function* () {
     resolveForReuse,
     createForThread,
     switchBranch,
+    editorWorkspaceFile,
     remove,
   });
 });

@@ -17,6 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
@@ -34,6 +35,7 @@ const GitLayer = Layer.mergeAll(GitVcsDriver.layer, WorkspaceFolderResolver.laye
 
 const threadId = ThreadId.make("thread:worktree-set");
 const projectId = ProjectId.make("project:worktree-set");
+const decodeJson = Schema.decodeSync(Schema.UnknownFromJsonString);
 
 interface ThreadRecord {
   readonly id: ThreadId;
@@ -1265,6 +1267,239 @@ it.effect("removes no member without force while any member has changes", () =>
     assert.equal(error._tag, "VcsThreadWorktreesError");
     assert.include(error.message, set.members[1]!.path);
     for (const member of set.members) assert.isTrue(yield* fileSystem.exists(member.path));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("writes and rewrites the frozen folders in workspace order at their worktree paths", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
+    const shared = yield* fileSystem.makeTempDirectoryScoped({ prefix: "shared-" });
+    const missing = path.join(shared, "missing");
+    const snapshot = [
+      { ...workspaceFolders[0]!, name: 'API "core"' },
+      { ...workspaceFolders[1]!, name: "Web app" },
+      { path: shared, name: "Shared", label: "Shared", checkoutRoot: null },
+      { path: missing, name: "Missing", label: "Missing", checkoutRoot: null },
+      { uri: "vscode-remote://ssh-remote+devbox/team", name: "Remote", label: "Remote" },
+    ];
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders: snapshot, baseRef: api.branch, branch: "editor" }),
+    );
+    const thread = {
+      id: threadId,
+      title: "Set",
+      ...WorktreeSet.worktreeSetBinding(set),
+      workspaceFolders: snapshot,
+    };
+    const open = withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.editorWorkspaceFile(threadId),
+      ),
+      {
+        thread,
+        projectRoot: path.join(shared, "different-primary-after-relink"),
+      },
+    );
+    const target = yield* open;
+    assert.equal(target, path.join(config.worktreesDir, "api", "editor", "editor.code-workspace"));
+    const expected = {
+      folders: [
+        { name: 'API "core"', path: set.members[0]!.path },
+        { name: "Web app", path: set.members[1]!.path },
+        { name: "Shared", path: shared },
+        { name: "Missing", path: missing },
+        { name: "Remote", uri: "vscode-remote://ssh-remote+devbox/team" },
+      ],
+    };
+    assert.deepEqual(decodeJson(yield* fileSystem.readFileString(target)), expected);
+    yield* fileSystem.writeFileString(target, "stale");
+    assert.equal(yield* open, target);
+    assert.deepEqual(decodeJson(yield* fileSystem.readFileString(target)), expected);
+    assert.equal(yield* git(api.root, ["status", "--porcelain"]), "");
+    assert.equal(yield* git(set.members[0]!.path, ["status", "--porcelain"]), "");
+    assert.equal(yield* git(set.members[1]!.path, ["status", "--porcelain"]), "");
+    assert.equal(yield* git(web.root, ["status", "--porcelain"]), "");
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("puts a one-member workspace beside git and maps snapshot checkout prefixes", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const repo = yield* makeRepo("monorepo", ["apps/web/README.md", "packages/core/README.md"]);
+    const snapshot = yield* snapshotOf([
+      path.join(repo.root, "apps", "web"),
+      path.join(repo.root, "packages", "core"),
+    ]);
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders: snapshot, baseRef: repo.branch, branch: "one-editor" }),
+    );
+    const target = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.editorWorkspaceFile(threadId),
+      ),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          ...WorktreeSet.worktreeSetBinding(set),
+          workspaceFolders: snapshot,
+        },
+      },
+    );
+    assert.equal(target, `${set.members[0]!.path}.code-workspace`);
+    assert.deepEqual(decodeJson(yield* fileSystem.readFileString(target)), {
+      folders: [
+        { name: "web", path: path.join(set.members[0]!.path, "apps", "web") },
+        { name: "core", path: path.join(set.members[0]!.path, "packages", "core") },
+      ],
+    });
+    assert.equal(yield* git(set.members[0]!.path, ["status", "--porcelain"]), "");
+    yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.remove({ threadId }),
+      ),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          ...WorktreeSet.worktreeSetBinding(set),
+          workspaceFolders: snapshot,
+        },
+      },
+    );
+    assert.isFalse(yield* fileSystem.exists(target));
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect(
+  "uses the primary's chosen worktree without moving other folders when there is no tuple",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { api, workspaceFolders } = yield* makeSiblingWorkspace;
+      const set = yield* withCoordinator(
+        createSet({ projectRoot: api.root, baseRef: api.branch, branch: "chosen-editor" }),
+      );
+      const worktreePath = set.members[0]!.path;
+      const target = yield* withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+          coordinator.editorWorkspaceFile(threadId),
+        ),
+        {
+          thread: {
+            id: threadId,
+            title: "Set",
+            branch: "chosen-editor",
+            worktreePath,
+            workspaceFolders,
+          },
+        },
+      );
+      assert.equal(target, `${worktreePath}.code-workspace`);
+      assert.deepEqual(decodeJson(yield* fileSystem.readFileString(target)), {
+        folders: workspaceFolders.map((folder, index) => ({
+          name: folder.name,
+          path: index === 0 ? worktreePath : folder.path,
+        })),
+      });
+      assert.equal(yield* git(worktreePath, ["status", "--porcelain"]), "");
+      assert.equal(path.dirname(target), path.dirname(worktreePath));
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("puts a nested set's workspace beside its parent member, outside both repositories", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const parent = yield* makeRepo("parent");
+    const child = yield* makeRepo("child", ["README.md"], parent.root);
+    const snapshot = yield* snapshotOf([child.root, parent.root]);
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders: snapshot, baseRef: child.branch, branch: "nested-editor" }),
+    );
+    const parentMember = set.members.find((member) => member.repositoryRoot === parent.root)!;
+    const target = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.editorWorkspaceFile(threadId),
+      ),
+      {
+        thread: {
+          id: threadId,
+          title: "Nested",
+          ...WorktreeSet.worktreeSetBinding(set),
+          workspaceFolders: snapshot,
+        },
+      },
+    );
+    assert.equal(target, `${parentMember.path}.code-workspace`);
+    assert.deepEqual(decodeJson(yield* fileSystem.readFileString(target)), {
+      folders: [
+        { name: "child", path: set.members[0]!.path },
+        { name: "parent", path: parentMember.path },
+      ],
+    });
+    assert.notInclude(yield* git(parentMember.path, ["status", "--porcelain"]), ".code-workspace");
+    assert.equal(yield* git(set.members[0]!.path, ["status", "--porcelain"]), "");
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("reports a workspace-file write failure without changing the worktree binding", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const repo = yield* makeRepo("write-error");
+    const snapshot = yield* snapshotOf([repo.root]);
+    const set = yield* withCoordinator(
+      createSet({ workspaceFolders: snapshot, baseRef: repo.branch, branch: "editor-error" }),
+    );
+    const target = `${set.members[0]!.path}.code-workspace`;
+    yield* fileSystem.makeDirectory(target);
+    const dispatched: Array<MetadataUpdate> = [];
+    const error = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.editorWorkspaceFile(threadId),
+      ),
+      {
+        thread: {
+          id: threadId,
+          title: "Set",
+          ...WorktreeSet.worktreeSetBinding(set),
+          workspaceFolders: snapshot,
+        },
+        dispatched,
+      },
+    ).pipe(Effect.flip);
+    assert.equal(error._tag, "VcsThreadWorktreesError");
+    assert.include(error.detail, target);
+    assert.isDefined(error.cause);
+    assert.deepEqual(dispatched, []);
+    assert.equal(yield* git(set.members[0]!.path, ["status", "--porcelain"]), "");
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("does not generate a workspace file for a current-checkout thread", () =>
+  Effect.gen(function* () {
+    const repo = yield* makeRepo("current");
+    const workspaceFolders = yield* snapshotOf([repo.root]);
+    const error = yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+        coordinator.editorWorkspaceFile(threadId),
+      ),
+      {
+        thread: {
+          id: threadId,
+          title: "Current",
+          branch: repo.branch,
+          worktreePath: null,
+          workspaceFolders,
+        },
+      },
+    ).pipe(Effect.flip);
+    assert.equal(error._tag, "VcsThreadWorktreesError");
+    assert.equal(yield* git(repo.root, ["status", "--porcelain"]), "");
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 

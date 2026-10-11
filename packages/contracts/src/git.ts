@@ -181,6 +181,11 @@ export const VcsRemoveThreadWorktreesInput = Schema.Struct({
 });
 export type VcsRemoveThreadWorktreesInput = typeof VcsRemoveThreadWorktreesInput.Type;
 
+export const VcsEditorWorkspaceFileInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type VcsEditorWorkspaceFileInput = typeof VcsEditorWorkspaceFileInput.Type;
+
 /**
  * Gives a thread that works in place its own worktrees, one per git checkout
  * among its folders, and binds it to them. Without a branch, the set gets a

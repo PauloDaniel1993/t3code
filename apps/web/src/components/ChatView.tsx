@@ -3996,12 +3996,28 @@ export default function ChatView(props: ChatViewProps) {
     primaryEnvironmentId,
     remoteOpenMode: remoteOpenState.mode,
   });
+  const editorWorktreeThreadId =
+    isServerThread &&
+    actionThread != null &&
+    actionThread.worktreePath !== null &&
+    (serverProjection?.thread.workspaceFolders !== undefined ||
+      ("workspaceFolderCount" in actionThread && actionThread.workspaceFolderCount !== undefined))
+      ? actionThread.id
+      : undefined;
+  const editorWorkspace = useMemo(
+    () => ({
+      workspaceFile: activeProject?.workspaceFile,
+      worktreeThreadId: editorWorktreeThreadId,
+    }),
+    [activeProject?.workspaceFile, editorWorktreeThreadId],
+  );
   useOpenFavoriteEditorShortcut({
     enabled: showOpenInPicker,
     environmentId: activeThread?.environmentId ?? environmentId,
     keybindings,
     availableEditors,
     openInCwd: gitCwd,
+    editorWorkspace,
   });
   const manualCompactionProviderAvailable = useMemo(
     () =>
@@ -10600,6 +10616,7 @@ export default function ChatView(props: ChatViewProps) {
     keybindings,
     availableEditors,
     showOpenInPicker,
+    editorWorkspace,
     gitCwd,
     isGitRepo,
     envLocked,

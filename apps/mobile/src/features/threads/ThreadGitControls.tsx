@@ -107,6 +107,7 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
   readonly showDirectFileControl?: boolean;
   readonly onOpenTerminal: (terminalId?: string | null) => void;
   readonly onOpenNewTerminal: () => void;
+  readonly onOpenInEditor?: (() => void) | undefined;
   readonly onRunProjectScript: (script: ProjectScript) => Promise<void>;
 };
 
@@ -263,6 +264,16 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
         label: "Terminal",
         menu: {
           items: [
+            ...(props.onOpenInEditor
+              ? [
+                  {
+                    icon: { name: "desktopcomputer", type: "sfSymbol" as const },
+                    label: "Open in editor on server",
+                    onPress: props.onOpenInEditor,
+                    type: "action" as const,
+                  },
+                ]
+              : []),
             ...props.projectScripts.map((script) => ({
               description: script.command,
               icon: { name: projectScriptMenuIcon(script.icon), type: "sfSymbol" as const },
@@ -398,6 +409,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       props.gitStatus,
       props.onMergeBack,
       props.onOpenNewTerminal,
+      props.onOpenInEditor,
       props.onOpenTerminal,
       props.onRunProjectScript,
       props.projectScripts,
@@ -447,6 +459,11 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
           disabled={!props.canOpenTerminal}
           separateBackground
         >
+          {props.onOpenInEditor ? (
+            <NativeHeaderToolbar.MenuAction icon="desktopcomputer" onPress={props.onOpenInEditor}>
+              <NativeHeaderToolbar.Label>Open in editor on server</NativeHeaderToolbar.Label>
+            </NativeHeaderToolbar.MenuAction>
+          ) : null}
           {props.projectScripts.length > 0 ? (
             props.projectScripts.map((script) => (
               <NativeHeaderToolbar.MenuAction

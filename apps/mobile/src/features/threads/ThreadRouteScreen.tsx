@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import * as Option from "effect/Option";
 import {
   DEFAULT_SERVER_SETTINGS,
+  EDITORS,
   EnvironmentId,
   ThreadId,
   type ProjectScript,
@@ -30,6 +31,9 @@ import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useConnectionsReady } from "../../state/workspace";
 import { useEnvironmentShellReadiness } from "../../state/shell";
+import { shellEnvironment } from "../../state/shell";
+import { resolveEditorTarget } from "@t3tools/client-runtime/editor-target";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
 import { clearPendingThreadCreationOutcome } from "../../state/pending-thread-creation";
 import { recoverFailedThreadDraft } from "../../state/recover-failed-thread-draft";
@@ -123,6 +127,13 @@ function ThreadHeader(
         onPress: () => onOpenTerminal(null),
       });
     }
+    if (props.gitControls.onOpenInEditor) {
+      actions.push({
+        accessibilityLabel: "Open in editor on server",
+        icon: "desktopcomputer",
+        onPress: props.gitControls.onOpenInEditor,
+      });
+    }
     actions.push({
       accessibilityLabel: "Open git controls",
       icon: "point.topleft.down.curvedto.point.bottomright.up",
@@ -147,6 +158,7 @@ function ThreadHeader(
     props.onReturnToThread,
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
+    props.gitControls.onOpenInEditor,
   ]);
 
   return (
@@ -465,6 +477,63 @@ function ThreadRouteContent(
     }, [props.renderInspector]),
   );
   const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
+  const generateEditorWorkspace = useAtomCommand(shellEnvironment.editorWorkspaceFile, {
+    reportFailure: false,
+  });
+  const openInEditor = useAtomCommand(shellEnvironment.openInEditor, { reportFailure: false });
+  const workspaceEditor = EDITORS.find(
+    (editor) =>
+      editor.id !== "file-manager" &&
+      routeEnvironmentRuntime?.serverConfig?.availableEditors.includes(editor.id),
+  );
+  const handleOpenInEditor = useCallback(async () => {
+    if (!selectedThread || !selectedThreadCwd || !workspaceEditor) return;
+    const target = resolveEditorTarget({
+      cwd: selectedThreadCwd,
+      editor: workspaceEditor.id,
+      workspaceFile: selectedThreadProject?.workspaceFile,
+      worktreeThreadId:
+        selectedThread.workspaceFolderCount !== undefined && selectedThread.worktreePath !== null
+          ? selectedThread.id
+          : undefined,
+    });
+    let cwd = selectedThreadCwd;
+    if ("threadId" in target) {
+      const generated = await generateEditorWorkspace({
+        environmentId: selectedThread.environmentId,
+        input: target,
+      });
+      if (generated._tag !== "Success") {
+        const error = squashAtomCommandFailure(generated);
+        Alert.alert(
+          "Unable to open editor",
+          error instanceof Error ? error.message : "Could not prepare the workspace.",
+        );
+        return;
+      }
+      cwd = generated.value;
+    } else {
+      cwd = target.cwd;
+    }
+    const result = await openInEditor({
+      environmentId: selectedThread.environmentId,
+      input: { cwd, editor: workspaceEditor.id },
+    });
+    if (result._tag !== "Success") {
+      const error = squashAtomCommandFailure(result);
+      Alert.alert(
+        "Unable to open editor",
+        error instanceof Error ? error.message : "Could not open the workspace.",
+      );
+    }
+  }, [
+    generateEditorWorkspace,
+    openInEditor,
+    selectedThread,
+    selectedThreadCwd,
+    selectedThreadProject?.workspaceFile,
+    workspaceEditor,
+  ]);
   const fileScope = useWorkspaceFileScope({
     enabled: routeEnvironmentRuntime?.serverConfig?.workspaceFileProjects === true,
     project: selectedThreadProject,
@@ -854,6 +923,8 @@ function ThreadRouteContent(
     showDirectFileControl: layout.usesSplitView,
     onOpenTerminal: handleOpenTerminal,
     onOpenNewTerminal: handleOpenNewTerminal,
+    onOpenInEditor:
+      workspaceEditor && selectedThreadCwd ? () => void handleOpenInEditor() : undefined,
     onRunProjectScript: handleRunProjectScript,
     onPull: gitActions.onPullSelectedThreadBranch,
     onRunAction: gitActions.onRunSelectedThreadGitAction,

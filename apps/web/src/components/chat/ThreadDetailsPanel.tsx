@@ -30,6 +30,7 @@ import { ThreadWorkspaceFolders } from "./ThreadWorkspaceFolders";
 import type { ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
+import type { EditorWorkspace } from "@t3tools/client-runtime/editor-target";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
@@ -61,6 +62,7 @@ export interface ThreadDetailsPanelProps extends Pick<
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   showOpenInPicker: boolean;
+  editorWorkspace?: EditorWorkspace | undefined;
   gitCwd: string | null;
   isGitRepo: boolean;
   envLocked: boolean;
@@ -218,7 +220,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   keybindings={props.keybindings}
                   availableEditors={props.availableEditors}
                   openInCwd={props.gitCwd}
+                  editorWorkspace={props.editorWorkspace}
                   displayMode="panel"
+                  enableShortcut={false}
                 />
               ) : null}
 

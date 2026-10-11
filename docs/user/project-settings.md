@@ -52,6 +52,18 @@ to override its environment defaults. Worktree directories keep their original n
 If generation fails, or a custom name is invalid or already taken, the temporary
 branch name remains.
 
+## Open a workspace in an editor
+
+On web and desktop, use **Open in…** in the thread's Workspace section, or the
+favorite-editor shortcut. VS Code, Cursor and other VS Code-based editors open
+the linked workspace file. Worktree threads open their own folder snapshot at
+its worktree paths; shared folders stay in place. Other editors open the primary
+folder. A folder's own **Open in editor** action opens only that folder.
+
+On mobile, choose **Open in editor on server** from the thread's terminal menu
+(the editor action in the Android header). This launches an available editor on
+the connected environment, using the same workspace target.
+
 ## Scheduled tasks on mobile
 
 Open **Settings → Scheduled tasks** to create recurring tasks or manage existing

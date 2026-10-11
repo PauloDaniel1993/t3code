@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./editor-target": {
+      "types": "./src/editorTarget.ts",
+      "default": "./src/editorTarget.ts"
+    },
     "./state/subagent-retention": {
       "types": "./src/state/subagentRetention.ts",
       "default": "./src/state/subagentRetention.ts"
