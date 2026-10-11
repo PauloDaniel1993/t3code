@@ -400,5 +400,20 @@ export function applyGitStatusStreamEvent(
         );
       }
       return mergeGitStatusParts(toLocalStatusPart(current), event.remote);
+    case "branch":
+      // Full subscriptions never receive these; a branch fact keeps everything else.
+      return current === null
+        ? mergeGitStatusParts(
+            {
+              isRepo: event.isRepo,
+              hasPrimaryRemote: false,
+              isDefaultRef: false,
+              refName: event.refName,
+              hasWorkingTreeChanges: false,
+              workingTree: { files: [], insertions: 0, deletions: 0 },
+            },
+            null,
+          )
+        : { ...current, isRepo: event.isRepo, refName: event.refName };
   }
 }

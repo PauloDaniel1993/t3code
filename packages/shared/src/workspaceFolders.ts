@@ -192,6 +192,106 @@ export function resolveThreadWorkspace(input: {
   };
 }
 
+/** One git checkout a thread works in, where its version control actions run. */
+export interface WorkspaceGitCheckout {
+  /**
+   * Names the checkout: a worktree set member's source checkout, else the
+   * checkout root its folders were found in. A thread without a snapshot
+   * names it by its primary path.
+   */
+  readonly repositoryRoot: string;
+  /** Where git runs: the first folder the checkout holds, where the thread works on it. */
+  readonly cwd: string;
+  /** The label of that folder. */
+  readonly label: string;
+  /** The branch a worktree set member is expected on; null for a checkout used in place. */
+  readonly expectedBranch: string | null;
+}
+
+/**
+ * The git checkouts a thread works in, the primary's first: the members of its
+ * worktree set, and each checkout among its git folders that no member holds,
+ * used in place. Folders outside git when the thread was bound, and URI
+ * folders, are in none. A thread without a snapshot has one, at its primary
+ * path.
+ */
+export function workspaceGitCheckouts(
+  thread: WorkspaceThread,
+  project: WorkspaceProject,
+): ReadonlyArray<WorkspaceGitCheckout> {
+  const workspace = resolveThreadWorkspace({ thread, project });
+  const snapshot = thread.workspaceFolders;
+  if (snapshot === undefined || snapshot.length === 0) {
+    const primary = workspace.folders[0]!;
+    return [
+      {
+        repositoryRoot: workspace.primaryPath,
+        cwd: workspace.primaryPath,
+        label: primary.label,
+        expectedBranch: null,
+      },
+    ];
+  }
+  const members = thread.worktrees ?? [];
+  // A worktree picked outside a set holds the primary alone.
+  const worktreePath = thread.worktreePath;
+  const primaryWorktree =
+    worktreePath !== null && !members.some((member) => isPathWithin(member.path, worktreePath))
+      ? worktreePath
+      : null;
+  const checkouts: Array<WorkspaceGitCheckout> = [];
+  // Each checkout's working tree, so folders sharing one are one checkout.
+  const worktrees: Array<string> = [];
+  workspace.folders.forEach((resolved, index) => {
+    const folder = snapshot[index]!;
+    const checkoutRoot = folder.checkoutRoot;
+    if (
+      typeof checkoutRoot !== "string" ||
+      folder.path === undefined ||
+      resolved.effectivePath === null
+    ) {
+      return;
+    }
+    const location = snapshotFolderCheckoutLocation(folder) ?? folder.path;
+    const member = deepestMember(location, members)?.member;
+    const worktree =
+      member?.path ??
+      (resolved.isPrimary && primaryWorktree !== null ? primaryWorktree : checkoutRoot);
+    if (worktrees.some((known) => isSamePath(known, worktree))) return;
+    worktrees.push(worktree);
+    checkouts.push({
+      repositoryRoot: member?.repositoryRoot ?? checkoutRoot,
+      cwd: resolved.effectivePath,
+      label: resolved.label,
+      expectedBranch: member?.branch ?? null,
+    });
+  });
+  return checkouts;
+}
+
+/** Whether a checkout has left the branch its worktree set expects. A checkout used in place never has. */
+export function isCheckoutDrifted(
+  checkout: Pick<WorkspaceGitCheckout, "expectedBranch">,
+  refName: string | null,
+): boolean {
+  return checkout.expectedBranch !== null && refName !== checkout.expectedBranch;
+}
+
+/** The set member whose source checkout most deeply holds `location`, and `location` below it. */
+function deepestMember(location: string, members: ReadonlyArray<OrchestrationV2ThreadWorktree>) {
+  let deepest:
+    | { readonly member: OrchestrationV2ThreadWorktree; readonly rest: ReadonlyArray<string> }
+    | undefined;
+  for (const member of members) {
+    const rest = segmentsBelow(member.repositoryRoot, location);
+    // Fewer segments left below the member means a deeper member.
+    if (rest !== null && (deepest === undefined || rest.length < deepest.rest.length)) {
+      deepest = { member, rest };
+    }
+  }
+  return deepest;
+}
+
 /**
  * A file's canonical workspace path: `<label>/<relative path>` when the scope
  * has several folders, and the bare relative path when it has one, so a
@@ -291,16 +391,8 @@ export function worktreeSetPath(
   members: ReadonlyArray<OrchestrationV2ThreadWorktree>,
 ): string {
   if (members.some((member) => isPathWithin(member.path, path))) return path;
-  let deepest: { readonly worktree: string; readonly rest: ReadonlyArray<string> } | undefined;
-  for (const member of members) {
-    const rest = segmentsBelow(member.repositoryRoot, path);
-    // Fewer segments left below the member means a deeper member.
-    if (rest !== null && (deepest === undefined || rest.length < deepest.rest.length)) {
-      deepest = { worktree: member.path, rest };
-    }
-  }
-  if (deepest === undefined) return path;
-  return appendSegments(deepest.worktree, deepest.rest);
+  const deepest = deepestMember(path, members);
+  return deepest === undefined ? path : appendSegments(deepest.member.path, deepest.rest);
 }
 
 /**

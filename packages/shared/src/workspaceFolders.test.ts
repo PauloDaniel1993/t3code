@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   allocateFolderLabels,
   hasOwnChanges,
+  isCheckoutDrifted,
   isPathWithin,
   isSamePath,
   nestedPathPrefixes,
@@ -17,6 +18,7 @@ import {
   threadPrimaryPath,
   toCanonicalPath,
   workspaceAdditionalDirectories,
+  workspaceGitCheckouts,
   worktreeSetPath,
 } from "./workspaceFolders.ts";
 
@@ -216,6 +218,73 @@ describe("resolveThreadWorkspace", () => {
       "D:\\wt\\s\\Repo",
       "D:\\wt\\s\\Repo\\Docs",
     ]);
+  });
+});
+
+describe("workspaceGitCheckouts", () => {
+  it("runs a set thread's git in each member's worktree, expecting the member's branch", () => {
+    expect(
+      workspaceGitCheckouts(
+        { worktreePath: "/wt/s/repo/web", workspaceFolders: snapshotFolders, worktrees },
+        project,
+      ),
+    ).toEqual([
+      {
+        repositoryRoot: "/repo",
+        cwd: "/wt/s/repo/web",
+        label: "web",
+        expectedBranch: "t3code/feature",
+      },
+      {
+        repositoryRoot: "/repo/lib/vendor",
+        cwd: "/wt/s/repo/lib/vendor",
+        label: "vendor",
+        expectedBranch: "t3code/feature",
+      },
+    ]);
+  });
+
+  it("uses each checkout in place for a current-checkout thread, which expects no branch", () => {
+    expect(
+      workspaceGitCheckouts({ worktreePath: null, workspaceFolders: snapshotFolders }, project),
+    ).toEqual([
+      { repositoryRoot: "/repo", cwd: "/repo/web", label: "web", expectedBranch: null },
+      {
+        repositoryRoot: "/repo/lib/vendor",
+        cwd: "/repo/lib/vendor",
+        label: "vendor",
+        expectedBranch: null,
+      },
+    ]);
+  });
+
+  it("keeps a worktree picked for the primary apart from the primary's own checkout", () => {
+    expect(
+      workspaceGitCheckouts(
+        { worktreePath: "/wt/picked", workspaceFolders: snapshotFolders },
+        project,
+      ).map((checkout) => [checkout.repositoryRoot, checkout.cwd]),
+    ).toEqual([
+      ["/repo", "/wt/picked"],
+      ["/repo/lib/vendor", "/repo/lib/vendor"],
+      ["/repo", "/repo/lib"],
+    ]);
+  });
+
+  it("gives a thread without a snapshot one checkout at its primary path", () => {
+    expect(workspaceGitCheckouts({ worktreePath: "/wt/feature" }, project)).toEqual([
+      { repositoryRoot: "/wt/feature", cwd: "/wt/feature", label: "web", expectedBranch: null },
+    ]);
+  });
+});
+
+describe("isCheckoutDrifted", () => {
+  it("flags a set member off its expected branch, detached included, and never a checkout in place", () => {
+    const member = { expectedBranch: "t3code/feature" };
+    expect(isCheckoutDrifted(member, "t3code/feature")).toBe(false);
+    expect(isCheckoutDrifted(member, "main")).toBe(true);
+    expect(isCheckoutDrifted(member, null)).toBe(true);
+    expect(isCheckoutDrifted({ expectedBranch: null }, "main")).toBe(false);
   });
 });
 

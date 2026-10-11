@@ -3,7 +3,7 @@ import {
   type CommandId,
   pullRequestHostOf,
   type GitRunStackedActionResult,
-  type OrchestrationProjectShell,
+  type RepositoryIdentity,
   type SourceControlProviderKind,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
-import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 
 export interface CreatedPullRequestKey {
   readonly host: string;
@@ -26,12 +26,12 @@ export interface CreatedPullRequestKey {
  * The identity a stacked action's pull request should be linked under, or
  * null when the action did not leave one behind. Reading the host and
  * repository from the URL keeps the link host-level even when the checkout's
- * remote differs from where the PR was opened (a fork, say); the project is
- * only consulted when the URL is one this cannot read.
+ * remote differs from where the PR was opened (a fork, say); the checkout's
+ * repository is only consulted when the URL is one this cannot read.
  */
 export function createdPullRequestKey(
   result: Pick<GitRunStackedActionResult, "pr">,
-  project: OrchestrationProjectShell | undefined,
+  checkout: { readonly repositoryIdentity?: RepositoryIdentity | null | undefined } | undefined,
 ): CreatedPullRequestKey | null {
   const { status, number, url } = result.pr;
   if ((status !== "created" && status !== "opened_existing") || number === undefined || !url) {
@@ -39,7 +39,7 @@ export function createdPullRequestKey(
   }
   const parsed = parseChangeRequestUrl(url);
   if (parsed !== null) return { ...parsed, url };
-  const identity = project?.repositoryIdentity;
+  const identity = checkout?.repositoryIdentity;
   const kind = identity?.provider as SourceControlProviderKind | undefined;
   const repository = sourceControlRepositorySelector(identity);
   if (!identity || kind === undefined || repository === null) return null;
@@ -59,18 +59,29 @@ export function createdPullRequestKey(
  */
 export const linkCreatedPullRequest = <E>(input: {
   readonly threadId: ThreadId;
+  /** The checkout the action ran in: any repository the thread works in. */
+  readonly cwd: string;
   readonly result: Pick<GitRunStackedActionResult, "pr">;
   readonly commandId: Effect.Effect<CommandId, E>;
-}): Effect.Effect<void, never, Orchestrator.OrchestratorV2 | ProjectService.ProjectService> =>
+}): Effect.Effect<
+  void,
+  never,
+  Orchestrator.OrchestratorV2 | RepositoryIdentityResolver.RepositoryIdentityResolver
+> =>
   Effect.gen(function* () {
+    const { status } = input.result.pr;
+    if (status !== "created" && status !== "opened_existing") return;
     const engine = yield* Orchestrator.OrchestratorV2;
-    const projects = yield* ProjectService.ProjectService;
     const thread = yield* engine
       .getThreadShell(input.threadId)
       .pipe(Effect.map(Option.fromNullishOr));
     if (Option.isNone(thread)) return;
-    const project = Option.getOrUndefined(yield* projects.getShell(thread.value.projectId));
-    const key = createdPullRequestKey(input.result, project);
+    const identities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+    const key =
+      createdPullRequestKey(input.result, undefined) ??
+      createdPullRequestKey(input.result, {
+        repositoryIdentity: yield* identities.resolve(input.cwd),
+      });
     if (key === null) return;
     const commandId = yield* input.commandId;
     yield* engine

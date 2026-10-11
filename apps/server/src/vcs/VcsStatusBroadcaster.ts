@@ -6,6 +6,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
@@ -200,6 +201,11 @@ export class VcsStatusBroadcaster extends Context.Service<
     readonly refreshPullRequestStatus: (
       cwd: string,
     ) => Effect.Effect<VcsStatusRemoteResult | null, GitManagerServiceError>;
+    /**
+     * A checkout's status: a snapshot, then local and remote updates, while
+     * keeping its remote poller running. A `branch` scope instead streams the
+     * checked-out branch whenever it changes and leaves the remote alone.
+     */
     readonly streamStatus: (
       input: VcsStatusInput,
       options?: StreamStatusOptions,
@@ -694,7 +700,38 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  // Shares the checkout's cached local status with full subscriptions, but
+  // never retains the remote poller and sends only branch changes.
+  const streamBranch = (input: VcsStatusInput) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const cwd = yield* withFileSystem(normalizeCwd(input.cwd));
+        const subscription = yield* PubSub.subscribe(changesPubSub);
+        const initialLocal = yield* getOrLoadLocalStatus(cwd);
+        return Stream.concat(
+          Stream.make(initialLocal),
+          Stream.fromSubscription(subscription).pipe(
+            Stream.filter((change) => change.cwd === cwd),
+            Stream.map(({ event }) => ("local" in event ? event.local : null)),
+            Stream.filter(Predicate.isNotNull),
+          ),
+        ).pipe(
+          Stream.changesWith(
+            (left, right) => left.isRepo === right.isRepo && left.refName === right.refName,
+          ),
+          Stream.map((local): VcsStatusStreamEvent => ({
+            _tag: "branch",
+            isRepo: local.isRepo,
+            refName: local.refName,
+          })),
+        );
+      }),
+    );
+
   const streamStatus: VcsStatusBroadcaster["Service"]["streamStatus"] = (input, options) =>
+    input.scope === "branch" ? streamBranch(input) : streamFullStatus(input, options);
+
+  const streamFullStatus: VcsStatusBroadcaster["Service"]["streamStatus"] = (input, options) =>
     Stream.unwrap(
       Effect.gen(function* () {
         const cwd = yield* withFileSystem(normalizeCwd(input.cwd));

@@ -18,7 +18,7 @@ import {
   v2PullRequestThread,
 } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
-import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { refreshPushedPullRequests } from "./refreshPushedPullRequests.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { createdPullRequestKey, linkCreatedPullRequest } from "./linkCreatedPullRequest.ts";
@@ -49,6 +49,20 @@ const project: OrchestrationProjectShell = {
   updatedAt: "2026-08-01T00:00:00.000Z",
 };
 
+// Another repository the thread works in, beside the project's own.
+const OTHER_CHECKOUT = "/workspace/billing";
+const otherIdentity = {
+  ...project.repositoryIdentity!,
+  canonicalKey: "github.acme.test/platform/billing",
+  locator: {
+    source: "git-remote" as const,
+    remoteName: "origin",
+    remoteUrl: "git@github.acme.test:Platform/Billing.git",
+  },
+  displayName: "Platform/Billing",
+  name: "Billing",
+};
+
 const thread: PullRequestTestThread = {
   id: THREAD_ID,
   projectId: PROJECT_ID,
@@ -74,10 +88,16 @@ function prResult(pr: GitRunStackedActionResult["pr"]): Pick<GitRunStackedAction
 const makeDependencies = (
   dispatch: Orchestrator.OrchestratorV2Shape["dispatch"],
   threadShell: PullRequestTestThread | null = thread,
+  resolvedCheckouts: Array<string> = [],
 ) =>
   Layer.mergeAll(
-    Layer.mock(ProjectService.ProjectService)({
-      getShell: () => Effect.succeedSome(project),
+    Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+      resolve: (cwd) =>
+        Effect.sync(() => {
+          resolvedCheckouts.push(cwd);
+          if (cwd === project.workspaceRoot) return project.repositoryIdentity ?? null;
+          return cwd === OTHER_CHECKOUT ? otherIdentity : null;
+        }),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
       getThreadShell: () => Effect.succeed(threadShell ? v2PullRequestThread(threadShell) : null),
@@ -113,7 +133,7 @@ describe("createdPullRequestKey", () => {
     });
   });
 
-  it("falls back to the project's host and repository for an unreadable URL", () => {
+  it("falls back to the checkout's host and repository for an unreadable URL", () => {
     expect(
       createdPullRequestKey(
         prResult({ status: "opened_existing", number: 3, url: "https://ghe.internal/x/3" }),
@@ -153,6 +173,7 @@ describe("linkCreatedPullRequest", () => {
       const { commands, dispatch } = yield* recordingDispatch();
       yield* linkCreatedPullRequest({
         threadId: THREAD_ID,
+        cwd: project.workspaceRoot,
         result: prResult({
           status: "created",
           number: 42,
@@ -176,17 +197,68 @@ describe("linkCreatedPullRequest", () => {
     }),
   );
 
+  it.effect("names a pull request with an unreadable URL by the checkout it came from", () =>
+    Effect.gen(function* () {
+      const { commands, dispatch } = yield* recordingDispatch();
+      const resolvedCheckouts: Array<string> = [];
+      const dependencies = makeDependencies(dispatch, thread, resolvedCheckouts);
+      const unreadable = prResult({
+        status: "created",
+        number: 9,
+        url: "https://ghe.internal/x/9",
+      });
+      yield* linkCreatedPullRequest({
+        threadId: THREAD_ID,
+        cwd: OTHER_CHECKOUT,
+        result: unreadable,
+        commandId,
+      }).pipe(Effect.provide(dependencies));
+      yield* linkCreatedPullRequest({
+        threadId: THREAD_ID,
+        cwd: project.workspaceRoot,
+        result: unreadable,
+        commandId,
+      }).pipe(Effect.provide(dependencies));
+      // A readable URL names its own repository without a lookup.
+      yield* linkCreatedPullRequest({
+        threadId: THREAD_ID,
+        cwd: OTHER_CHECKOUT,
+        result: prResult({
+          status: "created",
+          number: 4,
+          url: "https://github.com/t3tools/billing/pull/4",
+        }),
+        commandId,
+      }).pipe(Effect.provide(dependencies));
+
+      expect(resolvedCheckouts).toEqual([OTHER_CHECKOUT, project.workspaceRoot]);
+      expect(
+        (yield* Ref.get(commands)).map((command) =>
+          command.type === "thread.pull-request.link"
+            ? [command.repository, command.number]
+            : command.type,
+        ),
+      ).toEqual([
+        ["platform/billing", 9],
+        ["platform/api", 9],
+        ["t3tools/billing", 4],
+      ]);
+    }),
+  );
+
   it.effect("dispatches nothing when the action produced no pull request", () =>
     Effect.gen(function* () {
       const { commands, dispatch } = yield* recordingDispatch();
       const dependencies = makeDependencies(dispatch);
       yield* linkCreatedPullRequest({
         threadId: THREAD_ID,
+        cwd: project.workspaceRoot,
         result: prResult({ status: "skipped_not_requested" }),
         commandId,
       }).pipe(Effect.provide(dependencies));
       yield* linkCreatedPullRequest({
         threadId: THREAD_ID,
+        cwd: project.workspaceRoot,
         result: prResult({ status: "created", url: "https://github.com/t3tools/t3code/pull/42" }),
         commandId,
       }).pipe(Effect.provide(dependencies));
@@ -210,16 +282,25 @@ describe("linkCreatedPullRequest", () => {
         number: 7,
         url: "https://github.com/t3tools/t3code/pull/7",
       });
-      yield* linkCreatedPullRequest({ threadId: THREAD_ID, result, commandId }).pipe(
-        Effect.provide(makeDependencies(rejecting)),
-      );
-      yield* linkCreatedPullRequest({ threadId: THREAD_ID, result, commandId }).pipe(
-        Effect.provide(makeDependencies(() => Effect.die(new Error("engine down")))),
-      );
+      yield* linkCreatedPullRequest({
+        threadId: THREAD_ID,
+        cwd: project.workspaceRoot,
+        result,
+        commandId,
+      }).pipe(Effect.provide(makeDependencies(rejecting)));
+      yield* linkCreatedPullRequest({
+        threadId: THREAD_ID,
+        cwd: project.workspaceRoot,
+        result,
+        commandId,
+      }).pipe(Effect.provide(makeDependencies(() => Effect.die(new Error("engine down")))));
       // A thread that vanished between the action and the link is not an error either.
-      yield* linkCreatedPullRequest({ threadId: THREAD_ID, result, commandId }).pipe(
-        Effect.provide(makeDependencies(() => Effect.die(new Error("unreachable")), null)),
-      );
+      yield* linkCreatedPullRequest({
+        threadId: THREAD_ID,
+        cwd: project.workspaceRoot,
+        result,
+        commandId,
+      }).pipe(Effect.provide(makeDependencies(() => Effect.die(new Error("unreachable")), null)));
     }),
   );
 });

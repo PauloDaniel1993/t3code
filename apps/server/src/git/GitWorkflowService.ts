@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import {
   GitManagerError,
@@ -22,13 +23,28 @@ import {
   type GitResolvePullRequestResult,
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
+  type GitStackedAction,
+  type GitWorkspaceAction,
   type VcsStatusInput,
   type VcsStatusLocalResult,
   type VcsStatusRemoteResult,
   type VcsStatusResult,
+  type VcsRunWorkspaceActionInput,
+  type VcsRunWorkspaceActionResult,
+  type VcsWorkspaceActionMemberResult,
+  VcsWorkspaceActionError,
 } from "@t3tools/contracts";
+import {
+  isCheckoutDrifted,
+  isSamePath,
+  workspaceGitCheckouts,
+  type WorkspaceGitCheckout,
+} from "@t3tools/shared/workspaceFolders";
 
 import * as GitManager from "./GitManager.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
@@ -58,6 +74,16 @@ export class GitWorkflowService extends Context.Service<
       input: GitRunStackedActionInput,
       options?: GitManager.GitRunStackedActionOptions,
     ) => Effect.Effect<GitRunStackedActionResult, GitManagerServiceError>;
+    /**
+     * Runs one stacked action in each git checkout a thread works in, as
+     * independent operations, a few at once, each reporting its own progress.
+     * A worktree set member off its expected branch, or one that can't be
+     * reached, is skipped. One checkout's failure is its outcome.
+     */
+    readonly runWorkspaceAction: (
+      input: VcsRunWorkspaceActionInput,
+      options?: { readonly progressReporter?: GitManager.GitActionProgressReporter },
+    ) => Effect.Effect<VcsRunWorkspaceActionResult, VcsWorkspaceActionError>;
     readonly resolvePullRequest: (
       input: GitPullRequestRefInput,
     ) => Effect.Effect<GitResolvePullRequestResult, GitManagerServiceError>;
@@ -144,6 +170,19 @@ function nonRepositoryStatus(): VcsStatusResult {
   };
 }
 
+const WORKSPACE_STACKED_ACTIONS = {
+  commit: "commit",
+  push: "push",
+  // Opens a checkout's open pull request, and creates one only where none is open.
+  "create-prs": "create_pr",
+} as const satisfies Record<GitWorkspaceAction, GitStackedAction>;
+
+const workspaceActionFailure = (
+  threadId: VcsRunWorkspaceActionInput["threadId"],
+  detail: string,
+  cause?: unknown,
+) => new VcsWorkspaceActionError({ threadId, detail, ...(cause === undefined ? {} : { cause }) });
+
 function nonRepositoryListRefs(): VcsListRefsResult {
   return {
     refs: [],
@@ -159,6 +198,9 @@ export const make = Effect.gen(function* () {
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const projects = yield* ProjectStore.ProjectStoreV2;
+  const folderResolver = yield* WorkspaceFolderResolver.WorkspaceFolderResolver;
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
@@ -274,6 +316,116 @@ export const make = Effect.gen(function* () {
     (input: Input) =>
       ensureGit(operation, input.cwd).pipe(Effect.andThen(run(input)));
 
+  const runStackedAction: GitWorkflowService["Service"]["runStackedAction"] = (input, options) =>
+    ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
+      Effect.andThen(gitManager.runStackedAction(input, options)),
+    );
+
+  const runInCheckout = Effect.fn("GitWorkflowService.runInCheckout")(function* (
+    input: VcsRunWorkspaceActionInput,
+    checkout: WorkspaceGitCheckout,
+    options: Parameters<GitWorkflowService["Service"]["runWorkspaceAction"]>[1],
+  ) {
+    const { repositoryRoot, cwd, label } = checkout;
+    const finish = (
+      outcome: VcsWorkspaceActionMemberResult["outcome"],
+    ): VcsWorkspaceActionMemberResult => ({ repositoryRoot, cwd, label, outcome });
+    const probe = yield* folderResolver.probe(cwd, { vcs: false });
+    if (probe.availability === "unavailable") {
+      return finish({ _tag: "unavailable", reason: probe.unavailableReason ?? "missing" });
+    }
+    if (checkout.expectedBranch !== null) {
+      const details = yield* Effect.result(
+        git.statusDetailsLocal(cwd, { includeDivergence: false }),
+      );
+      if (details._tag === "Failure") {
+        return finish({ _tag: "failed", message: details.failure.message });
+      }
+      if (isCheckoutDrifted(checkout, details.success.branch)) {
+        return finish({
+          _tag: "drifted",
+          refName: details.success.branch,
+          expectedBranch: checkout.expectedBranch,
+        });
+      }
+    }
+    const action = WORKSPACE_STACKED_ACTIONS[input.action];
+    const result = yield* Effect.result(
+      runStackedAction(
+        {
+          actionId: input.actionId,
+          cwd,
+          action,
+          ...(action === "commit" && input.commitMessage !== undefined
+            ? { commitMessage: input.commitMessage }
+            : {}),
+          threadId: input.threadId,
+        },
+        {
+          actionId: input.actionId,
+          ...(options?.progressReporter ? { progressReporter: options.progressReporter } : {}),
+        },
+      ),
+    );
+    return finish(
+      result._tag === "Success"
+        ? { _tag: "completed", result: result.success }
+        : { _tag: "failed", message: result.failure.message },
+    );
+  });
+
+  const runWorkspaceAction: GitWorkflowService["Service"]["runWorkspaceAction"] = Effect.fn(
+    "GitWorkflowService.runWorkspaceAction",
+  )(function* (input, options) {
+    const { threadId } = input;
+    const thread = yield* projections
+      .getThread(threadId)
+      .pipe(
+        Effect.mapError((cause) =>
+          workspaceActionFailure(threadId, "Could not read the thread.", cause),
+        ),
+      );
+    if (thread.deletedAt !== null) {
+      return yield* workspaceActionFailure(threadId, "The thread was deleted.");
+    }
+    const project = yield* projects.get(thread.projectId, { includeDeleted: true }).pipe(
+      Effect.mapError((cause) =>
+        workspaceActionFailure(threadId, "Could not read the thread's project.", cause),
+      ),
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.fail(workspaceActionFailure(threadId, "The thread's project no longer exists.")),
+          onSome: Effect.succeed,
+        }),
+      ),
+    );
+    const checkouts = workspaceGitCheckouts(thread, project);
+    const members = input.members;
+    const unknown = members?.find(
+      (root) => !checkouts.some((checkout) => isSamePath(checkout.repositoryRoot, root)),
+    );
+    if (unknown !== undefined) {
+      return yield* workspaceActionFailure(
+        threadId,
+        `${unknown} is not one of this thread's repositories.`,
+      );
+    }
+    const chosen =
+      members === undefined
+        ? checkouts
+        : checkouts.filter((checkout) =>
+            members.some((root) => isSamePath(root, checkout.repositoryRoot)),
+          );
+    // Each checkout is its own operation; one failing never stops the others.
+    const results = yield* Effect.forEach(
+      chosen,
+      (checkout) => runInCheckout(input, checkout, options),
+      { concurrency: 4 },
+    );
+    return { results };
+  });
+
   return GitWorkflowService.of({
     isRepository: (cwd) =>
       registry.detect({ cwd }).pipe(
@@ -327,10 +479,8 @@ export const make = Effect.gen(function* () {
       ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
         Effect.andThen(git.pullCurrentBranch(cwd)),
       ),
-    runStackedAction: (input, options) =>
-      ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
-        Effect.andThen(gitManager.runStackedAction(input, options)),
-      ),
+    runStackedAction,
+    runWorkspaceAction,
     resolvePullRequest: routeGitManager(
       "GitWorkflowService.resolvePullRequest",
       gitManager.resolvePullRequest,
