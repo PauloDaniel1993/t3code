@@ -14,6 +14,8 @@ export function createWayfinderEnvironmentAtoms<R, E>(
     maps: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:wayfinder:maps",
       tag: WS_METHODS.subscribeWayfinderMaps,
+      // A folder switch must release its watcher and the server's bounded subscription slot.
+      idleTtlMs: 0,
     }),
     refreshMaps: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:wayfinder:refresh-maps",

@@ -4,17 +4,24 @@ import { useId } from "react";
 
 import ChatMarkdown from "~/components/ChatMarkdown";
 import { useProjectFileQuery } from "~/components/files/projectFilesQueryState";
+import type { WorkspaceFileContext } from "~/components/files/workspaceFiles";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { useNewThreadTaskAvailability } from "~/hooks/useNewThreadTaskAvailability";
 import { useRightPanelStore } from "~/rightPanelStore";
 
 import { openStarMapTicketAsTask } from "./StarMapTicketDetail.logic";
+import {
+  starMapFileTarget,
+  starMapMarkdownContext,
+  starMapTaskSourcePath,
+} from "./StarMapSurface.logic";
 import type { StarMapGraph, StarMapGraphNode } from "./starMapGraph";
 
 export interface StarMapTicketDetailProps {
   readonly environmentId: EnvironmentId;
   readonly cwd: string;
+  readonly workspace?: WorkspaceFileContext | undefined;
   readonly graph: StarMapGraph;
   readonly node: StarMapGraphNode;
   /** Current thread's panel scope; the open-as-file action hides without it. */
@@ -56,7 +63,16 @@ function blockersOf(graph: StarMapGraph, nodeId: string): ReadonlyArray<StarMapG
 export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
   const { node } = props;
   const taskUnavailableId = useId();
-  const fileQuery = useProjectFileQuery(props.environmentId, props.cwd, node.relativePath);
+  const fileTarget = starMapFileTarget(node.relativePath, props.cwd, props.workspace);
+  const fileQuery = useProjectFileQuery(
+    props.environmentId,
+    props.cwd,
+    fileTarget?.path ?? null,
+    fileTarget !== null,
+    fileTarget?.folderPath && props.workspace
+      ? { ...props.workspace.scope, folderPath: fileTarget.folderPath }
+      : undefined,
+  );
   const blockers = blockersOf(props.graph, node.id);
   // The parent is this panel's own thread, whichever thread it is. The New task host's shared
   // guard decides whether that thread can take a task, and says why when it cannot.
@@ -73,14 +89,20 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
     //      a wayfinder-specific variant would fork behaviour users already
     //      learned.
     // The action is explicit and user-initiated — it never fires silently.
-    useRightPanelStore.getState().openFile(props.threadRef, node.relativePath);
+    if (fileTarget === null) return;
+    useRightPanelStore
+      .getState()
+      .openFile(props.threadRef, fileTarget.path, undefined, fileTarget.folderPath);
   };
 
   const openAsTask = () => {
     if (props.threadRef === null || taskUnavailable !== null) return;
     openStarMapTicketAsTask({
       threadRef: props.threadRef,
-      node,
+      node: {
+        ...node,
+        relativePath: starMapTaskSourcePath(node.relativePath, props.cwd, props.workspace),
+      },
       contents: fileQuery.data?.contents ?? null,
       truncated: fileQuery.data?.truncated ?? false,
     });
@@ -189,7 +211,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
             ) : null}
             <ChatMarkdown
               text={fileQuery.data.contents}
-              cwd={props.cwd}
+              {...starMapMarkdownContext(props.cwd, props.workspace)}
               threadRef={props.threadRef ?? undefined}
               className="px-4 py-3 text-sm"
             />
