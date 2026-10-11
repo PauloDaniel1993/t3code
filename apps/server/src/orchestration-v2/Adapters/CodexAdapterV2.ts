@@ -84,6 +84,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
+import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
 import {
   buildCodexAdditionalContext,
   buildCodexDeveloperInstructions,
@@ -712,10 +713,23 @@ export function buildCodexTurnStartParams(input: {
       input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy =
+    const selectedSandboxPolicy =
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
+    const sandboxPolicy =
+      selectedSandboxPolicy?.type === "workspaceWrite" &&
+      input.runtimePolicy.interactionMode !== "plan"
+        ? {
+            ...selectedSandboxPolicy,
+            writableRoots: [
+              ...new Set([
+                ...(selectedSandboxPolicy.writableRoots ?? []),
+                ...input.runtimePolicy.additionalDirectories,
+              ]),
+            ],
+          }
+        : selectedSandboxPolicy;
     const selectedEffort = getModelSelectionStringOptionValue(
       input.modelSelection,
       "reasoningEffort",
@@ -730,7 +744,7 @@ export function buildCodexTurnStartParams(input: {
       input.hasT3Mcp !== true
         ? undefined
         : buildCodexDeveloperInstructions(input.runtimePolicy.interactionMode);
-    const additionalContext =
+    const t3Context =
       input.hasT3Mcp === true
         ? buildCodexAdditionalContext(
             { model: input.modelSelection.model, reasoningEffort: effort ?? "medium" },
@@ -740,6 +754,13 @@ export function buildCodexTurnStartParams(input: {
             },
           )
         : undefined;
+    const folderInventory = buildWorkspaceFolderInventory(input.runtimePolicy);
+    const additionalContext = {
+      ...t3Context,
+      ...(folderInventory === undefined
+        ? {}
+        : { workspace_folders: { kind: "application", value: folderInventory } }),
+    };
     const collaborationMode: CodexSchema.ClientRequest__CollaborationMode | undefined =
       input.runtimePolicy.interactionMode !== "plan" && developerInstructions === undefined
         ? undefined
@@ -757,7 +778,7 @@ export function buildCodexTurnStartParams(input: {
     return yield* decodeCodexTurnStartParamsWithCollaborationMode({
       threadId: input.nativeThreadId,
       input: input.codexInput,
-      ...(additionalContext ? { additionalContext } : {}),
+      ...(Object.keys(additionalContext).length > 0 ? { additionalContext } : {}),
       cwd: input.runtimePolicy.cwd,
       model: input.modelSelection.model,
       // Model catalogues can default summaries to "none". Request them on every
@@ -779,6 +800,7 @@ function providerSession(input: {
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
   readonly providerInstanceId: ProviderInstanceId;
   readonly cwd: string | null;
+  readonly additionalDirectories: ReadonlyArray<string>;
   readonly model: string;
   readonly now: DateTime.Utc;
 }): OrchestrationV2ProviderSession {
@@ -788,6 +810,7 @@ function providerSession(input: {
     providerInstanceId: input.providerInstanceId,
     status: "ready",
     cwd: input.cwd ?? process.cwd(),
+    additionalDirectories: input.additionalDirectories,
     model: input.model,
     capabilities: CodexProviderCapabilitiesV2,
     createdAt: input.now,
@@ -1625,13 +1648,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           yield* Ref.set(initialized, true);
         });
         const now = yield* DateTime.now;
-        const session = providerSession({
-          providerSessionId: input.providerSessionId,
-          providerInstanceId: adapterOptions.instanceId,
-          cwd: input.runtimePolicy.cwd,
-          model: input.modelSelection.model,
-          now,
-        });
+        const session = {
+          ...providerSession({
+            providerSessionId: input.providerSessionId,
+            providerInstanceId: adapterOptions.instanceId,
+            cwd: input.runtimePolicy.cwd,
+            additionalDirectories: input.runtimePolicy.additionalDirectories,
+            model: input.modelSelection.model,
+            now,
+          }),
+        };
         const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
         const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
         const limitedTurnItems = yield* Ref.make(
@@ -5562,6 +5588,25 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 return next;
               });
               const started = yield* client.request("turn/start", turnStartParams);
+              const recordedDirectories = session.additionalDirectories ?? [];
+              if (
+                recordedDirectories.length !==
+                  turnInput.runtimePolicy.additionalDirectories.length ||
+                recordedDirectories.some(
+                  (directory, index) =>
+                    directory !== turnInput.runtimePolicy.additionalDirectories[index],
+                )
+              ) {
+                // Keep the shared runtime record current for reused sessions, and
+                // publish a snapshot so later changes cannot mutate queued events.
+                session.additionalDirectories = [...turnInput.runtimePolicy.additionalDirectories];
+                session.updatedAt = yield* DateTime.now;
+                yield* emitProviderEvent({
+                  type: "provider_session.updated",
+                  driver: CODEX_PROVIDER,
+                  providerSession: { ...session },
+                });
+              }
               const nativeTurnId = started.turn.id;
               const startedAt = codexTimestamp(started.turn.startedAt);
               yield* registerRootTurn({
