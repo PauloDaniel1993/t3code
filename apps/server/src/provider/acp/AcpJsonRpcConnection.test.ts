@@ -33,6 +33,69 @@ const mockRuntimeOptions = {
 } satisfies AcpSessionRuntime.AcpSessionRuntimeOptions;
 
 describe("AcpSessionRuntime", () => {
+  it.effect.each(["new", "load", "resume"] as const)(
+    "forwards and clears workspace folders across %s startup and session activation",
+    (method) =>
+      Effect.gen(function* () {
+        const requests: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+        const directories = [
+          NodePath.join(process.cwd(), "extra-a"),
+          NodePath.join(process.cwd(), "extra-b"),
+        ];
+        const runtime = yield* AcpSessionRuntime.make({
+          ...mockRuntimeOptions,
+          spawn: { ...mockRuntimeOptions.spawn, env: { T3_ACP_SESSION_LIFECYCLE: "1" } },
+          additionalDirectories: directories,
+          ...(method === "new" ? {} : { resumeSessionId: "mock-session-1", resumeMethod: method }),
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requests.push(event);
+            }),
+        });
+        const started = yield* runtime.start();
+        yield* runtime.loadSession(started.sessionId);
+        yield* runtime.resumeSession(started.sessionId, { additionalDirectories: [] });
+        yield* runtime.forkSession(started.sessionId, { additionalDirectories: [directories[1]!] });
+        yield* runtime.loadSession(started.sessionId, {
+          additionalDirectories: [],
+          cwd: directories[0]!,
+        });
+        const payloads = requests.filter(
+          (event) =>
+            event.status === "started" &&
+            ["session/new", "session/load", "session/resume", "session/fork"].includes(
+              event.method,
+            ),
+        );
+        expect(payloads.map((event) => event.payload)).toEqual([
+          expect.objectContaining({ additionalDirectories: directories }),
+          expect.objectContaining({ additionalDirectories: directories }),
+          expect.objectContaining({ additionalDirectories: [] }),
+          expect.objectContaining({ additionalDirectories: [directories[1]] }),
+          expect.objectContaining({ additionalDirectories: [], cwd: directories[0] }),
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "rejects workspace folders before session creation when the agent does not advertise access",
+    () =>
+      Effect.gen(function* () {
+        const methods: Array<string> = [];
+        const runtime = yield* AcpSessionRuntime.make({
+          ...mockRuntimeOptions,
+          additionalDirectories: [NodePath.join(process.cwd(), "extra")],
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              methods.push(event.method);
+            }),
+        });
+        const error = yield* runtime.start().pipe(Effect.flip);
+        expect(error.message).toContain("does not advertise additional workspace directory access");
+        expect(methods).not.toContain("session/new");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect.each(["session/new", "session/resume"] as const)(
     "buffers root metadata while %s startup is still pending",
     (setupMethod) =>

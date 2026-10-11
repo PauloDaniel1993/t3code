@@ -44,6 +44,7 @@ export function makeKimiAcpAdapterFlavor(options: KimiAdapterV2Options): AcpAdap
   let interactionMode = "default";
   return {
     driver: KIMI,
+    workspaceDirectoriesOnNewSessionOnly: true,
     runtimeHarness: "Kimi Code",
     capabilities: {
       ...AcpProviderCapabilitiesV2,
@@ -123,6 +124,9 @@ export function makeKimiAdapterV2(options: KimiAdapterV2Options) {
         .pipe(
           Effect.map((session) => ({
             ...session,
+            get providerSession() {
+              return session.providerSession;
+            },
             ensureThread: (input: Parameters<typeof session.ensureThread>[0]) =>
               session.ensureThread({ ...input, modelSelection: selection(input.modelSelection) }),
             resumeThread: (input: Parameters<typeof session.resumeThread>[0]) =>
