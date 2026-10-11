@@ -186,6 +186,20 @@ describe("checkpointScopeParts", () => {
 });
 
 describe("checkpointScopeParts with moved or missing folders", () => {
+  it("preserves ownership of unavailable nested members in their parent's exclusions", () => {
+    const parts = checkpointScopeParts({
+      thread: rootThread([
+        folder("/repo", "root", { root: "/repo", prefix: "" }),
+        folder("/repo/child", "child", { root: "/repo", prefix: "child" }),
+      ]),
+      unavailableFolderPaths: ["/repo/child"],
+    });
+    assert.deepStrictEqual(parts?.[0]?.pathspecs, [".", ":(exclude,literal)child"]);
+    assert.deepStrictEqual(parts?.[0]?.folders, [
+      { folderPath: "/repo", label: "root", relativePath: "" },
+    ]);
+  });
+
   it("keeps a primary that a legacy writer moved into a worktree on its own part", () => {
     const parts = checkpointScopeParts({
       thread: {

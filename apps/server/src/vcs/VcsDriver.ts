@@ -14,6 +14,8 @@ import type {
 import { CheckpointRef } from "@t3tools/contracts";
 import * as VcsProcess from "./VcsProcess.ts";
 
+export const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
+
 export interface VcsCaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
@@ -34,6 +36,11 @@ export interface VcsDiffCheckpointsInput {
   readonly fallbackFromToHead?: boolean;
   readonly ignoreWhitespace: boolean;
   readonly format?: "patch" | "numstat";
+  readonly pathspecs?: ReadonlyArray<string>;
+  readonly relativePath?: string;
+  readonly srcPrefix?: string;
+  readonly dstPrefix?: string;
+  readonly maxOutputBytes?: number;
 }
 
 export interface VcsDeleteCheckpointRefsInput {

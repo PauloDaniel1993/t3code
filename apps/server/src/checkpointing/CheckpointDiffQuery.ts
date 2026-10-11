@@ -13,6 +13,8 @@ import {
   type OrchestrationGetTurnDiffInput,
   type OrchestrationGetTurnDiffResult as OrchestrationGetTurnDiffResultType,
   type ThreadId,
+  type OrchestrationV2CheckpointPart,
+  type OrchestrationV2CheckpointFolder,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -30,6 +32,7 @@ import {
   type CheckpointServiceError,
 } from "./Errors.ts";
 import * as CheckpointStore from "./CheckpointStore.ts";
+import { checkpointFolderDiffs, collectCheckpointDiffs } from "./CheckpointFolderDiffs.ts";
 
 /** Service tag for checkpoint diff queries. */
 export class CheckpointDiffQuery extends Context.Service<
@@ -115,7 +118,8 @@ export const make = Effect.gen(function* () {
       );
       const readyCheckpoints = projection.checkpoints.filter(
         (checkpoint) =>
-          checkpoint.status === "ready" &&
+          checkpoint.status !== "stale" &&
+          (checkpoint.parts !== undefined || checkpoint.status === "ready") &&
           checkpoint.appRunOrdinal !== null &&
           checkpoint.runId !== null &&
           completedRunIds.has(checkpoint.runId),
@@ -143,6 +147,130 @@ export const make = Effect.gen(function* () {
           turnCount: input.toTurnCount,
           checkpoint: "to",
         });
+      }
+
+      if (toCheckpoint.parts !== undefined) {
+        const firstListings = new Map<string, (typeof projection.checkpoints)[number]>();
+        const latestCheckouts = new Map<string, string>();
+        const rolledBackRunIds = new Set(
+          projection.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
+        );
+        for (const checkpoint of projection.checkpoints.toSorted(
+          (left, right) => (left.appRunOrdinal ?? 0) - (right.appRunOrdinal ?? 0),
+        )) {
+          if (
+            checkpoint.status === "stale" ||
+            (checkpoint.runId !== null && rolledBackRunIds.has(checkpoint.runId))
+          )
+            continue;
+          for (const part of checkpoint.parts ?? []) {
+            if (part.vcs === "git") latestCheckouts.set(part.key, part.cwd);
+            if (checkpoint.appRunOrdinal === null || checkpoint.appRunOrdinal > input.toTurnCount)
+              continue;
+            for (const folder of part.folders) {
+              const key = JSON.stringify([part.key, folder.relativePath]);
+              if (!firstListings.has(key)) firstListings.set(key, checkpoint);
+            }
+          }
+        }
+        const history = readyCheckpoints
+          .filter((checkpoint) => checkpoint.appRunOrdinal! <= input.toTurnCount)
+          .toSorted((left, right) => left.appRunOrdinal! - right.appRunOrdinal!);
+        const folderHistories = new Map<
+          string,
+          Array<{
+            readonly checkpoint: (typeof history)[number];
+            readonly part: OrchestrationV2CheckpointPart;
+            readonly folder: OrchestrationV2CheckpointFolder;
+          }>
+        >();
+        for (const checkpoint of history) {
+          for (const part of checkpoint.parts ?? []) {
+            if (part.vcs !== "git" || part.status !== "ready" || part.ref === null) continue;
+            const seen = new Set<string>();
+            for (const folder of part.folders) {
+              if (seen.has(folder.relativePath)) continue;
+              seen.add(folder.relativePath);
+              const key = JSON.stringify([part.key, folder.relativePath]);
+              const entries = folderHistories.get(key) ?? [];
+              entries.push({ checkpoint, part, folder });
+              folderHistories.set(key, entries);
+            }
+          }
+        }
+
+        const ownership = new Map<string, OrchestrationV2CheckpointPart>();
+        for (const entries of folderHistories.values()) {
+          const { part, folder } = entries.at(-1)!;
+          const previous = ownership.get(part.key);
+          ownership.set(part.key, {
+            ...part,
+            pathspecs: [],
+            folders: [...(previous?.folders ?? []), folder],
+          });
+        }
+        // Plan ownership once per checkout, including older healthy folders
+        // that were unavailable at its latest endpoint.
+        const folderPlans = new Map(
+          [...ownership].map(([key, part]) => [
+            key,
+            new Map(checkpointFolderDiffs(part).map((plan) => [plan.folder.relativePath, plan])),
+          ]),
+        );
+        const diffInputs: CheckpointStore.DiffCheckpointsInput[] = [];
+        for (const folderHistory of folderHistories.values()) {
+          const { part, folder } = folderHistory.at(-1)!;
+          const from = folderHistory.findLast(
+            (candidate) => candidate.checkpoint.appRunOrdinal! <= input.fromTurnCount,
+          );
+          // A stopped or failed capture can still contain work. Only a folder
+          // first listed later in the thread starts after ordinal zero.
+          const first = firstListings.get(JSON.stringify([part.key, folder.relativePath]))!;
+          const fromCheckpointRef =
+            from?.part.ref ??
+            checkpointRefForScopeOrdinal({
+              scopeId: first.scopeId,
+              ordinalWithinScope: Math.max(0, first.appRunOrdinal! - 1),
+              partKey: part.key,
+            });
+          if (fromCheckpointRef === part.ref) continue;
+          const folderDiff = folderPlans.get(part.key)!.get(folder.relativePath)!;
+          diffInputs.push({
+            cwd: latestCheckouts.get(part.key) ?? part.cwd,
+            fromCheckpointRef,
+            toCheckpointRef: part.ref!,
+            fallbackFromToHead: false,
+            ignoreWhitespace,
+            relativePath: folderDiff.relativePath,
+            srcPrefix: folderDiff.srcPrefix,
+            dstPrefix: folderDiff.dstPrefix,
+            pathspecs: [
+              ...folderDiff.pathspecs,
+              ...part.pathspecs.filter((pathspec) => pathspec.startsWith(":(exclude,")),
+            ],
+          });
+        }
+        const failedReads = new Set<string>();
+        const diffs = yield* collectCheckpointDiffs(diffInputs, (diffInput) => {
+          const key = JSON.stringify([
+            diffInput.cwd,
+            diffInput.fromCheckpointRef,
+            diffInput.toCheckpointRef,
+          ]);
+          return failedReads.has(key)
+            ? Effect.succeed("")
+            : checkpointStore.diffCheckpoints(diffInput).pipe(
+                Effect.catch((cause) => {
+                  failedReads.add(key);
+                  return Effect.logWarning("checkpoint part diff unavailable", {
+                    threadId: input.threadId,
+                    cwd: diffInput.cwd,
+                    cause: String(cause),
+                  }).pipe(Effect.as(""));
+                }),
+              );
+        });
+        return buildTurnDiffResult(input, diffs.map(({ diff }) => diff).join(""));
       }
 
       const toScope = projection.checkpointScopes.find(

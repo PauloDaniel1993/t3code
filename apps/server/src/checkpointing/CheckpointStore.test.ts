@@ -157,6 +157,16 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         expect(diff).toContain("diff --git");
         expect(diff).not.toContain("[truncated]");
         expect(diff).toContain("+line 04999");
+        const bounded = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+          ignoreWhitespace: true,
+          maxOutputBytes: 128,
+        });
+        expect(Buffer.byteLength(bounded, "utf8")).toBeLessThanOrEqual(128);
+        expect(bounded).toContain("diff --git");
+        expect(bounded).not.toContain("+line 04999");
       }),
     );
 

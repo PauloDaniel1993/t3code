@@ -21,13 +21,16 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as NodeFSP from "node:fs/promises";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
+import * as CheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "../config.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as IdAllocator from "./IdAllocator.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
 
 const threadId = ThreadId.make("thread:checkpoint-parts");
 const runId = RunId.make("run:checkpoint-parts:1");
@@ -526,6 +529,7 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         const mono = path.join(root, "mono");
         const inner = path.join(mono, "a", "inner");
         const notes = path.join(root, "notes");
+        const alias = path.join(root, "deep-alias");
         const write = (file: string, contents: string) =>
           Effect.andThen(
             fileSystem.makeDirectory(path.dirname(file), { recursive: true }),
@@ -546,34 +550,43 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         for (const folder of ["a", "b", "c"]) {
           yield* write(path.join(mono, folder, "keep.txt"), `${folder}0`);
         }
+        yield* write(path.join(mono, "a", "deep", "own.txt"), "deep0");
         yield* commitAll(mono);
         yield* write(path.join(inner, "x.txt"), "x0");
         yield* commitAll(inner);
         yield* write(path.join(notes, "n.txt"), "n0");
         const realMono = yield* fileSystem.realPath(mono);
         const realInner = yield* fileSystem.realPath(inner);
+        // Junctions let this directory-alias case run without Windows symlink privileges.
+        yield* Effect.promise(() =>
+          NodeFSP.symlink(path.join(mono, "a", "deep"), alias, "junction"),
+        );
 
         const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+        const thread = {
+          worktreePath: null,
+          workspaceFolders: [
+            snapshotFolder(path.join(mono, "a"), "a", realMono, "a"),
+            snapshotFolder(path.join(mono, "b"), "b", realMono, "b"),
+            snapshotFolder(path.join(mono, "a", "deep"), "deep", realMono, "a/deep"),
+            snapshotFolder(alias, "alias", realMono, "a/deep"),
+            snapshotFolder(inner, "inner", realInner),
+            snapshotFolder(notes, "notes", null),
+          ],
+        };
         const scope = yield* checkpoints.prepareRootRunScope({
           threadId,
           runId,
           rootNodeId: nodeId,
           providerThreadId,
           cwd: path.join(mono, "a"),
-          thread: {
-            worktreePath: null,
-            workspaceFolders: [
-              snapshotFolder(path.join(mono, "a"), "a", realMono, "a"),
-              snapshotFolder(path.join(mono, "b"), "b", realMono, "b"),
-              snapshotFolder(inner, "inner", realInner),
-              snapshotFolder(notes, "notes", null),
-            ],
-          },
+          thread,
           createdAt,
         });
         yield* checkpoints.captureBaseline({ scope, ordinalWithinScope: 0 });
         yield* write(path.join(mono, "a", "keep.txt"), "a1");
         yield* write(path.join(mono, "b", "new.txt"), "b1");
+        yield* write(path.join(mono, "a", "deep", "own.txt"), "deep1");
         yield* write(path.join(mono, "c", "keep.txt"), "c1");
         yield* write(path.join(inner, "x.txt"), "x1");
         yield* write(path.join(notes, "n.txt"), "n1");
@@ -610,7 +623,85 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         assert.equal(yield* git(realInner, ["show", `${innerPart?.ref}:x.txt`]), "x1");
         assert.deepStrictEqual(
           checkpoint.files.map((file) => file.path),
-          ["a/keep.txt", "b/new.txt"],
+          ["a/keep.txt", "b/new.txt", "deep/own.txt", "inner/x.txt"],
+        );
+        const query = yield* CheckpointDiffQuery.make.pipe(
+          Effect.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getCheckpointContext: () =>
+                Effect.succeed({
+                  runs: [{ id: runId, ordinal: 1, status: "completed" }],
+                  checkpointScopes: [scope],
+                  checkpoints: [checkpoint],
+                }),
+            }),
+          ),
+        );
+        const diff = yield* query.getFullThreadDiff({ threadId, toTurnCount: 1 });
+        const headers = diff.diff.split("\n").filter((line) => line.startsWith("diff --git"));
+        assert.deepStrictEqual(headers, [
+          "diff --git a/a/keep.txt b/a/keep.txt",
+          "diff --git a/b/new.txt b/b/new.txt",
+          "diff --git a/deep/own.txt b/deep/own.txt",
+          "diff --git a/inner/x.txt b/inner/x.txt",
+        ]);
+
+        // The nested member and checkout disappear after their first ready
+        // checkpoints. Neither deletion belongs to the surviving parent.
+        yield* fileSystem.remove(path.join(mono, "a", "deep"), { recursive: true });
+        yield* fileSystem.remove(inner, { recursive: true });
+        yield* write(path.join(mono, "a", "keep.txt"), "a2");
+        const secondRunId = RunId.make("run:checkpoint-parts:2");
+        const secondScope = yield* checkpoints.prepareRootRunScope({
+          threadId,
+          runId: secondRunId,
+          rootNodeId: nodeId,
+          providerThreadId,
+          cwd: path.join(mono, "a"),
+          thread,
+          unavailableFolderPaths: [path.join(mono, "a", "deep"), alias, inner],
+          createdAt,
+        });
+        const second = yield* checkpoints.capture({
+          scope: secondScope,
+          runId: secondRunId,
+          nodeId,
+          ordinalWithinScope: 2,
+          appRunOrdinal: 2,
+          capturedAt: createdAt,
+        });
+        assert.deepStrictEqual(
+          second.files.map((file) => file.path),
+          ["a/keep.txt"],
+        );
+        const secondQuery = yield* CheckpointDiffQuery.make.pipe(
+          Effect.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getCheckpointContext: () =>
+                Effect.succeed({
+                  runs: [
+                    { id: runId, ordinal: 1, status: "completed" },
+                    { id: secondRunId, ordinal: 2, status: "completed" },
+                  ],
+                  checkpointScopes: [secondScope],
+                  checkpoints: [checkpoint, second],
+                }),
+            }),
+          ),
+        );
+        const turn = yield* secondQuery.getTurnDiff({ threadId, fromTurnCount: 1, toTurnCount: 2 });
+        assert.deepStrictEqual(
+          turn.diff.split("\n").filter((line) => line.startsWith("diff --git")),
+          ["diff --git a/a/keep.txt b/a/keep.txt"],
+        );
+        const full = yield* secondQuery.getFullThreadDiff({ threadId, toTurnCount: 2 });
+        assert.deepStrictEqual(
+          full.diff.split("\n").filter((line) => line.startsWith("diff --git")),
+          [
+            "diff --git a/a/keep.txt b/a/keep.txt",
+            "diff --git a/b/new.txt b/b/new.txt",
+            "diff --git a/deep/own.txt b/deep/own.txt",
+          ],
         );
       }),
   );

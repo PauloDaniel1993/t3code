@@ -149,6 +149,22 @@ export function checkpointScopeParts(input: {
   );
   return drafts.map((draft) => {
     const included = outermost(draft.folders.map((folder) => folder.relativePath));
+    // Ownership is frozen in the snapshot: an unavailable nested member must
+    // not become a deletion attributed to its reachable parent folder.
+    const unavailableNested = snapshot.flatMap((folder, index) => {
+      if (
+        workspace.folders[index]?.effectivePath !== null ||
+        folder.path === undefined ||
+        folder.checkoutRoot == null ||
+        draft.checkoutRoot === null ||
+        !isSamePath(folder.checkoutRoot, draft.checkoutRoot)
+      )
+        return [];
+      const below = folder.checkoutPrefix ?? relativePathWithin(folder.checkoutRoot, folder.path);
+      return below !== null && below !== "" && included.some((path) => covers(path, below))
+        ? [below]
+        : [];
+    });
     const nested =
       draft.checkoutRoot === null
         ? []
@@ -167,7 +183,7 @@ export function checkpointScopeParts(input: {
       vcs: draft.vcs,
       pathspecs: [
         ...included.map((path) => (path === "" ? "." : `:(literal)${path}`)),
-        ...nested.map((path) => `:(exclude,literal)${path}`),
+        ...outermost([...nested, ...unavailableNested]).map((path) => `:(exclude,literal)${path}`),
       ],
       folders: draft.folders,
     };

@@ -2712,6 +2712,26 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           checkpointScopes: [{ id: scopeId, runId, kind: "root_run", cwd: "/repo/worktree" }],
           checkpoints: [{ scopeId, runId, appRunOrdinal: 1, status: "ready", ref }],
         });
+        const parts = [
+          {
+            key: "primary",
+            cwd: "/historical/worktree",
+            vcs: "git",
+            pathspecs: ["."],
+            folders: [{ folderPath: "/repo", label: "historical", relativePath: "" }],
+            status: "ready",
+            ref,
+          },
+        ] as const;
+        yield* sql`
+          UPDATE orchestration_v2_projection_checkpoints
+          SET payload_json = json_set(payload_json, '$.parts', json(${encodeUnknownJsonString(parts)}))
+          WHERE checkpoint_id = ${checkpointId}
+        `;
+        assert.deepEqual(
+          (yield* projectionStore.getCheckpointContext(threadId)).checkpoints[0]?.parts,
+          parts,
+        );
         const missing = yield* projectionStore
           .getCheckpointContext(ThreadId.make("thread:checkpoint-context:missing"))
           .pipe(Effect.flip);
