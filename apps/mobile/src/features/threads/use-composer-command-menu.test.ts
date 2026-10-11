@@ -24,6 +24,23 @@ import {
 } from "./use-composer-command-menu";
 
 describe("mobile slash commands", () => {
+  it("inserts a secondary-folder mention with its canonical label", () => {
+    expect(
+      resolveComposerCommandSelection({
+        draftMessage: "Read @ind",
+        trigger: { rangeStart: 5, rangeEnd: 9 },
+        item: {
+          id: "api/src/index.ts",
+          type: "path",
+          path: "api/src/index.ts",
+          kind: "file",
+          label: "index.ts",
+          description: "api/src/index.ts",
+        },
+        allowInteractionMode: false,
+      }),
+    ).toEqual({ text: "Read [index.ts](api/src/index.ts) ", cursor: 34, interactionMode: null });
+  });
   const antigravity = {
     driver: ProviderDriverKind.make("antigravity"),
     showInteractionModeToggle: false,

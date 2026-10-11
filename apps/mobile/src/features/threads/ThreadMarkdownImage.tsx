@@ -178,7 +178,10 @@ function ThreadMarkdownImageRequest(props: {
 /** Environment-hosted image that loads through a signed asset URL. */
 export function ThreadMarkdownImage(props: {
   readonly environmentId: EnvironmentId;
-  readonly resource: Extract<AssetResource, { readonly _tag: "attachment" | "media-file" }>;
+  readonly resource: Extract<
+    AssetResource,
+    { readonly _tag: "attachment" | "media-file" | "workspace-scope-file" }
+  >;
   readonly alt: string | null;
   readonly srcFragment?: string;
   readonly actionsSource?: MediaActionsSource;
@@ -189,11 +192,7 @@ export function ThreadMarkdownImage(props: {
   return (
     <ThreadMarkdownImageView
       uri={assetUrl._tag === "Success" ? assetUrl.url + (props.srcFragment ?? "") : null}
-      sourceKey={
-        props.resource._tag === "attachment"
-          ? `attachment:${props.resource.attachmentId}`
-          : `workspace:${props.resource.path}`
-      }
+      sourceKey={JSON.stringify([props.environmentId, props.resource])}
       unavailable={assetUrl._tag === "Failure"}
       knownSize={assetUrl._tag === "Success" ? assetUrl.imageDimensions : undefined}
       alt={props.alt}

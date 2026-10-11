@@ -1,5 +1,5 @@
 import { fileBasename } from "@t3tools/client-runtime/markdown-links";
-import type { ThreadId } from "@t3tools/contracts";
+import type { AssetResource, ThreadId } from "@t3tools/contracts";
 import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
 import type { MarkdownFileContextMenu } from "@t3tools/mobile-markdown-text/types";
 import { hostPreviewMimeTypeFromExtension } from "@t3tools/shared/filePreview";
@@ -17,6 +17,7 @@ export interface FileChipTarget {
   readonly fullPath?: string;
   /** The path inside the workspace, when the link resolves there. */
   readonly relativePath?: string;
+  readonly resource?: Extract<AssetResource, { readonly _tag: "workspace-scope-file" }>;
 }
 
 /** Null when the link is not a file or resolves nowhere the feed can open, such as `~/x` or `../x`. */
@@ -55,7 +56,7 @@ export function fileChipShareSource(target: FileChipTarget, threadId: ThreadId) 
     ? {
         name: metadata.name,
         mimeType: metadata.mimeType,
-        resource: { _tag: "media-file" as const, threadId, path: metadata.path },
+        resource: target.resource ?? { _tag: "media-file" as const, threadId, path: metadata.path },
       }
     : null;
 }

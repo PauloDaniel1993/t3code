@@ -4,6 +4,7 @@ import type {
   ProviderInteractionMode,
   ServerProvider,
   ThreadId,
+  WorkspaceScope,
 } from "@t3tools/contracts";
 import { matchComposerThreadItems } from "@t3tools/client-runtime/composerThreadItems";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -47,6 +48,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useComposerPathSearch, useComposerPullRequestSearch } from "../../state/queries";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
+import { pinWorkspaceFileScope, workspaceFileCacheKey } from "../../lib/workspaceFiles";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
 
@@ -172,6 +174,7 @@ export function useComposerCommandMenu({
   threadShells = EMPTY_THREAD_SHELLS,
   currentThreadId = null,
   projectCwd,
+  fileScope = null,
   pullRequestProjectId = null,
   pullRequestRepository = null,
   selectedProviderStatus,
@@ -191,6 +194,7 @@ export function useComposerCommandMenu({
   /** Left out of `@` thread suggestions: a thread is never context for itself. */
   readonly currentThreadId?: ThreadId | null;
   readonly projectCwd: string | null;
+  readonly fileScope?: WorkspaceScope | null;
   readonly pullRequestProjectId?: ProjectId | null;
   readonly pullRequestRepository?: string | null;
   readonly selectedProviderStatus: ServerProvider | null;
@@ -310,8 +314,16 @@ export function useComposerCommandMenu({
   const pathSearch = useComposerPathSearch({
     environmentId,
     cwd: trigger?.kind === "path" ? projectCwd : null,
+    scope: fileScope,
     query: trigger?.kind === "path" ? trigger.query : null,
   });
+  const pathOwnerKey = `${ownerKey}:${workspaceFileCacheKey({ environmentId, cwd: projectCwd, scope: fileScope })}`;
+  const pathPins = useRef<{ ownerKey: string; paths: Map<string, string> }>({
+    ownerKey: pathOwnerKey,
+    paths: new Map(),
+  });
+  if (pathPins.current.ownerKey !== pathOwnerKey)
+    pathPins.current = { ownerKey: pathOwnerKey, paths: new Map() };
   const pullRequestSearch = useComposerPullRequestSearch({
     environmentId,
     projectId: pullRequestProjectId,
@@ -502,6 +514,10 @@ export function useComposerCommandMenu({
   const onSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!trigger) return;
+      if (item.type === "path" && fileScope) {
+        const pin = pinWorkspaceFileScope(fileScope, item.path, pathSearch.folders);
+        if (pin?.folderPath !== undefined) pathPins.current.paths.set(item.path, pin.folderPath);
+      }
       if (item.type === "thread") {
         if (!ownerKey || trigger.kind !== "path") return;
         const shell = threadShells.find(
@@ -607,10 +623,13 @@ export function useComposerCommandMenu({
       selectedProviderStatus?.showInteractionModeToggle,
       threadShells,
       trigger,
+      fileScope,
+      pathSearch.folders,
     ],
   );
 
   return {
+    folderPathForMention: (path: string) => pathPins.current.paths.get(path),
     selection,
     onSelectionChange,
     trigger,
@@ -623,7 +642,9 @@ export function useComposerCommandMenu({
         ? pullRequestProjectId === null || pullRequestRepository === null
           ? "Pull requests are unavailable for this project."
           : pullRequestSearch.error
-        : null,
+        : trigger?.kind === "path"
+          ? pathSearch.error
+          : null,
     onSelect,
   };
 }

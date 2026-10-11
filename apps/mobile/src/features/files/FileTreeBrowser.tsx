@@ -108,6 +108,9 @@ const FileTreeRow = memo(function FileTreeRow(props: {
 
 export function FileTreeBrowser(props: {
   readonly entries: ReadonlyArray<ProjectEntry>;
+  readonly rootDirectoryPath?: string;
+  readonly folderPicker?: React.ReactNode;
+  readonly chooseFolder?: boolean;
   readonly error: string | null;
   readonly isPending: boolean;
   readonly searchQuery: string;
@@ -143,7 +146,13 @@ export function FileTreeBrowser(props: {
     pendingSelection?.selectedPathAtPress === controlledSelectedPath
       ? pendingSelection.path
       : controlledSelectedPath;
-  const tree = useMemo(() => cachedFileTree(props.entries), [props.entries]);
+  const tree = useMemo(
+    () =>
+      cachedFileTree(props.entries).flatMap((node) =>
+        node.path === props.rootDirectoryPath ? node.children : [node],
+      ),
+    [props.entries, props.rootDirectoryPath],
+  );
   const visibleNodes = useMemo(
     () =>
       flattenFileTree({
@@ -262,6 +271,7 @@ export function FileTreeBrowser(props: {
       renderItem={renderItem}
       ListHeaderComponent={
         <>
+          {props.folderPicker}
           {props.error && props.entries.length > 0 ? (
             <Text accessibilityRole="alert" className="mx-4 my-2 text-xs text-foreground-muted">
               {props.error}
@@ -298,11 +308,15 @@ export function FileTreeBrowser(props: {
             <ActivityIndicator size="small" />
           ) : (
             <>
-              <Text className="text-sm font-t3-bold text-foreground">No files found</Text>
+              <Text className="text-sm font-t3-bold text-foreground">
+                {props.chooseFolder ? "Choose a workspace folder" : "No files found"}
+              </Text>
               <Text className="mt-1 text-xs leading-normal text-foreground-muted">
                 {props.searchQuery.trim().length > 0
                   ? "Try a different search."
-                  : "The workspace is empty."}
+                  : props.chooseFolder
+                    ? "Select a folder to browse its files, or search across all folders."
+                    : "The workspace is empty."}
               </Text>
             </>
           )}

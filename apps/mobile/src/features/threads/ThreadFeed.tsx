@@ -118,6 +118,14 @@ import { VideoPreviewModal, type VideoPreviewSource } from "../../components/Vid
 import { VideoAttachmentTile } from "../../components/VideoAttachmentTile";
 import { MediaVideoPlayer } from "../../components/MediaVideoPlayer";
 import { resolveMarkdownMediaPreview } from "../../lib/markdownMedia";
+import { useServerConfigs } from "../../state/entities";
+import { useEnvironmentQuery } from "../../state/query";
+import { projectEnvironment } from "../../state/projects";
+import { useWorkspaceFileScope } from "../../state/use-workspace-file-scope";
+import {
+  workspaceMarkdownResource,
+  workspaceRelativeMarkdownPath,
+} from "../../lib/workspaceMarkdownResource";
 import {
   attachmentVideoPreviewSource,
   mediaVideoPreviewUri,
@@ -2107,6 +2115,45 @@ function ThreadFeedPlaceholder(props: {
 
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
+  const { selectedThread, selectedThreadProject } = useThreadSelection();
+  const configs = useServerConfigs();
+  const fileScope = useWorkspaceFileScope({
+    enabled:
+      configs.get(props.environmentId)?.workspaceFileProjects === true &&
+      selectedThread?.id === props.threadId &&
+      selectedThread.environmentId === props.environmentId,
+    project: selectedThreadProject,
+    thread: selectedThread,
+  });
+  const inventory = useEnvironmentQuery(
+    fileScope === null
+      ? null
+      : projectEnvironment.listEntries({
+          environmentId: props.environmentId,
+          input: { scope: fileScope, directoryPath: "" },
+        }),
+  );
+  const mediaContext = useMemo(
+    () => ({
+      environmentId: props.environmentId,
+      threadId: props.threadId,
+      workspaceRoot: props.workspaceRoot,
+      scope: fileScope,
+      folders: inventory.data?.folders ?? [],
+    }),
+    [props.environmentId, props.threadId, props.workspaceRoot, fileScope, inventory.data?.folders],
+  );
+  const resolveChipTarget = useCallback(
+    (href: string) => {
+      const resource = workspaceMarkdownResource(fileScope, mediaContext.folders, href);
+      if (fileScope && workspaceRelativeMarkdownPath(href) !== null && resource === null)
+        return null;
+      return resource
+        ? { relativePath: resource.path, resource }
+        : resolveFileChipTarget(href, props.workspaceRoot);
+    },
+    [fileScope, mediaContext.folders, props.workspaceRoot],
+  );
   const { themeAppearance } = useAppearancePreferences();
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
@@ -2228,6 +2275,31 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     (href: string) => {
       const presentation = resolveMarkdownLinkPresentation(href);
       if (presentation.kind === "file") {
+        const resource = workspaceMarkdownResource(fileScope, mediaContext.folders, href);
+        if (fileScope && workspaceRelativeMarkdownPath(href) !== null && resource === null) return;
+        if (resource) {
+          void Haptics.selectionAsync();
+          if (isPdfFile({ name: resource.path })) {
+            setExpandedFile(
+              (current) =>
+                current ?? {
+                  kind: "pdf",
+                  name: basename(resource.path),
+                  environmentId: props.environmentId,
+                  resource,
+                },
+            );
+          } else {
+            navigation.navigate("ThreadFile", {
+              environmentId: String(props.environmentId),
+              threadId: String(props.threadId),
+              path: fileRoutePathSegments(resource.path),
+              folderPath: resource.scope.folderPath,
+              ...(presentation.line ? { line: String(presentation.line) } : {}),
+            });
+          }
+          return;
+        }
         const relativePath = resolveWorkspaceRelativeFilePath(
           props.workspaceRoot,
           presentation.path,
@@ -2260,11 +2332,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         }
       }
 
-      const media = resolveMarkdownMediaPreview(href, {
-        environmentId: props.environmentId,
-        threadId: props.threadId,
-        workspaceRoot: props.workspaceRoot,
-      });
+      const media = resolveMarkdownMediaPreview(href, mediaContext);
       if (media) {
         void Haptics.selectionAsync();
         if (media.kind === "video") {
@@ -2314,17 +2382,17 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         void tryOpenExternalUrl(presentation.href, "markdown-link");
       }
     },
-    [props.environmentId, props.threadId, props.workspaceRoot, navigation],
+    [props.environmentId, props.threadId, props.workspaceRoot, navigation, fileScope, mediaContext],
   );
   const markdownLinkHandlers = useMemo<MarkdownLinkHandlers>(
     () => ({
       onLinkPress: onMarkdownLinkPress,
       fileContextMenu: (href) => {
-        const target = resolveFileChipTarget(href, props.workspaceRoot);
+        const target = resolveChipTarget(href);
         return target ? fileChipMenu(target) : undefined;
       },
       onFileContextMenuAction: (href, actionId) => {
-        const target = resolveFileChipTarget(href, props.workspaceRoot);
+        const target = resolveChipTarget(href);
         if (!target) return;
         switch (actionId as FileChipAction) {
           case "copy-full-path":
@@ -2342,14 +2410,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         }
       },
     }),
-    [onMarkdownLinkPress, props.workspaceRoot, shareFileChip],
+    [onMarkdownLinkPress, resolveChipTarget, shareFileChip],
   );
   const renderMarkdownImage = useCallback<MarkdownImageRenderer>(
     (image) => {
       const media = resolveMarkdownMediaPreview(image.href, {
-        environmentId: props.environmentId,
-        threadId: props.threadId,
-        workspaceRoot: props.workspaceRoot,
+        ...mediaContext,
         imageEmbed: true,
       });
       if (media?.kind === "video") {
@@ -2359,6 +2425,25 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             source={{ ...media.source, name: image.alt ?? media.source.name }}
           />
         );
+      }
+      if (
+        media?.kind === "image" &&
+        "resource" in media.source &&
+        media.source.resource._tag === "workspace-scope-file"
+      ) {
+        return (
+          <ThreadMarkdownImage
+            environmentId={props.environmentId}
+            resource={media.source.resource}
+            alt={image.alt}
+            srcFragment={media.source.srcFragment}
+            actionsSource={media.source.actionsSource}
+            onPressPreview={(source) => setExpandedFile((current) => current ?? source)}
+          />
+        );
+      }
+      if (fileScope && workspaceRelativeMarkdownPath(image.href) !== null) {
+        return <ThreadMarkdownImageUnavailable alt={image.alt} />;
       }
       const imageSource = classifyMarkdownImageSource(image.href, props.workspaceRoot ?? null);
       if (imageSource._tag === "Direct") {
@@ -2391,7 +2476,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         />
       );
     },
-    [props.environmentId, props.threadId, props.workspaceRoot],
+    [props.environmentId, props.threadId, props.workspaceRoot, mediaContext, fileScope],
   );
   const renderViewedImage = useCallback<MarkdownImageRenderer>(
     (image) => {

@@ -203,6 +203,11 @@ export const ComposerCommandPopover = memo(function ComposerCommandPopover(
           </Text>
         </View>
       ) : null}
+      {props.error && props.items.length > 0 ? (
+        <Text accessibilityRole="alert" className="px-3.5 py-1 text-xs text-foreground-muted">
+          {props.error}
+        </Text>
+      ) : null}
       {props.items.length > 0 ? (
         <ScrollView
           className="max-h-[180px]"

@@ -1,4 +1,4 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { resolveMarkdownMediaPreview } from "./markdownMedia";
@@ -10,6 +10,41 @@ const input = {
 };
 
 describe("resolveMarkdownMediaPreview", () => {
+  it("waits for scoped folder metadata instead of reading a canonical path under cwd", () => {
+    const scoped = {
+      ...input,
+      scope: { projectId: ProjectId.make("project-1"), threadId: input.threadId },
+    };
+    expect(resolveMarkdownMediaPreview("api/frame.png", scoped)).toBeNull();
+    expect(resolveMarkdownMediaPreview("/tmp/frame.png", scoped)).toMatchObject({
+      kind: "image",
+      source: { resource: { _tag: "media-file", path: "/tmp/frame.png" } },
+    });
+  });
+  it("previews labeled work-log media through the owning folder", () => {
+    const scope = { projectId: ProjectId.make("project-1"), threadId: input.threadId };
+    expect(
+      resolveMarkdownMediaPreview("api/clip.mp4#t=2", {
+        ...input,
+        scope,
+        folders: [
+          { folderPath: "/repo", label: "web", status: "ok" },
+          { folderPath: "/api", label: "api", status: "ok" },
+        ],
+      }),
+    ).toMatchObject({
+      kind: "video",
+      source: {
+        srcFragment: "#t=2",
+        resource: {
+          _tag: "workspace-scope-file",
+          scope: { ...scope, folderPath: "/api" },
+          path: "api/clip.mp4",
+        },
+        actionsSource: { resource: { _tag: "workspace-scope-file", path: "api/clip.mp4" } },
+      },
+    });
+  });
   it("decodes remote filenames once without changing the authored URL", () => {
     const href = "https://cdn.example.com/clip%20one%2520%2Emp4?signature=a%2fb#t=2";
     expect(resolveMarkdownMediaPreview(href, input)).toMatchObject({

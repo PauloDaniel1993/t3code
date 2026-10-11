@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, WorkspaceScope } from "@t3tools/contracts";
 import { SymbolView } from "../../components/AppSymbol";
 import { MaterialScreenContent } from "../../components/MaterialScreenContent";
 import { useCallback, useMemo, useState, type ComponentProps } from "react";
@@ -20,14 +20,17 @@ import { FileTreeBrowser } from "./FileTreeBrowser";
 import { useFileTreeEntries } from "./useFileTreeEntries";
 import { preloadWorkspaceFileContents } from "./preload-workspace-file";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
+import { WorkspaceFolderPicker } from "./WorkspaceFolderPicker";
+import { workspaceFileCacheKey } from "../../lib/workspaceFiles";
 
 export function ThreadFileNavigatorPane(props: {
   readonly cwd: string;
   readonly environmentId: EnvironmentId;
+  readonly scope?: WorkspaceScope | null;
   readonly headerInset: number;
   readonly projectName: string;
   readonly selectedPath: string | null;
-  readonly onSelectFile: (path: string) => void;
+  readonly onSelectFile: (path: string, folderPath?: string) => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const { toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
@@ -39,18 +42,22 @@ export function ThreadFileNavigatorPane(props: {
   const entriesQuery = useFileTreeEntries({
     environmentId: props.environmentId,
     cwd: props.cwd,
+    scope: props.scope,
     searchQuery,
   });
   const handlePreviewFile = useCallback(
     (relativePath: string) => {
+      const scope = entriesQuery.scopeForPath(relativePath);
+      if (props.scope && scope === null) return;
       preloadWorkspaceFileContents({
         cwd: props.cwd,
         environmentId: props.environmentId,
         relativePath,
+        scope,
         theme: highlightTheme,
       });
     },
-    [highlightTheme, props.cwd, props.environmentId],
+    [highlightTheme, props.cwd, props.environmentId, props.scope, entriesQuery.scopeForPath],
   );
   const nativeHeaderRightBarButtonItems = useMemo(
     () =>
@@ -71,7 +78,20 @@ export function ThreadFileNavigatorPane(props: {
 
   const fileTree = (
     <FileTreeBrowser
-      key={JSON.stringify([props.environmentId, props.cwd])}
+      key={`${workspaceFileCacheKey(props)}:${entriesQuery.rootDirectoryPath}`}
+      rootDirectoryPath={entriesQuery.rootDirectoryPath}
+      chooseFolder={
+        entriesQuery.folders.length > 1 &&
+        entriesQuery.selectedFolderPath === null &&
+        !searchQuery.trim()
+      }
+      folderPicker={
+        <WorkspaceFolderPicker
+          folders={entriesQuery.folders}
+          selectedFolderPath={entriesQuery.selectedFolderPath}
+          onSelectFolder={entriesQuery.selectFolder}
+        />
+      }
       entries={entriesQuery.entries}
       loadedDirectories={entriesQuery.loadedDirectories}
       onLoadDirectory={entriesQuery.loadDirectory}
@@ -82,7 +102,7 @@ export function ThreadFileNavigatorPane(props: {
       selectedPath={props.selectedPath}
       onPreviewFile={handlePreviewFile}
       onRefresh={entriesQuery.refresh}
-      onSelectFile={props.onSelectFile}
+      onSelectFile={(path) => props.onSelectFile(path, entriesQuery.scopeForPath(path)?.folderPath)}
     />
   );
 
