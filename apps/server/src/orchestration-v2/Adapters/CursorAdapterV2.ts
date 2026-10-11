@@ -55,6 +55,7 @@ import {
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { t3OrchestrationPromptForFirstRun } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
+import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { makeProviderFailure } from "../ProviderFailure.ts";
 import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
@@ -232,6 +233,7 @@ function providerSession(input: {
     providerInstanceId: input.providerInstanceId,
     status: "ready",
     cwd: input.cwd ?? process.cwd(),
+    additionalDirectories: [],
     model: input.model,
     capabilities: CursorProviderCapabilitiesV2,
     createdAt: input.now,
@@ -318,6 +320,7 @@ export function makeCursorAgentOptions(input: {
     ...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }),
     local: {
       ...(input.runtimePolicy.cwd === null ? {} : { cwd: input.runtimePolicy.cwd }),
+      dirs: [...input.runtimePolicy.additionalDirectories],
       autoReview: policy.autoReview,
       settingSources: [...CURSOR_AGENT_SETTING_SOURCES],
       sandboxOptions: {
@@ -840,6 +843,7 @@ interface ActiveCursorTurn {
 interface CursorLiveAgent {
   readonly nativeThreadId: string;
   readonly session: CursorAgentSdk.CursorAgentSdkSession;
+  readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }
 
 export interface CursorAdapterV2Options {
@@ -868,7 +872,7 @@ export function makeCursorAdapterV2(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;
         const createdAt = yield* DateTime.now;
-        const session = providerSession({
+        let session = providerSession({
           providerSessionId: input.providerSessionId,
           providerInstanceId: adapterOptions.instanceId,
           cwd: input.runtimePolicy.cwd,
@@ -2056,11 +2060,24 @@ export function makeCursorAdapterV2(
           if (
             existing !== null &&
             openInput.operation === "resume" &&
-            existing.nativeThreadId === openInput.agentId
+            existing.nativeThreadId === openInput.agentId &&
+            existing.runtimePolicy.cwd === openInput.runtimePolicy.cwd &&
+            existing.runtimePolicy.additionalDirectories.length ===
+              openInput.runtimePolicy.additionalDirectories.length &&
+            existing.runtimePolicy.additionalDirectories.every(
+              (directory, index) =>
+                directory === openInput.runtimePolicy.additionalDirectories[index],
+            )
           ) {
             return existing;
           }
           if (existing !== null) {
+            if ((yield* Ref.get(activeTurn)) !== null) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                detail: "Cursor cannot replace its agent while a provider turn is active.",
+              });
+            }
             yield* existing.session.close.pipe(Effect.ignore);
             yield* Ref.set(liveAgent, null);
           }
@@ -2079,8 +2096,23 @@ export function makeCursorAdapterV2(
           const next = {
             nativeThreadId: sdkSession.agentId,
             session: sdkSession,
+            runtimePolicy: {
+              ...openInput.runtimePolicy,
+              additionalDirectories: [...openInput.runtimePolicy.additionalDirectories],
+            },
           } satisfies CursorLiveAgent;
           yield* Ref.set(liveAgent, next);
+          session = {
+            ...session,
+            cwd: openInput.runtimePolicy.cwd ?? process.cwd(),
+            additionalDirectories: [...openInput.runtimePolicy.additionalDirectories],
+            updatedAt: yield* DateTime.now,
+          };
+          yield* emitProviderEvent({
+            type: "provider_session.updated",
+            driver: CursorAgentSdk.CURSOR_PROVIDER,
+            providerSession: session,
+          });
           return next;
         });
 
@@ -2155,7 +2187,13 @@ export function makeCursorAdapterV2(
               detail: "Cursor turn requires non-empty text or attachments.",
             });
           }
-          const text = `${userText}\n\n${buildRuntimeInstructions({ harness: "Cursor", model: turnInput.modelSelection.model })}`;
+          const text = [
+            userText,
+            buildRuntimeInstructions({ harness: "Cursor", model: turnInput.modelSelection.model }),
+            buildWorkspaceFolderInventory(turnInput.runtimePolicy),
+          ]
+            .filter((part) => part !== undefined)
+            .join("\n\n");
           return images.length === 0
             ? text
             : ({
@@ -2352,7 +2390,9 @@ export function makeCursorAdapterV2(
           instanceId: adapterOptions.instanceId,
           driver: CursorAgentSdk.CURSOR_PROVIDER,
           providerSessionId: input.providerSessionId,
-          providerSession: session,
+          get providerSession() {
+            return session;
+          },
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ensureThread: Effect.fn("CursorAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
@@ -2385,14 +2425,23 @@ export function makeCursorAdapterV2(
               ),
           ),
           resumeThread: Effect.fn("CursorAdapterV2.resumeThread")(
-            function* (threadInput: { readonly providerThread: OrchestrationV2ProviderThread }) {
+            function* (
+              threadInput: Parameters<
+                ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]
+              >[0],
+            ) {
               const agentId = nativeThreadId(threadInput.providerThread);
               yield* openAgent({
                 operation: "resume",
                 agentId,
                 threadId: threadInput.providerThread.appThreadId ?? input.threadId,
-                modelSelection: input.modelSelection,
-                runtimePolicy: input.runtimePolicy,
+                modelSelection: threadInput.modelSelection ?? input.modelSelection,
+                // Apply scope changes during load so a cwd-scoped native resume
+                // failure reaches T3's existing portable-context fallback.
+                runtimePolicy:
+                  threadInput.runtimePolicy ??
+                  (yield* Ref.get(liveAgent))?.runtimePolicy ??
+                  input.runtimePolicy,
               });
               const now = yield* DateTime.now;
               return {
@@ -2487,7 +2536,7 @@ export function makeCursorAdapterV2(
                 agentId: requestedAgentId,
                 threadId: snapshotInput.providerThread.appThreadId ?? input.threadId,
                 modelSelection: input.modelSelection,
-                runtimePolicy: input.runtimePolicy,
+                runtimePolicy: (yield* Ref.get(liveAgent))?.runtimePolicy ?? input.runtimePolicy,
               });
               const messages = yield* agent.session.listMessages;
               const now = yield* DateTime.now;

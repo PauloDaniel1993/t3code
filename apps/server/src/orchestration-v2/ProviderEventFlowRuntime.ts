@@ -73,6 +73,9 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
   });
   const stagedRuntime = {
     ...runtime,
+    get providerSession() {
+      return runtime.providerSession;
+    },
     events: runtime.events.pipe(
       Stream.map((event) => {
         if (event.type === "provider_session.updated" && event.providerSession.status === "stopped")
@@ -117,8 +120,12 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
       ),
     ),
   };
+  const decoratedRuntime = decorate(stagedRuntime);
   const exposedRuntime = {
-    ...decorate(stagedRuntime),
+    ...decoratedRuntime,
+    get providerSession() {
+      return decoratedRuntime.providerSession;
+    },
     subscribeEvents,
     events: Stream.unwrap(subscribeEvents.pipe(Effect.map((subscription) => subscription.events))),
   };
