@@ -7,6 +7,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { WorkspaceFolderUnavailableReason } from "./project.ts";
 import { SourceControlProviderError, SourceControlProviderInfo } from "./sourceControl.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
@@ -108,6 +109,12 @@ export type GitResolvedPullRequest = typeof GitResolvedPullRequest.Type;
 
 export const VcsStatusInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
+  /**
+   * What a status subscription streams. `branch` streams only `branch` events
+   * and never polls the remote, for hints that need just the checked-out
+   * branch. Absent means `full`.
+   */
+  scope: Schema.optionalKey(Schema.Literals(["full", "branch"])),
 });
 export type VcsStatusInput = typeof VcsStatusInput.Type;
 
@@ -216,6 +223,24 @@ export const VcsSwitchWorktreeSetBranchInput = Schema.Struct({
 });
 export type VcsSwitchWorktreeSetBranchInput = typeof VcsSwitchWorktreeSetBranchInput.Type;
 
+export const VcsWorkspaceAction = Schema.Literals(["commit", "push", "create-prs"]);
+export type VcsWorkspaceAction = typeof VcsWorkspaceAction.Type;
+
+/**
+ * Runs one stacked action in each git checkout a thread works in, or only in
+ * the checkouts named by their repository root. A commit needs a message,
+ * and every repository gets that one message. Checkouts that left their
+ * worktree set's branch, or can't be reached, are skipped.
+ */
+export const VcsRunWorkspaceActionInput = Schema.Struct({
+  actionId: TrimmedNonEmptyStringSchema,
+  threadId: ThreadId,
+  action: VcsWorkspaceAction,
+  commitMessage: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000))),
+  members: Schema.optional(Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1))),
+});
+export type VcsRunWorkspaceActionInput = typeof VcsRunWorkspaceActionInput.Type;
+
 export const VcsCreateRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,
@@ -310,6 +335,11 @@ export const VcsStatusStreamEvent = Schema.Union([
   Schema.TaggedStruct("remoteUpdated", {
     remote: Schema.NullOr(VcsStatusRemoteResult),
   }),
+  // Sent only to `branch` subscriptions, first and whenever the branch changes.
+  Schema.TaggedStruct("branch", {
+    isRepo: Schema.Boolean,
+    refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  }),
 ]);
 export type VcsStatusStreamEvent = typeof VcsStatusStreamEvent.Type;
 
@@ -379,6 +409,34 @@ export const GitRunStackedActionResult = Schema.Struct({
 });
 export type GitRunStackedActionResult = typeof GitRunStackedActionResult.Type;
 
+/** What a workspace action did in one checkout. */
+export const VcsWorkspaceActionOutcome = Schema.Union([
+  Schema.TaggedStruct("completed", { result: GitRunStackedActionResult }),
+  Schema.TaggedStruct("failed", { message: Schema.String }),
+  // Skipped: the checkout is not on the branch its worktree set expects.
+  Schema.TaggedStruct("drifted", {
+    refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+    expectedBranch: TrimmedNonEmptyStringSchema,
+  }),
+  // Skipped: the checkout can't be reached.
+  Schema.TaggedStruct("unavailable", { reason: WorkspaceFolderUnavailableReason }),
+]);
+export type VcsWorkspaceActionOutcome = typeof VcsWorkspaceActionOutcome.Type;
+
+export const VcsWorkspaceActionMemberResult = Schema.Struct({
+  repositoryRoot: TrimmedNonEmptyStringSchema,
+  /** Where git ran: the first folder the checkout holds, inside the thread's worktree when it has one. */
+  cwd: TrimmedNonEmptyStringSchema,
+  label: TrimmedNonEmptyStringSchema,
+  outcome: VcsWorkspaceActionOutcome,
+});
+export type VcsWorkspaceActionMemberResult = typeof VcsWorkspaceActionMemberResult.Type;
+
+export const VcsRunWorkspaceActionResult = Schema.Struct({
+  results: Schema.Array(VcsWorkspaceActionMemberResult),
+});
+export type VcsRunWorkspaceActionResult = typeof VcsRunWorkspaceActionResult.Type;
+
 export const VcsPullResult = Schema.Struct({
   status: Schema.Literals(["pulled", "skipped_up_to_date"]),
   refName: TrimmedNonEmptyStringSchema,
@@ -406,6 +464,20 @@ export class GitCommandError extends Schema.TaggedError<GitCommandError>()("GitC
 
 export class VcsThreadWorktreesError extends Schema.TaggedError<VcsThreadWorktreesError>()(
   "VcsThreadWorktreesError",
+  {
+    threadId: ThreadId,
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+/** A workspace action that could not start; failures inside one checkout are its outcome. */
+export class VcsWorkspaceActionError extends Schema.TaggedError<VcsWorkspaceActionError>()(
+  "VcsWorkspaceActionError",
   {
     threadId: ThreadId,
     detail: Schema.String,
@@ -524,3 +596,17 @@ export const GitActionProgressEvent = Schema.Union([
   GitActionFailedEvent,
 ]);
 export type GitActionProgressEvent = typeof GitActionProgressEvent.Type;
+
+/**
+ * A workspace action's stream: each checkout's stacked-action progress, told
+ * apart by its `cwd`, then one `workspace_action_finished` with every outcome.
+ */
+export const VcsWorkspaceActionProgressEvent = Schema.Union([
+  GitActionProgressEvent,
+  Schema.Struct({
+    kind: Schema.Literal("workspace_action_finished"),
+    actionId: TrimmedNonEmptyStringSchema,
+    results: Schema.Array(VcsWorkspaceActionMemberResult),
+  }),
+]);
+export type VcsWorkspaceActionProgressEvent = typeof VcsWorkspaceActionProgressEvent.Type;

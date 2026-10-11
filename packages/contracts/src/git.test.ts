@@ -8,6 +8,8 @@ import {
   GitRunStackedActionResult,
   GitRunStackedActionInput,
   GitResolvePullRequestResult,
+  VcsRunWorkspaceActionInput,
+  VcsStatusInput,
 } from "./git.ts";
 
 const decodeCreateWorktreeInput = Schema.decodeUnknownSync(VcsCreateWorktreeInput);
@@ -165,5 +167,33 @@ describe("GitRunStackedActionResult", () => {
     if (parsed.toast.cta.kind === "run_action") {
       expect(parsed.toast.cta.action.kind).toBe("create_pr");
     }
+  });
+});
+
+describe("VcsStatusInput", () => {
+  const decodeStatusInput = Schema.decodeUnknownSync(VcsStatusInput);
+
+  it("keeps old subscriptions full and accepts a branch scope", () => {
+    expect(decodeStatusInput({ cwd: "/repo" })).toEqual({ cwd: "/repo" });
+    expect(decodeStatusInput({ cwd: "/repo", scope: "branch" }).scope).toBe("branch");
+    expect(() => decodeStatusInput({ cwd: "/repo", scope: "remote" })).toThrow();
+  });
+});
+
+describe("VcsRunWorkspaceActionInput", () => {
+  const decodeWorkspaceActionInput = Schema.decodeUnknownSync(VcsRunWorkspaceActionInput);
+
+  it("accepts the three batch actions and a non-empty list of repository roots", () => {
+    for (const action of ["commit", "push", "create-prs"]) {
+      expect(
+        decodeWorkspaceActionInput({ actionId: "batch-1", threadId: "thread-1", action }).action,
+      ).toBe(action);
+    }
+    const base = { actionId: "batch-1", threadId: "thread-1", action: "push" };
+    expect(decodeWorkspaceActionInput({ ...base, members: ["/src/api"] }).members).toEqual([
+      "/src/api",
+    ]);
+    expect(() => decodeWorkspaceActionInput({ ...base, members: [] })).toThrow();
+    expect(() => decodeWorkspaceActionInput({ ...base, action: "commit_push_pr" })).toThrow();
   });
 });

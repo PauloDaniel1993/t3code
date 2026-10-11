@@ -41,6 +41,10 @@ import {
   type OrchestrationV2Command,
   type GitActionProgressEvent,
   type GitManagerServiceError,
+  type GitRunStackedActionInput,
+  type GitRunStackedActionResult,
+  type VcsWorkspaceActionError,
+  type VcsWorkspaceActionProgressEvent,
   type MessageId,
   type AcpRegistryImportSessionInput,
   type AcpRegistryDeleteSessionInput,
@@ -1744,6 +1748,40 @@ const makeWsRpcLayer = (
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
+      // After a stacked action in one checkout: link the pull request it left
+      // to its thread and refresh the checkout's status.
+      const settleCheckout = (
+        input: Pick<GitRunStackedActionInput, "cwd" | "threadId">,
+        result: GitRunStackedActionResult,
+      ) =>
+        (input.threadId === undefined
+          ? Effect.void
+          : linkCreatedPullRequest({
+              threadId: input.threadId,
+              cwd: input.cwd,
+              result,
+              commandId: serverCommandId("pr-created-link"),
+            })
+        ).pipe(
+          Effect.andThen(refreshGitStatus(input.cwd)),
+          Effect.provideService(Orchestrator.OrchestratorV2, orchestrationEngine),
+          Effect.provideService(
+            RepositoryIdentityResolver.RepositoryIdentityResolver,
+            repositoryIdentityResolver,
+          ),
+        );
+
+      // Pull request readers reload after a push.
+      const refreshPushed = (
+        input: Pick<GitRunStackedActionInput, "cwd" | "threadId" | "projectId">,
+        result: GitRunStackedActionResult,
+      ) =>
+        refreshPushedPullRequests(input, result).pipe(
+          Effect.provideService(Orchestrator.OrchestratorV2, orchestrationEngine),
+          Effect.provideService(ProjectStore.ProjectStoreV2, projectStore),
+          Effect.provideService(PullRequestService.PullRequestService, pullRequests),
+        );
+
       const getOrchestrationV2ArchivedShellSnapshot = sql
         .withTransaction(
           Effect.gen(function* () {
@@ -3395,30 +3433,65 @@ const makeWsRpcLayer = (
                   Effect.matchCauseEffect({
                     onFailure: (cause) => Queue.failCause(queue, cause),
                     onSuccess: (result) =>
-                      (input.threadId === undefined
-                        ? Effect.void
-                        : linkCreatedPullRequest({
-                            threadId: input.threadId,
-                            result,
-                            commandId: serverCommandId("pr-created-link"),
-                          }).pipe(
-                            Effect.provideService(Orchestrator.OrchestratorV2, orchestrationEngine),
-                            Effect.provideService(ProjectService.ProjectService, projectService),
-                          )
-                      ).pipe(
-                        Effect.andThen(
-                          refreshPushedPullRequests(input, result).pipe(
-                            Effect.provideService(Orchestrator.OrchestratorV2, orchestrationEngine),
-                            Effect.provideService(ProjectStore.ProjectStoreV2, projectStore),
-                            Effect.provideService(
-                              PullRequestService.PullRequestService,
-                              pullRequests,
-                            ),
-                          ),
-                        ),
-                        Effect.andThen(refreshGitStatus(input.cwd)),
+                      settleCheckout(input, result).pipe(
+                        Effect.andThen(refreshPushed(input, result)),
                         Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
                       ),
+                  }),
+                ),
+            ),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsRunWorkspaceAction]: (input) =>
+          observeRpcStream(
+            WS_METHODS.vcsRunWorkspaceAction,
+            Stream.callback<VcsWorkspaceActionProgressEvent, VcsWorkspaceActionError>((queue) =>
+              gitWorkflow
+                .runWorkspaceAction(input, {
+                  progressReporter: {
+                    publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
+                  },
+                  // Detached, so a dropped connection never leaves a created
+                  // pull request unlinked.
+                  onCompleted: ({ cwd, result }) =>
+                    settleCheckout({ cwd, threadId: input.threadId }, result).pipe(
+                      Effect.forkDetach,
+                      Effect.asVoid,
+                    ),
+                })
+                .pipe(
+                  Effect.matchCauseEffect({
+                    onFailure: (cause) => Queue.failCause(queue, cause),
+                    onSuccess: ({ results }) =>
+                      Effect.gen(function* () {
+                        // Readers reload once, however many repositories pushed.
+                        const pushed = results.flatMap(({ cwd, outcome }) =>
+                          outcome._tag === "completed" && outcome.result.push.status === "pushed"
+                            ? [{ cwd, result: outcome.result }]
+                            : [],
+                        )[0];
+                        if (pushed !== undefined) {
+                          yield* refreshPushed(
+                            { cwd: pushed.cwd, threadId: input.threadId },
+                            pushed.result,
+                          );
+                        }
+                        // A failed or drifted checkout may have changed too.
+                        yield* Effect.forEach(
+                          results,
+                          ({ cwd, outcome }) =>
+                            outcome._tag === "failed" || outcome._tag === "drifted"
+                              ? refreshGitStatus(cwd)
+                              : Effect.void,
+                          { discard: true },
+                        );
+                        yield* Queue.offer(queue, {
+                          kind: "workspace_action_finished",
+                          actionId: input.actionId,
+                          results,
+                        });
+                        yield* Queue.end(queue);
+                      }),
                   }),
                 ),
             ),

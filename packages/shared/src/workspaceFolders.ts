@@ -192,6 +192,85 @@ export function resolveThreadWorkspace(input: {
   };
 }
 
+/** One git checkout a thread works in, where its version control actions run. */
+export interface WorkspaceGitCheckout {
+  /**
+   * Names the checkout: the checkout root its folders were found in, which is
+   * a worktree set member's `repositoryRoot`. A worktree picked for the
+   * primary alone, and a thread without a snapshot, name it by where the
+   * thread works.
+   */
+  readonly repositoryRoot: string;
+  /** The checkout's top where the thread works on it: its worktree, or the checkout itself. */
+  readonly root: string;
+  /** Where git runs: the first folder the checkout holds, where the thread works on it. */
+  readonly cwd: string;
+  /** The label of that folder. */
+  readonly label: string;
+  /** The branch a worktree set member is expected on; null for any other checkout. */
+  readonly expectedBranch: string | null;
+}
+
+/**
+ * The git checkouts a thread works in, the primary's first: one per checkout
+ * root among its folders that were in git when it was bound, in its worktree
+ * set when it has one. A submodule riding in a member's worktree is a
+ * checkout of its own there, never that member. URI folders are in none. A
+ * thread without a snapshot has one, at its primary path.
+ */
+export function workspaceGitCheckouts(
+  thread: WorkspaceThread,
+  project: WorkspaceProject,
+): ReadonlyArray<WorkspaceGitCheckout> {
+  const workspace = resolveThreadWorkspace({ thread, project });
+  const snapshot = thread.workspaceFolders;
+  if (snapshot === undefined || snapshot.length === 0) {
+    const primary = workspace.folders[0]!;
+    return [
+      {
+        repositoryRoot: workspace.primaryPath,
+        root: workspace.primaryPath,
+        cwd: workspace.primaryPath,
+        label: primary.label,
+        expectedBranch: null,
+      },
+    ];
+  }
+  const members = thread.worktrees ?? [];
+  // A worktree picked outside a set holds the primary alone.
+  const worktreePath = thread.worktreePath;
+  const primaryWorktree =
+    worktreePath !== null && !members.some((member) => isPathWithin(member.path, worktreePath))
+      ? worktreePath
+      : null;
+  const checkouts: Array<WorkspaceGitCheckout> = [];
+  workspace.folders.forEach((resolved, index) => {
+    const folder = snapshot[index]!;
+    const checkoutRoot = folder.checkoutRoot;
+    if (typeof checkoutRoot !== "string" || resolved.effectivePath === null) return;
+    const picked = resolved.isPrimary ? primaryWorktree : null;
+    const member = members.find((candidate) => isSamePath(candidate.repositoryRoot, checkoutRoot));
+    const root = picked ?? member?.path ?? worktreeSetPath(checkoutRoot, members);
+    if (checkouts.some((checkout) => isSamePath(checkout.root, root))) return;
+    checkouts.push({
+      repositoryRoot: picked ?? checkoutRoot,
+      root,
+      cwd: resolved.effectivePath,
+      label: resolved.label,
+      expectedBranch: picked === null ? (member?.branch ?? null) : null,
+    });
+  });
+  return checkouts;
+}
+
+/** Whether a checkout has left the branch its worktree set expects. Any other checkout never has. */
+export function isCheckoutDrifted(
+  checkout: Pick<WorkspaceGitCheckout, "expectedBranch">,
+  refName: string | null,
+): boolean {
+  return checkout.expectedBranch !== null && refName !== checkout.expectedBranch;
+}
+
 /**
  * A file's canonical workspace path: `<label>/<relative path>` when the scope
  * has several folders, and the bare relative path when it has one, so a

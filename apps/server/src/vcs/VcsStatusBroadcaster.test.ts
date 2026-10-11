@@ -12,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -20,9 +21,8 @@ import type {
   VcsStatusLocalResult,
   VcsStatusRemoteResult,
   VcsStatusResult,
-  VcsStatusStreamEvent,
 } from "@t3tools/contracts";
-import { GitManagerError } from "@t3tools/contracts";
+import { GitManagerError, VcsStatusStreamEvent } from "@t3tools/contracts";
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
@@ -1027,4 +1027,199 @@ describe("VcsStatusBroadcaster", () => {
       assert.isTrue(Option.isSome(yield* Deferred.poll(remoteInterrupted)));
     }).pipe(Effect.provide(testLayer));
   });
+
+  it.effect("a branch subscription streams branch changes only and never polls the remote", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const branchEvents: Array<VcsStatusStreamEvent> = [];
+      const first = yield* Deferred.make<void>();
+      const switched = yield* Deferred.make<void>();
+      yield* Stream.runForEach(
+        broadcaster.streamStatus({ cwd: "/repo", scope: "branch" }),
+        (event) =>
+          Effect.suspend(() => {
+            branchEvents.push(event);
+            return Deferred.succeed(branchEvents.length === 1 ? first : switched, undefined);
+          }),
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(first);
+
+      yield* TestClock.adjust(Duration.minutes(2));
+      assert.equal(state.remoteStatusCalls, 0);
+
+      // Changed files on the same branch are no branch change.
+      state.currentLocalStatus = {
+        ...baseLocalStatus,
+        hasWorkingTreeChanges: true,
+        workingTree: {
+          files: [{ path: "a.ts", insertions: 1, deletions: 0 }],
+          insertions: 1,
+          deletions: 0,
+        },
+      };
+      yield* broadcaster.refreshLocalStatus("/repo");
+      state.currentLocalStatus = { ...state.currentLocalStatus, refName: "feature/next" };
+      yield* broadcaster.refreshLocalStatus("/repo");
+      yield* Deferred.await(switched);
+
+      assert.deepStrictEqual(branchEvents, [
+        { _tag: "branch", isRepo: true, refName: "feature/status-broadcast" },
+        { _tag: "branch", isRepo: true, refName: "feature/next" },
+      ] satisfies Array<VcsStatusStreamEvent>);
+
+      // A full subscription to the same checkout still keeps the remote poller.
+      const remoteUpdated = yield* Deferred.make<void>();
+      yield* Stream.runForEach(broadcaster.streamStatus({ cwd: "/repo" }), (event) =>
+        event._tag === "remoteUpdated" ? Deferred.succeed(remoteUpdated, undefined) : Effect.void,
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(remoteUpdated);
+      assert.equal(state.remoteStatusCalls, 1);
+      assert.equal(state.localStatusCalls, 3);
+    }).pipe(Effect.provide(Layer.merge(makeTestLayer(state), TestClock.layer())), Effect.scoped);
+  });
+
+  // Spec measured case: 20 visible sidebar rows, each a 5-repo worktree set.
+  // Every member streams its branch for the agreement hint and each row's
+  // primary keeps its full lease.
+  it.effect(
+    "measured case: 20 rows of 5-repo sets load each checkout once and poll 20 remotes",
+    () => {
+      const rows = 20;
+      const repos = 5;
+      const checkout = (row: number, repo: number) => `/wt/thread-${row}/repo-${repo}`;
+      const checkouts = Array.from({ length: rows }, (_, row) =>
+        Array.from({ length: repos }, (_, repo) => checkout(row, repo)),
+      ).flat();
+      const changedFiles = Array.from({ length: 40 }, (_, index) => ({
+        path: `packages/app/src/components/sidebar/ThreadRow${index}.tsx`,
+        insertions: 12,
+        deletions: 3,
+      }));
+      const onBranch = (refName: string, files = changedFiles): VcsStatusLocalResult => ({
+        ...baseLocalStatus,
+        refName,
+        hasWorkingTreeChanges: true,
+        workingTree: { files, insertions: 12 * files.length, deletions: 3 * files.length },
+      });
+      const locals = new Map(checkouts.map((cwd) => [cwd, onBranch("t3code/feature")]));
+      let localStatusCalls = 0;
+      let remoteStatusCalls = 0;
+      const layer = VcsStatusBroadcaster.layer.pipe(
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provide(makeBackgroundPolicyLayer(() => true)),
+        Layer.provide(
+          Layer.mock(GitWorkflowService.GitWorkflowService)({
+            localStatus: ({ cwd }) =>
+              Effect.sync(() => {
+                localStatusCalls += 1;
+                return locals.get(cwd) ?? onBranch("main");
+              }),
+            remoteStatus: () =>
+              Effect.sync(() => {
+                remoteStatusCalls += 1;
+                return baseRemoteStatus;
+              }),
+            invalidateLocalStatus: () => Effect.void,
+            invalidateRemoteStatus: () => Effect.void,
+          }),
+        ),
+      );
+      const encode = Schema.encodeSync(Schema.fromJsonString(VcsStatusStreamEvent));
+      const bytes = (event: VcsStatusStreamEvent) => new TextEncoder().encode(encode(event)).length;
+
+      return Effect.gen(function* () {
+        const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+        const branchEvents: Array<VcsStatusStreamEvent> = [];
+        const branchSubscribers = yield* Effect.forEach(checkouts, (cwd) =>
+          Effect.gen(function* () {
+            const first = yield* Deferred.make<void>();
+            const final = yield* Deferred.make<void>();
+            yield* Stream.runForEach(broadcaster.streamStatus({ cwd, scope: "branch" }), (event) =>
+              Effect.sync(() => branchEvents.push(event)).pipe(
+                Effect.andThen(Deferred.succeed(first, undefined)),
+                Effect.andThen(
+                  event._tag === "branch" && event.refName === "t3code/final"
+                    ? Deferred.succeed(final, undefined)
+                    : Effect.void,
+                ),
+              ),
+            ).pipe(Effect.forkScoped);
+            return { first, final };
+          }),
+        );
+        yield* Effect.forEach(branchSubscribers, ({ first }) => Deferred.await(first));
+
+        const fullEvents: Array<VcsStatusStreamEvent> = [];
+        const fullSubscribers = yield* Effect.forEach(
+          Array.from({ length: rows }, (_, row) => checkout(row, 0)),
+          (cwd) =>
+            Effect.gen(function* () {
+              const remoteLoaded = yield* Deferred.make<void>();
+              const final = yield* Deferred.make<void>();
+              yield* Stream.runForEach(broadcaster.streamStatus({ cwd }), (event) =>
+                Effect.sync(() => fullEvents.push(event)).pipe(
+                  Effect.andThen(
+                    event._tag === "remoteUpdated"
+                      ? Deferred.succeed(remoteLoaded, undefined)
+                      : event._tag === "localUpdated" && event.local.refName === "t3code/final"
+                        ? Deferred.succeed(final, undefined)
+                        : Effect.void,
+                  ),
+                ),
+              ).pipe(Effect.forkScoped);
+              return { remoteLoaded, final };
+            }),
+        );
+        yield* Effect.forEach(fullSubscribers, ({ remoteLoaded }) => Deferred.await(remoteLoaded));
+
+        // Subscriptions: 100 branch and 20 full share one local read per checkout,
+        // and only the 20 full ones keep a remote poller.
+        assert.equal(branchEvents.length, rows * repos);
+        assert.equal(localStatusCalls, rows * repos);
+        assert.equal(remoteStatusCalls, rows);
+
+        // Payload: a branch event stays small however many files changed, far
+        // below the full snapshot each member would otherwise stream.
+        const branchBytes = branchEvents.map(bytes);
+        const fullSnapshotBytes = bytes({
+          _tag: "snapshot",
+          local: onBranch("t3code/feature"),
+          remote: null,
+        });
+        assert.isTrue(branchBytes.every((size) => size < 80));
+        assert.isTrue(Math.max(...branchBytes) * 30 < fullSnapshotBytes);
+
+        // Sidebar updates. A turn changes files in every repo of row 0: only its
+        // primary's full lease updates. Row 3's second member switches branch:
+        // exactly one branch event.
+        for (let repo = 0; repo < repos; repo += 1) {
+          locals.set(checkout(0, repo), onBranch("t3code/feature", changedFiles.slice(1)));
+          yield* broadcaster.refreshLocalStatus(checkout(0, repo));
+        }
+        locals.set(checkout(3, 1), onBranch("t3code/other"));
+        yield* broadcaster.refreshLocalStatus(checkout(3, 1));
+        // Moving every checkout to one last branch flushes each subscriber, so
+        // the counts below include every event the steps above caused.
+        for (const cwd of checkouts) {
+          locals.set(cwd, onBranch("t3code/final"));
+          yield* broadcaster.refreshLocalStatus(cwd);
+        }
+        yield* Effect.forEach([...branchSubscribers, ...fullSubscribers], ({ final }) =>
+          Deferred.await(final),
+        );
+
+        assert.equal(branchEvents.length, rows * repos + 1 + rows * repos);
+        assert.equal(fullEvents.filter((event) => event._tag === "localUpdated").length, 1 + rows);
+      }).pipe(Effect.provide(Layer.merge(layer, TestClock.layer())), Effect.scoped);
+    },
+  );
 });

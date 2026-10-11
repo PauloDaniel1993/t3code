@@ -347,6 +347,10 @@ const GitLayerLive = Layer.empty.pipe(
 );
 
 const GitWorkflowLayerLive = GitWorkflowService.layer.pipe(
+  // Workspace actions read the thread's folders and probe its checkouts.
+  Layer.provide(
+    Layer.mergeAll(ProjectionStoreV2.layer, ProjectStore.layer, WorkspaceFolderResolver.layer),
+  ),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
 );
