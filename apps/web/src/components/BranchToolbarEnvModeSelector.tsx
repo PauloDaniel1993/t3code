@@ -67,7 +67,11 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   const groupedLabel =
     repositoryCount === undefined
       ? undefined
-      : `${activeWorktreePath ? "Worktree" : effectiveEnvMode === "worktree" || forceNewWorktree ? "New worktree" : "Current checkout"} · ${repositoryCount} ${repositoryCount === 1 ? "repo" : "repos"}`;
+      : worktreeDisabledReason &&
+          !activeWorktreePath &&
+          (effectiveEnvMode === "worktree" || forceNewWorktree)
+        ? "Worktree unavailable"
+        : `${activeWorktreePath ? "Worktree" : effectiveEnvMode === "worktree" || forceNewWorktree ? "New worktree" : "Current checkout"} · ${repositoryCount} ${repositoryCount === 1 ? "repo" : "repos"}`;
   const composerFloatingLayerProps = useComposerMenuProps();
   const showPreviousWorktree = Boolean(previousWorktreeLabel && onUsePreviousWorktree);
   const envModeItems = useMemo(

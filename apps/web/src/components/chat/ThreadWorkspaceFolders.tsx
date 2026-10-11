@@ -1,9 +1,4 @@
-import type {
-  EditorId,
-  EnvironmentId,
-  OrchestrationV2ProviderSession,
-  ResolvedKeybindingsConfig,
-} from "@t3tools/contracts";
+import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
 import { useState } from "react";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -11,7 +6,6 @@ import { projectEnvironment } from "../../state/projects";
 import { WorkspaceFolderGroups } from "../WorkspaceFolderGroups";
 import {
   workspaceAvailabilityPending,
-  workspaceFolderRows,
   workspaceSnapshotChanged,
   type WorkspaceFolderRow,
   type WorkspaceFoldersProject,
@@ -23,24 +17,30 @@ export function ThreadWorkspaceFolders(props: {
   environmentId: EnvironmentId;
   project: WorkspaceFoldersProject;
   thread: WorkspaceThread | null;
+  rows: ReadonlyArray<WorkspaceFolderRow>;
   unavailableFolderPaths?: ReadonlyArray<string> | undefined;
-  session?: OrchestrationV2ProviderSession | undefined;
   availableEditors: ReadonlyArray<EditorId>;
   keybindings: ResolvedKeybindingsConfig;
   onShowChanges?: ((folder: WorkspaceFolderRow) => void) | undefined;
   onOpenTerminalHere?: ((folderPath: string) => void) | undefined;
 }) {
-  const rows = workspaceFolderRows(props.project, props.thread, props.unavailableFolderPaths);
+  const rows = props.rows;
   return (
     <>
       <WorkspaceFolderGroups {...props} rows={rows} />
+      {rows[0]?.unavailable ? (
+        <p className="mx-2 my-2 rounded-lg border border-warning/30 p-2 text-2xs text-warning">
+          The primary folder is unavailable. This thread cannot start a turn until it is available
+          again.
+        </p>
+      ) : null}
       {props.thread && workspaceSnapshotChanged(props.project, props.thread) ? (
         <p className="px-2 py-1 text-2xs text-muted-foreground">
           This thread keeps the folders it started with. Start a new thread to use the updated
           workspace.
         </p>
       ) : null}
-      {workspaceAvailabilityPending(rows, props.session) ? (
+      {workspaceAvailabilityPending(rows, props.unavailableFolderPaths) ? (
         <p className="px-2 py-1 text-2xs text-warning">
           Folder availability changed; applies on the next turn
         </p>

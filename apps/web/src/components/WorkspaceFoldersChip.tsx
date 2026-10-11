@@ -59,7 +59,7 @@ function WorkspaceFoldersChipContents(props: WorkspaceFoldersChipProps) {
 
 export function WorkspaceFoldersChip(props: WorkspaceFoldersChipProps) {
   const [open, setOpen] = useState(false);
-  const project = useProject(props.projectRef);
+  const project = useProject(props.threadRef ? null : props.projectRef);
   const config = useAtomValue(serverEnvironment.configValueAtom(props.projectRef.environmentId));
   const count = workspaceFolderChipCount(props.threadRef ? props : null, project);
   if (count < 2 || config?.workspaceFileProjects !== true) return null;

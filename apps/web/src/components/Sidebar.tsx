@@ -53,9 +53,10 @@ import {
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
 import {
+  type EnvironmentId,
   type EnvironmentMachineKind,
+  type ProjectId,
   type ScopedThreadRef,
-  type ScopedProjectRef,
   type ThreadId,
 } from "@t3tools/contracts";
 
@@ -834,7 +835,8 @@ function SidebarSectionHeader(props: {
 const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   draftId: DraftId;
   composer: ComposerThreadDraftState;
-  projectRef: ScopedProjectRef;
+  environmentId: EnvironmentId;
+  projectId: ProjectId;
   project: ProjectFaviconProject | null;
   projectDisplayName: string | null;
   isActive: boolean;
@@ -911,7 +913,9 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
             <span className="min-w-0 flex-1 truncate text-xs font-medium text-secondary-label">
               {props.projectDisplayName}
             </span>
-            <WorkspaceFoldersChip projectRef={props.projectRef} />
+            <WorkspaceFoldersChip
+              projectRef={{ environmentId: props.environmentId, projectId: props.projectId }}
+            />
             <span className="ml-auto flex h-5 min-w-5 shrink-0 items-center justify-end">
               <Tooltip>
                 <TooltipTrigger
@@ -1044,7 +1048,8 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
             key={draftId}
             draftId={draftId}
             composer={composer}
-            projectRef={{ environmentId: session.environmentId, projectId: session.projectId }}
+            environmentId={session.environmentId}
+            projectId={session.projectId}
             project={props.projectByKey.get(projectKey) ?? null}
             projectDisplayName={props.projectDisplayNameByKey.get(projectKey) ?? null}
             isActive={draftId === props.routeDraftId}

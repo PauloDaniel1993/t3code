@@ -2,7 +2,6 @@ import type {
   EditorId,
   EnvironmentId,
   ProjectScript,
-  OrchestrationV2ProviderSession,
   ResolvedKeybindingsConfig,
   ThreadId,
 } from "@t3tools/contracts";
@@ -55,7 +54,6 @@ export interface ThreadDetailsPanelProps extends Pick<
   workspaceProject?: WorkspaceFoldersProject | undefined;
   workspaceThread?: WorkspaceThread | null | undefined;
   workspaceWorktreePath?: string | null | undefined;
-  workspaceSession?: OrchestrationV2ProviderSession | undefined;
   workspaceUnavailableFolderPaths?: ReadonlyArray<string> | undefined;
   onOpenFolderChanges?: ((folder: WorkspaceFolderRow) => void) | undefined;
   onOpenTerminalHere?: (folderPath: string) => void;
@@ -190,9 +188,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   workspaceRoot={props.gitCwd}
                   repositoryCount={workspaceRepositoryCount(rows)}
                   worktreeDisabledReason={
-                    rows[0]?.isGit
-                      ? undefined
-                      : "The primary folder must be an available Git repository to use worktrees."
+                    rows[0]?.unavailable || (rows[0]?.vcsKnown && !rows[0].isGit)
+                      ? "The primary folder must be an available Git repository to use worktrees."
+                      : undefined
                   }
                   onEnvModeChange={props.onEnvModeChange}
                 />
@@ -205,7 +203,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   environmentId={props.environmentId}
                   project={props.workspaceProject}
                   thread={props.workspaceThread ?? null}
-                  session={props.workspaceSession}
+                  rows={rows}
                   unavailableFolderPaths={props.workspaceUnavailableFolderPaths}
                   availableEditors={props.availableEditors}
                   keybindings={props.keybindings}

@@ -1,13 +1,8 @@
-import type {
-  OrchestrationProjectShell,
-  OrchestrationV2ProviderSession,
-  OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+import type { OrchestrationProjectShell } from "@t3tools/contracts";
 import {
   isSamePath,
   projectFolders,
   resolveThreadWorkspace,
-  workspaceAdditionalDirectories,
   type WorkspaceThread,
 } from "@t3tools/shared/workspaceFolders";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
@@ -46,10 +41,15 @@ export function workspaceFolderRows(
         ? resolved.folder.uri
         : normalizeProjectPathForComparison(resolved.folder.path),
     );
+    const isWorktree =
+      resolved.folder.path !== undefined &&
+      resolved.effectivePath !== null &&
+      !isSamePath(resolved.folder.path, resolved.effectivePath);
+    const availability = resolved.isPrimary && isWorktree ? undefined : facts?.availability;
     const unavailable =
       resolved.effectivePath === null ||
-      facts?.availability === "unavailable" ||
-      (facts?.availability === undefined &&
+      availability === "unavailable" ||
+      (availability === undefined &&
         unavailableFolderPaths.some((path) =>
           resolved.folder.path ? isSamePath(path, resolved.folder.path) : false,
         ));
@@ -60,10 +60,6 @@ export function workspaceFolderRows(
           ? null
           : facts?.vcs?.checkoutRoot;
     const isGit = !unavailable && typeof checkoutRoot === "string";
-    const isWorktree =
-      resolved.folder.path !== undefined &&
-      resolved.effectivePath !== null &&
-      !isSamePath(resolved.folder.path, resolved.effectivePath);
     const reason = !unavailable
       ? null
       : resolved.folder.uri !== undefined || facts?.unavailableReason === "remote"
@@ -77,6 +73,7 @@ export function workspaceFolderRows(
       ...resolved,
       effectivePath: unavailable ? null : resolved.effectivePath,
       checkoutRoot,
+      vcsKnown: thread?.workspaceFolders !== undefined || facts?.vcs !== undefined,
       isGit,
       isWorktree,
       unavailable,
@@ -120,29 +117,15 @@ export function workspaceSnapshotChanged(
 
 export function workspaceAvailabilityPending(
   rows: ReadonlyArray<WorkspaceFolderRow>,
-  session: Pick<OrchestrationV2ProviderSession, "cwd" | "additionalDirectories"> | undefined,
+  lastRunUnavailableFolderPaths: ReadonlyArray<string> | undefined,
 ) {
-  if (!session || rows.length < 2) return false;
-  const primary = rows[0]!;
-  if (primary.effectivePath === null) return true;
-  const directories = workspaceAdditionalDirectories({
-    primaryPath: primary.effectivePath,
-    folders: rows,
-  });
-  const installed = session.additionalDirectories ?? [];
-  return (
-    !isSamePath(primary.effectivePath, session.cwd) ||
-    directories.length !== installed.length ||
-    directories.some((path, index) => !installed[index] || !isSamePath(path, installed[index]!))
-  );
-}
-
-export function workspaceInstalledSession(projection: OrchestrationV2ThreadProjection) {
-  const providerThread = projection.providerThreads.find(
-    (candidate) => candidate.id === projection.thread.activeProviderThreadId,
-  );
-  return projection.providerSessions.find(
-    (session) => session.id === providerThread?.providerSessionId,
+  if (!lastRunUnavailableFolderPaths || rows[0]?.unavailable) return false;
+  return rows.some(
+    (row) =>
+      !row.isPrimary &&
+      row.folder.path !== undefined &&
+      row.unavailable !==
+        lastRunUnavailableFolderPaths.some((path) => isSamePath(path, row.folder.path!)),
   );
 }
 

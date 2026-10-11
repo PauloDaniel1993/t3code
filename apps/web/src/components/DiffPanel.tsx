@@ -180,6 +180,7 @@ export default function DiffPanel({
             activeProject,
             activeThreadProjection.thread,
             selectedFolderPath,
+            activeThreadProjection.runs.at(-1)?.unavailableFolderPaths,
           )
         : null,
     [activeProject, activeThreadProjection, selectedFolderPath],
@@ -429,15 +430,14 @@ export default function DiffPanel({
   const isSelectedPatchTruncated = !selectedTurn && selectedGitSource?.truncated === true;
   const isLoadingSelectedPatch = selectedTurn
     ? activeCheckpointDiff.isPending
-    : branchDiffPreview.isPending;
+    : branchDiffPreview.isPending || (selectedFolderPath !== undefined && !activeThreadProjection);
   const selectedPatchError =
-    selectedFolderPath && !folderTarget
+    selectedFolderPath && activeThreadProjection && !folderTarget
       ? "This workspace folder is unavailable for changes."
       : selectedTurn
         ? activeCheckpointDiff.error
         : branchDiffPreview.error;
   const hasResolvedPatch = typeof selectedPatch === "string";
-  const hasNoNetChanges = hasResolvedPatch && selectedPatch.trim().length === 0;
   const lazySource =
     !selectedTurn && selectedGitSource?.truncated && selectedGitSource.files
       ? selectedGitSource
@@ -476,6 +476,11 @@ export default function DiffPanel({
           : renderablePatch,
     [folderTarget, renderablePatch],
   );
+  const hasNoNetChanges =
+    (hasResolvedPatch && selectedPatch.trim().length === 0) ||
+    (folderTarget !== null &&
+      ((folderPatch?.kind === "files" && folderPatch.files.length === 0) ||
+        lazySource?.files?.length === 0));
   const fileStats = useMemo(
     () => new Map(lazySource?.files?.map((file) => [file.path, file])),
     [lazySource?.files],
@@ -1074,7 +1079,7 @@ export default function DiffPanel({
                 <p className="mb-2 text-2xs text-error/80">{selectedPatchError}</p>
               </div>
             )}
-            {!folderPatch && !lazySource ? (
+            {(!folderPatch && !lazySource) || hasNoNetChanges ? (
               isLoadingSelectedPatch ? (
                 <DiffPanelLoadingState
                   label={

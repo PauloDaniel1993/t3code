@@ -129,7 +129,11 @@ describe("workspace folder presentation", () => {
       })),
     };
     expect(workspaceSnapshotChanged(changed, thread)).toBe(false);
-    expect(workspaceFolderRows(changed, thread).some((row) => row.isGit)).toBe(false);
+    expect(
+      workspaceFolderRows(changed, { ...thread, worktreePath: null, worktrees: [] }).some(
+        (row) => row.isGit,
+      ),
+    ).toBe(false);
   });
 
   it("uses last-run unavailability for folders removed from the current project", () => {
@@ -187,27 +191,42 @@ describe("workspace folder presentation", () => {
     ]);
   });
 
-  it("shows pending adoption only when effective availability differs from installed access", () => {
+  it("compares availability with this thread's last run independently of shared sessions", () => {
     const rows = workspaceFolderRows(project, thread);
     expect(workspaceAvailabilityPending(rows, undefined)).toBe(false);
-    expect(
-      workspaceAvailabilityPending(rows, {
-        cwd: "/sets/session/app",
-        additionalDirectories: ["/sets/api", "/notes"],
-      }),
-    ).toBe(false);
-    expect(
-      workspaceAvailabilityPending(rows, {
-        cwd: "/sets/session/app",
-        additionalDirectories: ["/sets/api", "/notes", "/archive"],
-      }),
-    ).toBe(true);
-    expect(
-      workspaceAvailabilityPending(rows, {
-        cwd: "/sets/session/app",
-        additionalDirectories: ["/notes"],
-      }),
-    ).toBe(true);
+    expect(workspaceAvailabilityPending(rows, ["/archive"])).toBe(false);
+    expect(workspaceAvailabilityPending(rows, [])).toBe(true);
+    expect(workspaceAvailabilityPending(rows, ["/archive", "/api"])).toBe(true);
+  });
+
+  it("keeps a bound primary worktree available when its original checkout disappears", () => {
+    const missingPrimary = {
+      ...project,
+      folders: project.folders!.map((folder, index) =>
+        index === 0 ? { ...folder, availability: "unavailable" as const } : folder,
+      ),
+    };
+    expect(workspaceFolderRows(missingPrimary, thread)[0]).toMatchObject({
+      effectivePath: "/sets/session/app",
+      isGit: true,
+      unavailable: false,
+    });
+    const currentCheckout = workspaceFolderRows(missingPrimary, {
+      ...thread,
+      worktreePath: null,
+      worktrees: [],
+    });
+    expect(currentCheckout[0]?.unavailable).toBe(true);
+    expect(workspaceAvailabilityPending(currentCheckout, [])).toBe(false);
+  });
+
+  it("distinguishes pending draft VCS facts from a known non-git folder", () => {
+    const pending = workspaceFolderRows(
+      { ...project, folders: project.folders!.map((folder) => ({ ...folder, vcs: undefined })) },
+      null,
+    );
+    expect(pending[0]).toMatchObject({ vcsKnown: false, isGit: false });
+    expect(workspaceFolderRows(project, null)[2]).toMatchObject({ vcsKnown: true, isGit: false });
   });
 
   it("uses Windows path identity when matching health and comparing snapshots", () => {

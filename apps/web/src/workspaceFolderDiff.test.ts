@@ -47,6 +47,14 @@ describe("workspace folder diff scope", () => {
     expect(workspaceFolderDiffTarget(project, thread, "/unknown")).toBeNull();
     expect(
       workspaceFolderDiffTarget(
+        { ...project, folders: project.folders.slice(0, 1) },
+        thread,
+        "/api",
+        ["/api"],
+      ),
+    ).toBeNull();
+    expect(
+      workspaceFolderDiffTarget(
         {
           ...project,
           folders: project.folders.map((folder) => ({

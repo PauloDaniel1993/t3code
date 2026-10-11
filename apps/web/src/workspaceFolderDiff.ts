@@ -17,8 +17,9 @@ export function workspaceFolderDiffTarget(
   project: WorkspaceFoldersProject,
   thread: WorkspaceThread,
   folderPath: string,
+  unavailableFolderPaths?: ReadonlyArray<string> | undefined,
 ) {
-  const rows = workspaceFolderRows(project, thread);
+  const rows = workspaceFolderRows(project, thread, unavailableFolderPaths);
   const row = rows.find(
     (folder) => folder.folder.path && isSamePath(folder.folder.path, folderPath),
   );

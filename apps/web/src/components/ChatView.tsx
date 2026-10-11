@@ -447,7 +447,7 @@ import {
 } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel, type ThreadDetailsPanelProps } from "./chat/ThreadDetailsPanel";
-import { workspaceInstalledSession, type WorkspaceFolderRow } from "./workspaceFolders.logic";
+import { type WorkspaceFolderRow } from "./workspaceFolders.logic";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   type EnvironmentOption,
@@ -10589,8 +10589,9 @@ export default function ChatView(props: ChatViewProps) {
       serverConfig?.workspaceFileProjects === true && activeProject ? activeProject : undefined,
     workspaceThread: isServerThread ? actionThread : null,
     workspaceWorktreePath: actionThread?.worktreePath ?? draftThread?.worktreePath ?? null,
-    workspaceSession: serverProjection ? workspaceInstalledSession(serverProjection) : undefined,
-    workspaceUnavailableFolderPaths: serverProjection?.runs.at(-1)?.unavailableFolderPaths,
+    workspaceUnavailableFolderPaths: serverProjection?.runs.length
+      ? (serverProjection.runs.at(-1)?.unavailableFolderPaths ?? [])
+      : undefined,
     onOpenFolderChanges: isServerThread ? openFolderChangesFromThreadPanel : undefined,
     onOpenTerminalHere: openTerminalInFolder,
     preferredScriptId: activeProject

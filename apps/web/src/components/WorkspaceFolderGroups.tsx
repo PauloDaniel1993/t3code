@@ -42,10 +42,10 @@ function WorkspaceFolderRowView({
   );
   const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "workspace folder path" });
   const subline = row.unavailable
-    ? `${row.reason} · skipped`
+    ? `${row.reason} · ${row.isPrimary ? "blocks this thread" : "skipped"}`
     : row.isGit
       ? `${status.data?.refName ?? (status.error ? "Status unavailable" : status.data ? "Detached HEAD" : "Loading branch…")} · ${row.isWorktree ? "Worktree" : "Current checkout"}`
-      : row.checkoutRoot === undefined
+      : !row.vcsKnown
         ? "Folder status not available"
         : "Shared · not checkpointed";
   return (
@@ -80,14 +80,18 @@ function WorkspaceFolderRowView({
           <EllipsisIcon className="size-3.5" />
         </MenuTrigger>
         <MenuPopup>
-          <OpenInPicker
-            environmentId={props.environmentId}
-            availableEditors={props.availableEditors}
-            keybindings={props.keybindings}
-            openInCwd={row.effectivePath}
-            presentation="menu"
-            enableShortcut={false}
-          />
+          {row.unavailable ? (
+            <MenuItem disabled>Open in…</MenuItem>
+          ) : (
+            <OpenInPicker
+              environmentId={props.environmentId}
+              availableEditors={props.availableEditors}
+              keybindings={props.keybindings}
+              openInCwd={row.effectivePath}
+              presentation="menu"
+              enableShortcut={false}
+            />
+          )}
           <MenuItem onClick={() => copyToClipboard(row.path, undefined)}>
             <CopyIcon className="size-4" />
             {isCopied ? "Path copied" : "Copy path"}
