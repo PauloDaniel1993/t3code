@@ -688,6 +688,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const settingsRouteSession = useMemo<ExistingThreadSettingsRouteSession>(
     () => ({
       ownerId: settingsOwnerId,
+      workspaceTarget: { environmentId: props.environmentId, threadId: props.selectedThread.id },
       environmentId: props.environmentId,
       providerInstanceId: currentModelSelection.instanceId,
       providerGroups: threadProviderGroups,

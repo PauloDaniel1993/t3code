@@ -421,3 +421,4 @@ export * from "./gitActions.ts";
 export * from "./vcsAction.ts";
 export * from "./vcsRef.ts";
 export * from "./workspaceVcs.ts";
+export * from "./workspaceVcsActions.ts";

@@ -20,6 +20,8 @@ import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import { canSnooze, resolveSnoozePresets } from "@t3tools/client-runtime/state/thread-settled";
 import type { MenuAction } from "@react-native-menu/menu";
+import { useNavigation } from "@react-navigation/native";
+import { useEnvironmentServerConfig } from "../../state/entities";
 import { memo, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
 import { Alert, Pressable, useWindowDimensions, View } from "react-native";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
@@ -50,6 +52,7 @@ import {
   type ThreadListV2Status,
 } from "./threadListV2";
 import { QueuedMessageIcon } from "./queued-message-icon";
+import { WorkspaceFoldersChip, WorkspaceBranchHint } from "./WorkspaceFoldersChip";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
 /**
@@ -314,6 +317,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
         >
           {projectTitle}
         </Text>
+        {props.project ? <WorkspaceFoldersChip project={props.project} /> : null}
         {isDraft ? (
           <View className="flex-row items-center gap-1">
             <SymbolView
@@ -551,6 +555,18 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onMoveThread,
   } = props;
   const snoozedRow = props.snoozed === true;
+  const workspaceFoldersEnabled =
+    useEnvironmentServerConfig(thread.environmentId)?.workspaceFileProjects === true;
+  const hasWorkspaceFolders = workspaceFoldersEnabled && (thread.workspaceFolderCount ?? 1) >= 2;
+  const navigation = useNavigation();
+  const openWorkspaceFolders = useCallback(
+    () =>
+      navigation.navigate("ThreadWorkspaceFolders", {
+        environmentId: thread.environmentId,
+        threadId: thread.id,
+      }),
+    [navigation, thread.environmentId, thread.id],
+  );
   const pinnedRow = props.pinned === true;
   const dormant = useSwipeRowDormant(props.activationKey);
 
@@ -811,6 +827,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "copy-thread-id") {
         copyTextWithHaptic(thread.id, { target: "thread-id" });
       }
+      if (nativeEvent.event === "workspace-folders") openWorkspaceFolders();
       if (nativeEvent.event === "delete") handleDelete();
       if (nativeEvent.event === "snooze:custom") {
         setCustomSnoozeOpen(true);
@@ -829,6 +846,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     },
     [
       onNewThreadOnBranch,
+      openWorkspaceFolders,
       thread,
       handleArchive,
       handleDelete,
@@ -1022,20 +1040,22 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                   {thread.branch}
                 </Text>
               ) : null}
-              {thread.branch && props.environmentLabel ? "  ·  " : null}
-              {props.environmentLabel ? (
-                <Text
-                  className={cn(
-                    "text-xs",
-                    selected
-                      ? selectedThreadRowColors.mutedForegroundClassName
-                      : rowAppearance.tertiaryForegroundClassName,
-                  )}
-                >
-                  {props.environmentLabel}
-                </Text>
-              ) : null}
             </Text>
+            <WorkspaceBranchHint thread={thread} active={!dormant} />
+            {props.environmentLabel ? (
+              <Text
+                numberOfLines={1}
+                className={cn(
+                  "shrink text-xs",
+                  selected
+                    ? selectedThreadRowColors.mutedForegroundClassName
+                    : rowAppearance.tertiaryForegroundClassName,
+                )}
+              >
+                {thread.branch ? "· " : ""}
+                {props.environmentLabel}
+              </Text>
+            ) : null}
             {props.environmentLabel && props.environmentMachine ? (
               <EnvironmentMachineSymbol
                 kind={props.environmentMachine}
@@ -1075,6 +1095,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             </Text>
           </View>
         ) : null}
+        <WorkspaceFoldersChip thread={thread} />
         {providerInstance ? (
           // Earlier owners peek out behind the current provider so a
           // handed-off thread shows where it has been. The current owner
@@ -1113,6 +1134,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         }
         accessibilityRole="button"
         accessibilityState={{ selected }}
+        accessibilityActions={
+          hasWorkspaceFolders
+            ? [{ name: "workspace-folders", label: "Show workspace folders" }]
+            : undefined
+        }
+        onAccessibilityAction={(event) => {
+          if (event.nativeEvent.actionName === "workspace-folders") {
+            close();
+            openWorkspaceFolders();
+          }
+        }}
         onPress={() => {
           close();
           onSelectThread(thread);
@@ -1145,6 +1177,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         }
         accessibilityRole="button"
         accessibilityState={{ selected }}
+        accessibilityActions={
+          hasWorkspaceFolders
+            ? [{ name: "workspace-folders", label: "Show workspace folders" }]
+            : undefined
+        }
+        onAccessibilityAction={(event) => {
+          if (event.nativeEvent.actionName === "workspace-folders") {
+            close();
+            openWorkspaceFolders();
+          }
+        }}
         className={rowAppearance.className}
         onPress={() => {
           close();
@@ -1193,6 +1236,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             ) : null}
           </View>
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
+          <WorkspaceFoldersChip thread={thread} />
           <Text
             className={cn(
               "text-sm tabular-nums",
@@ -1250,6 +1294,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                   ]
                 : []),
               { id: "copy-thread-id", title: "Copy thread ID", image: "doc.on.doc" },
+              ...(hasWorkspaceFolders
+                ? [{ id: "workspace-folders", title: "Workspace folders", image: "folder" }]
+                : []),
               ...(snoozedRow
                 ? snoozedMenuActions
                 : !props.settlementSupported

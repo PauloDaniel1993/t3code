@@ -41,8 +41,11 @@ import { useSelectedThreadGitActions } from "../../../state/use-selected-thread-
 import { useSelectedThreadGitState } from "../../../state/use-selected-thread-git-state";
 import { useSelectedThreadWorktree } from "../../../state/use-selected-thread-worktree";
 import { vcsEnvironment } from "../../../state/vcs";
+import { useEnvironmentServerConfig, useThreadShell } from "../../../state/entities";
 import { resolveGitOverviewReviewNavigationAction } from "./git-overview-navigation";
 import { MetaCard, SheetListRow, menuItemIconName, statusSummary } from "./gitSheetComponents";
+import { WorkspaceGitOverviewSheet } from "./WorkspaceGitOverviewSheet";
+import { workspaceFolderChipCount } from "../workspace-folders-model";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
@@ -55,6 +58,25 @@ type GitOverviewSheetProps = StaticScreenProps<{
 };
 
 export function GitOverviewSheet(props: GitOverviewSheetProps) {
+  const target = {
+    environmentId: EnvironmentId.make(props.route.params.environmentId),
+    threadId: ThreadId.make(props.route.params.threadId),
+  };
+  const thread = useThreadShell(target);
+  const enabled = useEnvironmentServerConfig(target.environmentId)?.workspaceFileProjects === true;
+  if (enabled && workspaceFolderChipCount(thread, null) >= 2) {
+    return (
+      <WorkspaceGitOverviewSheet
+        target={target}
+        presentation={props.presentation}
+        headerInset={props.headerInset}
+      />
+    );
+  }
+  return <SingleRepositoryGitOverviewSheet {...props} />;
+}
+
+function SingleRepositoryGitOverviewSheet(props: GitOverviewSheetProps) {
   const { layout } = useAdaptiveWorkspaceLayout();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();

@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  ScopedThreadRef,
   ModelSelection,
   ProviderInstanceId,
   ProviderOptionDescriptor,
@@ -78,6 +79,7 @@ import {
   NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED,
 } from "../layout/native-mail-search-toolbar";
 import { ModelRow, ChoiceRow } from "./ThreadSettingsRows";
+import { ThreadWorkspaceFolders } from "./ThreadWorkspaceFolders";
 import {
   compatibleRuntimeModeForChoices,
   runtimeModeChoicesForSupportedModes,
@@ -241,6 +243,7 @@ type ThreadSettingsSubmenuPage =
   | { readonly kind: "runtime" };
 
 type ThreadSettingsSessionProps = {
+  readonly workspaceTarget?: ScopedThreadRef;
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -295,6 +298,7 @@ export function useExistingThreadSettingsRoutePresentation() {
 }
 
 type ThreadSettingsSessionValue = {
+  readonly workspaceTarget: ScopedThreadRef | undefined;
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -478,6 +482,7 @@ function ThreadSettingsSessionProvider(
       runtimeModeChoices,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
       onOpenTurnAgents: props.onOpenTurnAgents,
+      workspaceTarget: props.workspaceTarget,
       displayedDescriptors,
       favoriteKeys,
       favoritesLoaded,
@@ -516,6 +521,7 @@ function ThreadSettingsSessionProvider(
       providerFilter,
       props.onUpdateRuntimeMode,
       props.onOpenTurnAgents,
+      props.workspaceTarget,
       props.providerGroups,
       runtimeModeChoices,
       searchQuery,
@@ -912,6 +918,9 @@ function ThreadSettingsMainContent(props: {
       maintainVisibleContentPosition={THREAD_SETTINGS_MAINTAIN_VISIBLE_CONTENT_POSITION}
       ListHeaderComponent={
         <>
+          {session.workspaceTarget ? (
+            <ThreadWorkspaceFolders target={session.workspaceTarget} />
+          ) : null}
           {session.onOpenTurnAgents ? (
             <View className="mx-4 mb-3 overflow-hidden rounded-2xl bg-card">
               <DisclosureRow
