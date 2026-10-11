@@ -26,6 +26,19 @@ const thread = {
 };
 
 describe("workspace folder diff scope", () => {
+  it("keeps a legacy bound thread scoped to its sole primary folder", () => {
+    const checkout = workspaceFolderDiffTarget(project, { worktreePath: null }, "/repo/app")!;
+    expect(workspaceFolderOwnsDiffPath(checkout, "app/main.ts")).toBe(true);
+    expect(workspaceFolderOwnsDiffPath(checkout, "outside.ts")).toBe(false);
+    expect(workspaceFolderDiffTarget(project, { worktreePath: null }, "/api")).toBeNull();
+    const isolated = workspaceFolderDiffTarget(
+      project,
+      { worktreePath: "/legacy-tree" },
+      "/repo/app",
+    )!;
+    expect(isolated.repositoryRoot).toBe("/legacy-tree");
+    expect(workspaceFolderOwnsDiffPath(isolated, "main.ts")).toBe(true);
+  });
   it("pins a secondary folder to its mapped repository and excludes other files", () => {
     const target = workspaceFolderDiffTarget(project, thread, "/api")!;
     expect(target.cwd).toBe("/set-api");

@@ -26,7 +26,7 @@ export function workspaceFolderDiffTarget(
   if (!row?.isGit || !row.effectivePath || !row.checkoutRoot) return null;
   // Ownership remains frozen even when a nested folder is currently unavailable.
   // Git paths and symlinked folders must meet in the snapshot's real checkout space.
-  const owners = (thread.workspaceFolders ?? []).map((folder) => ({
+  const owners = thread.workspaceFolders?.map((folder) => ({
     label: folder.label,
     path:
       folder.path === undefined
@@ -35,7 +35,7 @@ export function workspaceFolderDiffTarget(
             snapshotFolderCheckoutLocation(folder) ?? folder.path,
             thread.worktrees ?? [],
           ),
-  }));
+  })) ?? [{ label: row.label, path: row.effectivePath }];
   const workspaceRoot =
     owners.find((folder) => folder.label === row.label)?.path ?? row.effectivePath;
   return {
@@ -43,7 +43,10 @@ export function workspaceFolderDiffTarget(
     owners,
     workspaceRoot,
     cwd: row.effectivePath,
-    repositoryRoot: worktreeSetPath(row.checkoutRoot, thread.worktrees ?? []),
+    repositoryRoot:
+      thread.workspaceFolders === undefined && thread.worktreePath !== null
+        ? thread.worktreePath
+        : worktreeSetPath(row.checkoutRoot, thread.worktrees ?? []),
   };
 }
 
