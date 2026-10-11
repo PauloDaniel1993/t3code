@@ -193,6 +193,7 @@ it.effect(
               }),
             getThreadShell: () =>
               Effect.succeed({
+                id: scope.threadId,
                 worktrees: [
                   { repositoryRoot: "/source", path: "/", branch: "feature" },
                   { repositoryRoot: "/repo", path: "/repo", branch: "feature" },
