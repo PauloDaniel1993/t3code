@@ -1,3 +1,9 @@
+import {
+  workspaceFileReference,
+  workspaceFileScopeKey,
+  workspaceResultFolderPath,
+  type WorkspaceFileContext,
+} from "./workspaceFiles";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { Spinner } from "~/components/ui/spinner";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -31,8 +37,9 @@ import { useProjectEntriesQuery } from "./projectFilesQueryState";
 
 interface FileBreadcrumbsProps {
   readonly cwd: string;
+  readonly workspace?: WorkspaceFileContext | undefined;
   readonly environmentId: EnvironmentId;
-  readonly onOpenFile: (relativePath: string) => void;
+  readonly onOpenFile: (relativePath: string, folderPath?: string) => void;
   readonly projectName: string;
   readonly relativePath: string;
   readonly workspaceMutationId: string | null;
@@ -68,24 +75,39 @@ function BreadcrumbLabel(props: {
 
 function BreadcrumbMenuContent(props: {
   readonly cwd: string;
+  readonly workspace?: WorkspaceFileContext | undefined;
   readonly currentFilePath: string;
   readonly directoryPath: string;
   readonly environmentId: EnvironmentId;
   readonly onDirectoryChange: (path: string) => void;
   readonly onOpenChange: (open: boolean) => void;
-  readonly onOpenFile: (path: string) => void;
+  readonly onOpenFile: (path: string, folderPath?: string) => void;
   readonly projectName: string;
   readonly rootPath: string;
   readonly workspaceMutationId: string | null;
 }) {
-  const entriesQuery = useProjectEntriesQuery(props.environmentId, props.cwd, props.directoryPath);
+  const scope = useMemo(
+    () =>
+      workspaceFileReference(props.workspace, props.directoryPath)?.scope ?? props.workspace?.scope,
+    [props.workspace, props.directoryPath],
+  );
+  const entriesQuery = useProjectEntriesQuery(
+    props.environmentId,
+    props.cwd,
+    props.directoryPath,
+    scope,
+  );
   useWorkspaceMutationRefresh({
     mutationId: props.workspaceMutationId,
     refresh: entriesQuery.refresh,
-    resourceKey: `files:${props.environmentId}:${props.cwd}`,
+    resourceKey: `files:${props.environmentId}:${workspaceFileScopeKey(props.cwd, scope)}`,
   });
   const { resolvedTheme } = useTheme();
-  const entries = entriesQuery.data?.entries ?? [];
+  const folders = entriesQuery.data?.folders ?? [];
+  const entries =
+    props.directoryPath === "" && folders.length > 1
+      ? folders.map((folder) => ({ path: folder.label, kind: "directory" as const }))
+      : (entriesQuery.data?.entries ?? []);
   const entriesTruncated = entriesQuery.data?.truncated ?? false;
   const children = useMemo(
     () => fileBreadcrumbChildren(entries, props.directoryPath),
@@ -146,7 +168,7 @@ function BreadcrumbMenuContent(props: {
             value={props.currentFilePath}
             onValueChange={(path) => {
               props.onOpenChange(false);
-              props.onOpenFile(path);
+              props.onOpenFile(path, workspaceResultFolderPath(path, folders));
             }}
           >
             {children.map((entry) => {
@@ -250,6 +272,7 @@ function DirectoryBreadcrumb(props: FileBreadcrumbsProps & { readonly crumb: Fil
       {open ? (
         <BreadcrumbMenuContent
           cwd={props.cwd}
+          workspace={props.workspace}
           currentFilePath={props.relativePath}
           directoryPath={directoryPath}
           environmentId={props.environmentId}

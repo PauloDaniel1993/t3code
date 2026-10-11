@@ -28,6 +28,29 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("retains a result's folder pin on later reveals and across persistence", () => {
+    const store = useRightPanelStore.getState();
+    store.openFile(refA, "ui/main.ts", 4, "/original/ui");
+    store.openFile(refA, "ui/main.ts", 7);
+    const before = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(before.surfaces).toEqual([
+      expect.objectContaining({
+        relativePath: "ui/main.ts",
+        folderPath: "/original/ui",
+        revealLine: 7,
+      }),
+    ]);
+    const restored = migratePersistedRightPanelState({
+      byThreadKey: useRightPanelStore.getState().byThreadKey,
+    });
+    expect(selectThreadRightPanelState(restored.byThreadKey, refA).surfaces).toEqual(
+      before.surfaces,
+    );
+    store.openFile(refA, "ui/main.ts", undefined, "/replacement/ui");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces[0],
+    ).toMatchObject({ folderPath: "/replacement/ui" });
+  });
   it("gives each host/device its own tab and preserves renamed tabs", () => {
     const store = useRightPanelStore.getState();
     const android = {

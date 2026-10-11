@@ -2716,7 +2716,15 @@ function useChatMarkdownState({
       // in flight.
       const isLatestLookup = claimWorkspaceBasenameLookup();
       const openAt = (path: string) =>
-        useRightPanelStore.getState().openFile(threadRef, path, line);
+        useRightPanelStore
+          .getState()
+          .openFile(
+            threadRef,
+            readThreadShell(threadRef)?.workspaceFolderCount !== undefined && cwd
+              ? resolvePathLinkTarget(path, cwd)
+              : path,
+            line,
+          );
       if (!cwd || !needsWorkspaceBasenameLookup(panelPath)) {
         openAt(panelPath);
         return;

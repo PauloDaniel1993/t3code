@@ -13,6 +13,7 @@ import type {
   EnvironmentId,
   ProjectContentMatch,
   ProjectEntryKind,
+  WorkspaceScope,
   VcsListRefsResult,
   VcsRef,
 } from "@t3tools/contracts";
@@ -195,7 +196,8 @@ export function usePaginatedBranches(target: VcsRefTarget) {
   };
 }
 
-type ProjectPathSearchTarget = ComposerPathSearchTarget & {
+export type ProjectPathSearchTarget = ComposerPathSearchTarget & {
+  readonly scope?: WorkspaceScope | undefined;
   readonly kind?: ProjectEntryKind | undefined;
   readonly imageOnly?: boolean | undefined;
 };
@@ -209,7 +211,23 @@ export function areProjectPathSearchTargetsEqual(
     left.cwd === right.cwd &&
     left.query === right.query &&
     left.kind === right.kind &&
-    left.imageOnly === right.imageOnly
+    left.imageOnly === right.imageOnly &&
+    left.scope?.projectId === right.scope?.projectId &&
+    left.scope?.threadId === right.scope?.threadId &&
+    left.scope?.folderPath === right.scope?.folderPath
+  );
+}
+
+function useProjectSearchScope(input: WorkspaceScope | undefined) {
+  const projectId = input?.projectId;
+  const threadId = input?.threadId;
+  const folderPath = input?.folderPath;
+  return useMemo(
+    () =>
+      projectId === undefined
+        ? undefined
+        : { projectId, ...(threadId ? { threadId } : {}), ...(folderPath ? { folderPath } : {}) },
+    [projectId, threadId, folderPath],
   );
 }
 
@@ -219,6 +237,7 @@ export function useProjectPathSearch(
   options?: { readonly allowEmptyQuery?: boolean },
 ) {
   const allowEmptyQuery = options?.allowEmptyQuery === true;
+  const scope = useProjectSearchScope(target.scope);
   const normalizedTarget = useMemo(
     () => ({
       environmentId: target.environmentId,
@@ -226,8 +245,9 @@ export function useProjectPathSearch(
       query: target.query == null ? null : target.query.trim(),
       kind: target.kind,
       imageOnly: target.imageOnly,
+      scope,
     }),
-    [target.cwd, target.environmentId, target.imageOnly, target.kind, target.query],
+    [target.cwd, target.environmentId, target.imageOnly, target.kind, target.query, scope],
   );
   const debouncedTarget = useDebouncedValue(normalizedTarget, PROJECT_PATH_SEARCH_DEBOUNCE_MS);
   const result = useEnvironmentQuery(
@@ -238,7 +258,9 @@ export function useProjectPathSearch(
       ? projectEnvironment.searchEntries({
           environmentId: debouncedTarget.environmentId,
           input: {
-            cwd: debouncedTarget.cwd,
+            ...(debouncedTarget.scope
+              ? { scope: debouncedTarget.scope }
+              : { cwd: debouncedTarget.cwd }),
             query: debouncedTarget.query,
             limit,
             ...(debouncedTarget.kind ? { kind: debouncedTarget.kind } : {}),
@@ -250,6 +272,7 @@ export function useProjectPathSearch(
 
   return {
     entries: result.data?.entries ?? [],
+    folders: result.data?.folders ?? [],
     error: result.error,
     isPending:
       !areProjectPathSearchTargetsEqual(normalizedTarget, debouncedTarget) || result.isPending,
@@ -259,11 +282,12 @@ export function useProjectPathSearch(
   };
 }
 
-export function useComposerPathSearch(target: ComposerPathSearchTarget) {
+export function useComposerPathSearch(target: ProjectPathSearchTarget) {
   return useProjectPathSearch(target, COMPOSER_PATH_SEARCH_LIMIT);
 }
 
 interface ProjectContentSearchTarget {
+  readonly scope?: WorkspaceScope | undefined;
   readonly environmentId: EnvironmentId | null;
   readonly cwd: string | null;
   readonly query: string;
@@ -277,21 +301,45 @@ export function useProjectContentSearch(target: ProjectContentSearchTarget) {
   // decide whether the input is blank.
   const query = target.query;
   const hasQuery = query.trim().length > 0;
-  const debouncedQuery = useDebouncedValue(query, PROJECT_CONTENT_SEARCH_DEBOUNCE_MS);
+  const scope = useProjectSearchScope(target.scope);
+  const normalizedTarget = useMemo(
+    () => ({
+      environmentId: target.environmentId,
+      cwd: target.cwd,
+      scope,
+      query: target.query,
+      caseSensitive: target.caseSensitive,
+      wholeWord: target.wholeWord,
+      useRegex: target.useRegex,
+    }),
+    [
+      target.environmentId,
+      target.cwd,
+      scope,
+      target.query,
+      target.caseSensitive,
+      target.wholeWord,
+      target.useRegex,
+    ],
+  );
+  const debouncedTarget = useDebouncedValue(normalizedTarget, PROJECT_CONTENT_SEARCH_DEBOUNCE_MS);
+  const debouncedQuery = debouncedTarget.query;
   const result = useEnvironmentQuery(
-    target.environmentId !== null &&
-      target.cwd !== null &&
+    debouncedTarget.environmentId !== null &&
+      debouncedTarget.cwd !== null &&
       hasQuery &&
       debouncedQuery.trim().length > 0
       ? projectContentSearch({
-          environmentId: target.environmentId,
+          environmentId: debouncedTarget.environmentId,
           input: {
-            cwd: target.cwd,
+            ...(debouncedTarget.scope
+              ? { scope: debouncedTarget.scope }
+              : { cwd: debouncedTarget.cwd }),
             query: debouncedQuery,
             limit: PROJECT_CONTENT_SEARCH_LIMIT,
-            caseSensitive: target.caseSensitive,
-            wholeWord: target.wholeWord,
-            useRegex: target.useRegex,
+            caseSensitive: debouncedTarget.caseSensitive,
+            wholeWord: debouncedTarget.wholeWord,
+            useRegex: debouncedTarget.useRegex,
           },
         })
       : null,
@@ -299,8 +347,9 @@ export function useProjectContentSearch(target: ProjectContentSearchTarget) {
 
   return {
     matches: result.data?.matches ?? EMPTY_CONTENT_MATCHES,
+    folders: result.data?.folders ?? [],
     error: result.error,
-    isPending: hasQuery && (query !== debouncedQuery || result.isPending),
+    isPending: hasQuery && (normalizedTarget !== debouncedTarget || result.isPending),
     hasQuery,
     truncated: result.data?.truncated ?? false,
     invalidRegex: target.useRegex && result.data?.regexFallbackError !== undefined,

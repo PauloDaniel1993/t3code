@@ -14,6 +14,8 @@ import {
   getProjectFilePickerMatches,
   PROJECT_FILE_PICKER_RESULT_LIMIT,
 } from "./ProjectFilePicker.logic";
+import { WorkspaceFolderPicker, WorkspaceFolderStatus } from "./WorkspaceFileControls";
+import { workspaceResultFolderPath } from "./workspaceFiles";
 import { useProjectFilePickerQuery } from "./projectFilesQueryState";
 
 interface ProjectFilePickerProps {
@@ -71,12 +73,21 @@ function EmptyProjectFilePicker() {
 function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveProjectTarget }) {
   const { target } = props;
   const [query, setQuery] = useState("");
+  const [folderPath, setFolderPath] = useState<string>();
+  const scope = useMemo(
+    () =>
+      target.workspace
+        ? { ...target.workspace.scope, ...(folderPath ? { folderPath } : {}) }
+        : undefined,
+    [target.workspace, folderPath],
+  );
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const result = useProjectFilePickerQuery(
     target.environmentId,
     target.cwd,
     query,
     PROJECT_FILE_PICKER_RESULT_LIMIT,
+    { scope },
   );
   const { resolvedTheme } = useTheme();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -107,10 +118,17 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
         ),
         icon: <PierreEntryIcon pathValue={match.path} kind="file" theme={resolvedTheme} />,
         run: async () => {
-          useRightPanelStore.getState().openFile(target.threadRef, match.path);
+          useRightPanelStore
+            .getState()
+            .openFile(
+              target.threadRef,
+              match.path,
+              undefined,
+              workspaceResultFolderPath(match.path, result.folders),
+            );
         },
       })),
-    [hasMatchedQuery, matches, resolvedTheme, target.threadRef],
+    [hasMatchedQuery, matches, resolvedTheme, target.threadRef, result.folders],
   );
 
   const emptyStateMessage = getEmptyStateMessage(query, result.error, result.isPending);
@@ -134,6 +152,14 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
       testId="project-file-picker"
       value={query}
     >
+      <div className="flex shrink-0 items-center px-2">
+        <WorkspaceFolderPicker
+          workspace={target.workspace}
+          value={folderPath}
+          onChange={setFolderPath}
+        />
+      </div>
+      <WorkspaceFolderStatus folders={result.folders} />
       <CommandPaletteResults
         groups={
           items.length > 0 ? [{ value: "project-files", label: target.projectName, items }] : []

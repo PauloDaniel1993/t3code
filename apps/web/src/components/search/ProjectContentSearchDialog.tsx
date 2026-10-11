@@ -14,6 +14,8 @@ import { CommandPaletteContent } from "../CommandPaletteContent";
 import { ScrollArea } from "../ui/scroll-area";
 import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { WorkspaceFolderPicker, WorkspaceFolderStatus } from "../files/WorkspaceFileControls";
+import { workspaceResultFolderPath, workspaceFileScopeKey } from "../files/workspaceFiles";
 import { HighlightedSearchLine } from "./HighlightedSearchLine";
 
 interface ProjectContentSearchDialogProps {
@@ -106,6 +108,14 @@ function OpenContentSearchDialog(props: {
   const { target } = props;
   const { resolvedTheme } = useTheme();
   const [query, setQuery] = useState("");
+  const [folderPath, setFolderPath] = useState<string>();
+  const scope = useMemo(
+    () =>
+      target.workspace
+        ? { ...target.workspace.scope, ...(folderPath ? { folderPath } : {}) }
+        : undefined,
+    [target.workspace, folderPath],
+  );
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const [useRegex, setUseRegex] = useState(false);
@@ -116,6 +126,7 @@ function OpenContentSearchDialog(props: {
   const search = useProjectContentSearch({
     environmentId: target.environmentId,
     cwd: target.cwd,
+    scope,
     query,
     caseSensitive,
     wholeWord,
@@ -155,7 +166,14 @@ function OpenContentSearchDialog(props: {
   const openMatch = (match: ProjectContentMatch) => {
     if (!canOpenMatches) return;
     props.onOpenChange(false);
-    useRightPanelStore.getState().openFile(target.threadRef, match.path, match.lineNumber);
+    useRightPanelStore
+      .getState()
+      .openFile(
+        target.threadRef,
+        match.path,
+        match.lineNumber,
+        workspaceResultFolderPath(match.path, search.folders),
+      );
   };
   const fileCount = useMemo(() => new Set(matches.map((match) => match.path)).size, [matches]);
   const showSearchStatus =
@@ -223,6 +241,14 @@ function OpenContentSearchDialog(props: {
       testId="project-content-search"
       value={query}
     >
+      <div className="flex shrink-0 items-center px-2">
+        <WorkspaceFolderPicker
+          workspace={target.workspace}
+          value={folderPath}
+          onChange={setFolderPath}
+        />
+      </div>
+      <WorkspaceFolderStatus folders={search.folders} />
       {showSearchStatus ? (
         <div className="flex h-9 shrink-0 items-center border-b px-3 text-xs text-muted-foreground">
           {search.isPending ? (
@@ -313,7 +339,7 @@ export function ProjectContentSearchDialog(props: ProjectContentSearchDialogProp
   return target ? (
     <OpenContentSearchDialog
       // Reset the query and options whenever the workspace changes.
-      key={`${target.environmentId}:${target.cwd}`}
+      key={`${target.environmentId}:${workspaceFileScopeKey(target.cwd, target.workspace?.scope)}`}
       onOpenChange={props.onOpenChange}
       target={target}
     />

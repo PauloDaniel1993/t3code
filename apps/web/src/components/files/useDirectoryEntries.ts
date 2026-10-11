@@ -1,13 +1,19 @@
-import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectEntry, WorkspaceScopeFolder } from "@t3tools/contracts";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { workspaceFileReference, type WorkspaceFileContext } from "./workspaceFiles";
 import { projectEnvironment } from "~/state/projects";
 
 /** Loads only requested directories; collapsing a folder keeps its children cached. */
-export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
+export function useDirectoryEntries(
+  environmentId: EnvironmentId,
+  cwd: string,
+  workspace?: WorkspaceFileContext,
+) {
+  const [folders, setFolders] = useState<readonly WorkspaceScopeFolder[]>([]);
   const [directories, setDirectories] = useState(new Map<string, readonly ProjectEntry[]>());
   const [errors, setErrors] = useState(new Map<string, string>());
   const [pending, setPending] = useState(0);
@@ -26,7 +32,12 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
       if (!refresh && loaded.current.has(directoryPath)) return Promise.resolve();
       loaded.current.add(directoryPath);
       requested.current.add(directoryPath);
-      const atom = projectEnvironment.listEntries({ environmentId, input: { cwd, directoryPath } });
+      const reference = directoryPath ? workspaceFileReference(workspace, directoryPath) : null;
+      const scope = reference?.scope ?? workspace?.scope;
+      const atom = projectEnvironment.listEntries({
+        environmentId,
+        input: scope ? { scope, directoryPath } : { cwd, directoryPath },
+      });
       setPending((count) => count + 1);
       const request = (async () => {
         if (running.current >= 4)
@@ -48,15 +59,19 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
         .then((result) => {
           if (!active.current || !result) return;
           if (result._tag === "Success") {
-            setDirectories((previous) =>
-              new Map(previous).set(
-                directoryPath,
-                result.value.entries.filter(
-                  (entry) =>
-                    entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) === directoryPath,
-                ),
-              ),
-            );
+            setFolders(result.value.folders ?? []);
+            const roots =
+              directoryPath === "" && (result.value.folders?.length ?? 0) > 1
+                ? result.value.folders!.map((folder) => ({
+                    path: folder.label,
+                    kind: "directory" as const,
+                  }))
+                : result.value.entries.filter(
+                    (entry) =>
+                      entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) ===
+                      directoryPath,
+                  );
+            setDirectories((previous) => new Map(previous).set(directoryPath, roots));
             setErrors((previous) => {
               const next = new Map(previous);
               next.delete(directoryPath);
@@ -80,7 +95,7 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
       requests.current.set(directoryPath, request);
       return request;
     },
-    [cwd, environmentId],
+    [cwd, environmentId, workspace],
   );
 
   useEffect(() => {
@@ -127,6 +142,7 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
 
   return {
     entries,
+    folders,
     load,
     refresh,
     isPending: pending > 0,

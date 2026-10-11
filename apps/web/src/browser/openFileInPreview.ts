@@ -133,6 +133,7 @@ export async function openUrlInPreview<E>(input: {
 export async function openFileInPreview<AssetError, PreviewError>(input: {
   readonly threadRef: ScopedThreadRef;
   readonly filePath: string;
+  readonly resource?: AssetResource | undefined;
   readonly workspaceRoot: string | undefined;
   readonly httpBaseUrl: string;
   readonly createAssetUrl: CreateAssetUrlMutation<AssetError>;
@@ -161,7 +162,7 @@ export async function openFileInPreview<AssetError, PreviewError>(input: {
   const assetResult = await input.createAssetUrl({
     environmentId: input.threadRef.environmentId,
     input: {
-      resource: {
+      resource: input.resource ?? {
         _tag: insideWorkspace ? "workspace-file" : "media-file",
         threadId: input.threadRef.threadId,
         path: input.filePath,

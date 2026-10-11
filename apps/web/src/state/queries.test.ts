@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { areProjectPathSearchTargetsEqual } from "./queries";
@@ -22,5 +22,29 @@ describe("areProjectPathSearchTargetsEqual", () => {
     expect(areProjectPathSearchTargetsEqual(target, { ...target, query: "readme" })).toBe(false);
     expect(areProjectPathSearchTargetsEqual(target, { ...target, kind: "file" })).toBe(false);
     expect(areProjectPathSearchTargetsEqual(target, { ...target, imageOnly: true })).toBe(false);
+    const scoped = {
+      ...target,
+      scope: {
+        projectId: ProjectId.make("project"),
+        threadId: ThreadId.make("thread"),
+        folderPath: "/api",
+      },
+    };
+    expect(
+      areProjectPathSearchTargetsEqual(scoped, { ...scoped, scope: { ...scoped.scope } }),
+    ).toBe(true);
+    expect(areProjectPathSearchTargetsEqual(target, scoped)).toBe(false);
+    expect(
+      areProjectPathSearchTargetsEqual(scoped, {
+        ...scoped,
+        scope: { ...scoped.scope, folderPath: "/ui" },
+      }),
+    ).toBe(false);
+    expect(
+      areProjectPathSearchTargetsEqual(scoped, {
+        ...scoped,
+        scope: { ...scoped.scope, threadId: ThreadId.make("other") },
+      }),
+    ).toBe(false);
   });
 });

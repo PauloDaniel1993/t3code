@@ -1,3 +1,4 @@
+import { workspaceFileContext } from "./files/workspaceFiles";
 import { ChatCanvas } from "./chat/ChatCanvas";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import { StarMapSurface } from "./map/StarMapSurface";
@@ -4020,6 +4021,33 @@ export default function ChatView(props: ChatViewProps) {
     : null;
   const hasTimelineTopBanner = Boolean(timelineThreadError) || visibleProviderStatus !== null;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
+  const fileWorkspace = useMemo(
+    () =>
+      activeProject
+        ? workspaceFileContext(
+            activeProject,
+            {
+              worktreePath:
+                serverProjection?.thread.worktreePath ?? activeThread?.worktreePath ?? null,
+              workspaceFolders: serverProjection?.thread.workspaceFolders,
+              worktrees: serverProjection?.thread.worktrees ?? activeThread?.worktrees,
+            },
+            isServerThread ? activeThread?.id : undefined,
+            serverConfig?.workspaceFileProjects === true,
+          )
+        : undefined,
+    [
+      activeProject,
+      activeThread?.worktreePath,
+      serverProjection?.thread.workspaceFolders,
+      serverProjection?.thread.worktreePath,
+      serverProjection?.thread.worktrees,
+      activeThread?.worktrees,
+      activeThread?.id,
+      isServerThread,
+      serverConfig?.workspaceFileProjects,
+    ],
+  );
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = gitStatusCwd ?? undefined;
   useLayoutEffect(() => {
@@ -5116,9 +5144,9 @@ export default function ChatView(props: ChatViewProps) {
     if (!sessionStillExists) usePreviewMiniPlayerStore.getState().close(activeThreadRef);
   }, [activePreviewMiniPlayer, activeThreadRef, deviceState.sessions, deviceStateLoaded]);
   const openFileSurface = useCallback(
-    (relativePath: string) => {
+    (relativePath: string, folderPath?: string) => {
       if (!activeThreadRef || !activeProject) return;
-      useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
+      useRightPanelStore.getState().openFile(activeThreadRef, relativePath, undefined, folderPath);
     },
     [activeProject, activeThreadRef],
   );
@@ -10369,6 +10397,12 @@ export default function ChatView(props: ChatViewProps) {
           }`}
           environmentId={activeThread.environmentId}
           cwd={activeWorkspaceRoot ?? ""}
+          workspace={fileWorkspace}
+          folderPath={
+            renderedRightPanelSurface.kind === "file"
+              ? renderedRightPanelSurface.folderPath
+              : undefined
+          }
           projectName={activeProject?.title ?? ""}
           threadRef={activeThreadRef}
           composerDraftTarget={composerDraftTarget}
@@ -10845,6 +10879,7 @@ export default function ChatView(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              fileWorkspace={fileWorkspace}
                               multipleModelSelections={multipleModelSelections}
                               supportsMultipleModels={
                                 serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
