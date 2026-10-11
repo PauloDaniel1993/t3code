@@ -884,6 +884,8 @@ export function makeClaudeQueryOptions(input: {
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
+      // Resumes must render the current folder inventory, including clearing it.
+      snapshot: false,
       append:
         buildRuntimeInstructions({ harness: "Claude Code" }) +
         (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS) +
