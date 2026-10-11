@@ -12,6 +12,11 @@ import {
   type WorktreeMcpSetupScriptStatus,
   type WorktreeMcpStatusResult,
 } from "@t3tools/contracts";
+import {
+  resolveThreadWorkspace,
+  type WorkspaceProject,
+  type WorkspaceThread,
+} from "@t3tools/shared/workspaceFolders";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -82,10 +87,15 @@ const make = Effect.gen(function* () {
   const resolveFolders = (
     threadId: McpInvocationScope["threadId"],
     projectId: ProjectId,
+    thread: WorkspaceThread,
+    project: WorkspaceProject,
     folderPath?: string,
   ) =>
     folderFiles
-      .resolveScope({ projectId, threadId, ...(folderPath === undefined ? {} : { folderPath }) })
+      .resolveScope(
+        { projectId, threadId, ...(folderPath === undefined ? {} : { folderPath }) },
+        resolveThreadWorkspace({ thread, project }).folders,
+      )
       .pipe(
         Effect.mapError((error) =>
           failure(
@@ -443,7 +453,12 @@ const make = Effect.gen(function* () {
           ...workspaceBinding(
             { ...projection.thread, ...binding },
             project,
-            (yield* resolveFolders(scope.threadId, project.id).pipe(
+            (yield* resolveFolders(
+              scope.threadId,
+              project.id,
+              { ...projection.thread, ...binding },
+              project,
+            ).pipe(
               Effect.mapError((error) =>
                 failure(
                   "operation_failed",
@@ -507,7 +522,7 @@ const make = Effect.gen(function* () {
         ...workspaceBinding(
           projection.thread,
           project,
-          (yield* resolveFolders(scope.threadId, project.id)).folders,
+          (yield* resolveFolders(scope.threadId, project.id, projection.thread, project)).folders,
         ),
         attached: projection.thread.worktreePath !== null,
         worktreePath: projection.thread.worktreePath,
@@ -523,9 +538,12 @@ const make = Effect.gen(function* () {
     function* (scope, input) {
       yield* requireCapability(scope);
       const projection = yield* loadThread(scope);
+      const project = yield* loadProject(scope, projection.thread.projectId);
       const resolved = yield* resolveFolders(
         scope.threadId,
         projection.thread.projectId,
+        projection.thread,
+        project,
         input.folderPath,
       );
       const folder = resolved.selected[0];
@@ -547,13 +565,15 @@ const make = Effect.gen(function* () {
         );
       }
       const { folderPath: _, ...refInput } = input;
-      const refs =
-        probe.vcs == null
-          ? { refs: [], isRepo: false, hasPrimaryRemote: false, nextCursor: null, totalCount: 0 }
-          : yield* gitWorkflow
-              .listRefs({ ...refInput, cwd })
-              .pipe(asOperationFailed("Unable to list refs"));
-      return { ...refs, folderPath, cwd, repositoryRoot: probe.vcs?.checkoutRoot ?? null };
+      const refs = yield* gitWorkflow
+        .listRefs({ ...refInput, cwd })
+        .pipe(asOperationFailed("Unable to list refs"));
+      return {
+        ...refs,
+        folderPath,
+        cwd,
+        repositoryRoot: refs.isRepo ? (probe.vcs?.checkoutRoot ?? null) : null,
+      };
     },
     Effect.mapError(
       (error) =>

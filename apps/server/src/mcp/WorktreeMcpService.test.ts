@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentId,
+  GitCommandError,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadWorkspaceFolder,
   type OrchestrationV2ThreadWorktree,
@@ -122,6 +123,8 @@ interface HarnessOptions {
   readonly unavailableFolders?: ReadonlyArray<string>;
   readonly folderCheckouts?: Readonly<Record<string, string>>;
   readonly folderReadFails?: boolean;
+  readonly handoffOnFolderRead?: boolean;
+  readonly listRefsError?: "spawn" | "timeout";
 }
 
 const makeHarness = (options: HarnessOptions = {}) => {
@@ -270,23 +273,32 @@ const makeHarness = (options: HarnessOptions = {}) => {
           ),
   );
   const listRefs = vi.fn((input: { readonly query?: string | undefined }) =>
-    Effect.succeed({
-      refs:
-        options.existingBranchWorktreePath === undefined
-          ? []
-          : [
-              {
-                name: input.query ?? "",
-                current: false,
-                isDefault: false,
-                worktreePath: options.existingBranchWorktreePath,
-              },
-            ],
-      isRepo: true,
-      hasPrimaryRemote: true,
-      nextCursor: null,
-      totalCount: options.existingBranchWorktreePath === undefined ? 0 : 1,
-    }),
+    options.listRefsError
+      ? Effect.fail(
+          new GitCommandError({
+            operation: "listRefs",
+            command: "git",
+            cwd: workspaceRoot,
+            detail: `Git ${options.listRefsError} failure`,
+          }),
+        )
+      : Effect.succeed({
+          refs:
+            options.existingBranchWorktreePath === undefined
+              ? []
+              : [
+                  {
+                    name: input.query ?? "",
+                    current: false,
+                    isDefault: false,
+                    worktreePath: options.existingBranchWorktreePath,
+                  },
+                ],
+          isRepo: options.notARepo !== true,
+          hasPrimaryRemote: options.notARepo !== true,
+          nextCursor: null,
+          totalCount: options.existingBranchWorktreePath === undefined ? 0 : 1,
+        }),
   );
   const localStatus = vi.fn((_: unknown) =>
     Effect.succeed({
@@ -344,13 +356,23 @@ const makeHarness = (options: HarnessOptions = {}) => {
         );
   const services = Layer.mergeAll(
     Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
-      resolveScope: (scope) => {
+      resolveScope: (scope, capturedFolders) => {
         if (options.folderReadFails)
           return Effect.fail(new WorkspaceScopeError({ ...scope, failure: "read-failed" }));
-        const folders = resolveThreadWorkspace({
-          thread: makeProjection(boundThread ?? {}).thread,
-          project,
-        }).folders.map((folder) =>
+        if (options.handoffOnFolderRead) {
+          boundThread = {
+            ...boundThread,
+            worktreePath: "/worktrees/raced",
+            branch: "feature/raced",
+          };
+        }
+        const folders = (
+          capturedFolders ??
+          resolveThreadWorkspace({
+            thread: makeProjection(boundThread ?? {}).thread,
+            project,
+          }).folders
+        ).map((folder) =>
           options.unavailableFolders?.includes(folder.folder.path ?? folder.folder.uri ?? "")
             ? { ...folder, effectivePath: null }
             : folder,
@@ -594,9 +616,22 @@ describe("t3_worktree_list", () => {
         nextCursor: null,
         totalCount: 0,
       });
-      expect(harness.listRefs).not.toHaveBeenCalled();
+      expect(harness.listRefs).toHaveBeenCalledWith({ cwd: workspaceRoot });
     });
   });
+
+  it.effect("reports Git spawn and timeout failures instead of a non-git inventory", () =>
+    Effect.gen(function* () {
+      for (const listRefsError of ["spawn", "timeout"] as const) {
+        const harness = makeHarness({ notARepo: true, listRefsError });
+        expectTypedFailure(yield* Effect.exit(runList(harness)), {
+          _tag: "OrchestratorMcpFailure",
+          code: "orchestration_error",
+          message: `Unable to list refs: Git command failed in listRefs (${workspaceRoot}): Git ${listRefsError} failure`,
+        });
+      }
+    }),
+  );
 
   it.effect("rejects unknown, mapped, missing and remote selectors before listing refs", () => {
     const harness = makeHarness({
@@ -1340,6 +1375,28 @@ describe("t3_worktree_handoff", () => {
 });
 
 describe("t3_worktree_status", () => {
+  it.effect("keeps one captured binding when a handoff lands during folder inspection", () => {
+    const harness = makeHarness({ handoffOnFolderRead: true });
+    return Effect.gen(function* () {
+      const before = yield* runStatus(harness);
+      expect(before).toMatchObject({
+        attached: false,
+        cwd: workspaceRoot,
+        worktreePath: null,
+        branch: null,
+      });
+      expect(before.folders[0]?.effectivePath).toBe(workspaceRoot);
+      expect(before.worktrees).toBeUndefined();
+      const after = yield* runStatus(harness);
+      expect(after).toMatchObject({
+        attached: true,
+        cwd: "/worktrees/raced",
+        worktreePath: "/worktrees/raced",
+        branch: "feature/raced",
+      });
+      expect(after.folders[0]?.effectivePath).toBe(after.cwd);
+    });
+  });
   it.effect("reports mapped, shared and unavailable snapshot folders", () => {
     const harness = makeHarness({
       projectLinked: true,

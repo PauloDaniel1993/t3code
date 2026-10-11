@@ -54,6 +54,7 @@ import {
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
+import { resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -1791,10 +1792,10 @@ const make = Effect.gen(function* () {
           ),
         );
         const resolved = yield* folderFiles
-          .resolveScope({
-            projectId: target.thread.projectId,
-            threadId: target.thread.id,
-          })
+          .resolveScope(
+            { projectId: target.thread.projectId, threadId: target.thread.id },
+            resolveThreadWorkspace({ thread: target.thread, project }).folders,
+          )
           .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
         const view = input.view ?? "messages";
         const afterPosition = input.afterPosition ?? -1;
