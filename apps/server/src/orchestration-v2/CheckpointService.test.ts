@@ -23,11 +23,13 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
+import * as CheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "../config.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as IdAllocator from "./IdAllocator.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
 
 const threadId = ThreadId.make("thread:checkpoint-parts");
 const runId = RunId.make("run:checkpoint-parts:1");
@@ -546,6 +548,7 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         for (const folder of ["a", "b", "c"]) {
           yield* write(path.join(mono, folder, "keep.txt"), `${folder}0`);
         }
+        yield* write(path.join(mono, "a", "deep", "own.txt"), "deep0");
         yield* commitAll(mono);
         yield* write(path.join(inner, "x.txt"), "x0");
         yield* commitAll(inner);
@@ -565,6 +568,7 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
             workspaceFolders: [
               snapshotFolder(path.join(mono, "a"), "a", realMono, "a"),
               snapshotFolder(path.join(mono, "b"), "b", realMono, "b"),
+              snapshotFolder(path.join(mono, "a", "deep"), "deep", realMono, "a/deep"),
               snapshotFolder(inner, "inner", realInner),
               snapshotFolder(notes, "notes", null),
             ],
@@ -574,6 +578,7 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         yield* checkpoints.captureBaseline({ scope, ordinalWithinScope: 0 });
         yield* write(path.join(mono, "a", "keep.txt"), "a1");
         yield* write(path.join(mono, "b", "new.txt"), "b1");
+        yield* write(path.join(mono, "a", "deep", "own.txt"), "deep1");
         yield* write(path.join(mono, "c", "keep.txt"), "c1");
         yield* write(path.join(inner, "x.txt"), "x1");
         yield* write(path.join(notes, "n.txt"), "n1");
@@ -610,8 +615,28 @@ it.layer(GitServiceLayer)("CheckpointService parts with git", (it) => {
         assert.equal(yield* git(realInner, ["show", `${innerPart?.ref}:x.txt`]), "x1");
         assert.deepStrictEqual(
           checkpoint.files.map((file) => file.path),
-          ["a/keep.txt", "b/new.txt"],
+          ["a/keep.txt", "b/new.txt", "deep/own.txt", "inner/x.txt"],
         );
+        const query = yield* CheckpointDiffQuery.make.pipe(
+          Effect.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getCheckpointContext: () =>
+                Effect.succeed({
+                  runs: [{ id: runId, ordinal: 1, status: "completed" }],
+                  checkpointScopes: [scope],
+                  checkpoints: [checkpoint],
+                }),
+            }),
+          ),
+        );
+        const diff = yield* query.getFullThreadDiff({ threadId, toTurnCount: 1 });
+        const headers = diff.diff.split("\n").filter((line) => line.startsWith("diff --git"));
+        assert.deepStrictEqual(headers, [
+          "diff --git a/a/keep.txt b/a/keep.txt",
+          "diff --git a/b/new.txt b/b/new.txt",
+          "diff --git a/deep/own.txt b/deep/own.txt",
+          "diff --git a/inner/x.txt b/inner/x.txt",
+        ]);
       }),
   );
   it.effect("drops member folders git ignores or that vanished, instead of failing the part", () =>

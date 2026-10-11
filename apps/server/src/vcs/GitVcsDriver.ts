@@ -39,6 +39,7 @@ import {
 } from "./GitVcsDriverCore.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import { CHECKPOINT_DIFF_MAX_OUTPUT_BYTES } from "../checkpointing/CheckpointFolderDiffs.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -412,7 +413,6 @@ const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const CHECKPOINT_RECOVERY_MAX_CANDIDATES = 64;
 const CHECKPOINT_RECOVERY_TIMEOUT = "5 seconds";
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
-const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
 const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
   "-c",
   "core.fsmonitor=false",
@@ -1245,12 +1245,16 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           "--no-ext-diff",
           "--no-textconv",
           ...PATCH_RENDER_PREFIX_ARGS,
+          ...(input.relativePath === undefined ? [] : [`--relative=${input.relativePath}`]),
+          ...(input.srcPrefix === undefined ? [] : [`--src-prefix=${input.srcPrefix}`]),
+          ...(input.dstPrefix === undefined ? [] : [`--dst-prefix=${input.dstPrefix}`]),
           ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
           `${fromRevision}^{commit}`,
           `${input.toCheckpointRef}^{commit}`,
+          ...(input.pathspecs === undefined ? [] : ["--", ...input.pathspecs]),
         ],
         allowNonZeroExit: true,
-        maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+        maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
         outputMode: input.format === "numstat" ? "error" : "truncate",
       });
 

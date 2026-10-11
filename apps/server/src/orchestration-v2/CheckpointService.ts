@@ -26,6 +26,10 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { parseTurnDiffFilesFromNumstat } from "../checkpointing/Diffs.ts";
+import {
+  checkpointFolderDiffs,
+  collectCheckpointDiffs,
+} from "../checkpointing/CheckpointFolderDiffs.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import {
   checkpointBarrierStatus,
@@ -463,8 +467,8 @@ export const layer: Layer.Layer<
           ),
         );
 
-    // A part's failure becomes its status, never the run's. The primary part
-    // also summarizes the files the turn changed.
+    // A part's failure becomes its status, never the run's. Legacy scopes also
+    // summarize their files here; parts share one summary budget after capture.
     const capturePart = (
       scope: OrchestrationV2CheckpointScope,
       part: OrchestrationV2CheckpointScopePart,
@@ -505,7 +509,7 @@ export const layer: Layer.Layer<
           if (!captured) {
             return { part: { ...part, ref: checkpointRef, status: "error" }, files: [] } as const;
           }
-          if (part.key !== PRIMARY_CHECKPOINT_PART_KEY) {
+          if (scope.parts !== undefined) {
             return { part: { ...part, ref: checkpointRef, status: "ready" }, files: [] } as const;
           }
 
@@ -577,6 +581,59 @@ export const layer: Layer.Layer<
           { concurrency: PART_CONCURRENCY },
         );
 
+        let files = captured.flatMap(({ files }) => files);
+        if (input.scope.parts !== undefined) {
+          const diffInputs: Array<CheckpointStore.DiffCheckpointsInput & { label: string }> = [];
+          for (const { part } of captured) {
+            if (part.vcs !== "git" || part.status !== "ready" || part.ref === null) continue;
+            const previousCheckpointRef = partRef(
+              input.scope,
+              part,
+              Math.max(0, input.ordinalWithinScope - 1),
+            );
+            const previousExists = yield* withCheckoutLock(
+              part.cwd,
+              checkpointStore.hasCheckpointRef({
+                cwd: part.cwd,
+                checkpointRef: previousCheckpointRef,
+              }),
+            ).pipe(Effect.catch(() => Effect.succeed(false)));
+            if (!previousExists) continue;
+            for (const folderDiff of checkpointFolderDiffs(part)) {
+              diffInputs.push({
+                cwd: part.cwd,
+                fromCheckpointRef: previousCheckpointRef,
+                toCheckpointRef: part.ref,
+                fallbackFromToHead: false,
+                ignoreWhitespace: false,
+                format: "numstat",
+                label: folderDiff.folder.label,
+                relativePath: folderDiff.relativePath,
+                pathspecs: folderDiff.pathspecs,
+              });
+            }
+          }
+          const diffs = yield* collectCheckpointDiffs(diffInputs, (diffInput) =>
+            withCheckoutLock(diffInput.cwd, checkpointStore.diffCheckpoints(diffInput)).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("orchestration V2 checkpoint diff summary failed", {
+                  scopeId: input.scope.id,
+                  checkpointRef: diffInput.toCheckpointRef,
+                  cause: String(cause),
+                }).pipe(Effect.as("")),
+              ),
+            ),
+          );
+          files = diffs.flatMap(({ label, diff }) =>
+            parseTurnDiffFilesFromNumstat(diff).map((file) => ({
+              path: `${label}/${file.path}`,
+              kind: "modified" as const,
+              additions: file.additions,
+              deletions: file.deletions,
+            })),
+          );
+        }
+
         return makeCheckpoint({
           id: checkpointId,
           scope: input.scope,
@@ -586,7 +643,7 @@ export const layer: Layer.Layer<
           ordinalWithinScope: input.ordinalWithinScope,
           appRunOrdinal: input.appRunOrdinal,
           parts: captured.map(({ part }) => part),
-          files: captured.flatMap(({ files }) => files),
+          files,
           capturedAt: input.capturedAt,
         });
       }).pipe(
