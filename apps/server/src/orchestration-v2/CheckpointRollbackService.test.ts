@@ -3,12 +3,14 @@ import { assert, it, vi } from "@effect/vitest";
 import {
   CheckpointId,
   CheckpointScopeId,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadProjection,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -17,7 +19,10 @@ import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Layer from "effect/Layer";
 
 import { resolveCodexRollbackTurnCount } from "./Adapters/CodexAdapterV2.ts";
-import { isCheckpointRestoreIsolated } from "./CheckpointRestoreSafety.ts";
+import {
+  restoreIsolationRefusal,
+  SHARED_WORKSPACE_RESTORE_MESSAGE,
+} from "./CheckpointRestoreSafety.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as EventSink from "./EventSink.ts";
@@ -294,14 +299,17 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
     providerSessions: [],
     checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: 1 }],
     checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
-    runs: [],
+    runs: [{ id: "later-run", ordinal: 2, status: "completed" }],
     attempts: [],
     providerTurns: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const testLayer = checkpointRollbackServiceLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(CheckpointService.CheckpointServiceV2)({ restore }),
+        Layer.mock(CheckpointService.CheckpointServiceV2)({
+          preflightRestore: () => Effect.succeed(undefined),
+          restore,
+        }),
         Layer.mock(EventSink.EventSinkV2)({}),
         IdAllocator.layer,
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
@@ -363,7 +371,7 @@ it.effect("rewinds a provider that can't reach every folder without handing it t
     providerSessions: [],
     checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: 1 }],
     checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
-    runs: [],
+    runs: [{ id: "later-run", ordinal: 2, status: "completed" }],
     attempts: [],
     providerTurns: [],
   } as unknown as OrchestrationV2ThreadProjection;
@@ -421,9 +429,6 @@ it.effect.each([
   { restoreFiles: false, shared: "worktree" },
   { restoreFiles: true, shared: "historical" },
   { restoreFiles: false, shared: "none", targetOrdinal: 1 },
-  // A checkpoint holds one checkout, so a multi-folder thread only rewinds its conversation.
-  { restoreFiles: true, shared: "multi-folder" },
-  { restoreFiles: false, shared: "multi-folder" },
 ])("rewinds safely with %s", ({ restoreFiles, shared, targetOrdinal = 0 }) => {
   const threadId = ThreadId.make("rewind-files");
   const providerThreadId = ProviderThreadId.make("rewind-provider");
@@ -442,14 +447,6 @@ it.effect.each([
       worktreePath: shared === "root" ? null : process.cwd(),
       activeProviderThreadId: providerThreadId,
       modelSelection: { instanceId, model: "test" },
-      ...(shared === "multi-folder"
-        ? {
-            workspaceFolders: [
-              { path: process.cwd(), name: "app", label: "app", checkoutRoot: process.cwd() },
-              { path: "/work/lib", name: "lib", label: "lib", checkoutRoot: "/work/lib" },
-            ],
-          }
-        : {}),
     },
     providerThreads: [providerThread],
     providerSessions: [],
@@ -479,6 +476,7 @@ it.effect.each([
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(CheckpointService.CheckpointServiceV2)({
+          preflightRestore: () => Effect.succeed(undefined),
           restore: () =>
             Effect.sync(() => {
               calls.push("files");
@@ -548,17 +546,16 @@ it.effect.each([
       const error = yield* Effect.flip(
         service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles }),
       );
-      assert.equal(
-        error.reason,
-        shared === "multi-folder" ? "multi-folder-workspace" : "shared-workspace",
-      );
+      assert.equal(error.reason, "file-restore-refused");
+      assert.equal(error.message, SHARED_WORKSPACE_RESTORE_MESSAGE);
       assert.deepEqual(calls, []);
       return;
     }
     yield* service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles });
+    // The conversation is committed before any file is touched.
     assert.deepEqual(
       calls,
-      restoreFiles ? ["provider", "files", "projection"] : ["provider", "projection"],
+      restoreFiles ? ["provider", "projection", "files"] : ["provider", "projection"],
     );
   }).pipe(Effect.provide(testLayer));
 });
@@ -586,9 +583,9 @@ it.effect.skipIf(!symlinksSupported)(
         getCheckpointContext: () =>
           Effect.succeed({ runs: [], checkpointScopes: [], checkpoints: [] }),
       } as never);
-      const isolated = yield* isCheckpointRestoreIsolated(
+      const refusal = yield* restoreIsolationRefusal(
         { id: threadId, worktreePath: cwd },
-        { cwd },
+        [{ cwd, folders: [] }],
         {
           fileSystem,
           path,
@@ -598,6 +595,258 @@ it.effect.skipIf(!symlinksSupported)(
           } as never),
         },
       );
-      assert.isFalse(isolated);
+      assert.deepEqual(refusal, { reason: "shared", folders: [] });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+/**
+ * A thread at run 3 rewinding to run 1. The event sink applies run and
+ * checkpoint updates, so a retry sees what the first attempt committed. The
+ * provider rewinds by a turn count, like Codex.
+ */
+const makeRewindHarness = (options: {
+  readonly name: string;
+  readonly targetStatus: "ready" | "error";
+  readonly checkpoints: Partial<CheckpointService.CheckpointServiceV2["Service"]>;
+}) => {
+  const threadId = ThreadId.make(`${options.name}-thread`);
+  const providerThreadId = ProviderThreadId.make(`${options.name}-provider`);
+  const instanceId = ProviderInstanceId.make(`${options.name}-instance`);
+  const scopeId = CheckpointScopeId.make(`${options.name}-scope`);
+  const providerThread = {
+    id: providerThreadId,
+    providerSessionId: ProviderSessionId.make(`${options.name}-session`),
+    providerInstanceId: instanceId,
+  };
+  const checkpoint = (ordinal: number, status: "ready" | "error" | "missing") => ({
+    id: CheckpointId.make(`${options.name}-checkpoint-${ordinal}`),
+    scopeId,
+    runId: `run-${ordinal}`,
+    nodeId: `node-${ordinal}`,
+    appRunOrdinal: ordinal,
+    status,
+  });
+  const state = {
+    nativeTurns: 3,
+    providerRollbacks: 0,
+    writes: [] as Array<ReadonlyArray<OrchestrationV2DomainEvent>>,
+    projection: {
+      thread: {
+        id: threadId,
+        worktreePath: process.cwd(),
+        activeProviderThreadId: providerThreadId,
+        modelSelection: { instanceId, model: "test" },
+      },
+      providerThreads: [providerThread],
+      providerSessions: [],
+      providerTurns: [1, 2, 3].map((ordinal) => ({
+        id: `turn-${ordinal}`,
+        providerThreadId,
+        runAttemptId: `attempt-${ordinal}`,
+        ordinal,
+        status: "completed",
+      })),
+      nodes: [],
+      attempts: [1, 2, 3].map((ordinal) => ({ id: `attempt-${ordinal}`, runId: `run-${ordinal}` })),
+      checkpoints: [
+        checkpoint(1, options.targetStatus),
+        checkpoint(2, "ready"),
+        // A turn whose capture failed still goes stale.
+        checkpoint(3, "error"),
+      ],
+      checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+      runs: [1, 2, 3].map((ordinal) => ({
+        id: `run-${ordinal}`,
+        ordinal,
+        status: "completed",
+        rootNodeId: null,
+        activeAttemptId: `attempt-${ordinal}`,
+      })),
+    } as unknown as OrchestrationV2ThreadProjection,
+  };
+  const replace = <T extends { readonly id: string }>(items: ReadonlyArray<T>, item: T) =>
+    items.map((candidate) => (candidate.id === item.id ? item : candidate));
+  const layer = checkpointRollbackServiceLayer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(CheckpointService.CheckpointServiceV2)(options.checkpoints),
+        Layer.mock(EventSink.EventSinkV2)({
+          write: ({ events }) =>
+            Effect.sync(() => {
+              state.writes.push(events);
+              for (const event of events) {
+                if (event.type === "run.updated") {
+                  state.projection = {
+                    ...state.projection,
+                    runs: replace(state.projection.runs, event.payload),
+                  };
+                } else if (event.type === "checkpoint.captured") {
+                  state.projection = {
+                    ...state.projection,
+                    checkpoints: replace(state.projection.checkpoints, event.payload),
+                  };
+                }
+              }
+              return [];
+            }),
+        }),
+        IdAllocator.layer,
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadRecords: () => Effect.sync(() => state.projection as never),
+          getShellSnapshot: () =>
+            Effect.succeed({
+              schemaVersion: 1,
+              snapshotSequence: 0,
+              threads: [],
+              archivedThreads: [],
+            }),
+        }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          open: () =>
+            Effect.succeed({
+              rollbackThread: (input: ProviderAdapterV2RollbackThreadInput) =>
+                Effect.gen(function* () {
+                  state.nativeTurns -= yield* resolveCodexRollbackTurnCount(input);
+                  state.providerRollbacks++;
+                  return { providerThread };
+                }),
+            } as never),
+        }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: () => Effect.succeed({} as never),
+          requireWorkspaceFolderAccess: () => Effect.void,
+        }),
+      ),
+    ),
+  );
+  const execute = (restoreFiles: boolean) =>
+    CheckpointRollbackService.CheckpointRollbackServiceV2.pipe(
+      Effect.flatMap((service) =>
+        service.execute({
+          threadId,
+          providerThreadId,
+          checkpointId: checkpoint(1, "ready").id,
+          scopeId,
+          restoreFiles,
+        }),
+      ),
+    );
+  const statuses = () => ({
+    runs: state.projection.runs.map((run) => run.status),
+    checkpoints: state.projection.checkpoints.map((candidate) => candidate.status),
+  });
+  return { state, layer, execute, statuses };
+};
+
+it.effect("rewinds the conversation to an error-barrier checkpoint without its files", () => {
+  const restore = vi.fn(() => Effect.die("file restore must not run"));
+  const preflightRestore = vi.fn(() => Effect.die("file restore checks must not run"));
+  const deleted: Array<string> = [];
+  const harness = makeRewindHarness({
+    name: "rewind-error-barrier",
+    targetStatus: "error",
+    checkpoints: {
+      preflightRestore,
+      restore,
+      deleteStaleRefs: ({ checkpoints }) =>
+        Effect.sync(() => {
+          deleted.push(...checkpoints.map((candidate) => candidate.id));
+        }),
+    },
+  });
+  return Effect.gen(function* () {
+    yield* harness.execute(false);
+    assert.equal(harness.state.nativeTurns, 1);
+    assert.deepEqual(harness.statuses(), {
+      runs: ["completed", "rolled_back", "rolled_back"],
+      checkpoints: ["error", "stale", "stale"],
+    });
+    assert.deepEqual(deleted, [
+      "rewind-error-barrier-checkpoint-2",
+      "rewind-error-barrier-checkpoint-3",
+    ]);
+    assert.equal(restore.mock.calls.length, 0);
+    assert.equal(preflightRestore.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("refuses a file restore before the provider rewinds, naming the folders", () => {
+  const restore = vi.fn(() => Effect.die("file restore must not run"));
+  const harness = makeRewindHarness({
+    name: "rewind-refused",
+    targetStatus: "error",
+    checkpoints: {
+      preflightRestore: () => Effect.succeed({ reason: "not-ready", folders: ["lib"] }),
+      restore,
+    },
+  });
+  return Effect.gen(function* () {
+    const error = yield* Effect.flip(harness.execute(true));
+    assert.equal(error.reason, "file-restore-refused");
+    assert.equal(
+      error.message,
+      "Files in lib weren't checkpointed. Rewind the conversation without restoring files instead.",
+    );
+    assert.equal(
+      CheckpointRollbackService.rollbackFailureMessage(Cause.fail(error)),
+      error.message,
+    );
+    assert.equal(harness.state.providerRollbacks, 0);
+    assert.deepEqual(harness.state.writes, []);
+    assert.equal(restore.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("retries a failed file restore without rewinding the provider again", () => {
+  let restoreAttempts = 0;
+  const harness = makeRewindHarness({
+    name: "rewind-retry",
+    targetStatus: "ready",
+    checkpoints: {
+      preflightRestore: () => Effect.succeed(undefined),
+      restore: ({ scope, checkpoint }) =>
+        ++restoreAttempts === 1
+          ? Effect.fail(
+              new CheckpointService.CheckpointRestoreError({
+                scopeId: scope.id,
+                checkpointId: checkpoint.id,
+                restoredFolders: ["app"],
+                unrestoredFolders: ["lib"],
+                cause: "index.lock exists",
+              }),
+            )
+          : Effect.void,
+      deleteStaleRefs: () => Effect.void,
+    },
+  });
+  return Effect.gen(function* () {
+    const error = yield* Effect.flip(harness.execute(true));
+    assert.equal(error.reason, "files-not-restored");
+    assert.equal(
+      CheckpointRollbackService.rollbackFailureMessage(Cause.fail(error)),
+      "The conversation was rewound, but files in lib couldn't be restored. Files in app were restored.",
+    );
+    // The conversation was committed before the files; the turns stay until they are back.
+    assert.equal(harness.state.nativeTurns, 1);
+    assert.deepEqual(harness.statuses(), {
+      runs: ["completed", "rolled_back", "rolled_back"],
+      checkpoints: ["ready", "ready", "error"],
+    });
+
+    yield* harness.execute(true);
+    assert.equal(harness.state.providerRollbacks, 1);
+    assert.equal(harness.state.nativeTurns, 1);
+    assert.equal(restoreAttempts, 2);
+    assert.deepEqual(harness.statuses(), {
+      runs: ["completed", "rolled_back", "rolled_back"],
+      checkpoints: ["ready", "stale", "stale"],
+    });
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it("keeps a fixed message for failures that aren't about files", () => {
+  assert.equal(
+    CheckpointRollbackService.rollbackFailureMessage(Cause.fail(new Error("socket closed"))),
+    CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+  );
+});

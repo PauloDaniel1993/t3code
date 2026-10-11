@@ -374,8 +374,9 @@ export const executorLayer: Layer.Layer<
               })
               .pipe(
                 // The last failed attempt tells waiting clients it failed,
-                // instead of leaving them to time out. Clients get a fixed
-                // message; the worker logs the full cause for each attempt.
+                // instead of leaving them to time out. A refused or partial
+                // file restore names its folders; other failures get a fixed
+                // message, and the worker logs the full cause for each attempt.
                 Effect.tapCause((cause) =>
                   willRetry || Cause.hasInterruptsOnly(cause)
                     ? Effect.void
@@ -385,7 +386,7 @@ export const executorLayer: Layer.Layer<
                           commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
                           threadId: effect.threadId,
                           requestId: effect.commandId,
-                          message: CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+                          message: CheckpointRollbackService.rollbackFailureMessage(cause),
                         })
                         .pipe(
                           Effect.catchCause((recordCause) =>

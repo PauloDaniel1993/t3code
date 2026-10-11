@@ -84,6 +84,7 @@ import {
   shouldShowPlanFollowUpPrompt,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForRevertedMessage,
+  deriveRewindFileRestore,
   prepareRevertedMessageAttachments,
 } from "./ChatView.logic";
 
@@ -2073,6 +2074,7 @@ describe("waitForRevertedMessage", () => {
   const threadRef = { environmentId: EnvironmentId.make("env-1"), threadId: ThreadId.make("t") };
   const messageId = MessageId.make("message-2");
   const requestId = CommandId.make("rollback-1");
+  const runId = RunId.make("run-2");
 
   function projectionAtom() {
     const base = makeThreadProjectionFixture();
@@ -2082,7 +2084,7 @@ describe("waitForRevertedMessage", () => {
         {
           id: messageId,
           threadId: base.thread.id,
-          runId: RunId.make("run-2"),
+          runId,
           nodeId: null,
           role: "user",
           text: "second",
@@ -2092,47 +2094,181 @@ describe("waitForRevertedMessage", () => {
           updatedAt: base.updatedAt,
         },
       ],
+      runs: [{ id: runId, ordinal: 2, status: "completed" }],
+      checkpoints: [{ runId, appRunOrdinal: 2, status: "ready" }],
     } as unknown as ReturnType<typeof makeThreadProjectionFixture>;
     const state = Atom.make({ data: Option.some(projection) });
     vi.spyOn(environmentThreadDetails, "stateAtom").mockReturnValue(state as never);
-    return { state, projection };
+    const update = (change: (current: typeof projection) => Partial<typeof projection>): void => {
+      const current = Option.getOrThrow(appAtomRegistry.get(state).data);
+      appAtomRegistry.set(state, { data: Option.some({ ...current, ...change(current) }) });
+    };
+    const rewindConversation = () =>
+      update(() => ({ runs: [{ id: runId, ordinal: 2, status: "rolled_back" }] as never }));
+    const fail = (message: string, id = requestId) =>
+      update((current) => ({
+        thread: { ...current.thread, rollbackFailure: { requestId: id, message } },
+      }));
+    return { update, rewindConversation, fail };
   }
 
   afterEach(() => vi.restoreAllMocks());
 
-  it("rejects with the projected reason when the rollback fails for good", async () => {
-    const { state, projection } = projectionAtom();
-    const waiting = waitForRevertedMessage(threadRef, messageId, 1, requestId, async () => {});
+  it("rejects with the projected reason when the rollback fails before rewinding", async () => {
+    const { fail } = projectionAtom();
+    const waiting = waitForRevertedMessage(
+      threadRef,
+      messageId,
+      1,
+      requestId,
+      true,
+      async () => {},
+    );
     await Promise.resolve();
-    appAtomRegistry.set(state, {
-      data: Option.some({
-        ...projection,
-        thread: {
-          ...projection.thread,
-          rollbackFailure: { requestId, message: "The provider could not roll back." },
-        },
-      }),
-    });
+    fail("The provider could not roll back.");
 
     await expect(waiting).rejects.toThrow("The provider could not roll back.");
   });
 
   it("ignores a failure recorded for an earlier rollback", async () => {
     vi.useFakeTimers();
-    const { state, projection } = projectionAtom();
-    const waiting = waitForRevertedMessage(threadRef, messageId, 1, requestId, async () => {}, 50);
+    const { fail } = projectionAtom();
+    const waiting = waitForRevertedMessage(
+      threadRef,
+      messageId,
+      1,
+      requestId,
+      true,
+      async () => {},
+      50,
+    );
     const settled = expect(waiting).rejects.toThrow("Timed out waiting for the thread to rewind.");
-    appAtomRegistry.set(state, {
-      data: Option.some({
-        ...projection,
-        thread: {
-          ...projection.thread,
-          rollbackFailure: { requestId: CommandId.make("rollback-0"), message: "Old failure." },
-        },
-      }),
-    });
+    fail("Old failure.", CommandId.make("rollback-0"));
     await vi.advanceTimersByTimeAsync(50);
     await settled;
     vi.useRealTimers();
+  });
+
+  it("waits for restored files after the conversation rewinds", async () => {
+    const { update, rewindConversation } = projectionAtom();
+    let settled = false;
+    const waiting = waitForRevertedMessage(
+      threadRef,
+      messageId,
+      1,
+      requestId,
+      true,
+      async () => {},
+    );
+    void waiting.then(() => {
+      settled = true;
+    });
+    rewindConversation();
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+    expect(settled).toBe(false);
+
+    update(() => ({ checkpoints: [{ runId, appRunOrdinal: 2, status: "stale" }] as never }));
+    await expect(waiting).resolves.toEqual({ filesFailure: null });
+  });
+
+  it("resolves once the conversation rewinds when keeping files", async () => {
+    const { rewindConversation } = projectionAtom();
+    const waiting = waitForRevertedMessage(
+      threadRef,
+      messageId,
+      1,
+      requestId,
+      false,
+      async () => {},
+    );
+    rewindConversation();
+
+    await expect(waiting).resolves.toEqual({ filesFailure: null });
+  });
+
+  it("reports files that failed after the conversation rewound", async () => {
+    const { rewindConversation, fail } = projectionAtom();
+    const waiting = waitForRevertedMessage(
+      threadRef,
+      messageId,
+      1,
+      requestId,
+      true,
+      async () => {},
+    );
+    rewindConversation();
+    fail("The conversation was rewound, but files in lib couldn't be restored.");
+
+    await expect(waiting).resolves.toEqual({
+      filesFailure: "The conversation was rewound, but files in lib couldn't be restored.",
+    });
+  });
+});
+
+describe("deriveRewindFileRestore", () => {
+  const folder = (label: string, checkoutRoot: string | null, path?: string) => ({
+    ...(path === undefined ? { uri: `vscode-remote://ssh-remote+box/${label}` } : { path }),
+    name: label,
+    label,
+    checkoutRoot,
+  });
+  const part = (vcs: "git" | null, folderPaths: ReadonlyArray<string>) => ({
+    key: folderPaths[0]!,
+    cwd: folderPaths[0]!,
+    vcs,
+    pathspecs: ["."],
+    folders: folderPaths.map((folderPath) => ({ folderPath, label: folderPath, relativePath: "" })),
+    ref: null,
+    status: vcs === null ? ("missing" as const) : ("ready" as const),
+  });
+
+  it("offers only the conversation when the turn's checkpoint isn't ready", () => {
+    expect(
+      deriveRewindFileRestore({
+        checkpoints: [{ appRunOrdinal: 1, ordinalWithinScope: 1, status: "error" }],
+        workspaceFolders: undefined,
+        turnCount: 1,
+      }),
+    ).toEqual({ canRestoreFiles: false, unrestoredFolders: [] });
+  });
+
+  it("restores a single folder whole", () => {
+    expect(
+      deriveRewindFileRestore({
+        checkpoints: [{ appRunOrdinal: null, ordinalWithinScope: 0, status: "ready" }],
+        workspaceFolders: undefined,
+        turnCount: 0,
+      }),
+    ).toEqual({ canRestoreFiles: true, unrestoredFolders: [] });
+  });
+
+  it("lists the folders a file restore leaves alone", () => {
+    expect(
+      deriveRewindFileRestore({
+        checkpoints: [
+          {
+            appRunOrdinal: 1,
+            ordinalWithinScope: 1,
+            status: "ready",
+            parts: [part("git", ["/app"]), part(null, ["/notes"])],
+          },
+        ],
+        workspaceFolders: [
+          folder("app", "/app", "/app"),
+          // Unavailable during that turn.
+          folder("lib", "/lib", "/lib"),
+          folder("notes", null, "/notes"),
+          folder("remote", null),
+        ],
+        turnCount: 1,
+      }),
+    ).toEqual({
+      canRestoreFiles: true,
+      unrestoredFolders: [
+        { label: "lib", reason: "added-later" },
+        { label: "notes", reason: "not-checkpointed" },
+        { label: "remote", reason: "not-checkpointed" },
+      ],
+    });
   });
 });

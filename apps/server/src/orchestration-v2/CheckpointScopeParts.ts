@@ -1,4 +1,5 @@
 import type {
+  OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointFolder,
   OrchestrationV2CheckpointPart,
   OrchestrationV2CheckpointScope,
@@ -219,6 +220,29 @@ export function runFolderPaths(
       folder.effectivePath === null ? [] : [folder.effectivePath],
     ) ?? []
   );
+}
+
+/**
+ * The checkouts a file restore of `checkpoint` writes: its git parts, where the
+ * turn left them. A checkpoint without parts is its scope's whole cwd.
+ */
+export function checkpointRestoreParts(
+  scope: Pick<OrchestrationV2CheckpointScope, "cwd">,
+  checkpoint: Pick<OrchestrationV2Checkpoint, "parts" | "ref" | "status">,
+): ReadonlyArray<OrchestrationV2CheckpointPart> {
+  return (
+    checkpoint.parts ?? [
+      {
+        key: PRIMARY_CHECKPOINT_PART_KEY,
+        cwd: scope.cwd,
+        vcs: "git",
+        pathspecs: ["."],
+        folders: [],
+        ref: checkpoint.ref,
+        status: checkpoint.status,
+      },
+    ]
+  ).filter((part) => part.vcs === "git");
 }
 
 /**

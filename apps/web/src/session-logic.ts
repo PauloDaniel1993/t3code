@@ -982,10 +982,11 @@ export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
 }): Map<ChatMessage["id"], number> {
-  const readyCheckpointByRunId = new Map<RunId, ThreadCheckpointSummary>();
+  // A turn whose files weren't checkpointed can still rewind its conversation.
+  const checkpointByRunId = new Map<RunId, ThreadCheckpointSummary>();
   for (const checkpoint of input.checkpoints) {
-    if (checkpoint.status === "ready") {
-      readyCheckpointByRunId.set(checkpoint.runId, checkpoint);
+    if (checkpoint.status !== "stale") {
+      checkpointByRunId.set(checkpoint.runId, checkpoint);
     }
   }
   const byUserMessageId = new Map<ChatMessage["id"], number>();
@@ -995,7 +996,7 @@ export function deriveRevertTurnCountByUserMessageId(input: {
       continue;
     }
     if (entry.message.runId === null) continue;
-    const checkpoint = readyCheckpointByRunId.get(entry.message.runId);
+    const checkpoint = checkpointByRunId.get(entry.message.runId);
     if (checkpoint === undefined) continue;
     byUserMessageId.set(entry.message.id, Math.max(0, checkpoint.checkpointTurnCount - 1));
   }

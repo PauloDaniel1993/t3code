@@ -1126,6 +1126,10 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
 
     restoreCheckpoint: Effect.fn("GitVcsDriver.checkpoints.restoreCheckpoint")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.restoreCheckpoint";
+      const pathspecs =
+        input.pathspecs === undefined || input.pathspecs.length === 0 ? ["."] : input.pathspecs;
+      const excludes = pathspecs.filter((spec) => spec.startsWith(":(exclude"));
+      const included = pathspecs.filter((spec) => !spec.startsWith(":(exclude"));
 
       let commitOid = yield* resolveCheckpointCommit(input.cwd, input.checkpointRef);
 
@@ -1137,36 +1141,61 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         return false;
       }
 
-      const tracked = yield* execute({
-        operation,
-        cwd: input.cwd,
-        args: ["ls-files", "--cached", `--with-tree=${commitOid}`, "-z", "--", "."],
-      });
-      // An empty index and checkpoint have nothing for git restore's pathspec to match.
-      if (tracked.stdout.length > 0) {
+      // git restore refuses a pathspec that matches nothing, such as a folder
+      // that is empty both in the index and in the checkpoint.
+      const restorable = yield* Effect.filter(included, (spec) =>
+        execute({
+          operation,
+          cwd: input.cwd,
+          args: ["ls-files", "--cached", `--with-tree=${commitOid}`, "-z", "--", spec, ...excludes],
+          maxOutputBytes: 1,
+          outputMode: "truncate",
+        }).pipe(Effect.map((listed) => listed.stdout.length > 0 || listed.stdoutTruncated)),
+      );
+      // Restore and clean can remove a member folder they empty; it stays a
+      // workspace folder, so it is put back afterwards.
+      const members = yield* Effect.filter(
+        included.flatMap((spec) => {
+          const member = /^:\(literal\)(.+)$/.exec(spec)?.[1];
+          return member === undefined ? [] : [path.join(input.cwd, member)];
+        }),
+        (member) => fileSystem.exists(member).pipe(Effect.orElseSucceed(() => false)),
+      );
+      if (restorable.length > 0) {
         yield* execute({
           operation,
           cwd: input.cwd,
-          args: ["restore", "--source", commitOid, "--worktree", "--staged", "--", "."],
+          args: [
+            "restore",
+            "--source",
+            commitOid,
+            "--worktree",
+            "--staged",
+            "--",
+            ...restorable,
+            ...excludes,
+          ],
         });
       }
+      const recreateDirectory = (directory: string) =>
+        fileSystem.makeDirectory(directory, { recursive: true }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new VcsProcessExitError({
+                operation,
+                command: "git restore",
+                cwd: input.cwd,
+                exitCode: 0,
+                detail: `Could not recreate the checkpoint workspace: ${cause.message}`,
+              }),
+          ),
+        );
       // Restoring away the last tracked file can remove a nested workspace directory.
-      yield* fileSystem.makeDirectory(input.cwd, { recursive: true }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new VcsProcessExitError({
-              operation,
-              command: "git restore",
-              cwd: input.cwd,
-              exitCode: 0,
-              detail: `Could not recreate the checkpoint workspace: ${cause.message}`,
-            }),
-        ),
-      );
+      yield* recreateDirectory(input.cwd);
       const cleaned = yield* execute({
         operation,
         cwd: input.cwd,
-        args: ["clean", "-fd", "--", "."],
+        args: ["clean", "-fd", "--", ...pathspecs],
         allowNonZeroExit: true,
       });
       if (cleaned.exitCode !== 0) {
@@ -1187,13 +1216,14 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             detail: cleaned.stderr.trim() || "Could not clean the checkpoint workspace.",
           });
       }
+      for (const member of members) yield* recreateDirectory(member);
 
       const headExists = yield* hasHeadCommit(input.cwd);
       if (headExists) {
         yield* execute({
           operation,
           cwd: input.cwd,
-          args: ["reset", "--quiet", "--", "."],
+          args: ["reset", "--quiet", "--", ...pathspecs],
         });
       }
 

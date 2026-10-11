@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import { fileRestoreRefusalMessage, restoreIsolationRefusal } from "./CheckpointRestoreSafety.ts";
 import {
   CheckpointRollbackServiceV2,
   layer as rollbackLayer,
@@ -156,6 +157,7 @@ it.effect.each([
               }),
           }),
           Layer.mock(CheckpointServiceV2)({
+            preflightRestore: () => Effect.succeed(undefined),
             restore: () =>
               Effect.gen(function* () {
                 calls.push("files");
@@ -189,7 +191,8 @@ it.effect.each([
       const error = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
         .pipe(Effect.flip);
-      assert.equal(error.reason, "shared-workspace");
+      assert.equal(error.reason, "file-restore-refused");
+      assert.match(error.message, /isolated worktree/);
       assert.deepEqual(calls, []);
       assert.equal(yield* fs.readFileString(otherFile), "other thread's uncommitted work");
     } else {
@@ -198,4 +201,109 @@ it.effect.each([
       assert.equal(yield* fs.exists(otherFile), !restoreFiles);
     }
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  // A thread's own nested members never conflict with each other.
+  { owner: "none", nested: true, shared: [] },
+  { owner: "extra-directory", nested: false, shared: ["lib"] },
+  { owner: "root-folder", nested: false, shared: ["lib"] },
+  { owner: "member", nested: false, shared: ["app"] },
+  // lib is restored in place, outside the thread's own worktrees.
+  { owner: "foreign-part", nested: false, shared: ["lib"] },
+] as const)(
+  "restores only parts no other thread reaches, owner=$owner",
+  ({ owner, nested, shared }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v2-restore-parts-" });
+      const session = path.join(parent, "session");
+      const app = path.join(session, "app");
+      const lib = nested ? path.join(app, "lib") : path.join(session, "lib");
+      const otherRoot = path.join(parent, "other-source");
+      const otherWorktree = path.join(parent, "other-worktree");
+      for (const directory of [app, lib, path.join(lib, "sub"), otherRoot, otherWorktree]) {
+        yield* fs.makeDirectory(directory, { recursive: true });
+      }
+      const projectId = ProjectId.make("restore-parts-project");
+      const otherId = ThreadId.make("restore-parts-other");
+      const member = (worktree: string) => ({
+        repositoryRoot: path.join(parent, "source", path.basename(worktree)),
+        path: worktree,
+        branch: "feature",
+      });
+      const otherThread = {
+        id: otherId,
+        projectId,
+        deletedAt: null,
+        worktreePath: owner === "root-folder" ? null : otherWorktree,
+        ...(owner === "member" ? { worktrees: [member(app)] } : {}),
+        ...(owner === "root-folder" ? { workspaceFolderCount: 2 } : {}),
+      };
+      const projections = ProjectionStoreV2.of({
+        getShellSnapshot: () =>
+          Effect.succeed({
+            schemaVersion: 1,
+            snapshotSequence: 0,
+            threads: owner === "none" || owner === "foreign-part" ? [] : [otherThread as never],
+            archivedThreads: [],
+          }),
+        getCheckpointContext: () =>
+          Effect.succeed({ runs: [], checkpointScopes: [], checkpoints: [] }),
+        getThreadProviderContext: () =>
+          Effect.succeed({
+            providerSessions:
+              owner === "extra-directory"
+                ? [
+                    {
+                      cwd: otherWorktree,
+                      additionalDirectories: [path.join(lib, "sub")],
+                      status: "running",
+                      capabilities: {
+                        sessions: { supportsMultipleProviderThreadsPerSession: false },
+                      },
+                    },
+                  ]
+                : [],
+          } as never),
+        getThread: () =>
+          Effect.succeed({
+            worktreePath: null,
+            workspaceFolders: [
+              { path: otherRoot, name: "other", label: "other" },
+              { path: path.join(lib, "sub"), name: "sub", label: "sub" },
+            ],
+          } as never),
+      } as never);
+      const refusal = yield* restoreIsolationRefusal(
+        {
+          id: ThreadId.make("restore-parts-current"),
+          worktreePath: app,
+          worktrees: owner === "foreign-part" ? [member(app)] : [member(app), member(lib)],
+        },
+        [
+          { cwd: app, folders: [{ folderPath: "/source/app", label: "app", relativePath: "" }] },
+          { cwd: lib, folders: [{ folderPath: "/source/lib", label: "lib", relativePath: "" }] },
+        ],
+        {
+          fileSystem: fs,
+          path,
+          projections,
+          projects: ProjectStore.ProjectStoreV2.of({
+            get: () => Effect.succeed(Option.some({ workspaceRoot: otherRoot } as never)),
+          } as never),
+        },
+      );
+      assert.deepStrictEqual(
+        refusal,
+        shared.length === 0 ? undefined : { reason: "shared", folders: shared },
+      );
+      if (refusal !== undefined) {
+        assert.equal(
+          fileRestoreRefusalMessage(refusal),
+          `File restore requires isolated worktrees. ${shared.join(", ")} may contain changes from another thread. Rewind the conversation without restoring files instead.`,
+        );
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

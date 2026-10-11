@@ -27,3 +27,11 @@ A folder's `path` is lexical, spelled as the workspace file spells it. `checkout
 - **Plain projects** keep the old binding, the worktree root and no tuple. Mapping a subfolder project's primary would silently change single-root behaviour.
 - **Removal is all or nothing.** Explicit removal and storage cleanup take the whole set. They remove nothing while another thread (archived ones included) or a project folder overlaps any member. Without force, every member must be clean first, so a refusal can't leave half a set. Storage cleanup leaves sets whose members nest for explicit removal: the parent's checkout can't tell a nested worktree from its own untracked or ignored files.
 - **The generated editor workspace file** lives in the session directory as `<directory name>.code-workspace`. When the session directory is itself a member's worktree, it goes beside it as `<session directory>.code-workspace`, so it never shows up as a change in that checkout. Removal deletes it and the emptied session directory, but only inside T3's worktrees directory.
+
+## File restore
+
+A rewind restores every git part of the target checkpoint, or none ([`CheckpointRestoreSafety.ts`](../../apps/server/src/orchestration-v2/CheckpointRestoreSafety.ts)).
+
+- **Refuse before the provider rewinds.** Command admission and the rollback effect both check each part: ready, its checkout present, its ref there, and the checkout one of the thread's own worktrees that no other thread reaches (worktrees, part cwds, session cwds and extra directories, and every folder of a thread without a worktree). A refusal leaves the conversation-only rewind, which needs no ready checkpoint.
+- **The conversation is committed before any file.** Codex rewinds by a turn count, so a retry that rolled the provider back again would lose more turns. The effect writes the rolled-back runs first; a retry finds none left, skips the provider and restores the files again.
+- **Stale marking comes last.** The web client treats the rewound turns' checkpoints going stale as the sign that the files are back, and a failure recorded after the runs rolled back as files that weren't. Keep that order.

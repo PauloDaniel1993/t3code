@@ -301,6 +301,44 @@ describe("V2 session presentation", () => {
     expect(targets.has(steerMessageId)).toBe(false);
   });
 
+  it("offers a rewind for turns whose files weren't checkpointed, not for rolled-back ones", () => {
+    const statuses = ["ready", "error", "missing", "stale"] as const;
+    const timelineEntries: TimelineEntry[] = statuses.map((status, index) => ({
+      id: MessageId.make(`message-${status}`),
+      kind: "message",
+      createdAt: `2026-06-20T00:00:0${index}.000Z`,
+      message: {
+        id: MessageId.make(`message-${status}`),
+        role: "user",
+        text: status,
+        runId: RunId.make(`run-${status}`),
+        inputIntent: "turn_start",
+        streaming: false,
+        createdAt: `2026-06-20T00:00:0${index}.000Z`,
+        updatedAt: `2026-06-20T00:00:0${index}.000Z`,
+      },
+    }));
+
+    const targets = deriveRevertTurnCountByUserMessageId({
+      timelineEntries,
+      checkpoints: statuses.map((status, index) => ({
+        runId: RunId.make(`run-${status}`),
+        checkpointTurnCount: index + 1,
+        checkpointRef: `checkpoint-${status}` as never,
+        status,
+        files: [],
+        assistantMessageId: null,
+        completedAt: "2026-06-20T00:00:09.000Z",
+      })),
+    });
+
+    expect([...targets]).toEqual([
+      [MessageId.make("message-ready"), 0],
+      [MessageId.make("message-error"), 1],
+      [MessageId.make("message-missing"), 2],
+    ]);
+  });
+
   it("uses visible turn item order and keeps provider errors in the work log", () => {
     const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
     const threadId = ThreadId.make("thread-visible");

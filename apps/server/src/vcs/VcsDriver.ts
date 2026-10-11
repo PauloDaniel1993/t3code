@@ -27,6 +27,8 @@ export interface VcsRestoreCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
   readonly fallbackToHead?: boolean;
+  /** What to restore below `cwd`, as captured; everything else is left alone. Defaults to `["."]`. */
+  readonly pathspecs?: ReadonlyArray<string>;
 }
 
 export interface VcsDiffCheckpointsInput {

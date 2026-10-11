@@ -66,12 +66,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
-import {
-  isCheckpointRestoreIsolated,
-  MULTI_FOLDER_RESTORE_MESSAGE,
-  SHARED_WORKSPACE_RESTORE_MESSAGE,
-  spansWorkspaceFolders,
-} from "./CheckpointRestoreSafety.ts";
+import { fileRestoreRefusal, fileRestoreRefusalMessage } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { CommandPolicyV2, resolveMessageDispatchIntent } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
@@ -8259,11 +8254,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Checkpoint ${command.checkpointId} was not found.`,
         });
       }
-      if (targetCheckpoint.status !== "ready") {
+      // A conversation-only rewind needs only a turn that wasn't rolled back;
+      // file restore checks readiness below.
+      if (targetCheckpoint.status === "stale") {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Checkpoint ${command.checkpointId} is ${targetCheckpoint.status} and cannot be restored.`,
+          cause: `Checkpoint ${command.checkpointId} is stale and cannot be restored.`,
         });
       }
       const targetScope = projection.checkpointScopes.find(
@@ -8283,20 +8280,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Checkpoint ${command.checkpointId} belongs to scope ${targetScope.id}, not ${command.scopeId}.`,
         });
       }
-      if (command.restoreFiles !== false && spansWorkspaceFolders(projection.thread)) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: MULTI_FOLDER_RESTORE_MESSAGE,
-        });
-      }
       if (command.restoreFiles !== false) {
-        const isolated = yield* isCheckpointRestoreIsolated(projection.thread, targetScope, {
-          projects,
-          path,
-          fileSystem,
-          projections: projectionStore,
-        }).pipe(
+        const refusal = yield* fileRestoreRefusal(
+          projection.thread,
+          targetScope,
+          targetCheckpoint,
+          {
+            checkpoints: checkpointService,
+            projects,
+            path,
+            fileSystem,
+            projections: projectionStore,
+          },
+        ).pipe(
           Effect.mapError(
             (cause) =>
               new OrchestratorDispatchError({
@@ -8306,11 +8302,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
-        if (!isolated)
+        if (refusal !== undefined)
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
-            cause: SHARED_WORKSPACE_RESTORE_MESSAGE,
+            cause: fileRestoreRefusalMessage(refusal),
           });
       }
 
