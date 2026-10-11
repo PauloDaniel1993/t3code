@@ -1,7 +1,14 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  ContextHandoffId,
+  ProviderSessionId,
+  RunId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -11,6 +18,7 @@ import { describe } from "vite-plus/test";
 
 import * as ProviderEventLoggers from "../../provider/Layers/ProviderEventLoggers.ts";
 import * as IdAllocator from "../IdAllocator.ts";
+import { deliverContextHandoffs } from "../ContextHandoffDelivery.ts";
 import type * as ProviderAdapter from "../ProviderAdapter.ts";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import {
@@ -47,11 +55,17 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
           const fixture = yield* makeCursorWorkspaceFixture(
             yield* CursorAgentSdk.CursorAgentSdkRunner,
           );
-          const { adapter, runtimePolicy, modelSelection } = fixture;
+          const { adapter, modelSelection } = fixture;
+          // Unsandboxed file access would succeed without a folder grant.
+          const runtimePolicy = {
+            ...fixture.runtimePolicy,
+            runtimeMode: "auto-accept-edits" as const,
+          };
           const files = fixture.additionalDirectories.map((directory) =>
             path.join(directory, "probe.txt"),
           );
           const original = NodeCrypto.randomUUID();
+          const inheritedMarker = NodeCrypto.randomUUID();
           yield* Effect.forEach(files, (file) => fileSystem.writeFileString(file, original));
           const threadId = ThreadId.make("cursor-live-workspace-source");
           const exercise = Effect.fnUntraced(function* (
@@ -60,6 +74,7 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
             ordinal: number,
             phase: string,
             expected: string,
+            context = "",
           ) {
             yield* runtime.startTurn(
               yield* cursorWorkspaceTurnInput({
@@ -67,7 +82,18 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
                 runtimePolicy,
                 modelSelection,
                 ordinal,
-                text: `Read both files ${files.map((file) => quote(file)).join(" and ")}. Append exactly ${quote(`\n${phase}`)} to each file, preserving its current contents. Reply with the original first line you read from each file. Do not edit other files.`,
+                text: [
+                  context,
+                  phase === "start"
+                    ? `Remember this conversation-only inherited marker: ${inheritedMarker}. Never write it to a file.`
+                    : "",
+                  `Use shell commands to read both files ${files.map((file) => quote(file)).join(" and ")}. Append exactly ${quote(`\n${phase}`)} to each file, preserving its current contents. Reply with the original first line you read from each file. Do not edit other files.`,
+                  phase === "fork"
+                    ? "Also reply with the inherited marker from the parent conversation."
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join("\n\n"),
               }),
             );
             const events = yield* cursorWorkspaceTurnEvents(runtime);
@@ -81,6 +107,7 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
               )
               .join("\n");
             assert.include(reply, original);
+            if (phase === "fork") assert.include(reply, inheritedMarker);
             for (const file of files)
               assert.equal(yield* fileSystem.readFileString(file), expected);
             assert.deepEqual(
@@ -102,7 +129,10 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
                 runtimePolicy,
               });
               yield* exercise(runtime, providerThread, 1, "start", `${original}\nstart`);
-              return providerThread;
+              return {
+                providerThread,
+                snapshot: yield* runtime.readThreadSnapshot({ providerThread }),
+              };
             }),
           );
           yield* Effect.scoped(
@@ -113,7 +143,9 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
                 runtimePolicy,
                 providerSessionId: ProviderSessionId.make("cursor-live-workspace-resume"),
               });
-              const providerThread = yield* runtime.resumeThread({ providerThread: source });
+              const providerThread = yield* runtime.resumeThread({
+                providerThread: source.providerThread,
+              });
               yield* exercise(runtime, providerThread, 2, "resume", `${original}\nstart\nresume`);
             }),
           );
@@ -130,8 +162,63 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
             modelSelection,
             runtimePolicy,
           });
-          assert.notEqual(forkThread.nativeThreadRef?.nativeId, source.nativeThreadRef?.nativeId);
-          yield* exercise(fork, forkThread, 1, "fork", `${original}\nstart\nresume\nfork`);
+          assert.notEqual(
+            forkThread.nativeThreadRef?.nativeId,
+            source.providerThread.nativeThreadRef?.nativeId,
+          );
+          const now = yield* DateTime.now;
+          const handoff = yield* deliverContextHandoffs({
+            providerThread: forkThread,
+            budget: 16_000,
+            alreadyDeliveredItemIds: new Set(),
+            persist: () => Effect.void,
+            handoffs: [
+              {
+                id: ContextHandoffId.make("cursor-live-workspace-fork-context"),
+                threadId,
+                targetRunId: RunId.make("cursor-live-workspace-fork-run"),
+                fromProviderThreadIds: [source.providerThread.id],
+                toProviderThreadId: forkThread.id,
+                coveredRunOrdinals: { from: 1, to: 1 },
+                strategy: "full_thread_summary",
+                status: "ready",
+                summaryMessageId: null,
+                summaryText: "",
+                history: {
+                  coverage: "Parent conversation before the portable fork.",
+                  omittedItems: 0,
+                  messages: source.snapshot.messages.flatMap((message) =>
+                    message.role === "system"
+                      ? []
+                      : [
+                          {
+                            itemId: TurnItemId.make(message.id),
+                            threadId,
+                            runId: message.runId,
+                            providerThreadId: source.providerThread.id,
+                            role: message.role,
+                            text: message.text,
+                            status: "completed",
+                            kind: `${message.role}_message`,
+                          },
+                        ],
+                  ),
+                },
+                createdByProviderInstanceId: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          });
+          yield* exercise(
+            fork,
+            forkThread,
+            1,
+            "fork",
+            `${original}\nstart\nresume\nfork`,
+            handoff.context,
+          );
+          yield* handoff.delivered;
         }).pipe(Effect.scoped, Effect.provide(liveLayer)),
       360_000,
     );
