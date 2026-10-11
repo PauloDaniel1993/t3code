@@ -102,7 +102,9 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
       return {
         taskId: task.id,
         threadId: task.threadId,
+        workspaceStrategy: task.workspaceStrategy,
         lastRunStatus: task.lastRunStatus,
+        lastRunError: task.lastRunError,
         runCount: task.runCount,
         nextRunAt: task.nextRunAt,
       };

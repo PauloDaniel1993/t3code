@@ -29,6 +29,7 @@ import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import {
@@ -521,6 +522,12 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
         "True (default) posts each run into this thread; false creates a fresh top-level thread per run.",
     }),
   ),
+  workspaceStrategy: Schema.optional(
+    OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
+      description:
+        "Launch strategy for an unbound task only (bindToCurrentThread:false). Omitted defaults to a fresh worktree from origin/main. Bound tasks follow their thread's workspace and reject this field.",
+    }),
+  ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -533,9 +540,13 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   enabled: Schema.Boolean,
   projectId: ProjectId,
   boundThreadId: Schema.NullOr(ThreadId),
+  workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
+    description: "Stored launch strategy; unused when boundThreadId is non-null.",
+  }),
   schedule: ScheduledTaskSchedule,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRunStatus: ScheduledTaskRunStatus,
+  lastRunError: Schema.NullOr(Schema.String),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -555,6 +566,12 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   schedule: Schema.optional(OrchestratorMcpSchedule),
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
+  workspaceStrategy: Schema.optional(
+    OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
+      description:
+        "Launch strategy for an unbound task only. Omitted preserves the strategy on ordinary edits; unbinding without a strategy selects a fresh worktree from origin/main. Bound tasks reject this field.",
+    }),
+  ),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

@@ -37,6 +37,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
@@ -194,6 +195,7 @@ function makeHarness(options: HarnessOptions = {}) {
       createWorktree,
       renameBranch,
       listLocalBranchNames: () => Effect.succeed([]),
+      localStatus: () => Effect.succeed({ refName: "secondary-base" } as never),
       fetchRemote: options.fetchRemote ?? (() => Effect.void),
       remoteExists: () => Effect.succeed(true),
       remoteBranchExists: () => Effect.succeed(true),
@@ -1281,6 +1283,154 @@ it.effect("fails a scheduled dispatch into a linked project on an unverified pro
     assert.lengthOf(yield* threads.listProjectThreads({ projectId, includeSubagents: false }), 0);
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, scheduledTasks)));
 });
+
+it.effect.each(["root", "worktree"] as const)(
+  "an unbound scheduled $0 dispatch binds current membership through shared launch",
+  (mode) =>
+    Effect.gen(function* () {
+      const original = [
+        linkedSnapshot[0]!,
+        { path: "/api", name: "api", label: "api", checkoutRoot: "/api", checkoutPrefix: "" },
+      ];
+      const updated = [
+        linkedSnapshot[0]!,
+        { path: "/lib", name: "lib", label: "lib", checkoutRoot: "/lib", checkoutPrefix: "" },
+      ];
+      let membership = original;
+      const setup = yield* Queue.unbounded<ThreadId>();
+      const harness = makeHarness({
+        snapshotWorkspaceFolders: () => Effect.sync(() => membership),
+        workspaceFolderAccess: "supported",
+        createWorktree: (input) =>
+          Effect.succeed({
+            worktree: { path: input.path!, refName: input.newRefName, headSha: "abc" },
+          } as never),
+        runSetup: (input) =>
+          (input.threadId === ThreadId.make("thread:schedule:before")
+            ? Effect.void
+            : Queue.offer(setup, ThreadId.make(input.threadId))
+          ).pipe(Effect.as({ status: "no-script" as const })),
+      });
+      const scheduler = ScheduledTasks.layer.pipe(
+        Layer.provide(Layer.mergeAll(harness.layer, NodeCrypto.layer, Scheduler.layer)),
+      );
+      yield* Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const before = yield* launches.launch(
+          launchInput({ command: "command:schedule:before", thread: "thread:schedule:before" }),
+        );
+        const { task } = yield* tasks.upsert({
+          title: "Current folders",
+          prompt: "Audit the current project.",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId,
+          threadId: null,
+          workspaceStrategy:
+            mode === "root"
+              ? { type: "root" }
+              : { type: "worktree", baseRef: "dev", branch: "schedule/current" },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        membership = updated;
+        const result = yield* tasks.runNow({ id: task.id });
+        assert.equal(result.task.lastRunStatus, "succeeded");
+        assert.isNull(result.task.threadId);
+        const launchedThreadId =
+          mode === "worktree"
+            ? yield* Queue.take(setup)
+            : (yield* threads.listProjectThreads({ projectId, includeSubagents: false })).find(
+                (thread) => thread.id !== before.threadId,
+              )!.id;
+        const { thread } = yield* threads.getThreadProjection(launchedThreadId);
+        assert.deepEqual(thread.workspaceFolders, updated);
+        assert.deepEqual(
+          (yield* threads.getThreadProjection(before.threadId)).thread.workspaceFolders,
+          original,
+        );
+        if (mode === "worktree") {
+          assert.deepEqual(
+            thread.worktrees?.map((member) => member.repositoryRoot),
+            ["/repo", "/lib"],
+          );
+          assert.equal(thread.worktreePath, thread.worktrees?.[0]?.path);
+          assert.deepEqual(
+            harness.createWorktree.mock.calls.map(([input]) => [input.cwd, input.refName]),
+            [
+              ["/repo", "dev"],
+              ["/lib", "secondary-base"],
+            ],
+          );
+        } else {
+          assert.isUndefined(thread.worktrees);
+          assert.isNull(thread.worktreePath);
+        }
+      }).pipe(Effect.provide(Layer.mergeAll(harness.layer, scheduler)));
+    }),
+);
+
+it.effect("a bound scheduled run follows a handed-off set and keeps its frozen folders", () =>
+  Effect.gen(function* () {
+    const original = [
+      linkedSnapshot[0]!,
+      { path: "/api", name: "api", label: "api", checkoutRoot: "/api", checkoutPrefix: "" },
+    ];
+    let membership = original;
+    const harness = makeHarness({
+      snapshotWorkspaceFolders: () => Effect.sync(() => membership),
+      workspaceFolderAccess: "supported",
+    });
+    const scheduler = ScheduledTasks.layer.pipe(
+      Layer.provide(Layer.mergeAll(harness.layer, NodeCrypto.layer, Scheduler.layer)),
+    );
+    yield* Effect.gen(function* () {
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch(
+        launchInput({ command: "command:schedule:bound", thread: "thread:schedule:bound" }),
+      );
+      const { task } = yield* tasks.upsert({
+        title: "Follow this thread",
+        prompt: "Audit the bound folders.",
+        enabled: false,
+        schedule: { type: "interval", everyMs: 60_000 },
+        projectId,
+        threadId: launched.threadId,
+        workspaceStrategy: { type: "root" },
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+      const handedOff = [
+        { repositoryRoot: "/repo", path: "/sets/bound/repo", branch: "schedule/bound" },
+        { repositoryRoot: "/api", path: "/sets/bound/api", branch: "schedule/bound" },
+      ];
+      // The same atomic binding write made by the handoff coordinator.
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("command:schedule:handoff"),
+        threadId: launched.threadId,
+        branch: "schedule/bound",
+        worktreePath: handedOff[0]!.path,
+        worktrees: handedOff,
+      });
+      membership = original.slice(0, 1);
+      const result = yield* tasks.runNow({ id: task.id });
+      assert.equal(result.task.lastRunStatus, "succeeded");
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.deepEqual(projection.thread.workspaceFolders, original);
+      assert.deepEqual(projection.thread.worktrees, handedOff);
+      assert.equal(projection.messages[0]?.scheduledTaskId, task.id);
+      assert.lengthOf(yield* threads.listProjectThreads({ projectId, includeSubagents: false }), 1);
+      assert.lengthOf(harness.createWorktree.mock.calls, 0);
+    }).pipe(Effect.provide(Layer.mergeAll(harness.layer, scheduler)));
+  }),
+);
 
 /** A linked project whose threads launch into worktree sets; setup reports where it ran. */
 const makeLinkedHarness = Effect.gen(function* () {
