@@ -4,6 +4,7 @@ import {
   CommandId,
   EnvironmentId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadWorkspaceFolder,
   type Project,
   ProjectId,
   ProviderInstanceId,
@@ -25,7 +26,11 @@ import {
   OrchestratorDispatchError,
   OrchestratorProjectionError,
 } from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as WorktreeSet from "../orchestration-v2/WorktreeSetService.ts";
+import * as ServerConfig from "../config.ts";
+import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -54,6 +59,7 @@ interface ThreadFixture {
   readonly worktreePath?: string | null;
   readonly archivedAt?: string | null;
   readonly deletedAt?: string | null;
+  readonly workspaceFolders?: ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder>;
 }
 
 const makeProjection = (overrides: ThreadFixture = {}): OrchestrationV2ThreadProjection =>
@@ -305,40 +311,64 @@ const makeHarness = (options: HarnessOptions = {}) => {
             } as unknown as Path.Path),
           ),
         );
-  const layer = serviceLayer.pipe(
+  const services = Layer.mergeAll(
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
+      dispatch,
+      getThreadRecords,
+      sendToThread,
+    } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
+    Layer.mock(ProjectService.ProjectService)({
+      getById,
+    } satisfies Partial<ProjectService.ProjectService["Service"]>),
+    ServerSettings.layerTest({
+      newWorktreesStartFromOrigin: options.newWorktreesStartFromOrigin ?? false,
+    }),
+    Layer.mock(GitWorkflowService.GitWorkflowService)({
+      listRefs,
+      listLocalBranchNames,
+      localStatus,
+      remoteExists: () => Effect.succeed(true),
+      remoteBranchExists: () => Effect.succeed(true),
+      fetchRemote,
+      resolveRemoteTrackingCommit,
+      createWorktree,
+      removeWorktree,
+      deleteLocalBranch,
+    } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+    Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+      runForThread,
+    } satisfies Partial<ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]>),
+    Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
+      refreshStatus,
+    } satisfies Partial<VcsStatusBroadcaster.VcsStatusBroadcaster["Service"]>),
+    NodeServices.layer,
+  );
+  // The real coordinator over the same git and thread mocks; every folder is
+  // its own checkout's root.
+  const worktreeSets = WorktreeSet.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
-          dispatch,
-          getThreadRecords,
-          sendToThread,
-        } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
-        Layer.mock(ProjectService.ProjectService)({
-          getById,
-        } satisfies Partial<ProjectService.ProjectService["Service"]>),
-        ServerSettings.layerTest({
-          newWorktreesStartFromOrigin: options.newWorktreesStartFromOrigin ?? false,
+        services,
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+        Layer.mock(WorkspaceFolderResolver.WorkspaceFolderResolver)({
+          probe: (folderPath) =>
+            Effect.succeed({
+              path: folderPath,
+              availability: "available",
+              vcs: {
+                checkoutRoot: folderPath,
+                checkoutPrefix: "",
+                commonDir: folderPath + "/.git",
+              },
+            }),
         }),
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
-          listRefs,
-          listLocalBranchNames,
-          localStatus,
-          fetchRemote,
-          resolveRemoteTrackingCommit,
-          createWorktree,
-          removeWorktree,
-          deleteLocalBranch,
-        } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
-        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
-          runForThread,
-        } satisfies Partial<ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]>),
-        Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
-          refreshStatus,
-        } satisfies Partial<VcsStatusBroadcaster.VcsStatusBroadcaster["Service"]>),
-        NodeServices.layer,
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-mcp-test-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
       ),
     ),
   );
+  const layer = serviceLayer.pipe(Layer.provide(Layer.merge(services, worktreeSets)));
 
   return {
     layer,
@@ -405,13 +435,16 @@ describe("t3_worktree_handoff", () => {
       });
 
       expect(harness.fetchRemote).not.toHaveBeenCalled();
-      expect(harness.createWorktree).toHaveBeenCalledWith({
-        cwd: workspaceRoot,
-        refName: "dev",
-        newRefName: "feature/handoff",
-        baseRefName: "dev",
-        path: null,
-      });
+      expect(harness.createWorktree).toHaveBeenCalledWith(
+        {
+          cwd: workspaceRoot,
+          refName: "dev",
+          newRefName: "feature/handoff",
+          baseRefName: "dev",
+          path: null,
+        },
+        expect.anything(),
+      );
       expect(harness.dispatch).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "thread.metadata.update",
@@ -519,19 +552,23 @@ describe("t3_worktree_handoff", () => {
       expect(harness.fetchRemote).toHaveBeenCalledWith({
         cwd: workspaceRoot,
         remoteName: "origin",
+        refName: "dev",
       });
       expect(harness.resolveRemoteTrackingCommit).toHaveBeenCalledWith({
         cwd: workspaceRoot,
         refName: "dev",
         fallbackRemoteName: "origin",
       });
-      expect(harness.createWorktree).toHaveBeenCalledWith({
-        cwd: workspaceRoot,
-        refName: "abc123",
-        newRefName: "feature/from-origin",
-        baseRefName: "dev",
-        path: "/custom/worktree/location",
-      });
+      expect(harness.createWorktree).toHaveBeenCalledWith(
+        {
+          cwd: workspaceRoot,
+          refName: "abc123",
+          newRefName: "feature/from-origin",
+          baseRefName: "dev",
+          path: "/custom/worktree/location",
+        },
+        expect.anything(),
+      );
       // localStatus is always consulted now (repo pre-check), but its branch
       // must not override the explicit baseRef.
       expect(harness.localStatus).toHaveBeenCalled();
@@ -601,12 +638,42 @@ describe("t3_worktree_handoff", () => {
     });
   });
 
-  it.effect("refuses a handoff for a project linked to a workspace file", () => {
-    const harness = makeHarness({ projectLinked: true });
+  it.effect("hands a thread of a linked project off to a worktree set", () => {
+    const harness = makeHarness({
+      projectLinked: true,
+      // The thread's own primary, which a later relink never moves.
+      thread: {
+        workspaceFolders: [
+          {
+            path: workspaceRoot,
+            name: "project",
+            label: "project",
+            checkoutRoot: workspaceRoot,
+            checkoutPrefix: "",
+          },
+        ],
+      },
+    });
     return Effect.gen(function* () {
-      const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/linked" }));
-      expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "invalid_request" });
-      expect(harness.createWorktree).not.toHaveBeenCalled();
+      const result = yield* runHandoff(harness, { branch: "feature/linked" });
+      const member = {
+        repositoryRoot: workspaceRoot,
+        path: result.worktreePath,
+        branch: "feature/linked",
+      };
+      expect(result.worktreePath).toMatch(/feature-linked$/);
+      expect(harness.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "thread.metadata.update",
+          branch: "feature/linked",
+          worktreePath: result.worktreePath,
+          worktrees: [member],
+          expectedWorktreePath: null,
+        }),
+      );
+      expect(harness.runForThread).toHaveBeenCalledWith(
+        expect.objectContaining({ projectCwd: workspaceRoot, worktreePath: result.worktreePath }),
+      );
     });
   });
 
@@ -799,7 +866,12 @@ describe("t3_worktree_handoff", () => {
   it.effect("queues the continuation even when interrupted during the binding dispatch", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
-      const harness = makeHarness({ dispatchGate: Deferred.await(gate) });
+      const dispatching = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        dispatchGate: Deferred.succeed(dispatching, undefined).pipe(
+          Effect.andThen(Deferred.await(gate)),
+        ),
+      });
 
       // Interrupt arrives while the metadata dispatch is in flight; the
       // binding-plus-continuation section must run to completion anyway so the
@@ -810,7 +882,7 @@ describe("t3_worktree_handoff", () => {
           continuationPrompt: "Keep going in the worktree.",
         }),
       );
-      yield* Effect.yieldNow;
+      yield* Deferred.await(dispatching);
       const interruption = yield* Effect.forkChild(Fiber.interrupt(fiber));
       yield* Effect.yieldNow;
       yield* Deferred.succeed(gate, undefined);
@@ -861,6 +933,7 @@ describe("t3_worktree_handoff", () => {
       expect(result.worktreePath).toBe("C:\\worktrees\\custom");
       expect(harness.createWorktree).toHaveBeenCalledWith(
         expect.objectContaining({ path: "C:\\worktrees\\custom" }),
+        expect.anything(),
       );
     });
   });

@@ -3425,6 +3425,36 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "vcs" },
           ),
+        [WS_METHODS.vcsCreateThreadWorktrees]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsCreateThreadWorktrees,
+            worktreeSets.createForThread(input).pipe(
+              Effect.tap((binding) =>
+                Effect.forEach(
+                  binding.worktrees?.map((member) => member.repositoryRoot) ?? [
+                    binding.worktreePath,
+                  ],
+                  refreshGitStatus,
+                  { discard: true },
+                ),
+              ),
+              Effect.map(({ branch, worktreePath }) => ({ branch, worktreePath })),
+            ),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsSwitchWorktreeSetBranch]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsSwitchWorktreeSetBranch,
+            worktreeSets.switchBranch(input).pipe(
+              Effect.tap((switched) =>
+                Effect.forEach(switched, (member) => refreshGitStatus(member.path), {
+                  discard: true,
+                }),
+              ),
+              Effect.asVoid,
+            ),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateRef,

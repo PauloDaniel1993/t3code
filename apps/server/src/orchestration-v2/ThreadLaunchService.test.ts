@@ -48,6 +48,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
@@ -191,6 +192,7 @@ function makeHarness(options: HarnessOptions = {}) {
     Layer.mock(GitWorkflow.GitWorkflowService)({
       createWorktree,
       renameBranch,
+      listLocalBranchNames: () => Effect.succeed([]),
       fetchRemote: options.fetchRemote ?? (() => Effect.void),
       remoteExists: () => Effect.succeed(true),
       remoteBranchExists: () => Effect.succeed(true),
@@ -218,7 +220,24 @@ function makeHarness(options: HarnessOptions = {}) {
     Layer.provide(
       Layer.mergeAll(
         externalServices,
+        threadManagement,
         ProjectionStore.layer.pipe(Layer.provide(database)),
+        // Every folder is its own checkout's root.
+        Layer.mock(WorkspaceFolderResolver.WorkspaceFolderResolver)({
+          probe: (folderPath) =>
+            Effect.succeed({
+              path: folderPath,
+              availability: "available",
+              vcs: {
+                checkoutRoot: folderPath,
+                checkoutPrefix: "",
+                commonDir: `${folderPath}/.git`,
+              },
+            }),
+        }),
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-thread-launch-test-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
         NodeServices.layer,
       ),
     ),
@@ -1262,33 +1281,88 @@ it.effect("fails a scheduled dispatch into a linked project on an unverified pro
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, scheduledTasks)));
 });
 
-it.effect.each([
-  { type: "worktree" as const, baseRef: "main" },
-  { type: "existing_worktree" as const, worktreePath: "/repo-worktrees/feature" },
-])("refuses a $type launch for a linked project until worktree sets land", (workspace) =>
+/** A linked project whose threads launch into worktree sets; setup reports where it ran. */
+const makeLinkedHarness = Effect.gen(function* () {
+  const setupAt = yield* Deferred.make<string>();
+  // The project's folders change after the first thread binds.
+  let snapshots = 0;
+  const harness = makeHarness({
+    snapshotWorkspaceFolders: () =>
+      Effect.sync(() => (snapshots++ === 0 ? linkedSnapshot : linkedSnapshot.slice(0, 1))),
+    workspaceFolderAccess: "supported",
+    runSetup: (input) =>
+      Deferred.succeed(setupAt, input.worktreePath).pipe(
+        Effect.as({ status: "no-script" as const }),
+      ),
+  });
+  return { harness, setupAt };
+});
+
+it.effect("binds a linked project's worktree launch to its set, at its primary's place", () =>
   Effect.gen(function* () {
-    const harness = makeHarness({
-      snapshotWorkspaceFolders: () => Effect.succeed(linkedSnapshot),
-      workspaceFolderAccess: "supported",
-    });
+    const { harness, setupAt } = yield* makeLinkedHarness;
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
-      const error = yield* launches
-        .launch(
-          launchInput({
-            command: `command:launch:linked-${workspace.type}`,
-            thread: `thread:launch:linked-${workspace.type}`,
-            workspace,
-          }),
-        )
-        .pipe(Effect.flip);
-      assert.equal(error.operation, "validate-workspace");
-      assert.match(String(error.cause), /aren't supported yet/);
-      assert.equal(harness.createWorktree.mock.calls.length, 0);
-      assert.isNull(
-        yield* threads.getThreadShell(ThreadId.make(`thread:launch:linked-${workspace.type}`)),
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:launch:linked-worktree",
+          thread: "thread:launch:linked-worktree",
+          workspace: { type: "worktree", baseRef: "main", branch: "feature/set" },
+        }),
       );
+      // Setup runs once the set is bound, at the primary's place in it.
+      assert.equal(yield* Deferred.await(setupAt), "/repo-worktrees/feature");
+      const { thread } = yield* threads.getThreadProjection(launched.threadId);
+      assert.deepEqual(thread.worktrees, [
+        { repositoryRoot: "/repo", path: "/repo-worktrees/feature", branch: "feature/set" },
+      ]);
+      assert.equal(thread.worktreePath, "/repo-worktrees/feature");
+      assert.equal(thread.branch, "feature/set");
+      assert.equal(harness.createWorktree.mock.calls[0]?.[0]?.cwd, "/repo");
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("gives a thread reusing a set's worktree the whole set and its folders", () =>
+  Effect.gen(function* () {
+    const { harness, setupAt } = yield* makeLinkedHarness;
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      yield* launches.launch(
+        launchInput({
+          command: "command:launch:set-source",
+          thread: "thread:launch:set-source",
+          workspace: { type: "worktree", baseRef: "main", branch: "feature/set" },
+        }),
+      );
+      yield* Deferred.await(setupAt);
+
+      const reused = yield* launches.launch(
+        launchInput({
+          command: "command:launch:set-reuse",
+          thread: "thread:launch:set-reuse",
+          workspace: { type: "existing_worktree", worktreePath: "/repo-worktrees/feature" },
+        }),
+      );
+      // The folders the set was made for, not the project's current ones.
+      assert.deepEqual(reused.projection.thread.workspaceFolders, linkedSnapshot);
+      assert.deepEqual(reused.projection.thread.worktrees, [
+        { repositoryRoot: "/repo", path: "/repo-worktrees/feature", branch: "feature/set" },
+      ]);
+      assert.equal(reused.projection.thread.branch, "feature/set");
+
+      // A worktree no set holds binds the primary alone.
+      const single = yield* launches.launch(
+        launchInput({
+          command: "command:launch:single-worktree",
+          thread: "thread:launch:single-worktree",
+          workspace: { type: "existing_worktree", worktreePath: "/elsewhere" },
+        }),
+      );
+      assert.equal(single.projection.thread.worktreePath, "/elsewhere");
+      assert.isUndefined(single.projection.thread.worktrees);
+      assert.deepEqual(single.projection.thread.workspaceFolders, linkedSnapshot.slice(0, 1));
     }).pipe(Effect.provide(harness.layer));
   }),
 );

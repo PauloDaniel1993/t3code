@@ -116,8 +116,11 @@ import {
   VcsPullInput,
   GitPullRequestRefInput,
   VcsPullResult,
+  VcsCreateThreadWorktreesInput,
+  VcsCreateThreadWorktreesResult,
   VcsRemoveThreadWorktreesInput,
   VcsRemoveWorktreeInput,
+  VcsSwitchWorktreeSetBranchInput,
   VcsThreadWorktreesError,
   GitResolvePullRequestResult,
   GitRunStackedActionInput,
@@ -392,6 +395,8 @@ export const WS_METHODS = {
   vcsCreateWorktree: "vcs.createWorktree",
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsRemoveThreadWorktrees: "vcs.removeThreadWorktrees",
+  vcsCreateThreadWorktrees: "vcs.createThreadWorktrees",
+  vcsSwitchWorktreeSetBranch: "vcs.switchWorktreeSetBranch",
   vcsCreateRef: "vcs.createRef",
   vcsSwitchRef: "vcs.switchRef",
   vcsInit: "vcs.init",
@@ -1320,6 +1325,17 @@ const WsVcsRemoveThreadWorktreesRpc = Rpc.make(WS_METHODS.vcsRemoveThreadWorktre
   error: Schema.Union([GitCommandError, VcsThreadWorktreesError, EnvironmentAuthorizationError]),
 });
 
+const WsVcsCreateThreadWorktreesRpc = Rpc.make(WS_METHODS.vcsCreateThreadWorktrees, {
+  payload: VcsCreateThreadWorktreesInput,
+  success: VcsCreateThreadWorktreesResult,
+  error: Schema.Union([GitCommandError, VcsThreadWorktreesError, EnvironmentAuthorizationError]),
+});
+
+const WsVcsSwitchWorktreeSetBranchRpc = Rpc.make(WS_METHODS.vcsSwitchWorktreeSetBranch, {
+  payload: VcsSwitchWorktreeSetBranchInput,
+  error: Schema.Union([GitCommandError, VcsThreadWorktreesError, EnvironmentAuthorizationError]),
+});
+
 const WsVcsCreateRefRpc = Rpc.make(WS_METHODS.vcsCreateRef, {
   payload: VcsCreateRefInput,
   success: VcsCreateRefResult,
@@ -1831,6 +1847,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsCreateWorktreeRpc,
   WsVcsRemoveWorktreeRpc,
   WsVcsRemoveThreadWorktreesRpc,
+  WsVcsCreateThreadWorktreesRpc,
+  WsVcsSwitchWorktreeSetBranchRpc,
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,
   WsVcsInitRpc,

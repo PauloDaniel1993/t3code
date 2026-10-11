@@ -4,7 +4,7 @@ import type {
   OrchestrationV2ThreadWorkspaceFolder,
   OrchestrationV2ThreadWorktree,
 } from "@t3tools/contracts";
-import { isPathWithin, isSamePath, worktreeSetPath } from "@t3tools/shared/workspaceFolders";
+import { isPathWithin, isSamePath, snapshotFolderPath } from "@t3tools/shared/workspaceFolders";
 import * as Result from "effect/Result";
 
 /** The thread fields that bind it to its workspace. */
@@ -28,7 +28,8 @@ type ThreadWorkspaceUpdate = Pick<
  */
 export function threadWorkspaceViolation(binding: ThreadWorkspaceBinding): string | undefined {
   const folders = binding.workspaceFolders;
-  const primaryFolderPath = folders?.[0]?.path;
+  const primaryFolder = folders?.[0];
+  const primaryFolderPath = primaryFolder?.path;
   if (folders !== undefined) {
     if (primaryFolderPath === undefined) {
       return "A thread's folder snapshot must start with its local primary folder.";
@@ -39,13 +40,18 @@ export function threadWorkspaceViolation(binding: ThreadWorkspaceBinding): strin
   }
   const worktrees = binding.worktrees;
   if (worktrees === undefined) return undefined;
-  if (primaryFolderPath === undefined) return "A thread's worktree set needs its folder snapshot.";
+  if (primaryFolder === undefined || primaryFolderPath === undefined) {
+    return "A thread's worktree set needs its folder snapshot.";
+  }
   const primary = worktrees[0];
   if (primary === undefined) return "A thread's worktree set needs at least one member.";
   if (
     binding.worktreePath === null ||
     !isPathWithin(primary.path, binding.worktreePath) ||
-    !isSamePath(binding.worktreePath, worktreeSetPath(primaryFolderPath, worktrees))
+    !isSamePath(
+      binding.worktreePath,
+      snapshotFolderPath(primaryFolder, worktrees) ?? primaryFolderPath,
+    )
   ) {
     return "A thread's worktree path must be its primary folder's place in its primary worktree.";
   }

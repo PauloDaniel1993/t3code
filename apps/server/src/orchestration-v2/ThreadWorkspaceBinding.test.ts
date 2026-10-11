@@ -19,6 +19,7 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import { threadWorkspaceViolation } from "./ThreadWorkspaceBinding.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -295,4 +296,23 @@ it.layer(testLayer)("thread workspace binding", (it) => {
       assert.notProperty(thread, "worktrees");
     }),
   );
+});
+
+it("places a symlinked primary in its set through the checkout git found it in", () => {
+  const binding = {
+    branch: "feature",
+    worktreePath: "/wt/s/apps/web",
+    workspaceFolders: [
+      {
+        path: "/link/repo/apps/web",
+        name: "web",
+        label: "web",
+        checkoutRoot: "/real/repo",
+        checkoutPrefix: "apps/web",
+      },
+    ],
+    worktrees: [{ repositoryRoot: "/real/repo", path: "/wt/s", branch: "feature" }],
+  };
+  assert.isUndefined(threadWorkspaceViolation(binding));
+  assert.isDefined(threadWorkspaceViolation({ ...binding, worktreePath: "/wt/s" }));
 });

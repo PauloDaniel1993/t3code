@@ -11,6 +11,7 @@ import * as AgentSessionScanner from "../project/AgentSessionScanner.ts";
 import { layer as projectServiceLayer } from "../project/ProjectService.ts";
 import { layer as projectSetupScriptRunnerLayer } from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import { layer as checkpointCaptureServiceLayer } from "./CheckpointCaptureService.ts";
 import { layer as checkpointServiceLayer } from "./CheckpointService.ts";
 import { layer as checkpointRollbackServiceLayer } from "./CheckpointRollbackService.ts";
@@ -154,29 +155,6 @@ const runExecutionServiceProvided = runExecutionServiceLayer.pipe(
   ),
 );
 
-// Turn start takes ProjectService from its environment, as before the
-// coordinator existed; launches and transports get the live one.
-const worktreeSetProvided = WorktreeSet.layer.pipe(Layer.provide(projectionStoreLayer));
-const worktreeSetWithProjectsProvided = worktreeSetProvided.pipe(
-  Layer.provide(ProjectServiceLayerLive),
-);
-
-const providerTurnStartServiceProvided = providerTurnStartServiceLayer.pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      contextHandoffServiceProvided,
-      eventSinkProvided,
-      idAllocatorLayer,
-      projectionStoreLayer,
-      providerSessionManagerProvided,
-      providerAuthServiceProvided,
-      runExecutionServiceProvided,
-      runtimePolicyProvided,
-      worktreeSetProvided,
-    ),
-  ),
-);
-
 const providerTurnControlServiceProvided = providerTurnControlServiceLayer.pipe(
   Layer.provide(Layer.merge(projectionStoreLayer, providerSessionManagerProvided)),
 );
@@ -250,6 +228,33 @@ const agentSessionImporterProvided = agentSessionImporterLayer.pipe(
 
 const threadManagementProvided = threadManagementServiceLayer.pipe(
   Layer.provide(Layer.merge(orchestratorProvided, legacyV1ThreadImporterProvided)),
+);
+
+// Turn start takes ProjectService from its environment, as before the
+// coordinator existed; launches and transports get the live one.
+const worktreeSetProvided = WorktreeSet.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(projectionStoreLayer, threadManagementProvided, WorkspaceFolderResolver.layer),
+  ),
+);
+const worktreeSetWithProjectsProvided = worktreeSetProvided.pipe(
+  Layer.provide(ProjectServiceLayerLive),
+);
+
+const providerTurnStartServiceProvided = providerTurnStartServiceLayer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      contextHandoffServiceProvided,
+      eventSinkProvided,
+      idAllocatorLayer,
+      projectionStoreLayer,
+      providerSessionManagerProvided,
+      providerAuthServiceProvided,
+      runExecutionServiceProvided,
+      runtimePolicyProvided,
+      worktreeSetProvided,
+    ),
+  ),
 );
 export const ProjectSetupScriptRunnerLayerLive = projectSetupScriptRunnerLayer.pipe(
   Layer.provide(ProjectServiceLayerLive),
