@@ -42,6 +42,7 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import { makeCursorWorkspaceFixture } from "./Adapters/CursorWorkspaceFolders.testkit.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "./IdAllocator.ts";
@@ -354,6 +355,7 @@ function makeProviderAdapter(
 function makeTestLayer(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly idleTimeoutMs: number;
+  readonly adapter?: ProviderAdapterV2Shape;
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -375,19 +377,20 @@ function makeTestLayer(input: {
     ? FailingReleaseEventSinkLayer
     : TestEventSinkLayer;
   const registryLayer = ProviderAdapterRegistry.makeSingleLayer(
-    makeProviderAdapter(input.state, {
-      failEventStream: input.failEventStream ?? false,
-      ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
-      ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
-      ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
-      ...(input.hasPendingBackgroundWork === undefined
-        ? {}
-        : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
-      ...(input.hangSessionScopeClose === undefined
-        ? {}
-        : { hangSessionScopeClose: input.hangSessionScopeClose }),
-      ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
-    }),
+    input.adapter ??
+      makeProviderAdapter(input.state, {
+        failEventStream: input.failEventStream ?? false,
+        ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+        ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
+        ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
+        ...(input.hasPendingBackgroundWork === undefined
+          ? {}
+          : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
+        ...(input.hangSessionScopeClose === undefined
+          ? {}
+          : { hangSessionScopeClose: input.hangSessionScopeClose }),
+        ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+      }),
   );
   const providerEventIngestorTestLayer = ProviderEventIngestor.layer.pipe(
     Layer.provide(Layer.mergeAll(configuredEventSinkLayer, IdAllocator.layer, TestStoresLayer)),
@@ -646,6 +649,81 @@ function makePendingRuntimeRequestEvents(input: {
     return { events, providerEvents, requestId, nodeId };
   });
 }
+
+it.effect(
+  "ProviderSessionManagerV2 retains Cursor's installed scope through reuse and release",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      let opens = 0;
+      const fixture = yield* makeCursorWorkspaceFixture({
+        assertComplete: Effect.void,
+        open: (input) =>
+          Effect.sync(() => {
+            opens += 1;
+            return {
+              agentId: input.agentId ?? "cursor-manager-workspace",
+              listMessages: Effect.succeed([]),
+              close: Effect.void,
+              send: () => Effect.die("unused turn"),
+            };
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-cursor-manager-workspace");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          threadId,
+          providerInstanceId: fixture.modelSelection.instanceId,
+        });
+        const created = yield* makeThreadCreatedEvent({ idAllocator, threadId, now });
+        yield* eventSink.write({
+          events: [
+            {
+              ...created,
+              payload: {
+                ...created.payload,
+                providerInstanceId: fixture.modelSelection.instanceId,
+                modelSelection: fixture.modelSelection,
+                activeProviderThreadId: null,
+              },
+            },
+          ],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection: fixture.modelSelection,
+          runtimePolicy: fixture.runtimePolicy,
+        });
+        assert.deepEqual(runtime.providerSession.additionalDirectories, []);
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: fixture.modelSelection,
+          runtimePolicy: fixture.runtimePolicy,
+        });
+        for (let turn = 0; turn < 2; turn++) {
+          yield* runtime.resumeThread({ providerThread, runtimePolicy: fixture.runtimePolicy });
+          assert.deepEqual(
+            runtime.providerSession.additionalDirectories,
+            fixture.additionalDirectories,
+          );
+        }
+        assert.equal(opens, 1);
+        yield* manager.close(providerSessionId);
+        const projection = yield* projectionStore.getThreadProjection(threadId);
+        const session = projection.providerSessions.find((item) => item.id === providerSessionId);
+        assert.equal(session?.status, "stopped");
+        assert.deepEqual(session?.additionalDirectories, fixture.additionalDirectories);
+      }).pipe(
+        Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000, adapter: fixture.adapter })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
+);
 
 it.effect("ProviderSessionManagerV2 opens independent sessions concurrently", () =>
   Effect.gen(function* () {
