@@ -140,6 +140,9 @@ interface GitActionsControlProps {
   displayMode?: "toolbar" | "panel";
   compact?: boolean;
   onOpenChanges?: () => void;
+  disabled?: boolean;
+  /** Secondary repositories never update the thread's primary branch metadata. */
+  syncThreadBranch?: boolean;
 }
 
 interface PendingDefaultBranchAction {
@@ -1060,6 +1063,8 @@ export default function GitActionsControl({
   displayMode = "toolbar",
   compact = false,
   onOpenChanges,
+  disabled = false,
+  syncThreadBranch = true,
 }: GitActionsControlProps) {
   const isPanel = displayMode === "panel";
   const ActionGroup = isPanel ? "div" : Group;
@@ -1115,7 +1120,7 @@ export default function GitActionsControl({
 
   const persistThreadBranchSync = useCallback(
     (branch: string | null, manualSelection = false) => {
-      if (!activeThreadRef) {
+      if (!activeThreadRef || !syncThreadBranch) {
         return;
       }
 
@@ -1155,6 +1160,7 @@ export default function GitActionsControl({
       draftId,
       setDraftThreadContext,
       updateThreadMetadata,
+      syncThreadBranch,
     ],
   );
 
@@ -1201,10 +1207,11 @@ export default function GitActionsControl({
   const initAction = useVcsInitAction(sourceControlScope);
   const runImmediateGitAction = useGitStackedAction(sourceControlScope);
   const pullAction = useVcsPullAction(sourceControlScope);
-  const isGitActionRunning = useSourceControlActionRunning(
+  const sourceControlActionRunning = useSourceControlActionRunning(
     sourceControlScope,
     RUNNING_SOURCE_CONTROL_ACTIONS,
   );
+  const isGitActionRunning = disabled || sourceControlActionRunning;
   const isSelectingWorktreeBase =
     !activeServerThread &&
     activeDraftThread?.envMode === "worktree" &&

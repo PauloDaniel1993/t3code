@@ -926,6 +926,45 @@ it.effect("switches a set's members to a branch, each under its own name, and re
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
+it.effect(
+  "refreshes both a switched member root and its frozen folder cwd, leaving other members alone",
+  () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const api = yield* makeRepo("api", ["service/README.md"]);
+      const web = yield* makeRepo("web");
+      const workspaceFolders = yield* snapshotOf([path.join(api.root, "service"), web.root]);
+      const set = yield* withCoordinator(
+        createSet({ workspaceFolders, baseRef: api.branch, branch: "feature" }),
+      );
+      const binding = WorktreeSet.worktreeSetBinding(set);
+      yield* git(api.root, ["branch", "other"]);
+      const refreshed: Array<string> = [];
+      yield* withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (service) =>
+          service.switchBranch(
+            { threadId, branch: "other", members: [api.root] },
+            {
+              onSwitched: (cwd) =>
+                Effect.sync(() => {
+                  refreshed.push(cwd);
+                }),
+            },
+          ),
+        ),
+        {
+          thread: { id: threadId, title: "Set", ...binding, workspaceFolders },
+        },
+      );
+      assert.deepEqual(
+        refreshed.toSorted(),
+        [set.members[0]!.path, path.join(set.members[0]!.path, "service")].toSorted(),
+      );
+      assert.equal(yield* git(set.members[0]!.path, ["branch", "--show-current"]), "other");
+      assert.equal(yield* git(set.members[1]!.path, ["branch", "--show-current"]), "feature");
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
 it.effect("reuses the set of the newest thread whose primary works in a worktree", () =>
   Effect.gen(function* () {
     const folders = [{ path: "/repo", name: "repo", label: "repo", checkoutRoot: "/repo" }];

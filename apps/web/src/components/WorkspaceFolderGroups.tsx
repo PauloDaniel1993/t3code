@@ -34,7 +34,7 @@ function WorkspaceFolderRowView({
 }: Omit<WorkspaceFolderGroupsProps, "rows"> & { row: WorkspaceFolderRow }) {
   const status = useEnvironmentQuery(
     row.isGit && row.effectivePath
-      ? vcsEnvironment.status({
+      ? vcsEnvironment.branchStatus({
           environmentId: props.environmentId,
           input: { cwd: row.effectivePath },
         })

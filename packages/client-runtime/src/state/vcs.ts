@@ -17,6 +17,7 @@ import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import {
   createEnvironmentRpcCommand,
+  createEnvironmentCommand,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
 } from "./runtime.ts";
@@ -24,7 +25,8 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as Persistence from "../platform/persistence.ts";
-import { request, subscribe, type EnvironmentRpcInput } from "../rpc/client.ts";
+import { request, subscribe, runStream, type EnvironmentRpcInput } from "../rpc/client.ts";
+import { consumeWorkspaceActionProgress, type RunWorkspaceActionInput } from "./workspaceVcs.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
 import {
@@ -280,6 +282,44 @@ export function createVcsEnvironmentAtoms<R, E>(
 
   return {
     listRefs,
+    branchStatus: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: "environment-data:vcs:branch-status",
+      idleTtlMs: VCS_STATUS_IDLE_TTL_MS,
+      subscribe: (input: { readonly cwd: string }) =>
+        subscribe(WS_METHODS.subscribeVcsStatus, { ...input, scope: "branch" }).pipe(
+          Stream.filter((event) => event._tag === "branch"),
+          Stream.map((event) => ({ isRepo: event.isRepo, refName: event.refName })),
+        ),
+    }),
+    runWorkspaceAction: createEnvironmentCommand(runtime, {
+      label: "environment-data:vcs:run-workspace-action",
+      concurrency: {
+        mode: "serial",
+        key: (target: { environmentId: EnvironmentId; input: RunWorkspaceActionInput }) =>
+          JSON.stringify([target.environmentId, target.input.threadId]),
+      },
+      execute: (input: RunWorkspaceActionInput, registry, environmentId) => {
+        const { onProgress, ...rpcInput } = input;
+        return consumeWorkspaceActionProgress(
+          runStream(WS_METHODS.vcsRunWorkspaceAction, rpcInput),
+          input.actionId,
+          onProgress,
+        ).pipe(
+          Effect.ensuring(
+            invalidateCachedVcsRefs(registry, { environmentId, cwd: `thread:${input.threadId}` }),
+          ),
+        );
+      },
+    }),
+    switchWorktreeSetBranch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:switch-worktree-set-branch",
+      tag: WS_METHODS.vcsSwitchWorktreeSetBranch,
+      onSettled: (target, registry) =>
+        invalidateCachedVcsRefs(registry, {
+          environmentId: target.environmentId,
+          cwd: `thread:${target.input.threadId}`,
+        }),
+    }),
     status: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:vcs:status",
       idleTtlMs: VCS_STATUS_IDLE_TTL_MS,
@@ -373,3 +413,4 @@ export function createVcsEnvironmentAtoms<R, E>(
 export * from "./gitActions.ts";
 export * from "./vcsAction.ts";
 export * from "./vcsRef.ts";
+export * from "./workspaceVcs.ts";

@@ -32,6 +32,7 @@ interface PullRequestThreadDialogProps {
   threadId: ThreadId;
   cwd: string | null;
   initialReference: string | null;
+  primaryRepositoryOnly?: boolean;
   onOpenChange: (open: boolean) => void;
   onPrepared: (input: { branch: string; worktreePath: string | null }) => Promise<void> | void;
 }
@@ -42,6 +43,7 @@ export function PullRequestThreadDialog({
   threadId,
   cwd,
   initialReference,
+  primaryRepositoryOnly = false,
   onOpenChange,
   onPrepared,
 }: PullRequestThreadDialogProps) {
@@ -203,6 +205,7 @@ export function PullRequestThreadDialog({
           <DialogDescription>
             Resolve a {sourceControlPresentation.providerName} {terminology.singular}, then create
             the draft thread in the main repo or in a dedicated worktree.
+            {primaryRepositoryOnly ? " This applies only to the primary repository." : null}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>

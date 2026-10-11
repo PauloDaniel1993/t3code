@@ -22,6 +22,7 @@ import {
   snapshotFolderCheckoutLocation,
   snapshotFolderPath,
   threadUsingWorktrees,
+  workspaceGitCheckouts,
 } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -221,11 +222,14 @@ export class WorktreeSetService extends Context.Service<
      * its own name in the set, and records the branches they now expect.
      * Returns the members it switched.
      */
-    readonly switchBranch: (input: {
-      readonly threadId: ThreadId;
-      readonly branch: string;
-      readonly members?: ReadonlyArray<string> | undefined;
-    }) => Effect.Effect<ReadonlyArray<WorktreeLocation>, VcsThreadWorktreesError | GitCommandError>;
+    readonly switchBranch: (
+      input: {
+        readonly threadId: ThreadId;
+        readonly branch: string;
+        readonly members?: ReadonlyArray<string> | undefined;
+      },
+      options?: { readonly onSwitched?: (cwd: string) => Effect.Effect<void> },
+    ) => Effect.Effect<ReadonlyArray<WorktreeLocation>, VcsThreadWorktreesError | GitCommandError>;
     /** Rewrites the editor workspace from the frozen folders at their current places in the set. */
     readonly editorWorkspaceFile: (
       threadId: ThreadId,
@@ -894,14 +898,17 @@ const make = Effect.gen(function* () {
   const createForThread: WorktreeSetService["Service"]["createForThread"] = (input) =>
     threadChanges.withLock(input.threadId, createAndBind(input));
 
-  const switchBranch: WorktreeSetService["Service"]["switchBranch"] = (input) =>
-    threadChanges.withLock(input.threadId, switchMembers(input));
+  const switchBranch: WorktreeSetService["Service"]["switchBranch"] = (input, options) =>
+    threadChanges.withLock(input.threadId, switchMembers(input, options));
 
-  const switchMembers = Effect.fn("WorktreeSetService.switchBranch")(function* (input: {
-    readonly threadId: ThreadId;
-    readonly branch: string;
-    readonly members?: ReadonlyArray<string> | undefined;
-  }) {
+  const switchMembers = Effect.fn("WorktreeSetService.switchBranch")(function* (
+    input: {
+      readonly threadId: ThreadId;
+      readonly branch: string;
+      readonly members?: ReadonlyArray<string> | undefined;
+    },
+    options?: { readonly onSwitched?: (cwd: string) => Effect.Effect<void> },
+  ) {
     const { threadId } = input;
     const thread = yield* projections
       .getThread(threadId)
@@ -986,6 +993,28 @@ const make = Effect.gen(function* () {
         if (Exit.isFailure(outcome)) return yield* Effect.failCause(outcome.cause);
         return switched;
       }),
+    ).pipe(
+      Effect.ensuring(
+        Effect.suspend(() => {
+          const checkouts = workspaceGitCheckouts(thread, {
+            workspaceRoot: worktrees[0]!.repositoryRoot,
+          });
+          const paths = switched
+            .flatMap((member) => [
+              member.path,
+              ...checkouts
+                .filter((checkout) => isSamePath(checkout.repositoryRoot, member.repositoryRoot))
+                .map((checkout) => checkout.cwd),
+            ])
+            .filter(
+              (path, index, all) => all.findIndex((other) => isSamePath(path, other)) === index,
+            );
+          return Effect.forEach(paths, (cwd) => options?.onSwitched?.(cwd) ?? Effect.void, {
+            concurrency: 4,
+            discard: true,
+          });
+        }),
+      ),
     );
   });
 
