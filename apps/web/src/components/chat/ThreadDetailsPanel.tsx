@@ -27,6 +27,7 @@ import {
   type WorkspaceFolderRow,
 } from "../workspaceFolders.logic";
 import { ThreadWorkspaceFolders } from "./ThreadWorkspaceFolders";
+import { WorkspaceVersionControl } from "./WorkspaceVersionControl";
 import type { ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
@@ -210,6 +211,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   availableEditors={props.availableEditors}
                   keybindings={props.keybindings}
                   onShowChanges={props.onOpenFolderChanges}
+                  {...(props.draftId ? { draftId: props.draftId } : {})}
                   onOpenTerminalHere={props.onOpenTerminalHere}
                 />
               ) : null}
@@ -247,7 +249,27 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             </div>
           </ThreadDetailsSection>
 
-          {props.gitCwd ? (
+          {showWorkspaceFolders && props.workspaceProject ? (
+            <ThreadDetailsSection
+              headingId="thread-details-version-control-heading"
+              title="Version Control"
+              showHeading={density === "full"}
+              separated={density === "full"}
+            >
+              <WorkspaceVersionControl
+                key={`${props.environmentId}:${props.threadId}`}
+                environmentId={props.environmentId}
+                threadId={props.threadId}
+                project={props.workspaceProject}
+                thread={props.workspaceThread ?? null}
+                rows={rows}
+                onShowChanges={props.onOpenFolderChanges}
+                draftBranchControl={
+                  <BranchToolbar layout="panel" panelSection="branch" {...branchToolbarProps} />
+                }
+              />
+            </ThreadDetailsSection>
+          ) : props.gitCwd ? (
             <ThreadDetailsSection
               headingId="thread-details-version-control-heading"
               title="Version Control"

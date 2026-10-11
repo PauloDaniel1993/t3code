@@ -1,4 +1,5 @@
 import { CheckpointScopeId, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
+import { isPathWithin, isSamePath } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -33,6 +34,7 @@ export class RunFinalizationObserver extends Context.Reference<{
     readonly cwd: string;
     readonly threadId: ThreadId;
     readonly runId: RunId;
+    readonly vcsOnly?: boolean;
   }) => Effect.Effect<void, RunFinalizationRefreshError>;
 }>("t3/orchestration-v2/RunFinalizationObserver", {
   defaultValue: () => ({ refresh: () => Effect.void, refreshAfterTurn: () => Effect.void }),
@@ -86,6 +88,27 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(refreshError)),
       { concurrency: 4, discard: true },
     );
+    const thread = yield* projections
+      .getThreadShell(input.threadId)
+      .pipe(Effect.mapError(refreshError));
+    const roots = (thread?.worktrees ?? []).filter(
+      (member) =>
+        locations.some((cwd) => isPathWithin(member.path, cwd)) &&
+        !locations.some((cwd) => isSamePath(member.path, cwd)),
+    );
+    yield* Effect.forEach(
+      roots,
+      (member) =>
+        observer
+          .refresh({
+            cwd: member.path,
+            threadId: input.threadId,
+            runId: input.runId,
+            vcsOnly: true,
+          })
+          .pipe(Effect.mapError(refreshError)),
+      { concurrency: 4, discard: true },
+    );
   });
   return RunFinalizationService.of({ finalize });
 });
@@ -101,8 +124,12 @@ export const observerLive = Layer.effect(
     const pullRequests = yield* PullRequestService.PullRequestService;
     return {
       refreshAfterTurn: pullRequests.refreshAfterTurn,
-      refresh: ({ cwd, threadId, runId }) =>
+      refresh: ({ cwd, threadId, runId, vcsOnly }) =>
         Effect.gen(function* () {
+          if (vcsOnly) {
+            yield* vcsStatus.refreshLocalStatus(cwd);
+            return;
+          }
           const [, local] = yield* Effect.all(
             [workspaceEntries.refresh(cwd), vcsStatus.refreshLocalStatus(cwd)],
             { concurrency: "unbounded" },

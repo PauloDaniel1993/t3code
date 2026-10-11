@@ -1,5 +1,6 @@
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { WorkspaceFoldersChip } from "./WorkspaceFoldersChip";
+import { useSidebarBranchAgreement } from "../state/workspaceVcs";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
 import { setThreadChangeRequestSnapshot } from "./ThreadStatusIndicators";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
@@ -1271,6 +1272,22 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     JSON.stringify([thread.environmentId, gitCwd]),
     gitStatus.data,
   );
+  const branchAgreement = useSidebarBranchAgreement(
+    thread.environmentId,
+    thread.worktrees,
+    visibleGitStatus,
+    leaseLiveStatus,
+  );
+  const branchAgreementHint = branchAgreement?.hint ? (
+    <span
+      className={cn(
+        "shrink-0 text-2xs",
+        branchAgreement.drifted ? "text-warning" : "text-muted-foreground/60",
+      )}
+    >
+      · {branchAgreement.hint}
+    </span>
+  ) : null;
   const pr = linkedPullRequestStatus?.pr ?? null;
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
   const currentLinkedPr = supportsMultiplePullRequests
@@ -1837,6 +1854,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {draftIndicator}
             {title}
             {pinIndicator}
+            {branchAgreementHint ? (
+              <span className="flex min-w-0 items-center gap-1 text-2xs">
+                <MiddleTruncate value={thread.branch ?? "Detached HEAD"} showTitle={false} />
+                {branchAgreementHint}
+              </span>
+            ) : null}
             {terminalStatusIcon}
             {/* Ticket 32: slim parent task count. */}
             {workspaceFoldersChip}
@@ -2156,6 +2179,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   <ThreadWorktreeIndicator thread={thread} />
                   <span className="flex min-w-0 flex-1 text-muted-foreground/40">
                     <MiddleTruncate value={thread.branch} showTitle={false} />
+                    {branchAgreementHint}
                   </span>
                 </>
               ) : (

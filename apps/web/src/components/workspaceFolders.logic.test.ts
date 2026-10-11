@@ -61,6 +61,27 @@ const thread: WorkspaceThread = {
 };
 
 describe("workspace folder presentation", () => {
+  it("shares refreshed branch targets across folders of the same checkout", () => {
+    const sibling = { ...project.folders![0]!, name: "Lib", label: "lib", path: "/repo/lib" };
+    const workspace = { ...project, folders: [...project.folders!, sibling] };
+    const scope = {
+      ...thread,
+      workspaceFolders: [
+        ...thread.workspaceFolders!,
+        { ...sibling, checkoutRoot: "/repo", checkoutPrefix: "lib" },
+      ],
+    };
+    const rows = workspaceFolderRows(workspace, scope);
+    expect(rows[0]?.branchCwd).toBe("/sets/session");
+    expect(rows.at(-1)?.branchCwd).toBe("/sets/session");
+    const current = workspaceFolderRows(workspace, {
+      ...scope,
+      worktreePath: null,
+      worktrees: undefined,
+    });
+    expect(current[0]?.branchCwd).toBe("/repo/app");
+    expect(current.at(-1)?.branchCwd).toBe("/repo/app");
+  });
   it("maps git folders into their worktrees and leaves shared folders in place", () => {
     const rows = workspaceFolderRows(project, thread);
     expect(rows.map((row) => row.effectivePath)).toEqual([

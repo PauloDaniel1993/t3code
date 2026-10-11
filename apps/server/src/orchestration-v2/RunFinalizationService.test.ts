@@ -55,6 +55,7 @@ it.effect.each([
       Layer.mergeAll(
         Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({ execute: capture }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadShell: () => Effect.succeed(null),
           getThreadProjection: () =>
             Effect.die("workspace refresh must not load transcript history"),
           getCheckpointCaptureContext: () =>
@@ -168,5 +169,86 @@ it.effect.each(
     const observer = yield* RunFinalization.RunFinalizationObserver;
     yield* observer.refresh({ cwd: "/repo", threadId, runId });
     assert.deepEqual(refreshed, [...scenario.expected]);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect(
+  "refreshes containing member roots once, using only VCS status for the additional paths",
+  () => {
+    const scope = finalizedScope(undefined);
+    const shell: Pick<OrchestrationV2ThreadShell, "id" | "worktrees"> = {
+      id: scope.threadId,
+      worktrees: [
+        { repositoryRoot: "/source", path: "/", branch: "feature" },
+        { repositoryRoot: "/repo", path: "/repo", branch: "feature" },
+        { repositoryRoot: "/other", path: "/other", branch: "feature" },
+      ],
+    };
+    const refreshed: Array<{ cwd: string; vcsOnly?: boolean }> = [];
+    const layer = RunFinalization.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({ execute: () => Effect.void }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getCheckpointCaptureContext: () =>
+              Effect.succeed({
+                scope,
+                run: undefined,
+                rootNode: undefined,
+                providerThread: undefined,
+                readyCheckpointOrdinals: [],
+                partTurnCheckpointOrdinals: [],
+              }),
+            getThreadShell: () => Effect.succeed(shell as OrchestrationV2ThreadShell),
+          }),
+          Layer.succeed(RunFinalization.RunFinalizationObserver, {
+            refresh: ({ cwd, vcsOnly }) =>
+              Effect.sync(() => {
+                refreshed.push({ cwd, ...(vcsOnly ? { vcsOnly } : {}) });
+              }),
+            refreshAfterTurn: () => Effect.void,
+          }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const service = yield* RunFinalization.RunFinalizationService;
+      yield* service.finalize({ threadId: scope.threadId, runId: scope.runId!, scopeId: scope.id });
+      assert.deepEqual(refreshed, [{ cwd: "/repo" }, { cwd: "/", vcsOnly: true }]);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect("additional root refreshes never refresh workspace entries or discover PRs", () => {
+  const refreshed: Array<string> = [];
+  const layer = RunFinalization.observerLive.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(WorkspaceEntries.WorkspaceEntries)({
+          refresh: () => Effect.die("root must not refresh entries"),
+        }),
+        Layer.mock(PullRequestService.PullRequestService)({ refreshAfterTurn: () => Effect.void }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadShell: () => Effect.die("root must not discover PRs"),
+        }),
+        Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
+          refreshLocalStatus: (cwd) =>
+            Effect.sync(() => {
+              refreshed.push(cwd);
+              return {} as never;
+            }),
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const observer = yield* RunFinalization.RunFinalizationObserver;
+    yield* observer.refresh({
+      cwd: "/sets/api",
+      threadId: ThreadId.make("thread"),
+      runId: RunId.make("run"),
+      vcsOnly: true,
+    });
+    assert.deepEqual(refreshed, ["/sets/api"]);
   }).pipe(Effect.provide(layer));
 });

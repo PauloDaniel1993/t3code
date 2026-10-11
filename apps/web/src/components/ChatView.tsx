@@ -11363,6 +11363,7 @@ export default function ChatView(props: ChatViewProps) {
                 threadId={activeThread.id}
                 cwd={activeProject?.workspaceRoot ?? null}
                 initialReference={pullRequestDialogState.initialReference}
+                primaryRepositoryOnly={activeProject?.workspaceFile != null}
                 onOpenChange={(open) => {
                   if (!open) {
                     closePullRequestDialog();

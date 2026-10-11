@@ -3562,14 +3562,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsSwitchWorktreeSetBranch]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsSwitchWorktreeSetBranch,
-            worktreeSets.switchBranch(input).pipe(
-              Effect.tap((switched) =>
-                Effect.forEach(switched, (member) => refreshGitStatus(member.path), {
-                  discard: true,
-                }),
-              ),
-              Effect.asVoid,
-            ),
+            worktreeSets.switchBranch(input, { onSwitched: refreshGitStatus }).pipe(Effect.asVoid),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsEditorWorkspaceFile]: (input) =>
