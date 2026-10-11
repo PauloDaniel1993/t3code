@@ -3,6 +3,7 @@ import { type KnownTerminalSession } from "@t3tools/client-runtime/state/termina
 import { projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import {
   resolveThreadWorkspace,
+  threadPrimaryPath,
   type ResolvedWorkspaceFolder,
 } from "@t3tools/shared/workspaceFolders";
 import { SymbolView } from "../../components/AppSymbol";
@@ -1292,7 +1293,10 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
           status: terminal.status,
           hasRunningSubprocess: terminal.hasRunningSubprocess,
         }}
-        workspaceRoot={launchLocationCandidate?.cwd ?? selectedThreadProject.workspaceRoot}
+        workspaceRoot={threadPrimaryPath(
+          selectedThreadDetail?.projection.thread ?? selectedThread,
+          selectedThreadProject,
+        )}
         workspaceFolders={
           routeEnvironmentId &&
           serverConfigs.get(routeEnvironmentId)?.workspaceFileProjects === true

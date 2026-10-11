@@ -111,6 +111,25 @@ describe("resolveTerminalOpenLocation", () => {
 });
 
 describe("pending terminal launches", () => {
+  it("does not mix a thread snapshot with a newer shell worktree scalar", () => {
+    expect(
+      resolveTerminalOpenLocation({
+        terminalLocation: null,
+        activeSessionLocation: null,
+        workspaceRoot: "/new-primary",
+        threadShellWorktreePath: "/new-worktree",
+        threadDetailWorktreePath: null,
+        thread: {
+          worktreePath: null,
+          workspaceFolders: [
+            { path: "/old-primary", label: "api", name: "API" },
+            { path: "/repos/ui", label: "ui", name: "UI" },
+          ],
+        },
+        folderPath: "/repos/ui",
+      }),
+    ).toEqual({ cwd: "/repos/ui", worktreePath: null });
+  });
   it("stages and consumes launch details for a specific terminal target", () => {
     const target = {
       environmentId: EnvironmentId.make("env-1"),

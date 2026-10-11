@@ -25,6 +25,7 @@ import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
+import { isSamePath } from "@t3tools/shared/workspaceFolders";
 import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useConnectionsReady } from "../../state/workspace";
@@ -54,10 +55,7 @@ import {
   nextOpenTerminalId,
   resolveProjectScriptTerminalId,
 } from "../terminal/terminalMenu";
-import {
-  resolvePreferredThreadWorktreePath,
-  stagePendingTerminalLaunch,
-} from "../terminal/terminalLaunchContext";
+import { stagePendingTerminalLaunch } from "../terminal/terminalLaunchContext";
 import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen, type ThreadDetailScreenProps } from "./ThreadDetailScreen";
 import { GitOverviewSheet } from "./git/GitOverviewSheet";
@@ -755,19 +753,17 @@ function ThreadRouteContent(
       }
 
       try {
-        const preferredWorktreePath = resolvePreferredThreadWorktreePath({
-          threadShellWorktreePath: selectedThread.worktreePath ?? null,
-          threadDetailWorktreePath: selectedThreadDetailWorktreePath,
-        });
+        const thread = selectedThreadDetail?.thread ?? selectedThread;
+        const preferredWorktreePath = thread.worktreePath;
         const cwd = projectScriptCwd({
           project: { cwd: selectedThreadProject.workspaceRoot },
-          thread: selectedThreadDetail?.thread ?? selectedThread,
+          thread,
           worktreePath: preferredWorktreePath,
           folderPath: script.runOnWorktreeCreate ? undefined : script.folderPath,
         });
         const env = projectScriptRuntimeEnv({
           project: { cwd: selectedThreadProject.workspaceRoot },
-          thread: selectedThreadDetail?.thread ?? selectedThread,
+          thread,
           worktreePath: preferredWorktreePath,
           folderPath: script.runOnWorktreeCreate ? undefined : script.folderPath,
         });
@@ -775,7 +771,10 @@ function ThreadRouteContent(
           existingTerminalIds: terminalMenuSessions.map((session) => session.terminalId),
           hasRunningTerminal: terminalMenuSessions.some(
             (session) =>
-              session.status === "running" || session.status === "starting" || session.cwd !== cwd,
+              session.status === "running" ||
+              session.status === "starting" ||
+              session.cwd === null ||
+              !isSamePath(session.cwd, cwd),
           ),
         });
         const terminalWorktreePath =
@@ -799,7 +798,7 @@ function ThreadRouteContent(
           scriptId: script.id,
           terminalId: targetTerminalId,
           cwd,
-          worktreePath: preferredWorktreePath,
+          worktreePath: terminalWorktreePath,
         });
 
         void navigation.navigate("ThreadTerminal", {
