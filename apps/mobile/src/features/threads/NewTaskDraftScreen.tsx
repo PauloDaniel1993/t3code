@@ -69,6 +69,7 @@ import { hasProviderUsageLimits, isUsageLimitsCommand } from "@t3tools/shared/us
 import { COMPOSER_LAYOUT_TRANSITION, ComposerSurface } from "./ThreadComposer";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
+import { useWorkspaceFileScope } from "../../state/use-workspace-file-scope";
 import {
   ComposerDictationCancelAction,
   ComposerDictationPrimaryAction,
@@ -453,7 +454,12 @@ export function NewTaskDraftScreen(props: {
     () => composerStripAttachments(flow.attachments),
     [flow.attachments],
   );
+  const fileScope = useWorkspaceFileScope({
+    enabled: selectedEnvironmentServerConfig?.workspaceFileProjects === true,
+    project: selectedProject,
+  });
   const composerMenu = useComposerCommandMenu({
+    fileScope,
     draftMessage: flow.prompt,
     ownerKey: flow.draftKey,
     environmentId: selectedProject?.environmentId ?? null,
@@ -1395,6 +1401,7 @@ export function NewTaskDraftScreen(props: {
               environmentId: String(selectedProject.environmentId),
               cwd: composerWorkspaceCwd,
               projectName: selectedProject.title,
+              projectId: String(selectedProject.id),
               path: fileRoutePathSegments(path),
             }),
           );
@@ -1589,7 +1596,9 @@ export function NewTaskDraftScreen(props: {
     >
       {!voiceInput.isBusy &&
       composerMenu.trigger &&
-      (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (
+      (composerMenu.items.length > 0 ||
+        composerMenu.trigger.kind === "pull-request" ||
+        composerMenu.error !== null) ? (
         <View className="mb-2">
           <ComposerCommandPopover
             items={composerMenu.items}

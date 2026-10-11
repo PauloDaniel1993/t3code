@@ -1,10 +1,19 @@
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ThreadId,
+  WorkspaceScope,
+  WorkspaceScopeFolder,
+} from "@t3tools/contracts";
 import { normalizeNativeMarkdownUrl } from "@t3tools/mobile-markdown-text/links";
 
 import type { FilePreviewSource } from "../components/FilePreviewModal";
 import type { MediaVideoPreviewSource } from "./videoPreviewSource";
 import type { MediaActionsSource } from "./mediaActions";
+import {
+  workspaceMarkdownResource,
+  workspaceRelativeMarkdownPath,
+} from "./workspaceMarkdownResource";
 
 /** Resolves only explicit media references. Ordinary links keep their existing navigation. */
 export function resolveMarkdownMediaPreview(
@@ -13,6 +22,8 @@ export function resolveMarkdownMediaPreview(
     readonly environmentId: EnvironmentId;
     readonly threadId: ThreadId;
     readonly workspaceRoot: string | null | undefined;
+    readonly scope?: WorkspaceScope | null;
+    readonly folders?: ReadonlyArray<WorkspaceScopeFolder>;
     /** Image syntax can target an endpoint without a recognizable extension. */
     readonly imageEmbed?: boolean;
   },
@@ -22,14 +33,19 @@ export function resolveMarkdownMediaPreview(
   | null {
   const media = resolveMediaSource(href, input);
   if (media === null || media.access === "unavailable") return null;
-  const { kind, name, mimeType, reference, srcFragment } = media;
+  const { kind, name, mimeType, srcFragment } = media;
+  const scopedResource = workspaceMarkdownResource(input.scope ?? null, input.folders ?? [], href);
+  if (input.scope && workspaceRelativeMarkdownPath(href) !== null && scopedResource === null)
+    return null;
+  const reference = media.reference;
+  const resource = scopedResource ?? (media.access === "environment" ? media.resource : null);
 
   const target =
     media.access === "direct"
       ? { uri: normalizeNativeMarkdownUrl(media.uri) }
       : {
           environmentId: input.environmentId,
-          resource: media.resource,
+          resource: resource!,
           ...(srcFragment ? { srcFragment } : {}),
         };
   const actionsSource: MediaActionsSource =
@@ -39,7 +55,7 @@ export function resolveMarkdownMediaPreview(
           reference,
           environmentId: input.environmentId,
           threadId: input.threadId,
-          resource: media.resource,
+          resource: resource!,
           name,
           mimeType,
         };

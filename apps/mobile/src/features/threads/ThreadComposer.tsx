@@ -100,6 +100,7 @@ import {
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { ComposerQueuedEditAttachments } from "./ComposerQueuedEdit";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
+import { useWorkspaceFileScope } from "../../state/use-workspace-file-scope";
 import {
   ComposerDictationCancelAction,
   ComposerDictationDraftContent,
@@ -478,7 +479,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     return report !== null;
   }, [currentModelSelection.instanceId, onShowUsageLimits, props.serverConfig]);
 
+  const fileScope = useWorkspaceFileScope({
+    enabled: props.serverConfig?.workspaceFileProjects === true,
+    project,
+    thread: props.selectedThread,
+  });
   const composerMenu = useComposerCommandMenu({
+    fileScope,
+    fileWorktrees: props.selectedThread.worktrees,
     draftMessage: props.draftMessage,
     ownerKey: composerOwnerKey,
     environmentId: props.environmentId,
@@ -771,7 +779,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       >
         {!voiceInput.isBusy &&
         composerMenu.trigger &&
-        (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (
+        (composerMenu.items.length > 0 ||
+          composerMenu.trigger.kind === "pull-request" ||
+          composerMenu.error !== null) ? (
           <View className="absolute inset-x-0 bottom-full z-10 mb-2">
             <ComposerCommandPopover
               items={composerMenu.items}

@@ -1,5 +1,5 @@
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, WorkspaceScope } from "@t3tools/contracts";
 import {
   isWorkspaceBrowserPreviewPath,
   isWorkspaceImagePreviewPath,
@@ -11,21 +11,16 @@ import { isVideoPreviewFile } from "./filePath";
 import { prepareSourceFileDocument } from "./source-file-document";
 import { sourceHighlightAtom } from "./sourceHighlightingState";
 import type { ReviewDiffTheme } from "../review/shikiReviewHighlighter";
+import { workspaceFileCacheKey, workspaceFileReadInput } from "../../lib/workspaceFiles";
+import { workspaceFileBindingAtom } from "../../state/workspace-file-bindings";
 
 const inFlightPreloads = new Map<string, Promise<void>>();
 const MAX_HIGHLIGHT_PRELOAD_CHARACTERS = 256 * 1024;
 
-function preloadKey(input: {
-  readonly cwd: string;
-  readonly environmentId: EnvironmentId;
-  readonly relativePath: string;
-}): string {
-  return JSON.stringify([input.environmentId, input.cwd, input.relativePath]);
-}
-
 export function preloadWorkspaceFileContents(input: {
   readonly cwd: string;
   readonly environmentId: EnvironmentId;
+  readonly scope?: WorkspaceScope | null;
   readonly relativePath: string;
   readonly theme: ReviewDiffTheme;
 }): void {
@@ -37,7 +32,10 @@ export function preloadWorkspaceFileContents(input: {
     return;
   }
 
-  const key = preloadKey(input);
+  const bindingKey = appAtomRegistry.get(
+    workspaceFileBindingAtom(input.environmentId, input.scope ?? null),
+  );
+  const key = `${workspaceFileCacheKey(input)}:${bindingKey}`;
   if (inFlightPreloads.has(key)) {
     return;
   }
@@ -46,7 +44,7 @@ export function preloadWorkspaceFileContents(input: {
     appAtomRegistry,
     projectEnvironment.readFile({
       environmentId: input.environmentId,
-      input: { cwd: input.cwd, relativePath: input.relativePath },
+      input: workspaceFileReadInput(input.cwd, input.relativePath, input.scope ?? null),
     }),
     {
       label: "workspace file preload",

@@ -28,6 +28,7 @@ export type ComposerCommandItem =
       readonly id: string;
       readonly type: "path";
       readonly path: string;
+      readonly folderPath?: string;
       readonly kind: "file" | "directory";
       readonly label: string;
       readonly description: string;
@@ -202,6 +203,11 @@ export const ComposerCommandPopover = memo(function ComposerCommandPopover(
             {label}
           </Text>
         </View>
+      ) : null}
+      {props.error && props.items.length > 0 ? (
+        <Text accessibilityRole="alert" className="px-3.5 py-1 text-xs text-foreground-muted">
+          {props.error}
+        </Text>
       ) : null}
       {props.items.length > 0 ? (
         <ScrollView

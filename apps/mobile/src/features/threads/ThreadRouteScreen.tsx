@@ -78,6 +78,7 @@ import {
   useRegisterWorkspaceInspector,
 } from "../layout/AdaptiveWorkspaceLayout";
 import { ThreadFileNavigatorPane } from "../files/thread-file-navigator-pane";
+import { useWorkspaceFileScope } from "../../state/use-workspace-file-scope";
 import {
   ThreadInspectorContentStack,
   type ThreadInspectorMode,
@@ -466,6 +467,11 @@ function ThreadRouteContent(
     }, [props.renderInspector]),
   );
   const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
+  const fileScope = useWorkspaceFileScope({
+    enabled: routeEnvironmentRuntime?.serverConfig?.workspaceFileProjects === true,
+    project: selectedThreadProject,
+    thread: selectedThread,
+  });
   const routeConnectionState =
     routeEnvironmentRuntime?.connectionState ?? (environmentId ? "available" : connectionState);
   const routeConnectionError = routeEnvironmentRuntime?.connectionError ?? null;
@@ -587,7 +593,7 @@ function ThreadRouteContent(
     action.toggleAuxiliaryPane();
   }, []);
   const handleSelectInspectorFile = useCallback(
-    (path: string) => {
+    (path: string, folderPath?: string) => {
       if (selectedThread === null) {
         return;
       }
@@ -595,6 +601,7 @@ function ThreadRouteContent(
         environmentId: String(selectedThread.environmentId),
         threadId: String(selectedThread.id),
         path: path.split("/").filter((segment) => segment.length > 0),
+        ...(folderPath ? { folderPath } : {}),
       };
       if (fileInspector.supported) {
         navigation.navigate("ThreadFile", params);
@@ -624,6 +631,7 @@ function ThreadRouteContent(
       selectedThread !== null && selectedThreadCwd !== null ? (
         <ThreadFileNavigatorPane
           cwd={selectedThreadCwd}
+          scope={fileScope}
           environmentId={selectedThread.environmentId}
           headerInset={inspectorHeaderInset}
           projectName={selectedThreadProject?.title ?? "Files"}
@@ -636,6 +644,7 @@ function ThreadRouteContent(
       inspectorHeaderInset,
       selectedThread,
       selectedThreadCwd,
+      fileScope,
       selectedThreadProject?.title,
     ],
   );

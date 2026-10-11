@@ -83,7 +83,12 @@ export function useMediaActions(source: MediaActionsSource | undefined, onOpenFi
   };
 
   const reference = source?.reference;
-  const relativePath = reference?.kind === "file" ? reference.relativePath : undefined;
+  const scopedFile =
+    source && "resource" in source && source.resource._tag === "workspace-scope-file"
+      ? source.resource
+      : null;
+  const relativePath =
+    scopedFile?.path ?? (reference?.kind === "file" ? reference.relativePath : undefined);
   const threadId = source && "threadId" in source ? source.threadId : undefined;
   const actions: { id: MediaActionId; title: string; run: () => void; disabled?: boolean }[] =
     source
@@ -126,6 +131,7 @@ export function useMediaActions(source: MediaActionsSource | undefined, onOpenFi
                       environmentId: String(source.environmentId),
                       threadId: String(threadId),
                       path: relativePath.split("/"),
+                      ...(scopedFile ? { folderPath: scopedFile.scope.folderPath } : {}),
                     });
                   },
                 },

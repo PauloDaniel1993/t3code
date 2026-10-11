@@ -1,6 +1,28 @@
 import type { ProjectEntry } from "@t3tools/contracts";
 import { normalizeSearchQuery, scoreQueryMatch } from "@t3tools/shared/searchRanking";
 
+/** Include loaded descendants only while a root or a search result can reach them. */
+export function collectFileTreeEntries(
+  roots: ReadonlyArray<ProjectEntry>,
+  directories: ReadonlyMap<string, ReadonlyArray<ProjectEntry>>,
+  search: ReadonlyArray<ProjectEntry> = [],
+) {
+  const merged = new Map<string, ProjectEntry>();
+  const reachableDirectories = new Set<string>();
+  const visit = (items: ReadonlyArray<ProjectEntry>) => {
+    for (const entry of items) {
+      merged.set(entry.path, entry);
+      if (entry.kind === "directory" && !reachableDirectories.has(entry.path)) {
+        reachableDirectories.add(entry.path);
+        visit(directories.get(entry.path) ?? []);
+      }
+    }
+  };
+  visit(search);
+  visit(roots);
+  return { entries: [...merged.values()], reachableDirectories };
+}
+
 export interface FileTreeNode {
   readonly path: string;
   readonly name: string;

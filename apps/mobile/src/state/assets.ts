@@ -9,7 +9,7 @@ import {
   createProjectFaviconUrlAtomFamily,
   EMPTY_ASSET_URL_ATOM,
 } from "@t3tools/client-runtime/state/assets";
-import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
+import { WS_METHODS, type AssetResource, type EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback } from "react";
@@ -21,10 +21,25 @@ import { type AssetUrlState, deriveAssetUrlState } from "./asset-url-state";
 import { environmentProjectCloneListAtom } from "./projectClones";
 import { environmentSession, usePreparedConnection } from "./session";
 import { useAtomQueryRunner } from "./use-atom-query-runner";
+import { createWorkspaceFileQuery } from "./workspace-file-bindings";
 
 export type { AssetUrlFailureReason, AssetUrlState } from "./asset-url-state";
 
-export const assetEnvironment = createAssetEnvironmentAtoms(connectionAtomRuntime);
+const legacyAssets = createAssetEnvironmentAtoms(connectionAtomRuntime);
+const scopedUrl = createWorkspaceFileQuery({
+  tag: WS_METHODS.assetsCreateUrl,
+  label: "mobile:scoped-file-url",
+  staleTimeMs: 5 * 60_000,
+  idleTtlMs: 60 * 60_000,
+  refreshIntervalMs: 30 * 60_000,
+});
+export const assetEnvironment = {
+  ...legacyAssets,
+  createUrl: (target: Parameters<typeof legacyAssets.createUrl>[0]) =>
+    target.input.resource._tag === "workspace-scope-file"
+      ? scopedUrl(target, target.input.resource.scope)
+      : legacyAssets.createUrl(target),
+};
 
 export const projectFaviconUrlAtom = createProjectFaviconUrlAtomFamily({
   imageCache: projectFaviconDatabaseCache,

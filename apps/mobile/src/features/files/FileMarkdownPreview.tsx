@@ -1,6 +1,12 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ThreadId,
+  WorkspaceScope,
+  WorkspaceScopeFolder,
+} from "@t3tools/contracts";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { getBrowseDirectoryPath } from "@t3tools/client-runtime/state/projects";
+import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
 import { useCallback, useMemo, useState } from "react";
 import {
   Markdown,
@@ -22,6 +28,10 @@ import {
   ThreadMarkdownImageUnavailable,
 } from "../threads/ThreadMarkdownImage";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import { workspaceMarkdownResource } from "../../lib/workspaceMarkdownResource";
+import { StackActions, useNavigation } from "@react-navigation/native";
+import { parseMarkdownFileLink } from "@t3tools/client-runtime/markdown-links";
+import { fileRoutePathSegments, isAbsolutePath } from "./filePath";
 import {
   hasNativeSelectableMarkdownText,
   SelectableMarkdownText,
@@ -191,6 +201,8 @@ function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): Markdown
 
 export function FileMarkdownPreview(props: {
   readonly cwd: string;
+  readonly scope?: WorkspaceScope | null;
+  readonly folders?: ReadonlyArray<WorkspaceScopeFolder>;
   readonly captured?: boolean;
   readonly environmentId: EnvironmentId;
   readonly markdown: string;
@@ -199,6 +211,7 @@ export function FileMarkdownPreview(props: {
   readonly threadId: ThreadId | null;
   readonly onRefresh?: () => Promise<void> | void;
 }) {
+  const navigation = useNavigation();
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const handlePullToRefresh = useCallback(async () => {
     if (!props.onRefresh) {
@@ -217,6 +230,12 @@ export function FileMarkdownPreview(props: {
   );
   const renderImage = useCallback<MarkdownImageRenderer>(
     (image) => {
+      const scopedResource = workspaceMarkdownResource(
+        props.scope ?? null,
+        props.folders ?? [],
+        image.href,
+        props.relativePath,
+      );
       const media = resolveMediaSource(image.href, {
         threadId: props.threadId ?? undefined,
         workspaceRoot: markdownDirectory,
@@ -225,30 +244,81 @@ export function FileMarkdownPreview(props: {
       if (media?.access === "direct") {
         return null;
       }
-      if (
-        props.captured ||
-        media === null ||
-        media.kind !== "image" ||
-        media.access === "unavailable"
-      ) {
+      const resource =
+        scopedResource ??
+        (media?.access === "environment" &&
+        (!props.scope || isAbsolutePath(parseMarkdownFileLink(image.href)?.path ?? ""))
+          ? media.resource
+          : null);
+      if (props.captured || resource === null || (media !== null && media.kind !== "image")) {
         return <ThreadMarkdownImageUnavailable alt={image.alt} />;
       }
       return (
         <ThreadMarkdownImage
           environmentId={props.environmentId}
-          resource={media.resource}
+          resource={resource}
           alt={image.alt}
-          srcFragment={media.srcFragment}
+          srcFragment={media?.srcFragment}
           onPressPreview={() => undefined}
         />
       );
     },
-    [markdownDirectory, props.environmentId, props.threadId, props.captured],
+    [
+      markdownDirectory,
+      props.environmentId,
+      props.threadId,
+      props.captured,
+      props.scope,
+      props.folders,
+      props.relativePath,
+    ],
   );
   const styles = useMarkdownPreviewStyles(renderImage);
-  const onLinkPress = useCallback((href: string) => {
-    void tryOpenExternalUrl(href, "markdown-link");
-  }, []);
+  const onLinkPress = useCallback(
+    (href: string) => {
+      if (resolveMarkdownLinkPresentation(href).kind !== "file") {
+        void tryOpenExternalUrl(href, "markdown-link");
+        return;
+      }
+      const resource = workspaceMarkdownResource(
+        props.scope ?? null,
+        props.folders ?? [],
+        href,
+        props.relativePath,
+      );
+      if (resource !== null) {
+        const line = parseMarkdownFileLink(href)?.line;
+        const params = {
+          environmentId: String(props.environmentId),
+          path: fileRoutePathSegments(resource.path),
+          folderPath: resource.scope.folderPath,
+          ...(line ? { line: String(line) } : {}),
+        };
+        if (props.threadId === null) {
+          navigation.dispatch(
+            StackActions.push("NewTaskFile", {
+              ...params,
+              projectId: String(resource.scope.projectId),
+              cwd: props.cwd,
+            }),
+          );
+        } else {
+          navigation.navigate("ThreadFile", { ...params, threadId: String(props.threadId) });
+        }
+        return;
+      }
+      void tryOpenExternalUrl(href, "markdown-link");
+    },
+    [
+      navigation,
+      props.cwd,
+      props.environmentId,
+      props.folders,
+      props.relativePath,
+      props.scope,
+      props.threadId,
+    ],
+  );
 
   return (
     <ScrollView

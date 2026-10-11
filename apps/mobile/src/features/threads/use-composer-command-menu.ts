@@ -4,6 +4,8 @@ import type {
   ProviderInteractionMode,
   ServerProvider,
   ThreadId,
+  WorkspaceScope,
+  OrchestrationV2ThreadWorktree,
 } from "@t3tools/contracts";
 import { matchComposerThreadItems } from "@t3tools/client-runtime/composerThreadItems";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -47,6 +49,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useComposerPathSearch, useComposerPullRequestSearch } from "../../state/queries";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
+import { pinWorkspaceFileScope, workspaceFileMentionPath } from "../../lib/workspaceFiles";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
 
@@ -172,6 +175,8 @@ export function useComposerCommandMenu({
   threadShells = EMPTY_THREAD_SHELLS,
   currentThreadId = null,
   projectCwd,
+  fileScope = null,
+  fileWorktrees,
   pullRequestProjectId = null,
   pullRequestRepository = null,
   selectedProviderStatus,
@@ -191,6 +196,8 @@ export function useComposerCommandMenu({
   /** Left out of `@` thread suggestions: a thread is never context for itself. */
   readonly currentThreadId?: ThreadId | null;
   readonly projectCwd: string | null;
+  readonly fileScope?: WorkspaceScope | null;
+  readonly fileWorktrees?: ReadonlyArray<OrchestrationV2ThreadWorktree>;
   readonly pullRequestProjectId?: ProjectId | null;
   readonly pullRequestRepository?: string | null;
   readonly selectedProviderStatus: ServerProvider | null;
@@ -310,6 +317,7 @@ export function useComposerCommandMenu({
   const pathSearch = useComposerPathSearch({
     environmentId,
     cwd: trigger?.kind === "path" ? projectCwd : null,
+    scope: fileScope,
     query: trigger?.kind === "path" ? trigger.query : null,
   });
   const pullRequestSearch = useComposerPullRequestSearch({
@@ -473,6 +481,9 @@ export function useComposerCommandMenu({
           return {
             id: `path:${entry.path}`,
             type: "path" as const,
+            folderPath: fileScope
+              ? pinWorkspaceFileScope(fileScope, entry.path, pathSearch.folders)?.folderPath
+              : undefined,
             path: entry.path,
             kind: entry.kind,
             label: parts[parts.length - 1] ?? entry.path,
@@ -491,6 +502,8 @@ export function useComposerCommandMenu({
     hasCompactableConversation,
     onUpdateInteractionMode,
     pathSearch.entries,
+    pathSearch.folders,
+    fileScope,
     pullRequestSearch.entries,
     projectCwd,
     selectedProviderStatus,
@@ -502,6 +515,17 @@ export function useComposerCommandMenu({
   const onSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!trigger) return;
+      let selectedItem = item;
+      if (item.type === "path" && fileScope) {
+        const destination = workspaceFileMentionPath(
+          item.path,
+          pathSearch.folders,
+          fileWorktrees,
+          item.folderPath,
+        );
+        if (destination === null) return;
+        selectedItem = { ...item, path: destination };
+      }
       if (item.type === "thread") {
         if (!ownerKey || trigger.kind !== "path") return;
         const shell = threadShells.find(
@@ -586,7 +610,7 @@ export function useComposerCommandMenu({
       const result = resolveComposerCommandSelection({
         draftMessage,
         trigger,
-        item,
+        item: selectedItem,
         allowInteractionMode:
           onUpdateInteractionMode !== undefined &&
           selectedProviderStatus?.showInteractionModeToggle !== false,
@@ -607,6 +631,9 @@ export function useComposerCommandMenu({
       selectedProviderStatus?.showInteractionModeToggle,
       threadShells,
       trigger,
+      fileScope,
+      fileWorktrees,
+      pathSearch.folders,
     ],
   );
 
@@ -623,7 +650,9 @@ export function useComposerCommandMenu({
         ? pullRequestProjectId === null || pullRequestRepository === null
           ? "Pull requests are unavailable for this project."
           : pullRequestSearch.error
-        : null,
+        : trigger?.kind === "path"
+          ? pathSearch.error
+          : null,
     onSelect,
   };
 }

@@ -15,6 +15,7 @@ import { MediaActionsMenu } from "../../components/MediaActionsMenu";
 import { PresentationSource } from "../../components/NativePresentation";
 import { useMediaActions, type MediaActionsSource } from "../../lib/mediaActions";
 import { useAssetUrlState } from "../../state/assets";
+import { useWorkspaceFileBindingKey } from "../../state/workspace-file-bindings";
 import {
   MARKDOWN_IMAGE_MAX_WIDTH,
   type MarkdownImageDisplaySize,
@@ -178,22 +179,25 @@ function ThreadMarkdownImageRequest(props: {
 /** Environment-hosted image that loads through a signed asset URL. */
 export function ThreadMarkdownImage(props: {
   readonly environmentId: EnvironmentId;
-  readonly resource: Extract<AssetResource, { readonly _tag: "attachment" | "media-file" }>;
+  readonly resource: Extract<
+    AssetResource,
+    { readonly _tag: "attachment" | "media-file" | "workspace-scope-file" }
+  >;
   readonly alt: string | null;
   readonly srcFragment?: string;
   readonly actionsSource?: MediaActionsSource;
   readonly onPressPreview: (source: FilePreviewSource) => void;
 }) {
   const assetUrl = useAssetUrlState(props.environmentId, props.resource);
+  const bindingKey = useWorkspaceFileBindingKey(
+    props.environmentId,
+    props.resource._tag === "workspace-scope-file" ? props.resource.scope : null,
+  );
 
   return (
     <ThreadMarkdownImageView
       uri={assetUrl._tag === "Success" ? assetUrl.url + (props.srcFragment ?? "") : null}
-      sourceKey={
-        props.resource._tag === "attachment"
-          ? `attachment:${props.resource.attachmentId}`
-          : `workspace:${props.resource.path}`
-      }
+      sourceKey={JSON.stringify([props.environmentId, props.resource, bindingKey])}
       unavailable={assetUrl._tag === "Failure"}
       knownSize={assetUrl._tag === "Success" ? assetUrl.imageDimensions : undefined}
       alt={props.alt}

@@ -6,6 +6,7 @@ import type {
   ThreadId,
   VcsListRefsResult,
   VcsRef,
+  WorkspaceScope,
 } from "@t3tools/contracts";
 import {
   createThreadSearchResultsAtomFamily,
@@ -29,6 +30,7 @@ import {
   normalizeComposerPathSearchQuery,
   type CheckpointDiffTarget,
 } from "./queryTargets";
+import { workspaceFileCacheKey, workspaceFolderErrors } from "../lib/workspaceFiles";
 
 const COMPOSER_PATH_SEARCH_DEBOUNCE_MS = 200;
 const COMPOSER_PATH_SEARCH_LIMIT = 20;
@@ -54,6 +56,7 @@ const threadSearchResultsAtom = createThreadSearchResultsAtomFamily({
 export interface ComposerPathSearchTarget {
   readonly environmentId: EnvironmentId | null;
   readonly cwd: string | null;
+  readonly scope?: WorkspaceScope | null;
   readonly query: string | null;
 }
 
@@ -302,9 +305,10 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
     () => ({
       environmentId: target.environmentId,
       cwd: target.cwd,
+      scope: target.scope ?? null,
       query: normalizeComposerPathSearchQuery(target.query),
     }),
-    [target.cwd, target.environmentId, target.query],
+    [target.cwd, target.environmentId, target.query, target.scope],
   );
   const debouncedTarget = useDebouncedValue(normalizedTarget, COMPOSER_PATH_SEARCH_DEBOUNCE_MS);
   const result = useEnvironmentQuery(
@@ -313,19 +317,28 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
       debouncedTarget.query.length > 0
       ? projectEnvironment.searchEntries({
           environmentId: debouncedTarget.environmentId,
-          input: {
-            cwd: debouncedTarget.cwd,
-            query: debouncedTarget.query,
-            limit: COMPOSER_PATH_SEARCH_LIMIT,
-          },
+          input: debouncedTarget.scope
+            ? {
+                scope: debouncedTarget.scope,
+                query: debouncedTarget.query,
+                limit: COMPOSER_PATH_SEARCH_LIMIT,
+              }
+            : {
+                cwd: debouncedTarget.cwd,
+                query: debouncedTarget.query,
+                limit: COMPOSER_PATH_SEARCH_LIMIT,
+              },
         })
       : null,
   );
 
+  const current =
+    workspaceFileCacheKey(normalizedTarget) === workspaceFileCacheKey(debouncedTarget);
   return {
-    entries: result.data?.entries ?? [],
-    error: result.error,
-    isPending: normalizedTarget.query !== debouncedTarget.query || result.isPending,
+    entries: current ? (result.data?.entries ?? []) : [],
+    folders: current ? (result.data?.folders ?? []) : [],
+    error: current ? (result.error ?? workspaceFolderErrors(result.data?.folders ?? [])) : null,
+    isPending: !current || normalizedTarget.query !== debouncedTarget.query || result.isPending,
     refresh: result.refresh,
   };
 }
