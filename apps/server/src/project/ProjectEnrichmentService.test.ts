@@ -411,6 +411,50 @@ it.effect("deduplicates requests, bounds pending work, and reloads invalidated r
   }),
 );
 
+it.effect("cold folder probes resolve secondary identities without another shell read", () =>
+  Effect.gen(function* () {
+    const metadata = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (path) => Effect.succeed(identity(path)),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      const changes = yield* service.subscribeChanges;
+      const folders = [
+        { path: "/work/app", name: "app", label: "app" },
+        { path: "/work/lib", name: "lib", label: "lib" },
+      ];
+      yield* service.getAvailableFolders(folders);
+      let change = yield* PubSub.take(changes);
+      while (!("workspaceRoot" in change) || change.workspaceRoot !== "/work/lib")
+        change = yield* PubSub.take(changes);
+      const served = yield* service.getAvailableFolders(folders, { request: false });
+      assert.deepEqual(served[1]?.vcs, {
+        checkoutRoot: "/work/lib",
+        repositoryIdentity: identity("/work/lib"),
+      });
+    }).pipe(
+      Effect.provide(
+        makeLayer(
+          metadata,
+          {},
+          folderResolverLayer((path) =>
+            Effect.succeed({
+              path,
+              availability: "available",
+              vcs: { checkoutRoot: path, checkoutPrefix: "", commonDir: `${path}/.git` },
+            }),
+          ),
+        ),
+      ),
+    );
+  }),
+);
+
 it.effect("serves folder facts once probed, and probes missing ones in the background", () =>
   Effect.gen(function* () {
     const probes = yield* Ref.make<ReadonlyArray<string>>([]);

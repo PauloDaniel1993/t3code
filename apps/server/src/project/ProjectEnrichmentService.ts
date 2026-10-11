@@ -286,17 +286,6 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
       discard: true,
     });
   };
-  yield* Effect.all(
-    [
-      startWorkers(repositoryIdentityLane, resolveRepositoryIdentity),
-      startWorkers(faviconLane, resolveFavicon),
-      startWorkers(folderLane, (path) =>
-        Cache.get(folderCache, path).pipe(Effect.flatMap(publishFolderFacts)),
-      ),
-    ],
-    { concurrency: "unbounded", discard: true },
-  );
-
   const requestLane = Effect.fn("ProjectEnrichmentService.requestLane")(function* (
     lane: EnrichmentWorkLane,
     workspaceRoot: string,
@@ -496,6 +485,24 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
       { discard: true },
     );
   });
+
+  yield* Effect.all(
+    [
+      startWorkers(repositoryIdentityLane, resolveRepositoryIdentity),
+      startWorkers(faviconLane, resolveFavicon),
+      startWorkers(
+        folderLane,
+        Effect.fn("ProjectEnrichmentService.resolveFolder")(function* (path) {
+          const probe = yield* Cache.get(folderCache, path);
+          // A cold shell cannot request the secondary's identity until its git
+          // probe completes. Schedule it here; refresh-frame hydration only peeks.
+          if (probe.vcs != null) yield* availableRepositoryIdentity(path);
+          yield* publishFolderFacts(probe);
+        }),
+      ),
+    ],
+    { concurrency: "unbounded", discard: true },
+  );
 
   return ProjectEnrichmentService.of({
     peek,
